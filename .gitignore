@@ -1,0 +1,38 @@
+# .gitignore — что НЕ коммитить в git
+
+# ═══ Виртуальное окружение ═══
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# ═══ IDE ═══
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ═══ Сборка ═══
+dist/
+build/
+*.egg-info/
+
+# ═══ ДАННЫЕ (не в git сервера!) ═══
+workspace/
+
+# ═══ Секреты ═══
+.env
+.env.local
+*.key
+
+# ═══ Туннель (cloudflared) — D11, D31 ═══
+# ВНИМАНИЕ: в .gitignore инлайн-комментарии НЕ работают — '#' в середине строки
+# становится частью паттерна. Комментарии только на ОТДЕЛЬНОЙ строке.
+# локальный бинарь туннеля
+bin/cloudflared
+# credentials именованного туннеля
+*.cloudflared.json
+# креды/конфиг cloudflared
+.cloudflared/
+# D31: может содержать tunnel_token — НЕ коммитить
+config/tunnel.yaml

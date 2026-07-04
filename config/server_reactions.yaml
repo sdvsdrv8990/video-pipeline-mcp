@@ -1,0 +1,139 @@
+# server_reactions.yaml — реестр реакций сервера (D4)
+#
+# Движок (core/engine) при ошибке смотрит сюда по `code` и собирает ErrorDetail.
+# Добавить реакцию = строка здесь, не код. Формат читается core/reactions/reactions.py:
+#   <CODE>:
+#     class: ai_recoverable | server_recoverable | human_required | integrity | unknown
+#     message_template: "текст по умолчанию"
+#     recovery: { suggested_tool, suggested_params, reason }
+
+# ═══ Ошибки движка/транспорта ═══
+
+TOOL_NOT_FOUND:
+  class: ai_recoverable
+  message_template: "Инструмент не найден."
+  recovery:
+    suggested_tool: "tools/list"
+    reason: "Посмотри доступные инструменты и вызови существующий."
+
+VALIDATION_ERROR:
+  class: ai_recoverable
+  message_template: "Параметры не соответствуют input_schema инструмента."
+  recovery:
+    suggested_tool: "tools/list"
+    reason: "Сверь параметры со схемой инструмента и повтори вызов."
+
+INTERNAL_ERROR:
+  class: human_required
+  message_template: "Внутренняя ошибка сервера."
+  recovery:
+    reason: "Непредвиденный сбой в хендлере. Нужна диагностика человеком."
+
+# ═══ Файловая система (safe-join, D1) ═══
+
+PATH_ESCAPE:
+  class: ai_recoverable
+  message_template: "Путь выходит за пределы workspace/."
+  recovery:
+    reason: "Используй путь ВНУТРИ workspace, без '..' и абсолютных путей."
+
+MISSING_TARGET_FILE:
+  class: ai_recoverable
+  message_template: "Файл '{missing_path}' не найден."
+  recovery:
+    suggested_tool: "fs_create_file"
+    reason: "Создай файл перед чтением."
+
+# D4: добавлены коды из fs_*/table_* хендлеров (были хардкодом вне реестра).
+FILE_NOT_FOUND:
+  class: ai_recoverable
+  message_template: "Файл не найден."
+  recovery:
+    suggested_tool: "fs_create_file"
+    reason: "Создай файл перед чтением."
+
+TABLE_NOT_FOUND:
+  class: ai_recoverable
+  message_template: "Таблица не найдена."
+  recovery:
+    suggested_tool: "fs_create_project_structure"
+    reason: "Создай структуру проекта."
+
+FILE_EXISTS:
+  class: ai_recoverable
+  message_template: "Файл или каталог уже существует: {path}"
+  recovery:
+    reason: "Удали существующий файл или используй другое имя."
+
+DIRECTORY_NOT_EMPTY:
+  class: ai_recoverable
+  message_template: "Каталог не пуст: {path}"
+  recovery:
+    reason: "Используй force=true для удаления с содержимым или очисти каталог вручную."
+
+TEMPLATE_NOT_FOUND:
+  class: ai_recoverable
+  message_template: "Шаблон не найден: {template}"
+  recovery:
+    reason: "Проверь имя шаблона в config/templates/workspace/."
+
+NO_FRAGMENTS:
+  class: ai_recoverable
+  message_template: "Нет фрагментов для создания."
+  recovery:
+    reason: "Укажи template или fragments."
+
+INVALID_EXTENSION:
+  class: ai_recoverable
+  message_template: "Неверное расширение файла: {path}"
+  recovery:
+    reason: "Используй расширение .py для Python-скриптов."
+
+STRUCTURE_INCOMPLETE:
+  class: ai_recoverable
+  message_template: "Структура неполна: отсутствуют {missing_fragments}."
+  recovery:
+    suggested_tool: "fs_create_project_structure"
+    reason: "Дострой недостающие фрагменты структуры."
+
+# ═══ Провайдеры (медиа) ═══
+
+PROVIDER_FAILED:
+  class: server_recoverable
+  message_template: "Внешний провайдер недоступен."
+  recovery:
+    reason: "Сервер выполняет retry с backoff и fallback из model_routing.yaml; при исчерпании — человек."
+
+CONTENT_REJECTED:
+  class: ai_recoverable
+  message_template: "Провайдер отклонил контент (модерация)."
+  recovery:
+    reason: "Переформулируй промпт — повтор того же промпта даст тот же отказ."
+
+LOCAL_INFERENCE_FAILED:
+  class: server_recoverable
+  message_template: "Сбой локального инференса."
+  recovery:
+    reason: "Деградация модели (large→medium→base) или проверка ресурсов; при исчерпании — человек."
+
+# ═══ Аутентификация (D3) ═══
+
+AUTH_REQUIRED:
+  class: human_required
+  message_template: "Требуется аутентификация. Заголовок Authorization отсутствует."
+  recovery:
+    reason: "Передай bearer-токен в заголовке Authorization: Bearer <token>."
+
+AUTH_FAILED:
+  class: human_required
+  message_template: "Аутентификация не пройдена. Неверный токен."
+  recovery:
+    reason: "Проверь значение MCP_AUTH_TOKEN и повтори запрос."
+
+# ═══ Fallback ═══
+
+DEFAULT:
+  class: unknown
+  message_template: "Непредвиденная ошибка."
+  recovery:
+    reason: "Нет протокола реакции для этого кода — требуется решение человека."

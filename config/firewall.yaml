@@ -1,0 +1,58 @@
+# firewall.yaml — конфигурация файрвола
+
+# ═══ ОГРАНИЧЕНИЕ ЧАСТОТЫ ═══
+rate_limit:
+  max_requests_per_minute: 60
+  ban_after_violations: 3
+
+# ═══ БЛОКИРОВКА IP ═══
+ip_blocklist:
+  enabled: true
+  auto_ban: true
+  ban_duration_hours: 24
+
+# ═══ ДЕТЕКЦИЯ PROMPT INJECTION ═══
+injection_detection:
+  enabled: true
+  patterns:
+    # Прямые инъекции
+    - "ignore previous"
+    - "ignore all previous"
+    - "ignore above"
+    - "you are now"
+    - "system prompt"
+    - "override"
+    - "disregard"
+    - "forget everything"
+    - "new instructions"
+
+    # Попытки подмены роли
+    - "act as"
+    - "pretend to be"
+    - "roleplay as"
+    - "you are an AI"
+
+    # Попытки доступа
+    - "show me the prompt"
+    - "output your instructions"
+    - "reveal your system"
+    - "what are your rules"
+
+    # Вредоносные команды
+    - "rm -rf"
+    - "format c:"
+    - "delete all"
+    - "drop table"
+
+# ═══ ДЕТЕКЦИЯ АНОМАЛИЙ ═══
+anomaly_detection:
+  enabled: true
+  window_sec: 60
+  max_methods_per_window: 10
+
+# ═══ ЛОГИРОВАНИЕ ═══
+logging:
+  log_all_requests: false
+  log_suspicious: true
+  log_blocked: true
+  log_file: "logs/firewall.log"
