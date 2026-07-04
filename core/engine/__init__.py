@@ -12,5 +12,6 @@ core/engine/__init__ — Точка входа для engine
 """
 
 from .engine import Engine
+from .template_engine import TemplateEngine, TemplateError
 
-__all__ = ["Engine"]
+__all__ = ["Engine", "TemplateEngine", "TemplateError"]

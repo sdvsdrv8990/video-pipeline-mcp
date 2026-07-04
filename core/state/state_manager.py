@@ -170,6 +170,33 @@ class StateManager:
 
         return queue
 
+    def clear_queue(self, entity_path: str) -> int:
+        """Очистка очереди без выполнения (отладка/сброс).
+
+        Возвращает число отброшенных операций. В отличие от execute_queue,
+        операции НЕ применяются к read.json — просто выбрасываются.
+
+        Args:
+            entity_path: Путь к сущности
+
+        Returns:
+            Сколько операций было в очереди до очистки
+
+        Raises:
+            ValueError: если путь выходит за пределы workspace (D29)
+        """
+        safe_resolve(entity_path, self.workspace_path)  # D29: containment
+        queue_file = self.workspace_path / entity_path / "write.json"
+
+        # D9: read-modify-write под локом + атомарная запись.
+        with self._lock:
+            if not queue_file.exists():
+                return 0
+            with open(queue_file, "r", encoding="utf-8") as f:
+                count = len(json.load(f))
+            _atomic_write_json(queue_file, [])
+        return count
+
     def log_event(self, event_type: str, data: dict):
         """Логирование события в _SESSION_LOG.
 

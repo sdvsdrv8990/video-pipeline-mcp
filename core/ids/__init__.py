@@ -10,5 +10,6 @@ core/ids/__init__ — Точка входа для генерации ID
 """
 
 from .id_generator import IDGenerator
+from .link_registry import LinkRegistry, LinkError
 
-__all__ = ["IDGenerator"]
+__all__ = ["IDGenerator", "LinkRegistry", "LinkError"]

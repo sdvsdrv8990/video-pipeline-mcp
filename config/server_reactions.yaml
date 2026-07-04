@@ -130,6 +130,94 @@ AUTH_FAILED:
   recovery:
     reason: "Проверь значение MCP_AUTH_TOKEN и повтори запрос."
 
+# ═══ Таблицы: данные (Категория 3) ═══
+
+SHEET_NOT_FOUND:
+  class: ai_recoverable
+  message_template: "Лист не найден в таблице."
+  recovery:
+    suggested_tool: "json_read_snapshot"
+    reason: "Проверь имя листа (регистр важен) или создай через excel_add_sheet."
+
+COLUMN_NOT_FOUND:
+  class: ai_recoverable
+  message_template: "Столбец не найден в листе."
+  recovery:
+    reason: "Сверь имя столбца со схемой (json_read_snapshot) или добавь через excel_add_column."
+
+ROW_NOT_FOUND:
+  class: ai_recoverable
+  message_template: "Строка с таким ID не найдена."
+  recovery:
+    reason: "Проверь ID строки (table_get_column отдаст список ID) или создай через table_append."
+
+COMPUTED_READONLY:
+  class: ai_recoverable
+  message_template: "Столбец вычисляемый (формула) — запись данных запрещена."
+  recovery:
+    reason: "Формулы не перезаписываются. Меняй исходные столбцы, из которых считается формула."
+
+ENUM_VIOLATION:
+  class: ai_recoverable
+  message_template: "Значение вне допустимого enum столбца."
+  recovery:
+    reason: "Используй одно из значений enum из схемы столбца."
+
+INVALID_ACTION:
+  class: ai_recoverable
+  message_template: "Недопустимое действие для очереди."
+  recovery:
+    reason: "В очередь идут только set/append/delete; чтения (get_column/get_row) выполняются сразу."
+
+# ═══ Таблицы: структура (Категория 2, excel_*) ═══
+
+WORKBOOK_NOT_FOUND:
+  class: ai_recoverable
+  message_template: "Книга .xlsx не найдена."
+  recovery:
+    suggested_tool: "excel_create_workbook"
+    reason: "Создай книгу через excel_create_workbook или проверь путь."
+
+SHEET_EXISTS:
+  class: ai_recoverable
+  message_template: "Лист с таким именем уже существует."
+  recovery:
+    reason: "Выбери свободное имя или переименуй существующий через excel_rename_sheet."
+
+LAST_SHEET:
+  class: ai_recoverable
+  message_template: "Нельзя удалить последний лист книги."
+  recovery:
+    reason: "В книге всегда должен оставаться хотя бы один лист."
+
+COLUMN_EXISTS:
+  class: ai_recoverable
+  message_template: "Столбец с таким заголовком уже существует."
+  recovery:
+    reason: "Используй другое имя или удали существующий через excel_delete_column."
+
+FORMULA_PROTECTED:
+  class: ai_recoverable
+  message_template: "В ячейке уже есть формула — тихая перезапись запрещена."
+  recovery:
+    reason: "Перезапись критической формулы недопустима молча. Передай overwrite=true осознанно."
+
+# ═══ Структура: реестр связей / ORPHAN (Ф2) ═══
+
+UNLINKED_ENTITY:
+  class: ai_recoverable
+  message_template: "Сущность {name} не привязана к родителю типа {needs_parent_type}."
+  recovery:
+    suggested_tool: "structure_link"
+    reason: "Оставить как есть можно, но связь не установлена. Привяжи через structure_link (в одном месте)."
+
+ENTITY_NOT_FOUND:
+  class: ai_recoverable
+  message_template: "Сущность не найдена в реестре связей."
+  recovery:
+    suggested_tool: "structure_status"
+    reason: "Проверь имя/тип через structure_status; при необходимости создай через structure_create."
+
 # ═══ Fallback ═══
 
 DEFAULT:

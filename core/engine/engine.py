@@ -43,10 +43,12 @@ class ToolDefinition:
     """Определение инструмента.
 
     Attributes:
-        name: Имя инструмента
+        name: Имя инструмента (техническое, для вызова)
         description: Описание (для Claude)
         input_schema: JSON Schema входных параметров
         handler: Функция-обработчик
+        title: Человекочитаемая подпись для UI (приоритет отображения в MCP:
+            title → annotations.title → name). Пусто = показывать name.
         group: Группа инструмента (filesystem, tables, и т.д.)
         annotations: Аннотации MCP (readOnlyHint, destructiveHint, и т.д.)
     """
@@ -54,6 +56,7 @@ class ToolDefinition:
     description: str
     input_schema: dict
     handler: Callable[..., Awaitable[ToolResult]]
+    title: str = ""
     group: str = "general"
     annotations: dict | None = None
 
@@ -95,6 +98,7 @@ class Engine:
         description: str,
         input_schema: dict,
         handler: Callable[..., Awaitable[ToolResult]],
+        title: str = "",
         group: str = "general",
         annotations: dict | None = None
     ):
@@ -105,6 +109,7 @@ class Engine:
             description: Описание для Claude
             input_schema: JSON Schema входных параметров
             handler: Функция-обработчик
+            title: Человекочитаемая подпись для UI (см. ToolDefinition.title)
             group: Группа инструмента (filesystem, tables, и т.д.)
             annotations: Аннотации MCP (readOnlyHint, destructiveHint, и т.д.)
         """
@@ -113,6 +118,7 @@ class Engine:
             description=description,
             input_schema=input_schema,
             handler=handler,
+            title=title,
             group=group,
             annotations=annotations
         )
@@ -209,6 +215,9 @@ class Engine:
                 "description": tool.description,
                 "inputSchema": tool.input_schema
             }
+            # title — человекочитаемая подпись (приоритет отображения над name).
+            if tool.title:
+                item["title"] = tool.title
             if tool.annotations:
                 item["annotations"] = tool.annotations
             result.append(item)
@@ -227,6 +236,7 @@ class Engine:
         for tool in self.tools.values():
             groups[tool.group].append({
                 "name": tool.name,
+                "title": tool.title,
                 "description": tool.description,
                 "inputSchema": tool.input_schema
             })

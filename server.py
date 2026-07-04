@@ -38,13 +38,15 @@ import yaml
 # Добавляем корень проекта в путь
 sys.path.insert(0, str(Path(__file__).parent))
 
-from core.engine import Engine
+from core.engine import Engine, TemplateEngine, TemplateError
 from core.firewall import Firewall, FirewallRequest, FirewallDecision
 from core.transport import Transport
 from core.reactions import Reactions
-from core.ids import IDGenerator
+from core.ids import IDGenerator, LinkRegistry, LinkError
 from core.state import StateManager
 from core.paths import safe_resolve
+from core.tables import TableEngine, TableError
+from core.excel import ExcelEngine, ExcelError
 
 
 # ═══ КОНФИГУРАЦИЯ ═══
@@ -325,6 +327,277 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
             return ToolResult(status="error", error=ErrorDetail(code="TABLE_NOT_FOUND", message=f"Table not found: {table}", recovery=Recovery(reason="Создай структуру через fs_create_project_structure")))
         return ToolResult(status="success", data=snapshot, facts=[Fact(type="SnapshotRead", data={"table": table})])
 
+    # ═══ ТАБЛИЦЫ: движки (generic-ядра, тонкие обёртки ниже) ═══
+    # Категория 3 (данные) — TableEngine поверх read.json/write.json.
+    # Категория 2 (структура) — ExcelEngine поверх .xlsx (openpyxl).
+    table_engine = TableEngine(state_manager, id_generator)
+    excel_engine = ExcelEngine(state_manager.workspace_path)
+    # Движок шаблонов структуры (Ф1): композиция по ссылке + контроль глубины.
+    template_engine = TemplateEngine(
+        state_manager.workspace_path, id_generator, CONFIG_PATH / "templates" / "workspace")
+    # Реестр связей (Ф2): анонимные → ORPHAN, link() в одном месте.
+    link_registry = LinkRegistry(state_manager.workspace_path)
+
+    def _err(code: str, message: str, reason: str = "", suggested_tool: str | None = None):
+        """Сборка ошибочного ToolResult (единый конверт)."""
+        from core.contracts import ToolResult, ErrorDetail, Recovery
+        return ToolResult(status="error", error=ErrorDetail(
+            code=code, message=message,
+            recovery=Recovery(reason=reason, suggested_tool=suggested_tool)))
+
+    def _safe(call):
+        """Выполнить sync-вызов ядра, смаппив исключения в ToolResult.
+
+        Returns (ok, value_or_error_result): при ok=False во втором элементе —
+        готовый ошибочный ToolResult, иначе — результат ядра.
+        """
+        try:
+            return True, call()
+        except ValueError:
+            return False, _err("PATH_ESCAPE", "Путь выходит за пределы workspace/.",
+                               "Используй путь ВНУТРИ workspace, без '..' и абсолютных путей.")
+        except (TableError, ExcelError, TemplateError, LinkError) as e:
+            return False, _err(e.code, e.message, e.reason, e.suggested_tool)
+
+    # ─── Структура: шаблонное создание (Ф1) ───
+
+    async def structure_create(type: str, name: str, parent_path: str = "",
+                               children: dict | None = None) -> "ToolResult":
+        """Материализация узла структуры по шаблону с контролем глубины.
+
+        Создаёт СВОИ папки/файлы узла + контейнеры детей; в детей спускается ТОЛЬКО
+        для явно названных (children={тип:[имена]}). Таблицы (kind:table) отложены в
+        фазу таблиц (Ф3) → tables_pending. ID узла присваивает сервер (в facts).
+        """
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: template_engine.create_node(type, name, parent_path, None, children))
+        if not ok:
+            return res
+
+        facts: list = []
+        created_ids: list[str] = []
+
+        def _walk(node: dict) -> None:
+            # Ф2: регистрируем узел в реестре связей (для ORPHAN/link).
+            link_registry.register({
+                "id": node["node_id"], "type": node["type"], "name": node["name"],
+                "path": node["path"], "parent_ids": node["parent_ids"]})
+            created_ids.append(node["node_id"])
+            facts.append(Fact(type="NodeCreated", data={
+                "id": node["node_id"], "type": node["type"], "name": node["name"],
+                "path": node["path"], "parent_ids": node["parent_ids"]}))
+            for c in node["created"]:
+                facts.append(Fact(
+                    type="FolderCreated" if c["kind"] == "folder" else "FileCreated",
+                    data={"path": c["path"]}))
+            for t in node["tables_pending"]:
+                facts.append(Fact(type="TableDeferred", data=t))
+            for d in node["deferred_children"]:
+                facts.append(Fact(type="ChildDeferred", data=d))
+            for sub in node["children"]:
+                _walk(sub)
+
+        _walk(res)
+
+        # Ф2: уведомление о висящих среди только что созданных (напр. конкурент без нашего канала).
+        orphan_notices = [o for o in link_registry.find_orphans() if o["id"] in created_ids]
+        for o in orphan_notices:
+            facts.append(Fact(type="EntityOrphaned", data=o))
+        res["orphan_notices"] = orphan_notices
+        return ToolResult(status="success", data=res, facts=facts)
+
+    async def structure_link(child_type: str, child_name: str,
+                             parent_type: str, parent_name: str) -> "ToolResult":
+        """Связать сущность с родителем В ОДНОМ месте (реестр — источник истины).
+
+        Один вызов добавляет parent_id ребёнку; не требует правки обоих деревьев
+        (экономит токены, исключает рассинхрон). Пример: привязать конкурента к нашему каналу.
+        """
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: link_registry.link(child_type, child_name, parent_type, parent_name))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="EntityLinked", data={
+            "child_id": res["child"]["id"], "child_type": child_type, "child_name": child_name,
+            "parent_id": res["parent_id"], "parent_type": parent_type, "parent_name": parent_name})])
+
+    async def structure_status() -> "ToolResult":
+        """Сводка связей: висящие (ORPHAN) + наши каналы без конкурента (мягко).
+
+        Это поверхность «уведомления от сервера»: у вас есть конкурент, не привязанный
+        ни к одному каналу / у вас есть канал без конкурента.
+        """
+        from core.contracts import ToolResult, Fact
+        orphans = link_registry.find_orphans()
+        ours_no_comp = link_registry.find_childless("channel", "competitor_channel")
+        facts = [Fact(type="EntityOrphaned", data=o) for o in orphans]
+        return ToolResult(status="success",
+                          data={"orphans": orphans, "our_channels_without_competitor": ours_no_comp},
+                          facts=facts)
+
+    # ─── Категория 3: чтения (проекции) ───
+
+    async def table_get_column(table: str, sheet: str, column: str) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: table_engine.get_column(table, sheet, column))
+        if not ok:
+            return res
+        return ToolResult(status="success", data={"column": column, "values": res},
+                          facts=[Fact(type="ColumnRead", data={"table": table, "sheet": sheet, "column": column, "n": len(res)})])
+
+    async def table_get_row(table: str, sheet: str, row_id: str) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: table_engine.get_row(table, sheet, row_id))
+        if not ok:
+            return res
+        return ToolResult(status="success", data={"row_id": row_id, "row": res},
+                          facts=[Fact(type="RowRead", data={"table": table, "sheet": sheet, "row_id": row_id})])
+
+    # ─── Категория 3: записи (через очередь) ───
+
+    async def table_set(table: str, sheet: str, row_id: str, column: str, value=None) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: table_engine.set(table, sheet, row_id, column, value))
+        if not ok:
+            return res
+        return ToolResult(status="success", data={"queued": res},
+                          facts=[Fact(type="RowSet", data={"table": table, "sheet": sheet, "row_id": row_id, "column": column})])
+
+    async def table_append(table: str, sheet: str, data: dict | None = None, id_prefix: str = "ROW") -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: table_engine.append(table, sheet, data or {}, id_prefix))
+        if not ok:
+            return res
+        return ToolResult(status="success", data={"queued": res, "row_id": res["row_id"]},
+                          facts=[Fact(type="RowAppended", data={"table": table, "sheet": sheet, "row_id": res["row_id"]})])
+
+    async def table_delete(table: str, sheet: str, row_id: str) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: table_engine.delete(table, sheet, row_id))
+        if not ok:
+            return res
+        return ToolResult(status="success", data={"queued": res},
+                          facts=[Fact(type="RowDeleted", data={"table": table, "sheet": sheet, "row_id": row_id})])
+
+    # ─── Категория 3: очередь (json_*) ───
+
+    async def json_push_to_queue(table: str, action: dict) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: table_engine.push_to_queue(table, action))
+        if not ok:
+            return res
+        return ToolResult(status="success", data={"queued": res},
+                          facts=[Fact(type="QueuePushed", data={"table": table, "action": res.get("action")})])
+
+    async def json_execute_queue(table: str) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: table_engine.execute_queue(table))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res,
+                          facts=[Fact(type="QueueExecuted", data={"table": table, "applied": res["applied"], "skipped": len(res["skipped"])})])
+
+    async def json_clear_queue(table: str) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: table_engine.clear_queue(table))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res,
+                          facts=[Fact(type="QueueCleared", data={"table": table, "cleared": res["cleared"]})])
+
+    # ─── Категория 2: структура (excel_*) ───
+
+    async def excel_create_workbook(path: str, sheet: str = "Sheet1") -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: excel_engine.create_workbook(path, sheet))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="WorkbookCreated", data=res)])
+
+    async def excel_add_sheet(path: str, sheet: str) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: excel_engine.add_sheet(path, sheet))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="SheetAdded", data={"path": path, "sheet": sheet})])
+
+    async def excel_rename_sheet(path: str, sheet: str, new_name: str) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: excel_engine.rename_sheet(path, sheet, new_name))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="SheetRenamed", data={"path": path, "from": sheet, "to": new_name})])
+
+    async def excel_delete_sheet(path: str, sheet: str) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: excel_engine.delete_sheet(path, sheet))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="SheetDeleted", data={"path": path, "sheet": sheet})])
+
+    async def excel_reorder_sheets(path: str, order: list) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: excel_engine.reorder_sheets(path, order))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="SheetsReordered", data={"path": path})])
+
+    async def excel_add_column(path: str, sheet: str, column: str, formula: str = "") -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: excel_engine.add_column(path, sheet, column, formula or None))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="ColumnAdded", data={"path": path, "sheet": sheet, "column": column})])
+
+    async def excel_delete_column(path: str, sheet: str, column: str) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: excel_engine.delete_column(path, sheet, column))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="ColumnDeleted", data={"path": path, "sheet": sheet, "column": column})])
+
+    async def excel_move_column(path: str, sheet: str, column: str, to_index: int) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: excel_engine.move_column(path, sheet, column, to_index))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="ColumnMoved", data={"path": path, "sheet": sheet, "column": column, "to": to_index})])
+
+    async def excel_insert_formula(path: str, sheet: str, cell: str, formula: str, overwrite: bool = False) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: excel_engine.insert_formula(path, sheet, cell, formula, overwrite))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="FormulaInserted", data={"path": path, "sheet": sheet, "cell": cell})])
+
+    async def excel_apply_formatting(path: str, sheet: str, target: str, fill: str = "", bold: bool = None, font_color: str = "") -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: excel_engine.apply_formatting(path, sheet, target, fill or None, bold, font_color or None))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="FormattingApplied", data={"path": path, "sheet": sheet, "target": target})])
+
+    async def excel_set_validation(path: str, sheet: str, column: str, allowed: list) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: excel_engine.set_validation(path, sheet, column, allowed))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="ValidationSet", data={"path": path, "sheet": sheet, "column": column})])
+
+    async def excel_read_range(path: str, sheet: str, cell_range: str) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: excel_engine.read_range(path, sheet, cell_range))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="RangeRead", data={"path": path, "sheet": sheet, "range": cell_range})])
+
+    async def excel_validate_formulas(path: str) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: excel_engine.validate_formulas(path))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="FormulasValidated", data={"path": path, "ok": res["ok"], "errors": len(res["errors"])})])
+
     # ═══ РЕГИСТРАЦИЯ (все хендлеры определены выше) ═══
 
     # Аннотации MCP для инструментов (помогают клиенту определить уровень доступа)
@@ -332,26 +605,153 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
     ANNOTATIONS_MODIFY = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
     ANNOTATIONS_DESTRUCTIVE = {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False}  # шаблон-резерв: не назначен ни одному инструменту (см. history_server.md v2.6 — destructiveHint триггерит auth-гейт коннектора Claude.ai)
 
+    # Формат кортежа: (name, title, description, schema, handler, annotations).
+    # title — человекочитаемая подпись для UI Claude; префикс «Файлы:» делает
+    # группу видимой у каждого инструмента (секций-заголовков MCP не даёт).
     fs_tools = [
-        ("fs_get_directory_tree", "Получение дерева каталогов", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь относительно workspace"}}}, fs_get_directory_tree, ANNOTATIONS_READONLY),
-        ("fs_read_file", "Чтение файла", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу"}}, "required": ["path"]}, fs_read_file, ANNOTATIONS_READONLY),
-        ("fs_create_file", "Создание файла", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу"}, "content": {"type": "string", "description": "Содержимое файла"}}, "required": ["path"]}, fs_create_file, ANNOTATIONS_MODIFY),
-        ("fs_write_file", "Полная перезапись файла", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу"}, "content": {"type": "string", "description": "Новое содержимое файла"}}, "required": ["path", "content"]}, fs_write_file, ANNOTATIONS_MODIFY),
-        ("fs_move", "Перемещение файла или каталога", {"type": "object", "properties": {"source": {"type": "string", "description": "Исходный путь"}, "destination": {"type": "string", "description": "Путь назначения"}}, "required": ["source", "destination"]}, fs_move, ANNOTATIONS_MODIFY),
-        ("fs_rename", "Переименование файла или каталога", {"type": "object", "properties": {"path": {"type": "string", "description": "Текущий путь"}, "new_name": {"type": "string", "description": "Новое имя (без пути)"}}, "required": ["path", "new_name"]}, fs_rename, ANNOTATIONS_MODIFY),
-        ("fs_delete", "Удаление файла или каталога", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу/каталогу"}, "force": {"type": "boolean", "description": "Принудительное удаление каталога с содержимым", "default": False}}, "required": ["path"]}, fs_delete, ANNOTATIONS_MODIFY),
-        ("fs_smart_search", "Поиск файлов по каталогу, расширению и ключевому слову", {"type": "object", "properties": {"directory": {"type": "string", "description": "Каталог для поиска", "default": "."}, "extension": {"type": "string", "description": "Фильтр по расширению (например .py)"}, "keyword": {"type": "string", "description": "Ключевое слово для поиска в содержимом"}}}, fs_smart_search, ANNOTATIONS_READONLY),
-        ("fs_create_python_script", "Создание Python-скрипта с каркасом", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к .py файлу"}, "description": {"type": "string", "description": "Описание модуля"}}, "required": ["path"]}, fs_create_python_script, ANNOTATIONS_MODIFY),
-        ("fs_create_project_structure", "Материализация структуры каталогов/файлов по шаблону или списку фрагментов", {"type": "object", "properties": {"template": {"type": "string", "description": "Имя шаблона из config/templates/workspace/"}, "fragments": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "type": {"type": "string", "enum": ["directory", "file"]}, "content": {"type": "string"}}}, "description": "Список фрагментов для создания"}}}, fs_create_project_structure, ANNOTATIONS_MODIFY),
+        ("fs_get_directory_tree", "Файлы: дерево каталогов", "Получение дерева каталогов", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь относительно workspace"}}}, fs_get_directory_tree, ANNOTATIONS_READONLY),
+        ("fs_read_file", "Файлы: прочитать файл", "Чтение файла", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу"}}, "required": ["path"]}, fs_read_file, ANNOTATIONS_READONLY),
+        ("fs_create_file", "Файлы: создать файл", "Создание файла", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу"}, "content": {"type": "string", "description": "Содержимое файла"}}, "required": ["path"]}, fs_create_file, ANNOTATIONS_MODIFY),
+        ("fs_write_file", "Файлы: перезаписать файл", "Полная перезапись файла", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу"}, "content": {"type": "string", "description": "Новое содержимое файла"}}, "required": ["path", "content"]}, fs_write_file, ANNOTATIONS_MODIFY),
+        ("fs_move", "Файлы: переместить", "Перемещение файла или каталога", {"type": "object", "properties": {"source": {"type": "string", "description": "Исходный путь"}, "destination": {"type": "string", "description": "Путь назначения"}}, "required": ["source", "destination"]}, fs_move, ANNOTATIONS_MODIFY),
+        ("fs_rename", "Файлы: переименовать", "Переименование файла или каталога", {"type": "object", "properties": {"path": {"type": "string", "description": "Текущий путь"}, "new_name": {"type": "string", "description": "Новое имя (без пути)"}}, "required": ["path", "new_name"]}, fs_rename, ANNOTATIONS_MODIFY),
+        ("fs_delete", "Файлы: удалить", "Удаление файла или каталога", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу/каталогу"}, "force": {"type": "boolean", "description": "Принудительное удаление каталога с содержимым", "default": False}}, "required": ["path"]}, fs_delete, ANNOTATIONS_MODIFY),
+        ("fs_smart_search", "Файлы: умный поиск", "Поиск файлов по каталогу, расширению и ключевому слову", {"type": "object", "properties": {"directory": {"type": "string", "description": "Каталог для поиска", "default": "."}, "extension": {"type": "string", "description": "Фильтр по расширению (например .py)"}, "keyword": {"type": "string", "description": "Ключевое слово для поиска в содержимом"}}}, fs_smart_search, ANNOTATIONS_READONLY),
+        ("fs_create_python_script", "Файлы: новый Python-скрипт", "Создание Python-скрипта с каркасом", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к .py файлу"}, "description": {"type": "string", "description": "Описание модуля"}}, "required": ["path"]}, fs_create_python_script, ANNOTATIONS_MODIFY),
+        ("fs_create_project_structure", "Файлы: структура проекта", "Материализация структуры каталогов/файлов по шаблону или списку фрагментов", {"type": "object", "properties": {"template": {"type": "string", "description": "Имя шаблона из config/templates/workspace/"}, "fragments": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "type": {"type": "string", "enum": ["directory", "file"]}, "content": {"type": "string"}}}, "description": "Список фрагментов для создания"}}}, fs_create_project_structure, ANNOTATIONS_MODIFY),
     ]
-    for name, desc, schema, handler, annot in fs_tools:
-        engine.register(name=name, description=desc, input_schema=schema, handler=handler, group="filesystem", annotations=annot)
+    for name, title, desc, schema, handler, annot in fs_tools:
+        engine.register(name=name, title=title, description=desc, input_schema=schema, handler=handler, group="filesystem", annotations=annot)
 
     engine.register(
-        name="json_read_snapshot", description="Чтение снапшота таблицы (read.json)",
-        input_schema={"type": "object", "properties": {"table": {"type": "string", "description": "Имя таблицы"}}, "required": ["table"]},
+        name="json_read_snapshot", title="Таблицы: снапшот (read.json)", description="Чтение снапшота таблицы (read.json)",
+        input_schema={"type": "object", "properties": {"table": {"type": "string", "description": "Путь к таблице (сущности) относительно workspace"}}, "required": ["table"]},
         handler=json_read_snapshot, group="tables", annotations=ANNOTATIONS_READONLY
     )
+
+    # ═══ КАТЕГОРИЯ 3: данные таблиц (json_* очередь + 5 примитивов) ═══
+    # Формат кортежа: (name, title, description, schema, handler, annotations).
+    _TABLE = {"type": "string", "description": "Путь к таблице (сущности) относительно workspace"}
+    _SHEET = {"type": "string", "description": "Имя листа (регистр важен)"}
+    tables_tools = [
+        ("table_get_column", "Таблицы: столбец {id:value}", "Проекция одного столбца листа: {row_id: value}",
+         {"type": "object", "properties": {"table": _TABLE, "sheet": _SHEET, "column": {"type": "string", "description": "Имя столбца"}}, "required": ["table", "sheet", "column"]},
+         table_get_column, ANNOTATIONS_READONLY),
+        ("table_get_row", "Таблицы: строка {col:value}", "Одна строка целиком: {column: value}",
+         {"type": "object", "properties": {"table": _TABLE, "sheet": _SHEET, "row_id": {"type": "string", "description": "ID строки"}}, "required": ["table", "sheet", "row_id"]},
+         table_get_row, ANNOTATIONS_READONLY),
+        ("table_set", "Таблицы: изменить поле", "Изменить поле строки (RMW через очередь). Защита формул + enum.",
+         {"type": "object", "properties": {"table": _TABLE, "sheet": _SHEET, "row_id": {"type": "string", "description": "ID строки"}, "column": {"type": "string", "description": "Имя столбца"}, "value": {"description": "Новое значение (любой JSON-тип)"}}, "required": ["table", "sheet", "row_id", "column", "value"]},
+         table_set, ANNOTATIONS_MODIFY),
+        ("table_append", "Таблицы: новая строка", "Добавить строку. ID присваивает сервер (приходит в facts).",
+         {"type": "object", "properties": {"table": _TABLE, "sheet": _SHEET, "data": {"type": "object", "description": "Поля новой строки {column: value}"}, "id_prefix": {"type": "string", "description": "Префикс ID строки", "default": "ROW"}}, "required": ["table", "sheet", "data"]},
+         table_append, ANNOTATIONS_MODIFY),
+        ("table_delete", "Таблицы: удалить строку", "Удалить строку по ID (через очередь).",
+         {"type": "object", "properties": {"table": _TABLE, "sheet": _SHEET, "row_id": {"type": "string", "description": "ID строки"}}, "required": ["table", "sheet", "row_id"]},
+         table_delete, ANNOTATIONS_MODIFY),
+        ("json_push_to_queue", "Таблицы: очередь → добавить", "Положить пишущую операцию (set/append/delete) в write.json.",
+         {"type": "object", "properties": {"table": _TABLE, "action": {"type": "object", "description": "{action: set|append|delete, sheet, ...}"}}, "required": ["table", "action"]},
+         json_push_to_queue, ANNOTATIONS_MODIFY),
+        ("json_execute_queue", "Таблицы: очередь → применить", "Применить очередь к read.json (RMW). Синк в .xlsx отложен.",
+         {"type": "object", "properties": {"table": _TABLE}, "required": ["table"]},
+         json_execute_queue, ANNOTATIONS_MODIFY),
+        ("json_clear_queue", "Таблицы: очередь → очистить", "Очистить очередь без применения (отладка/сброс).",
+         {"type": "object", "properties": {"table": _TABLE}, "required": ["table"]},
+         json_clear_queue, ANNOTATIONS_MODIFY),
+    ]
+    for name, title, desc, schema, handler, annot in tables_tools:
+        engine.register(name=name, title=title, description=desc, input_schema=schema, handler=handler, group="tables", annotations=annot)
+
+    # ═══ КАТЕГОРИЯ 2: структура таблиц (excel_*) ═══
+    _PATH = {"type": "string", "description": "Путь к .xlsx относительно workspace"}
+    excel_tools = [
+        ("excel_create_workbook", "Excel: новая книга", "Создать новый .xlsx (не перезаписывает существующий).",
+         {"type": "object", "properties": {"path": _PATH, "sheet": {"type": "string", "description": "Имя первого листа", "default": "Sheet1"}}, "required": ["path"]},
+         excel_create_workbook, ANNOTATIONS_MODIFY),
+        ("excel_add_sheet", "Excel: добавить лист", "Добавить лист в книгу.",
+         {"type": "object", "properties": {"path": _PATH, "sheet": _SHEET}, "required": ["path", "sheet"]},
+         excel_add_sheet, ANNOTATIONS_MODIFY),
+        ("excel_rename_sheet", "Excel: переименовать лист", "Переименовать лист.",
+         {"type": "object", "properties": {"path": _PATH, "sheet": _SHEET, "new_name": {"type": "string", "description": "Новое имя листа"}}, "required": ["path", "sheet", "new_name"]},
+         excel_rename_sheet, ANNOTATIONS_MODIFY),
+        ("excel_delete_sheet", "Excel: удалить лист", "Удалить лист (нельзя последний).",
+         {"type": "object", "properties": {"path": _PATH, "sheet": _SHEET}, "required": ["path", "sheet"]},
+         excel_delete_sheet, ANNOTATIONS_MODIFY),
+        ("excel_reorder_sheets", "Excel: порядок листов", "Переупорядочить листы (order = все листы книги).",
+         {"type": "object", "properties": {"path": _PATH, "order": {"type": "array", "items": {"type": "string"}, "description": "Полный список листов в новом порядке"}}, "required": ["path", "order"]},
+         excel_reorder_sheets, ANNOTATIONS_MODIFY),
+        ("excel_add_column", "Excel: добавить столбец", "Добавить столбец (заголовок в строку 1). formula — опционально.",
+         {"type": "object", "properties": {"path": _PATH, "sheet": _SHEET, "column": {"type": "string", "description": "Имя столбца (заголовок)"}, "formula": {"type": "string", "description": "Формула-образец (опц.)"}}, "required": ["path", "sheet", "column"]},
+         excel_add_column, ANNOTATIONS_MODIFY),
+        ("excel_delete_column", "Excel: удалить столбец", "Удалить столбец по имени заголовка.",
+         {"type": "object", "properties": {"path": _PATH, "sheet": _SHEET, "column": {"type": "string", "description": "Имя столбца"}}, "required": ["path", "sheet", "column"]},
+         excel_delete_column, ANNOTATIONS_MODIFY),
+        ("excel_move_column", "Excel: переместить столбец", "Переместить столбец на позицию to_index (1-based).",
+         {"type": "object", "properties": {"path": _PATH, "sheet": _SHEET, "column": {"type": "string", "description": "Имя столбца"}, "to_index": {"type": "integer", "description": "Новая позиция (1-based)"}}, "required": ["path", "sheet", "column", "to_index"]},
+         excel_move_column, ANNOTATIONS_MODIFY),
+        ("excel_insert_formula", "Excel: вставить формулу", "Формула в ячейку. Не перезаписывает существующую молча (overwrite).",
+         {"type": "object", "properties": {"path": _PATH, "sheet": _SHEET, "cell": {"type": "string", "description": "Ячейка (напр. C2)"}, "formula": {"type": "string", "description": "Формула (с '=' или без)"}, "overwrite": {"type": "boolean", "description": "Перезаписать существующую формулу", "default": False}}, "required": ["path", "sheet", "cell", "formula"]},
+         excel_insert_formula, ANNOTATIONS_MODIFY),
+        ("excel_apply_formatting", "Excel: форматирование", "Стили на ячейку/диапазон (заливка/жирный/цвет шрифта).",
+         {"type": "object", "properties": {"path": _PATH, "sheet": _SHEET, "target": {"type": "string", "description": "Ячейка или диапазон (A1 / A1:C3)"}, "fill": {"type": "string", "description": "HEX заливки RRGGBB"}, "bold": {"type": "boolean", "description": "Жирный"}, "font_color": {"type": "string", "description": "HEX цвета шрифта RRGGBB"}}, "required": ["path", "sheet", "target"]},
+         excel_apply_formatting, ANNOTATIONS_MODIFY),
+        ("excel_set_validation", "Excel: выпадающий список", "Data Validation (dropdown) на столбец — материализует enum из схемы.",
+         {"type": "object", "properties": {"path": _PATH, "sheet": _SHEET, "column": {"type": "string", "description": "Имя столбца"}, "allowed": {"type": "array", "items": {"type": "string"}, "description": "Список допустимых значений"}}, "required": ["path", "sheet", "column", "allowed"]},
+         excel_set_validation, ANNOTATIONS_MODIFY),
+        ("excel_read_range", "Excel: сырой диапазон (отладка)", "ОТЛАДКА: сырой 2D-массив ячеек. Рабочее чтение — json_read_snapshot.",
+         {"type": "object", "properties": {"path": _PATH, "sheet": _SHEET, "cell_range": {"type": "string", "description": "Диапазон (напр. A1:C10)"}}, "required": ["path", "sheet", "cell_range"]},
+         excel_read_range, ANNOTATIONS_READONLY),
+        ("excel_validate_formulas", "Excel: проверить формулы", "Поиск ошибок формул (#REF!/#VALUE!/…) по всем листам.",
+         {"type": "object", "properties": {"path": _PATH}, "required": ["path"]},
+         excel_validate_formulas, ANNOTATIONS_READONLY),
+    ]
+    for name, title, desc, schema, handler, annot in excel_tools:
+        engine.register(name=name, title=title, description=desc, input_schema=schema, handler=handler, group="excel", annotations=annot)
+
+    # ═══ СТРУКТУРА: шаблонное создание (композиция по ссылке + контроль глубины) ═══
+    engine.register(
+        name="structure_create",
+        title="Структура: создать узел по шаблону",
+        description=(
+            "Материализует узел (niche/network/channel/video/competitor_channel/competitor_video) "
+            "по шаблону: свои папки/файлы + контейнеры детей. В детей спускается ТОЛЬКО для явно "
+            "названных (children={тип:[имена]}) — так 'создать канал кроме видео' = не называть видео, "
+            "а 'назвать видео' = создать всё его поддерево. Таблицы (kind:table) отложены в фазу таблиц. "
+            "ID узла присваивает сервер (в facts NodeCreated)."),
+        input_schema={"type": "object", "properties": {
+            "type": {"type": "string",
+                     "enum": ["niche", "network", "channel", "video", "competitor_channel", "competitor_video"],
+                     "description": "Тип узла (ключ шаблона)"},
+            "name": {"type": "string", "description": "Имя экземпляра (один сегмент пути, без '/')"},
+            "parent_path": {"type": "string", "default": "",
+                            "description": "Контейнер-путь родителя относительно workspace (пусто → корень типа; для niche = niches/)"},
+            "children": {"type": "object",
+                         "description": "Каких детей развернуть: {тип_ребёнка: [имена]}. Не названные — отложены (ChildDeferred).",
+                         "additionalProperties": {"type": "array", "items": {"type": "string"}}},
+        }, "required": ["type", "name"]},
+        handler=structure_create, group="structure", annotations=ANNOTATIONS_MODIFY)
+    engine.register(
+        name="structure_link",
+        title="Структура: связать сущности",
+        description=(
+            "Связывает сущность с родителем В ОДНОМ месте (реестр связей — источник истины): "
+            "например конкурента с нашим каналом. Один вызов, не нужно править оба дерева — "
+            "экономит токены и исключает рассинхрон. Снимает уведомление UNLINKED_ENTITY."),
+        input_schema={"type": "object", "properties": {
+            "child_type": {"type": "string", "description": "Тип привязываемой сущности (напр. competitor_channel)"},
+            "child_name": {"type": "string", "description": "Имя привязываемой сущности"},
+            "parent_type": {"type": "string", "description": "Тип родителя (напр. channel)"},
+            "parent_name": {"type": "string", "description": "Имя родителя"},
+        }, "required": ["child_type", "child_name", "parent_type", "parent_name"]},
+        handler=structure_link, group="structure", annotations=ANNOTATIONS_MODIFY)
+    engine.register(
+        name="structure_status",
+        title="Структура: сводка связей (висящие)",
+        description=(
+            "Сводка реестра связей: висящие сущности (ORPHAN — напр. конкурент без нашего канала) "
+            "и наши каналы без привязанного конкурента. Поверхность серверных уведомлений о непривязанном."),
+        input_schema={"type": "object", "properties": {}},
+        handler=structure_status, group="structure", annotations=ANNOTATIONS_READONLY)
 
 
 def _jsonrpc_error(request_id, code: int, message: str) -> dict:
@@ -520,7 +920,7 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
         except Exception as e:
             tunnel_status_str = f"ошибка: {e}"
             print(f"⚠️  Туннель не поднят: {e}")
-            print("   Сервер работает локально. См. docs/dev/audit/v2/files/core_transport_tunnel.md")
+            print("   Сервер работает локально.")
             tunnel = None
 
     # Статус готовности (по спецификации MCP SDK).

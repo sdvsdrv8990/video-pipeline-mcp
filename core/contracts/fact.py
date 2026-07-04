@@ -48,6 +48,18 @@ KNOWN_FACT_TYPES = {
     "FileWritten", "FileMoved", "FileRenamed", "FileDeleted",
     "FileSearch", "StructureCreated",
     "RenderCompleted", "SnapshotRead", "TableRead",
+    # Таблицы: данные (Категория 3)
+    "ColumnRead", "RowRead", "RowSet", "RowAppended", "RowDeleted",
+    "QueuePushed", "QueueExecuted", "QueueCleared",
+    # Таблицы: структура (Категория 2, excel_*)
+    "WorkbookCreated", "SheetAdded", "SheetRenamed", "SheetDeleted",
+    "SheetsReordered", "ColumnAdded", "ColumnDeleted", "ColumnMoved",
+    "FormulaInserted", "FormattingApplied", "ValidationSet",
+    "RangeRead", "FormulasValidated",
+    # Шаблоны структуры (TemplateEngine): создание узлов с контролем глубины
+    "NodeCreated", "FolderCreated", "ChildDeferred", "TableDeferred",
+    # Реестр связей / ORPHAN (Ф2), верификация и здоровье (Ф4)
+    "EntityLinked", "EntityOrphaned", "StructureVerified", "HealthChecked",
 }
 
 

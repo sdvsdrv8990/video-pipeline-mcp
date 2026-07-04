@@ -1,10 +1,9 @@
 """
-core/transport/tunnel.py — Туннель к Claude AI Web через Cloudflare (D11)
+core/transport/tunnel.py — Туннель к Claude AI Web через Cloudflare
 
 ## Назначение
 Даёт облачному Claude AI Web публичный HTTPS-доступ к локальному серверу,
-поднимаясь ВМЕСТЕ с сервером (одна команда). Поставщик — cloudflared (см.
-docs/dev/audit/v2/global.md#G11 и v2/files/core_transport_tunnel.md).
+поднимаясь ВМЕСТЕ с сервером (одна команда). Поставщик — cloudflared.
 
 ## Режимы
 - quick  — эфемерный URL *.trycloudflare.com. Работает БЕЗ домена и аккаунта.
@@ -59,7 +58,7 @@ _FATAL_MARKERS = (
 
 _INSTALL_HINT = (
     "cloudflared не найден в PATH. Установи его (см. install.sh) или бинарь "
-    "проекта ./bin/cloudflared. Docs: docs/dev/audit/v2/files/core_transport_tunnel.md"
+    "проекта ./bin/cloudflared"
 )
 
 

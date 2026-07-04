@@ -163,8 +163,7 @@ Security / System / Integration / Workflow
 ## Связи с другими документами
 
 - `docs/dev/workflow.md` — рабочий процесс (читать перед работой)
-- `docs/dev/firewall_sessions.md` — сессии файрвола ( Security тесты)
-- `docs/dev/audit/v2/AUDIT.md` — аудит проекта (/regression тесты)
+- `docs/dev/firewall_sessions.md` — сессии файрвола (Security тесты)
 
 ## Запуск тестов
 
