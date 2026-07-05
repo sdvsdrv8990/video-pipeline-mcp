@@ -82,11 +82,20 @@ class AnomalyDetector:
         D17: только event-based проверки (опасные инструменты).
         Time-based counting удалён — таймеры пропускают события.
 
+        D32: LOG-ONLY. Вызов деструктивного инструмента СЧИТАЕТСЯ (сигнал в
+        get_stats/get_detected для outbound-мониторинга), но НЕ блокируется:
+        detected=False → firewall пропускает. Причина: глухой блок делал
+        fs_delete недостижимым по HTTP, а клиентского destructiveHint-гейта
+        нет намеренно (v2.6 — он триггерил reconnect коннектора Claude.ai).
+        Безопасность деструктива держится на containment в workspace/ (P1) и
+        на том, что Claude Web показывает вызовы пользователю. Жёсткий гейт —
+        отдельное решение (см. history v2.8 / firewall-audit-2026-07-05 D32).
+
         Args:
             request: Запрос для проверки
 
         Returns:
-            AnomalyResult
+            AnomalyResult (detected всегда False — правило не блокирует)
         """
         # D8/D18: проверяем ИМЯ ИНСТРУМЕНТА на опасность.
         if request.method == "tools/call" and isinstance(request.params, dict):
@@ -94,13 +103,13 @@ class AnomalyDetector:
         else:
             method = request.method
 
-        # D18: event-based — конкретный запрос содержит опасный инструмент.
+        # D18/D32: event-based — опасный инструмент СЧИТАЕМ (сигнал), но ПРОПУСКАЕМ.
         if method in self.dangerous_tools:
             self._detected += 1
             return AnomalyResult(
-                detected=True,
-                reason=f"Подозрительный инструмент: {method}",
-                severity="high"
+                detected=False,
+                reason=f"Деструктивный инструмент (log-only): {method}",
+                severity="info"
             )
 
         return AnomalyResult(detected=False)
