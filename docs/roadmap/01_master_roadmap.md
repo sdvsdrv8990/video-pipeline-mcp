@@ -33,9 +33,9 @@
 | I2 | Packaging: `pyproject.toml`, пиннинг зависимостей, `install.sh` truth-up | I1 | 1 |
 | I3 | CI/CD: `.github/workflows` — линт+типы+тесты+security-scan (bandit/gitleaks) | I1, I2, I4 | 1–2 |
 | I4 | Типизация+линт: `mypy`, `ruff`, `pre-commit` | I2 | 1 |
-| I5 | Логирование+observability: `structlog`, метрики, `/health`, tracing | — | 1–2 |
-| I6 | Безопасность: app-level auth (за туннелем), secrets-mgmt, закрыть D3/D29 (открыты) | security-прогон | 2 |
-| I7 | Программа тестового покрытия (исполнение `03_testing_plan.md`) | I1 | сквозная |
+| I5 | Логирование+observability: `structlog`, метрики, `/health`, tracing + **audit-trail** (auth/authz/tool-invocations→principal/scope/context — DIM-7) + **экон-контейнмент** (quotas/budgets на media — DIM-11) | — | 1–2 |
+| I6 | Безопасность (сессия 9 расширила): **OAuth 2.1+PKCE Resource Server** (DIM-2, D3) + secrets-mgmt + D29 + **P0-митигации `06 §D`**: провенанс workspace-вывода (F33/OUT1), containment write/move/delete+destructiveHint (OUT5), **write-type allowlist** (F34/§F), **deploy-hardening** (seccomp/Landlock/cap-drop `06 §G.1`), identity-rate+slowloris-таймауты (F36/§H) | security-прогон | 3–4 |
+| I7 | Программа тестового покрытия (`03_testing_plan.md`): **E-матрица** (E-A…E-I) + **agent-swarm-раннер** (`tests/agent_swarm/patterns.yaml`, F32) + **conformance** (`modelcontextprotocol/conformance`, DIM-1) + eval-слой качества | I1 | сквозная |
 | I8 | Публикуемые доки: architecture/API; реконструкция аудит-артефактов D#/G# | — | 1–2 |
 
 **Cross-cutting X1** — реконструкция аудит-словаря: `D#/G#` живут только в памяти; либо восстановить `docs/dev/audit/`, либо слить в `02_findings.md` как единый источник. (Входит в I8.)
@@ -85,4 +85,6 @@
 
 ## Definition of "Enterprise-ready"
 
-Проект считается доведённым, когда: продукт (P1–P7) работает e2e; архитектура соответствует README (A1–A6); есть CI/типы/логи/auth/packaging (I1–I6); тестовое покрытие по плану (I7); доки публикуемы (I8); аудит-словарь имеет артефакты (X1).
+Измеримо — через **рубрику зрелости `07_maturity_rubric.md`** (12 измерений × L0–L4). Enterprise = **L4 по всем** (или явно принятый минимум L3). Сегодня честно: **L1 с карманами L2**, три измерения на L0 (auth DIM-2, outbound DIM-4, observability/эконом DIM-7/11). Порядок к L3: Фаза 0 (CI-фундамент) → **I6** (auth+outbound+allowlist — 3 самых красных) ∥ **I5** (observability+quotas) → I7 (тесты) → P-ось (продукт) → L4 (conformance-gate + supply-chain).
+
+Кратко: продукт (P1–P7) работает e2e; архитектура соответствует README (A1–A6); CI/типы/логи/auth/packaging (I1–I6); покрытие по плану (I7); доки публикуемы (I8); аудит-словарь имеет артефакты (X1) — всё это = поднять измерения `07` до целевого уровня.

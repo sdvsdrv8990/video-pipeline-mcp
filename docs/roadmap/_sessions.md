@@ -139,6 +139,18 @@ firewall 1/4 (env) · tunnel 19/20 (env). Замер 2026-07-05.
 
 ---
 
+## Сессия 10 — 2026-07-05 — Консолидация решений + рубрика зрелости (planning)
+
+**Сделано:**
+- **`07_maturity_rubric.md`** — НОВЫЙ. 12 измерений (conformance/auth/sec-in/sec-out/изоляция/тесты/observability/packaging/repo-гигиена/контракты/эконом-контейнмент/продукт) × уровни L0–L4, с ЧЕСТНОЙ само-оценкой по доказанному состоянию + матрица + карта развития (какой воркстрим поднимает какое измерение). **Вердикт: L1 с карманами L2**; три измерения на L0 — auth (D3), outbound (F33), observability/эконом (I5). Research: MCP conformance-репо, OAuth 2.1+PKCE mandatory (spec июнь-2025), 75-point security checklist, «5 Gates», github-mcp-server. Эталоны-репо для сверки.
+- **Консолидация в `01_master_roadmap.md`** (решения легли в фазы): I6 расширен (OAuth 2.1 Resource Server + P0-митигации `06 §D`: провенанс/containment/destructiveHint/write-allowlist/deploy-hardening/identity-rate); I5 (+audit-trail principal/scope/context + quotas/budgets); I7 (+E-матрица + agent-swarm-раннер + conformance). «Definition of Enterprise-ready» теперь измерим через рубрику `07` (L4=цель, порядок к L3).
+
+**Тесты:** кода не трогал → baseline держится.
+
+**Коммит:** `docs(roadmap): maturity rubric + consolidate session-9 decisions into phases (session 10)`.
+
+---
+
 ## RESUME (следующая сессия) — два открытых трека
 
 ### Трек Б (новый, из сессии 9) — реализация защиты + тестов
