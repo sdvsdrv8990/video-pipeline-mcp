@@ -29,13 +29,13 @@
 
 | F# | Sev | Находка | Пруф | → |
 |---|---|---|---|---|
-| F12 | 🔴 | `tests/` в `.gitignore` — тесты не версионируются; регресс невозможно защитить в CI | `.gitignore` стр. `tests/` | I1 |
+| ~~F12~~ | ✅ | **РЕШЕНО S2 (I1):** `tests/` был свален в секцию «ДАННЫЕ» с `workspace/`. Убран из `.gitignore` (тесты = код); 23 файла (6 quick + 6 симуляций + scenarios.yaml) в git; `__pycache__`/`.pytest_cache` остаются игнорированы. Секретов в tests/ нет (проверено) | `git diff --cached` чист | I1 ✔ |
 | F13 | 🔴 | Нет CI/CD — ни линта, ни типов, ни прогона тестов, ни security-scan на PR | `.github/workflows` нет | I3 |
 | F14 | 🔴 | Нет app-level auth: за туннелем один клиент, IP-гранулярность бесполезна (G18); нет аутентификации на уровне приложения | память `firewall-audit`, G18 | I6 |
 | F15 | 🟠 | D3 (открыт) — предполагаемый дефект из v2-аудита, не закрыт; D29 (открыт) — traversal через `state_manager`, D1 закрыт лишь частично | память `audit-v2-task` (D3 OPEN, D29 🟠) | I6 |
 | F16 | 🟠 | `threat_landscape.md` отсутствует на диске (заявлен в скиле security-reviewer как источник угроз) | `find threat_landscape*` → ∅ | I8, security |
 | F17 | 🟠 | Секрет-гигиена: `tunnel.yaml` (D31) — уже в .gitignore, но проверить отсутствие ключей в трекнутых файлах; `.env`-стратегия | grep `token/api_key`, gitleaks | I3, I6 |
-| F18 | 🟡 | Симуляционные тесты (virus/cache/bot-army) — есть в скиле test-master как замысел, но покрытие на диске не подтверждено | `ls tests/` (gitignored) | I7 |
+| F18 | 🟡→🟢 | Симуляционные тесты **существуют на диске и теперь в git** (S2): `virus_injection`, `bot_army`, `cache_injection`, `cache_overflow`, `config_change`, `render_draft_final`. Остаётся: подтвердить, что зелёные в CI (часть требует живого сервера, как firewall 1/4) | `find tests/` после I1 | I7 |
 
 ## Открытые вопросы (решить в фазах)
 

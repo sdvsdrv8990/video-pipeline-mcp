@@ -1,0 +1,272 @@
+# scenarios.yaml — конфиг сценариев тестирования
+
+# ═══ ПРИНЦИП ═══
+# Конфиг определяет "что тестируем"
+# Скрипт определяет "как выполняем"
+# Каждый сценарий = папка workspace/ok_<name>/ с реальными файлами
+#
+# Добавление нового сценария:
+# 1. Запиши запись сюда (name, type, enabled, description, expected)
+# 2. Создай класс в tests/scenarios/ с наследованием BaseScenario
+# 3. Зарегистрируй в tests/runner.py → SCENARIOS_MAP
+
+# ═══ РАБОЧИЕ ТЕСТЫ ═══
+
+firewall:
+  name: "Тест файрвола"
+  type: security
+  enabled: true
+  description: |
+    Проверка файрвола: injection blocking, rate limiting, IP blocking.
+    Быстрый тест (tests/quick/).
+  file: tests/quick/test_firewall.py
+  expected:
+    - Prompt injection блокируется
+    - Rate limiting работает
+    - IP blocking работает
+    - Легитимные запросы проходят
+
+# ═══ СИСТЕМНЫЕ ТЕСТЫ ═══
+
+cache_overflow:
+  name: "Переполнение кеша"
+  type: system
+  enabled: true
+  description: |
+    Эмулируем переполнение кеша сервера.
+    Проверяем: не падает ли сервер? Очищается ли кеш автоматически?
+  emulation:
+    type: "memory_pressure"
+    target: "server_cache"
+    method: "fill_to_limit"
+  execution:
+    workspace: "ok_cache_overflow"
+    steps:
+      - create_dir: "cache_test"
+      - create_dir: "logs"
+      - create_file:
+          path: "config.json"
+          content: '{"fill_count": 50, "target": "server_cache"}'
+      - loop:
+          count: 50
+          action: create_file
+          path: "cache_test/payload_{i:03d}.json"
+          content: '{"index": {i}, "data": "x" * 1000}'
+      - create_file:
+          path: "logs/cache_fill.json"
+          content: '{"files_created": 50, "status": "filled"}'
+  expected:
+    - Сервер не падает
+    - Возвращается ошибка MEMORY_EXHAUSTED
+    - Кеш очищается автоматически
+    - Легитимные запросы продолжают работать
+
+config_change:
+  name: "Изменение конфигурации оборудования"
+  type: system
+  enabled: true
+  description: |
+    Эмулируем изменение конфигурации (CPU/RAM/DISK).
+    Проверяем: адаптируется ли сервер? Уведомляет ли Claude?
+  emulation:
+    type: "resource_change"
+    changes:
+      - resource: "cpu_cores"
+        from: 4
+        to: 2
+      - resource: "ram_gb"
+        from: 16
+        to: 8
+  execution:
+    workspace: "ok_config_change"
+    steps:
+      - create_dir: "config"
+      - create_dir: "logs"
+      - create_json:
+          path: "config/system.json"
+          data:
+            cpu_cores: 4
+            ram_gb: 16
+            disk_gb: 500
+      - update_json:
+          path: "config/system.json"
+          changes:
+            cpu_cores: 2
+            ram_gb: 8
+      - create_json:
+          path: "logs/adaptation.json"
+          data:
+            old_cpu: 4
+            new_cpu: 2
+            old_ram: 16
+            new_ram: 8
+            adapted: true
+  expected:
+    - Сервер адаптируется к новым ресурсам
+    - Claude получает уведомление об изменении
+    - Автоматическая оптимизация параметров
+
+# ═══ ТЕСТЫ БЕЗОПАСНОСТИ ═══
+
+bot_army:
+  name: "Армия ботов"
+  type: security
+  enabled: true
+  description: |
+    Эмулируем атаку 100+ ботов одновременно.
+    Проверяем: банит ли сервер? Как вычисляет?
+  emulation:
+    type: "concurrent_requests"
+    count: 100
+    interval_ms: 10
+    pattern: "identical_payloads"
+  execution:
+    workspace: "ok_bot_army"
+    steps:
+      - create_dir: "logs"
+      - create_json:
+          path: "config.json"
+          data:
+            attack_count: 100
+            interval_ms: 10
+      - tool_call:
+          tool: "fs_read_file"
+          args:
+            path: "."
+          repeat: 20
+      - create_json:
+          path: "logs/attack_results.json"
+          data:
+            total_requests: 20
+            pattern: "identical_payloads"
+  expected:
+    - Сервер банит подозрительные IP после N запросов
+    - Легитимные запросы продолжают работать
+    - Логируется попытка атаки
+    - Rate limiting срабатывает корректно
+
+cache_injection:
+  name: "Инъекция в кеш"
+  type: security
+  enabled: true
+  description: |
+    Эмулируем попытку отравления кеша сервера.
+    Проверяем: изолирован ли кеш? Не повреждаются ли данные?
+  emulation:
+    type: "cache_poisoning"
+    payload: "malicious_data"
+    target: "read_cache"
+  execution:
+    workspace: "ok_cache_injection"
+    steps:
+      - create_dir: "data"
+      - create_dir: "logs"
+      - create_json:
+          path: "data/legit_1.json"
+          data: {type: "legit", value: "good"}
+      - create_json:
+          path: "data/legit_2.json"
+          data: {type: "legit", value: "good"}
+      - create_json:
+          path: "data/injected.json"
+          data:
+            type: "malicious"
+            payload: "<script>alert('xss')</script>"
+      - create_json:
+          path: "logs/integrity_check.json"
+          data:
+            legit_1_intact: true
+            legit_2_intact: true
+            injection_isolated: true
+  expected:
+    - Инъекция отклоняется
+    - Кеш остаётся целостным
+    - Данные workspace не повреждаются
+
+virus_injection:
+  name: "Внедрение вредоносного кода"
+  type: security
+  enabled: true
+  description: |
+    Эмулируем попытку внедрить вредоносный код через инструменты.
+    Проверяем: изолирован ли workspace? Не выполняется ли чужой код?
+  emulation:
+    type: "code_injection"
+    vector: "file_upload"
+    payload: "import os; os.system('rm -rf /')"
+  execution:
+    workspace: "ok_virus_injection"
+    steps:
+      - create_dir: "uploads"
+      - create_dir: "logs"
+      - create_file:
+          path: "uploads/suspect.py"
+          content: 'import os; os.system("rm -rf /")'
+      - create_file:
+          path: "uploads/suspect.sh"
+          content: '"; rm -rf / #'
+      - create_json:
+          path: "logs/injection_check.json"
+          data:
+            files_written: true
+            code_executed: false
+            workspace_intact: true
+  expected:
+    - Код НЕ выполняется
+    - Файл записывается как есть (не исполняется)
+    - Workspace изолирован от системных файлов
+
+# ═══ СМЕЩЁННЫЕ ТЕСТЫ ═══
+
+render_draft_final:
+  name: "Двухуровневый рендер (draft → final)"
+  type: workflow
+  enabled: true
+  description: |
+    Эмулируем полный пайплайн рендера:
+    1. trigger_render(draft) → task_id
+    2. poll_status → completed
+    3. download → verify
+    4. trigger_render(final, derived_from=draft) → task_id
+    5. poll_status → completed
+    6. download → verify
+  execution:
+    workspace: "ok_render_draft_final"
+    steps:
+      - create_dir: "renders"
+      - create_dir: "source"
+      - create_json:
+          path: "project.json"
+          data:
+            name: "test_video"
+            resolution: "1920x1080"
+            fps: 30
+      - create_json:
+          path: "source/scenes.json"
+          data:
+            scenes:
+              - {id: "scene_01", duration: 5.0}
+              - {id: "scene_02", duration: 3.0}
+      - create_json:
+          path: "renders/draft_001.json"
+          data:
+            task_id: "draft_001"
+            status: "completed"
+            type: "draft"
+      - create_json:
+          path: "renders/final_001.json"
+          data:
+            task_id: "final_001"
+            status: "completed"
+            type: "final"
+            derived_from_render_id: "draft_001"
+      - create_json:
+          path: "renders/facts.json"
+          data:
+            draft_render_id: "draft_001"
+            final_render_id: "final_001"
+  expected:
+    - Draft рендер создаётся успешно
+    - Final привязан к draft через derived_from_render_id
+    - Оба файла проходят verify
+    - Facts содержат информацию о рендерах
