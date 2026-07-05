@@ -113,13 +113,7 @@ class QueryPlanner:
         self._lock = threading.Lock()
 
     def load_query(self, yaml_path: str | Path) -> QueryPlan:
-        """Загрузка YAML-файла запроса из workspace/.
-
-        D1/P1: yaml_path под контролем клиента → без containment это был бы
-        arbitrary-file-read (напр. "/etc/passwd"). Сейчас метод не вызывается
-        (search_* используют load_query_from_dict), но контейним превентивно,
-        чтобы будущая проводка не открыла traversal.
-        """
+        """Загрузка YAML-файла запроса из workspace/ (путь контейнится — анти-traversal)."""
         try:
             p = safe_resolve(str(yaml_path), self.workspace)
         except ValueError:

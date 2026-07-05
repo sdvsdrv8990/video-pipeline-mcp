@@ -81,8 +81,7 @@ class Firewall:
             max_requests=config.get("rate_limit", {}).get("max_requests_per_minute", 60),
             ban_after=config.get("rate_limit", {}).get("ban_after_violations", 3)
         )
-        # patterns=None (ключ отсутствует) → InjectionDetector берёт refined DEFAULT_PATTERNS.
-        # Пустой список в конфиге ([]) означал бы «выключить детекцию» — это осознанный выбор.
+        # patterns=None → refined DEFAULT_PATTERNS; [] = выключить детекцию.
         injection_detector = InjectionDetector(
             patterns=config.get("injection_detection", {}).get("patterns", None)
         )
@@ -90,10 +89,7 @@ class Firewall:
             auto_ban=config.get("ip_blocklist", {}).get("auto_ban", True),
             ban_duration_hours=config.get("ip_blocklist", {}).get("ban_duration_hours", 24)
         )
-        # D2/D8: конфиг детектора аномалий берём из firewall.yaml (раньше AnomalyDetector()
-        #   игнорировал конфиг — скрытый D2, список опасных был захардкожен).
-        # D17: time-based параметры удалены, только event-based dangerous_tools.
-        # None → DEFAULT_DANGEROUS_TOOLS (fallback). D32: действие (block) под пересмотром.
+        # dangerous_tools из конфига (None → дефолт); детекция event-based.
         anomaly_detector = AnomalyDetector(
             dangerous_tools=config.get("anomaly_detection", {}).get("dangerous_tools", None)
         )

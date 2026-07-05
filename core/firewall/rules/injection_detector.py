@@ -36,14 +36,8 @@ core/firewall/rules/injection_detector.py — Детектор prompt injection
 from typing import Any
 
 
-# Стандартные паттерны prompt injection (fallback, если firewall.yaml без patterns).
-# D7: убраны FP-паттерны ("act as", "disregard", "override") — легитимны
-# для видео/TTS-пайплайна. Оставлены только полные фразы prompt-injection.
-# D33: убраны command-injection паттерны ("rm -rf", "format c:", "drop table",
-# "delete all files") — сервер НИКОГДА не отдаёт params в shell/SQL/Windows,
-# такие атаки НЕисполнимы, а как паттерны рубили легитимный контент (FP-театр).
-# Реальная угроза injection у нас ИСХОДЯЩАЯ (workspace→модель, T1) — она не
-# закрывается сканом входящих params; это направление адресуется отдельно (P1).
+# Fallback prompt-injection паттерны (если firewall.yaml без patterns).
+# Только полные фразы (word-boundary); без command-injection — нет shell/SQL/Windows-поверхности.
 DEFAULT_PATTERNS = [
     # Прямые инъекции (с контекстом — полные фразы)
     "ignore previous instructions",

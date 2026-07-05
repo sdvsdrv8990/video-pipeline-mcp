@@ -179,9 +179,7 @@ class FsSearcher:
         """Выполнение задачи поиска."""
         task.status = "running"
         try:
-            # D1/G17 (P1/T5): task.root — под контролем клиента. Абсолютный путь
-            # ("/etc") или "../" выводили rglob за workspace/ и read_text читал
-            # чужие файлы (traversal+exfil). Прогоняем через единый containment.
+            # task.root под контролем клиента → containment внутри workspace/ (анти-traversal).
             try:
                 root = safe_resolve(str(task.root), self.workspace) if task.root else self.workspace.resolve()
             except ValueError:
@@ -287,14 +285,11 @@ class FsSearcher:
         return {"results": results, "errors": errors}
 
     def _detect_entity_type(self, path: Path) -> str:
-        """Определение типа сущности по контейнер-маркерам в пути.
+        """Тип сущности по контейнер-маркерам пути (устойчиво к именам ниши/сети/канала).
 
-        D37: прежняя логика делала ранний `return "niche"` для ВСЕГО под niches/
-        (remaining[0] = имя ниши ≠ "networks" → всегда niche) и искала competitors
-        под channels, хотя по шаблонам competitors — ребёнок network'а. Иерархия
-        (config/templates/workspace): niches/<n>/networks/<net>/channels/<ch>/videos/<v>
-        и networks/<net>/competitors/<comp>/videos/<v>. Классифицируем по САМОМУ
-        глубокому известному контейнеру, устойчиво к именам ниши/сети/канала.
+        Иерархия: niches/<n>/networks/<net>/channels/<ch>/videos/<v> и
+        networks/<net>/competitors/<comp>/videos/<v>. Классификация — по самому
+        глубокому известному контейнеру.
         """
         try:
             parts = path.relative_to(self.workspace).parts
