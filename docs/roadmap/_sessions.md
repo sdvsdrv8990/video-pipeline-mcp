@@ -79,16 +79,29 @@ firewall 1/4 (env) · tunnel 19/20 (env). Замер 2026-07-05.
 
 ---
 
+## Сессия 6 — 2026-07-05 — README truth-up (A4 / OQ1)
+
+**Сделано:**
+- README переписан под **фактическую консолидированную** архитектуру (решение владельца: убрать чего нет, чтобы не ловить ложные сигналы). Убрано: `config/ops/*.ops.yaml`, `model_routing.yaml`, `paths.yaml`, `.xlsx`-конфиг. Добавлено реальное: `core/{firewall,search,excel,tables,paths}`, `config/{firewall,channel_config,tunnel,server_reactions}`, `templates/workspace` (6). Маркеры статуса ✅/🟠/🔲, секция зависимостей под pyproject, ссылка на `docs/roadmap/`.
+- **F7 🟠→✅**, **A4 ✅** (OQ1 закрыт).
+
+**Тесты:** кода не трогал (доки) → baseline держится.
+
+**Коммит:** `docs(readme): truth-up to actual consolidated architecture (A4, session 6)`.
+
+---
+
 ## RESUME (следующая сессия)
 
-**Ждёт решения владельца:** **OQ5** (порядок продукта: A1′ таблично-схемный слой vs media Фаза 1) · **OQ1** (README truth-up, A4) · **F19** (LICENSE, отложено).
+**Порядок утверждён владельцем:** A1′ (таблицы) → media (P2–P4) → инфра. **Стартуем A1′.**
 
-**Варианты старта:**
-- **A1′** — таблично-схемный слой: `scripts/introspect_tables.py` → `config/templates/tables/*.schema.yaml` (вход — `spec/schemas/*.schema.md`) + лист SCENES/статусы. Закрывает «yaml-генерацию таблиц с листами».
-- **media Фаза 1** — P2 TTS + P3 STT по `spec/media_tools_deployment.md §4`.
-- **Фаза 0 `I4`** (default инфра) — ruff/mypy/pre-commit → I3 CI.
+**Воркстрим `A1′` — таблично-схемный слой (2–3 сессии):**
+1. Прочитать `spec/schemas/*.schema.md` (7) + `spec/instructions/ИНСТРУКЦИЯ_шаблоны.md` §5 (формат схем, computed-флаги, SCENES, статусы) + `Бриф_табличные_инструменты.md` — до кода.
+2. Спроектировать `scripts/introspect_tables.py` — вытащить колонки из готовых Excel-книг → `config/templates/tables/*.schema.yaml` (пометить `=`-столбцы `computed:true writable:false`). **Нужны реальные .xlsx-книги** — уточнить у владельца, где они (в `workspace/`? отдельно?).
+3. Руками спекнуть лист `SCENES` + статус-столбцы (enum+ui_colors) — их в Excel нет.
+4. Подключить схемы к `structure_create` фаза ТАБЛИЦЫ. Тесты structure зелёные до/после.
 
-Метод: воркстрим → `engineering-questions` → домен-скил → правки → тесты зелёные → `02_findings.md`+журнал → коммит+push → память.
+Открыто: **F19** (LICENSE, отложено). Метод: `engineering-questions` → домен-скил (`mcp-developer`/`project-conventions`) → тесты → findings+журнал → коммит+push → память.
 
 NB для I3: firewall 1/4 + tunnel 19/20 = integration (нужен живой сервер/cloudflared) → в CI skip/mark, гонять in-process (audit/search/structure/tables).
 
