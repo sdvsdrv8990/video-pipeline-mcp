@@ -159,7 +159,7 @@ firewall 1/4 (env) · tunnel 19/20 (env). Замер 2026-07-05.
 - **`08_pass_closure.md`** — НОВЫЙ: (1) ремап source-of-truth удалённого `docs/dev` (workflow→память, threat_landscape→`06`, testing_strategy→`03`, audit/D#/G#→`02`, history_*→`_sessions`+commit); (2) список недостающих файлов по гейтам L2/L3/L4 (LICENSE/SECURITY/CONTRIBUTING/CI/pre-commit/conftest/Dockerfile/OAuth/allowlist/observability — НИ ОДНОГО нет); (3) exit-чеклисты проходов; (4) сильные репо→уровень/стиль/структура/правила (conformance/github-mcp-server/MCP-SDK/servers/awesome-lists); (5) реконсиляция скилов.
 - **Правило истории обновлено** (README роадмапа + память `project-workflow-canonical`): write-back → `_sessions.md`+commit, не в `docs/dev/history_*`.
 
-**Открытый долг (Проход-0, первый пункт):** 9 скилов ссылаются на удалённые `docs/dev/` пути (`workflow.md`×22, `threat_landscape`×9, `testing_strategy`×6, `audit`×4) → реконсилировать по ремапу `08 §1` (skill-curator).
+**GIT-NATIVE принцип (владелец):** git = история версий файлов И кода, лучше `history_*.md`. Закреплён `08 §0` + память `project-workflow-canonical` (переписана): read = `git log --follow`/`blame`/`show`; write-back решение→факт = commit-сообщение + `_sessions.md` + память; `history_*.md` не ведём. **✅ 9 скилов реконсилированы** — git-native баннер вставлен во все + «источниковые» пути свопнуты (первый пункт Прохода-0 ЗАКРЫТ).
 
 **Тесты:** кода не трогал → baseline держится.
 
