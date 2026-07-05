@@ -51,8 +51,25 @@ firewall 1/4 (env) · tunnel 19/20 (env). Замер 2026-07-05.
 
 ---
 
+## Сессия 4 — 2026-07-05 — Спеки ↔ код (по указанию владельца)
+
+**Сделано (планирование, кода не трогал):**
+- Прочитаны спек-файлы владельца (`media_tools_deployment.md`, `ИНСТРУКЦИЯ_шаблоны.md`, 7 `*.schema.md` — заголовки). Создан **`05_data_template_media_system.md`**: целевая архитектура (niche→network→channel→video; консолидированный `channel_config.yaml`; workspace-tpl + table-схемы; интроспектор; media-пайплайн), матрица DONE/STUB/MISSING, инвентарь спек-файлов, воркстримы, принцип «синхронизация не ломая».
+- **Крупная ревизия reality-check:** `config/ops`/`model_routing` **намеренно упразднены** (консолидация в channel_config) — F2 ОТОЗВАНА, F7 понижена (🔴→🟠). Workspace-шаблоны (6 tpl) + `structure_*` (35/35) РЕАЛИЗОВАНЫ — мой S1-пессимизм был неверен дважды.
+- Новые находки: **F20** (table-схемы отсутствуют), **F21** (нет `introspect_tables.py`), **F22** (спек-файлы вне репо).
+- Master-roadmap A-ось исправлена: ~~A1 populate ops~~ → **A1′ таблично-схемный слой**; A3 пересмотрен; A4 = README под консолидированную архитектуру.
+- Новые открытые вопросы: **OQ4** (импортировать спеки в репо?), **OQ5** (сначала A1′ таблицы или media P2–P4?).
+
+**Тесты:** кода не трогал → baseline держится.
+
+**Коммит:** `docs(roadmap): spec↔code sync — data/template/media system (session 4)`.
+
+---
+
 ## RESUME (следующая сессия)
 
-**Фаза 0, воркстрим `I4`** — Типизация+линт: `ruff` (lint+format) + `mypy` + `pre-commit`. Конфиги — секциями в `pyproject.toml` (`[tool.ruff]`, `[tool.mypy]`) + `.pre-commit-config.yaml`. dev-инструменты уже объявлены в `[project.optional-dependencies].dev`. Начать с `ruff check` по коду, зафиксировать текущие нарушения как находки, решить: чинить сразу или baseline-игнор. Затем `I3` (CI гоняет ruff+mypy+pytest+bandit/pip-audit; firewall/tunnel = integration/skip).
+**Развилка** — ждут решения владельца: **OQ4** (импорт спек-файлов в репо), **OQ5** (порядок: A1′ таблично-схемный слой vs media P2–P4), **OQ1** (README truth-up под факт). До ответа — можно вернуться в **Фазу 0 `I4`** (ruff/mypy/pre-commit; dev-deps уже в pyproject), затем `I3` (CI). Либо, если владелец выбрал продукт — стартовать **A1′** (интроспектор + table-схемы из 7 `*.schema.md`) или **media Фаза 1** (P2 TTS + P3 STT по `media_tools_deployment.md §4`).
+
+NB для I3: firewall 1/4 + tunnel 19/20 = integration (нужен живой сервер/cloudflared) → в CI skip/mark, гонять in-process (audit/search/structure/tables).
 
 Метод: воркстрим → `engineering-questions` → домен-скил → правки → тесты зелёные → обновить `02_findings.md` + журнал → коммит с отчётом → память.
