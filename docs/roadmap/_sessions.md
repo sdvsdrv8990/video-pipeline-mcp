@@ -167,6 +167,19 @@ firewall 1/4 (env) · tunnel 19/20 (env). Замер 2026-07-05.
 
 ---
 
+## Сессия 12 — 2026-07-05 — Оргструктура агентов (отделы + оркестратор)
+
+**Сделано:** построена многоагентная команда для исполнения роадмапа.
+- **`09_agent_org.md`** — оргмодель: 3 отдела (Разработка=ось A/P, Тестирование=I7, Безопасность=I6) + оркестратор; роли (lead opus + engineer sonnet ×N), база знаний (роадмап+скилы+сильные репо), git-native воркфлоу, правила порядка/конфликтов, **назначение ВСЕХ задач по проходам** (Фаза-0/L2/L3/L4) и осям.
+- **`.claude/agents/` (7 типов):** `chief-orchestrator` (раздаёт/конфликты/эскалация), `dev-lead`+`dev-engineer` (mcp-developer/project-conventions/anti-hardcode/code-quality), `qa-lead`+`qa-engineer` (test-master), `sec-lead`+`sec-engineer` (security-reviewer/reactions-errors). Каждый: скилы+KB+git-native+scope.
+- **Честность механики:** «10/отдел» = спавн-экземпляры одного типа, не 30 файлов/процессов; оркестратор спавнит роли под задачу.
+
+**Тесты:** кода не трогал → baseline держится.
+
+**Коммит:** `feat(agents): department org (dev/qa/sec) + chief-orchestrator + task assignment (session 12)`.
+
+---
+
 ## RESUME (следующая сессия) — два открытых трека
 
 ### Трек Б (новый, из сессии 9) — реализация защиты + тестов
