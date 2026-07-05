@@ -97,6 +97,8 @@ import concurrent.futures
 import threading
 from datetime import datetime
 
+from core.paths import safe_resolve  # D1/G17: единый containment внутри workspace/
+
 
 @dataclass
 class FileResult:
@@ -177,7 +179,13 @@ class FsSearcher:
         """Выполнение задачи поиска."""
         task.status = "running"
         try:
-            root = self.workspace / task.root if task.root else self.workspace
+            # D1/G17 (P1/T5): task.root — под контролем клиента. Абсолютный путь
+            # ("/etc") или "../" выводили rglob за workspace/ и read_text читал
+            # чужие файлы (traversal+exfil). Прогоняем через единый containment.
+            try:
+                root = safe_resolve(str(task.root), self.workspace) if task.root else self.workspace.resolve()
+            except ValueError:
+                raise FsSearchError("PATH_ESCAPE", f"root вне workspace: {task.root}")
             if not root.exists():
                 raise FsSearchError("PATH_NOT_FOUND", f"Каталог не найден: {task.root}")
 

@@ -62,6 +62,8 @@ from typing import Any, Callable
 import concurrent.futures
 import threading
 
+from core.paths import safe_resolve  # D1/G17: containment внутри workspace/
+
 
 @dataclass
 class ReadTask:
@@ -111,8 +113,17 @@ class QueryPlanner:
         self._lock = threading.Lock()
 
     def load_query(self, yaml_path: str | Path) -> QueryPlan:
-        """Загрузка YAML-файла запроса."""
-        p = Path(yaml_path)
+        """Загрузка YAML-файла запроса из workspace/.
+
+        D1/P1: yaml_path под контролем клиента → без containment это был бы
+        arbitrary-file-read (напр. "/etc/passwd"). Сейчас метод не вызывается
+        (search_* используют load_query_from_dict), но контейним превентивно,
+        чтобы будущая проводка не открыла traversal.
+        """
+        try:
+            p = safe_resolve(str(yaml_path), self.workspace)
+        except ValueError:
+            raise SearchError("PATH_ESCAPE", f"Путь запроса вне workspace: {yaml_path}")
         if not p.exists():
             raise SearchError("QUERY_NOT_FOUND", f"Файл запроса не найден: {yaml_path}")
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
