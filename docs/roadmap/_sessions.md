@@ -117,7 +117,9 @@ firewall 1/4 (env) · tunnel 19/20 (env). Замер 2026-07-05.
 
 **OQ6 решён (в этой же сессии):** reconcile-by-purpose — `config/ops/{filesystem,tables,excel}.ops.yaml` строим (A3, реестр операций tool-обёрток, закон §3); media остаётся в `resource_limits`. **F23 ✅**. A3 возвращён в план (пара к A2).
 
-**Коммит:** `docs(roadmap): target-structure conformance + F23 resolved (session 8)`.
+**Design-уточнение media (владелец пояснил эволюцию замысла):** выбор media-модели — **per-channel**. Модель/голос/параметры из `resource_limits` конкретного канала; `model_routing.yaml` **не строим вообще** (не «минорно»). Механизм: адаптер провайдера подхватывает `channel_config` канала при работе с ним (контекст канала из параметров инструмента). `config/channel_config.yaml` = шаблон → материализуется per-channel. Открыто для P2–P4: пломбировка «активного канала» + связь шаблон↔per-channel. Записано в `05 §1`, `01` (model_routing → не строим).
+
+**Коммиты:** `docs(roadmap): target-structure conformance + F23 resolved (session 8)` + `docs(roadmap): media model-selection is per-channel, drop model_routing (session 8)`.
 
 ---
 

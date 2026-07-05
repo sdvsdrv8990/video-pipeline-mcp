@@ -55,7 +55,8 @@
 | `scripts/introspect_tables.py` — утилита вне рантайма | только `scripts/`, не `core`/`pipeline` | 🔲 | **A1′** |
 | `docs/dev/tools/<X>` — **зеркалит** `tools/<X>`/`core/providers/<X>` (простое→1 файл, сложное→папка+overview) | доки рядом-параллельно коду | 🔲 | **I8** (docs) |
 | `config/ops/{filesystem,tables,excel}.ops.yaml` | реестр операций tool-категорий (закон §3) | 🔲 → **строим** (F23 решён: reconcile-by-purpose) | **A3** (пара к A2) |
-| `config/model_routing.yaml`, `config/paths.yaml`; media-ops | роутинг/пути; media-операции | ⚪ media остаётся в `resource_limits`; routing/paths минорно | — |
+| ~~`config/model_routing.yaml`~~, media-ops | выбор media-модели | ❌ **НЕ строим** (S8): модель = per-channel `resource_limits`, провайдер подхватывает конфиг канала при работе (см. `05` §1). Отдельного routing нет | — |
+| `config/paths.yaml` | workspace-путь/лимиты | ⚪ минорно (если путь захардкожен — вынести) | по мере надобности |
 
 **Закон размещения способностей (§5, обобщение для будущих):** любая новая способность = адаптер
 `core/providers/<cap>/` + тонкие инструменты `tools/<category>/` + операции `config/ops/<category>.ops.yaml`
