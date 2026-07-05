@@ -91,17 +91,30 @@ firewall 1/4 (env) · tunnel 19/20 (env). Замер 2026-07-05.
 
 ---
 
-## RESUME (следующая сессия)
+## Сессия 7 — 2026-07-05 — A1′ часть 1: формат таблично-схемного слоя
 
-**Порядок утверждён владельцем:** A1′ (таблицы) → media (P2–P4) → инфра. **Стартуем A1′.**
+**Сделано (безопасно, код не тронут):**
+- Разобрал точку интеграции: `structure_create`/`template_engine.py:155-163` для `kind: table` **откладывает** книгу (`file_id` + `tables_pending[table_template]`, `.xlsx` не создаёт — честная заглушка Ф3). Loader'а `config/templates/tables/*.schema.yaml` в коде НЕТ (ед. ссылка — прокид имени).
+- Свёл API `core/excel`: `create_workbook`/`add_sheet`/`add_column(formula=)`/`set_validation(allowed=)`/`apply_formatting` — примитивы материализации есть, схема мапится 1:1.
+- Определил **формат `config/templates/tables/*.schema.yaml`** (`spec/TABLE_SCHEMA_FORMAT.md`): мост `spec/schemas/*.schema.md` → YAML → `core/excel`; флаги id/W/F/fk, тип enum→set_validation; + дизайн loader'а (фаза ТАБЛИЦЫ) для след. сессии.
+- **Proof:** `config/templates/tables/network_config.schema.yaml` (4 листа, все флаги) — из спеки, валиден.
+- **F20** 🟠→🔨 (в работе).
 
-**Воркстрим `A1′` — таблично-схемный слой (2–3 сессии):**
-1. Прочитать `spec/schemas/*.schema.md` (7) + `spec/instructions/ИНСТРУКЦИЯ_шаблоны.md` §5 (формат схем, computed-флаги, SCENES, статусы) + `Бриф_табличные_инструменты.md` — до кода.
-2. Спроектировать `scripts/introspect_tables.py` — вытащить колонки из готовых Excel-книг → `config/templates/tables/*.schema.yaml` (пометить `=`-столбцы `computed:true writable:false`). **Нужны реальные .xlsx-книги** — уточнить у владельца, где они (в `workspace/`? отдельно?).
-3. Руками спекнуть лист `SCENES` + статус-столбцы (enum+ui_colors) — их в Excel нет.
-4. Подключить схемы к `structure_create` фаза ТАБЛИЦЫ. Тесты structure зелёные до/после.
+**Тесты:** код не тронут → structure 35/35 (проверено), baseline держится.
 
-Открыто: **F19** (LICENSE, отложено). Метод: `engineering-questions` → домен-скил (`mcp-developer`/`project-conventions`) → тесты → findings+журнал → коммит+push → память.
+**Коммит:** `feat(tables): A1′ schema format + network_config proof (session 7)`.
+
+---
+
+## RESUME (следующая сессия) — A1′ часть 2
+
+**Два трека, оба готовы:**
+1. **Код (loader):** `core/engine/table_materializer.py` — по `tables_pending` грузит `*.schema.yaml`, материализует книгу через `core/excel` (таблица маппинга в `spec/TABLE_SCHEMA_FORMAT.md`). Контракт ToolResult + факты. Подключить как фаза ТАБЛИЦЫ (отдельный вызов после structure_create — НЕ ломать 35/35). Тесты новые + structure зелёные.
+2. **Авторинг схем:** остальные 6 книг из `spec/schemas/*.schema.md` → `config/templates/tables/*.schema.yaml` (competitor_channel_data малая — следующей; video_data с SCENES🆕/статусами — руками по `ИНСТРУКЦИЯ_шаблоны §5.2/5.3`).
+
+Рекомендация: сперва loader на proof-файле network_config (докажет цикл end-to-end), потом массовый авторинг. **Уточнить у владельца:** где реальные .xlsx-книги (для интроспектора вместо ручного авторинга ~90 листов)?
+
+Открыто: **F19** (LICENSE). Метод: `mcp-developer`/`project-conventions` → тесты → findings+журнал → коммит+push → память.
 
 NB для I3: firewall 1/4 + tunnel 19/20 = integration (нужен живой сервер/cloudflared) → в CI skip/mark, гонять in-process (audit/search/structure/tables).
 

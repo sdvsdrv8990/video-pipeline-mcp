@@ -1,0 +1,34 @@
+# network_config.xlsx — конфиг сетки (координация каналов). Уровень: network.
+# Источник: docs/roadmap/spec/schemas/network_config.schema.md. Формат: spec/TABLE_SCHEMA_FORMAT.md.
+book: network_config
+level: network
+source: network_config.schema.md
+sheets:
+  - name: NETWORK_SCHEDULE_MASTER   # сводное расписание сети (антиканнибализация тем)
+    columns:
+      - { name: date,           type: date,    flag: W }
+      - { name: channel_id,     type: string,  flag: fk }
+      - { name: planned_topic,  type: string,  flag: W }
+      - { name: status,         type: enum,    flag: W, enum: [PLANNED, IN_PRODUCTION, SCHEDULED] }
+      - { name: conflict_check, type: boolean, flag: F }   # сервер сверяет темы каналов на дату
+
+  - name: SHARED_RESOURCES          # общие пулы (API-квоты, мастер-библиотеки SVG)
+    columns:
+      - { name: resource_name,          type: string,  flag: id }   # MJ_API_Quota / Master_SVG_Library
+      - { name: total_pool_limit,       type: string,  flag: W }
+      - { name: allocated_channels,     type: string,  flag: W }    # список или ALL
+      - { name: current_network_usage,  type: integer, flag: W }    # сервер обновляет
+      - { name: reallocation_rule,      type: string,  flag: W }
+
+  - name: CROSS_CHANNEL_RULES       # правила взаимодействия каналов
+    columns:
+      - { name: rule_id,           type: string, flag: id }
+      - { name: rule_description,  type: string, flag: W }
+      - { name: enforcement_level, type: enum,   flag: W, enum: [HARD, SOFT] }   # HARD=сервер блокирует
+
+  - name: NETWORK_GATES             # глобальные точки согласования (human_gate уровня сети)
+    columns:
+      - { name: gate_id,           type: string, flag: id }
+      - { name: trigger_condition, type: string, flag: W }
+      - { name: approver_role,     type: string, flag: W }   # напр. Network_Admin
+      - { name: ui_message,        type: string, flag: W }

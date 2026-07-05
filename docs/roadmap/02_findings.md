@@ -20,7 +20,7 @@
 | F# | Sev | Находка | Пруф | → |
 |---|---|---|---|---|
 | ~~F7~~ | ✅ | **РЕШЕНО S6 (A4/OQ1):** README переписан под фактическую консолидированную архитектуру — убраны несуществующие `config/ops`/`paths.yaml`/`model_routing.yaml`/`.xlsx`; добавлены реальные `core/{firewall,search,excel,tables,paths}` + `config/{firewall,channel_config,tunnel}` + templates/workspace; маркеры ✅/🟠/🔲; ссылка на `docs/roadmap/`. «Ловить ложные сигналы» больше не с чего | README ↔ диск | A4 ✔ |
-| F20 | 🟠 | Таблично-схемный слой отсутствует: `config/templates/tables/*.schema.yaml` пуст → `structure_create` фаза ТАБЛИЦЫ не имеет схем книг. Блокирует «yaml-генерацию таблиц с листами» | `config/templates/tables/` ∅ | A1′ |
+| F20 | 🔨 | Таблично-схемный слой (в работе S7): формат определён (`spec/TABLE_SCHEMA_FORMAT.md`) + proof `network_config.schema.yaml`. Осталось: loader (`table_materializer` + фаза ТАБЛИЦЫ) + авторинг 6 схем. `structure_create` откладывает книги в `tables_pending` (template_engine:155) | формат+proof готовы | A1′ |
 | F21 | 🟠 | `scripts/introspect_tables.py` не существует → нет генерации схем из ~90 готовых Excel-книг (руками = недели). Причина пустого `scripts/` | `find introspect_tables.py` ∅ | A1′ |
 | ~~F22~~ | ✅ | **РЕШЕНО S5 (OQ4):** 15 спек-файлов импортированы в трекаемый `docs/roadmap/spec/` (schemas/ + instructions/ + Бриф/project_memory.spec/media_tools_deployment) + индекс `spec/README.md` + ledger улучшений `spec/IMPROVEMENTS.md`. Оригиналы в `/home/admin/projects/` оставлены | `find docs/roadmap/spec` = 17 файлов | OQ4 ✔ |
 | F8 | 🟠 | Пустые заскаффолженные каталоги: `tools/{5}`, `pipeline/{entry_points,steps}`, `scripts/` — структура-обещание без наполнения | `ls -R` | A1/A2/P5/P6 |
