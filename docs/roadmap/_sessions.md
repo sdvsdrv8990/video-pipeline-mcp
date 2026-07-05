@@ -180,6 +180,16 @@ firewall 1/4 (env) · tunnel 19/20 (env). Замер 2026-07-05.
 
 ---
 
+## Сессия 13 — 2026-07-05 — Каталог тестов (не плодить, развивать)
+
+**Сделано:** `tests/CATALOG.md` — карта зон ответственности. Разделены классы: **простые** (`tests/quick/`: audit_fixes=дом D#-регрессий · firewall · search · structure · tables · tunnel) и **симуляции** (`bot_army`/`cache_injection`/`cache_overflow`/`config_change`/`virus_injection`/`render_draft_final`) + рой (`agent_swarm/patterns.yaml`, раннер TODO). Для каждого: зона ответственности + зачем + **запас расширения** (какие векторы каталога `06`/E-матрицы впитывает) + когда оправдан новый. **Правило «не плодить»:** расширяй хозяина; новый — только вне зон ВСЕХ И когда лимит расширения исчерпан. Маршрут «куда класть сценарий» (§D). Реальные новые наборы на горизонте: только `agent_swarm/test_agent_swarm.py` + (при утяжелении) `tests/structure_emulation/`. README пропатчен (ссылка+docs/dev-ремап). QA-агенты (`qa-lead`/`qa-engineer`) получили правило+CATALOG.
+
+**Тесты:** кода не трогал → baseline держится.
+
+**Коммит:** `docs(tests): test catalog — responsibility zones + no-proliferation rule (session 13)`.
+
+---
+
 ## RESUME (следующая сессия) — два открытых трека
 
 ### Трек Б (новый, из сессии 9) — реализация защиты + тестов
