@@ -3,14 +3,7 @@ core/firewall/contracts.py — Контракты файрвола
 
 ## Назначение
 Модели данных файрвола: FirewallRequest, FirewallResult, FirewallDecision.
-
-## Причина выноса
-Избегаем циклических импортов: rules/ используют эти модели, а firewall.py использует rules/.
-
-## Порядок (сверху вниз по зависимостям)
-1. FirewallDecision — enum решений (базовый)
-2. FirewallRequest — входной запрос (базовый)
-3. FirewallResult — результат проверки (использует FirewallDecision)
+Вынесены отдельно чтобы избежать циклических импортов (rules/ используют модели, firewall.py использует rules/).
 """
 
 from enum import Enum

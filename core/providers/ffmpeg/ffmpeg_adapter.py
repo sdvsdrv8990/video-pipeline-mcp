@@ -4,68 +4,6 @@ core/providers/ffmpeg/ffmpeg_adapter.py — FFmpeg Adapter
 ## Назначение
 Единый интерфейс для работы с внешним FFmpeg MCP-сервером.
 Claude видит только наш интерфейс, внешний MCP скрыт за адаптером.
-
-## 4 уровня анализа
-
-### 1. Код
-- FFMpegAdapter — класс, инкапсулирующий работу с внешним MCP
-- Методы: trigger_render, poll_render_status, download_rendered, cancel_render
-- Каждый метод возвращает ToolResult (единый формат ответа)
-
-### 2. Поведение
-- Claude дёргает инструменты (trigger_*, poll_*, download_*)
-- Инструменты вызывают методы адаптера
-- Адаптер общается с внешним MCP-сервером
-- Результат возвращается как ToolResult
-
-### 3. Поток данных
-```
-Claude → trigger_render{video_id, scene_id, params}
-   → ffmpeg_adapter.trigger_render()
-   → внешний MCP: POST /render {params}
-   → ответ: {task_id: "FFMPEG_xxx"}
-   → ToolResult{status: "success", data: {task_id: "FFMPEG_xxx"}, facts: [...]}
-
-Claude → poll_render_status{task_id: "FFMPEG_xxx"}
-   → ffmpeg_adapter.poll_status()
-   → внешний MCP: GET /render/FFMPEG_xxx
-   → ответ: {status: "processing", progress: 45}
-   → TaskStatus{task_id: "FFMPEG_xxx", status: "processing", progress: {...}}
-
-Claude → download_rendered{task_id: "FFMPEG_xxx"}
-   → ffmpeg_adapter.download()
-   → внешний MCP: GET /render/FFMPEG_xxx/result
-   → ответ: {file_path: "/workspace/.../renders/video_final.mp4"}
-   → ToolResult{status: "success", data: {file_path: "...", verified: true}, facts: [...]}
-```
-
-### 4. Долгосрочный (6 мес)
-- Все видео будут рендериться через этот адаптер
-- Ошибки внешнего MCP будут накапливаться в _SESSION_LOG
-- Claude научится распознавать "какие ошибки FFmpeg бывают"
-- Через 6 мес: оптимизация параметров рендера, меньше failed
-
-## Порядок методов (причина → следствие)
-1. trigger_render — запуск (начало работы)
-2. poll_render_status — мониторинг (продолжение)
-3. download_rendered — получение результата (завершение)
-4. cancel_render — отмена (если нужно)
-
-## Как будет меняться
-- Добавятся новые параметры render (codec, resolution, fps)
-- poll может возвращать больше progress (этапы рендера)
-- download может возвращать метаданные (duration, size)
-
-## Какие регрессии возможны
-- Неверный URL внешнего MCP → все render-операции сломаются
-- Изменение формата запроса внешнего MCP → адаптер вернёт ошибку
-- Неверный маппинг ошибок → Claude получит неправильный recovery
-
-## Архитектурные связи
-- Использует: core.contracts (ToolResult, ErrorDetail, TaskStatus, Fact)
-- Использует: core.reactions (маппинг ошибок)
-- Использует: config/model_routing.yaml (URL внешнего MCP)
-- Используется: tools/video/* (инструменты монтажа)
 """
 
 from typing import Literal

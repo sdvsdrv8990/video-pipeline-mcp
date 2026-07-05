@@ -4,37 +4,6 @@ core/firewall/firewall.py — Основной класс Firewall
 ## Назначение
 Фильтрация ВСЕХ входящих запросов ДО ядра сервера.
 Блокировка атак, rate limiting, детекция injection.
-
-## 4 уровня анализа
-
-### 1. Код
-- Firewall класс с методом check(request)
-- Правила в rules/*.py (модульная структура)
-- Конфиг в config/firewall.yaml
-
-### 2. Поведение
-- Каждый запрос проходит через Firewall.check()
-- Возвращает: allow / block / rate_limit
-- Claude получает ошибку если заблокирован
-
-### 3. Поток данных
-```
-Запрос → Firewall.check()
-   ├── allow → core/engine
-   ├── block → ErrorDetail(SECURITY_VIOLATION)
-   └── rate_limit → ErrorDetail(RATE_LIMIT_EXCEEDED)
-```
-
-### 4. Долгосрочный (6 мес)
-- Блок-лист растёт на основе атак
-- Правила адаптируются к новым паттернам
-- Логи помогают выявить zero-day
-
-## Порядок проверок (причина → следствие)
-1. IP blocklist — быстрая проверка (забанен ли IP)
-2. Rate limit — проверка частоты
-3. Injection detection — проверка содержимого
-4. Anomaly detection — проверка паттернов
 """
 
 from .contracts import FirewallDecision, FirewallRequest, FirewallResult

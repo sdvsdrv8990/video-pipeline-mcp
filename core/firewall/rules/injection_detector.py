@@ -3,34 +3,6 @@ core/firewall/rules/injection_detector.py — Детектор prompt injection
 
 ## Назначение
 Обнаружение попыток prompt injection в входящих запросах.
-
-## 4 уровня анализа
-
-### 1. Код
-- InjectionDetector класс с методом detect(params)
-- Паттерны ищутся в любом месте запроса
-- Возвращает detected: bool
-
-### 2. Поведение
-- Сканирует все строковые значения в params
-- Ищет подозрительные паттерны
-- Если найден → блокирует запрос
-
-### 3. Поток данных
-```
-Параметры запроса → InjectionDetector.detect()
-   ├── detected=False → пропускаем
-   └── detected=True → бан + ErrorDetail(SECURITY_VIOLATION)
-```
-
-### 4. Долгосрочный (6 мес)
-- Паттерны обновляются по мере появления новых атак
-- Статистика помогает выявить новые векторы
-
-## Порядок полей
-1. Паттерны (patterns)
-2. Статистика (attempts)
-3. Методы (detect, get_attempts)
 """
 
 from typing import Any

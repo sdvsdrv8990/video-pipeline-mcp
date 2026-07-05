@@ -4,49 +4,6 @@ core/providers/stt/stable_ts_adapter.py — Stable-TS STT Adapter
 ## Назначение
 Адаптер для транскрибации через stable-ts (локально).
 Локальная модель, не требует внешнего API.
-
-## 4 уровня анализа
-
-### 1. Код
-- StableTSAdapter — класс для работы с stable-ts
-- Методы: trigger_transcription, parse_timestamps
-- Обычно sync (один вызов), но на длинном аудио может быть async
-
-### 2. Поведение
-- Claude шлёт trigger_transcription → запуск stable-ts
-- Обычно: сразу результат (sync)
-- На длинном аудио: task_id → poll → result
-- Ошибки маппятся на LOCAL_INFERENCE_FAILED
-
-### 3. Поток данных
-```
-Claude → trigger_transcription{audio_path, model_size}
-   → stable-ts: model.transcribe(audio_path)
-   → результат: {segments: [{start, end, text, words}]}
-   → ToolResult{timestamps, silence_map}
-
-Claude → parse_timestamps{raw_segments}
-   → обработка: пословные таймкоды + границы тишины
-   → ToolResult{timestamp_start, timestamp_end, word_count, pace_wpm}
-```
-
-### 4. Долгосрочный (6 мес)
-- Все STT-операции через этот адаптер
-- Точность таймкодов влияет на качество сцен
-- Ошибки ресурсов (GPU/память) будут накапливаться
-
-## Какие данные нужны для вызова
-- audio_path: str — путь к аудио-файлу
-- model_size: str — размер модели (large/medium/base)
-- word_timestamps: bool — пословные таймкоды
-- suppress_silence: bool — подавление тишины
-- vad: bool — Voice Activity Detection
-
-## Какие данные возвращаются
-- segments: list — сегменты с таймкодами
-- silence_map: list — границы тишины
-- word_count: int — количество слов
-- duration_sec: float — длительность
 """
 
 from core.contracts import ToolResult, ErrorDetail, Recovery, Fact

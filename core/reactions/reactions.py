@@ -3,31 +3,6 @@ core/reactions/reactions.py — Чтение и маппинг реакций
 
 ## Назначение
 Чтение server_reactions.yaml и маппинг ошибок на ErrorDetail.
-
-## 4 уровня анализа
-
-### 1. Код
-- Reactions класс с методами load, get_error
-- Читает YAML конфиг
-- Возвращает ErrorDetail по коду ошибки
-
-### 2. Поведение
-- При ошибке сервер ищет код в reactions
-- Собирает ErrorDetail с recovery
-- Отправляет Claude
-
-### 3. Поток данных
-```
-Ошибка → Reactions.get_error(code) → ErrorDetail
-```
-
-### 4. Долгосрочный (6 мес)
-- Реакции расширяются по мере появления новых ошибок
-- Recovery адаптируется к поведению Claude
-
-## Порядок полей
-1. Конфигурация (config)
-2. Методы (load, get_error)
 """
 
 import yaml

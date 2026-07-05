@@ -3,33 +3,6 @@ core/state/state_manager.py — Управление состоянием
 
 ## Назначение
 Управление read.json, write.json, session log, project_memory.
-
-## 4 уровня анализа
-
-### 1. Код
-- StateManager класс с методами read_snapshot, write_queue, log
-- Управляет файлами состояния в workspace/
-
-### 2. Поведение
-- Claude читает данные через read.json
-- Запись идёт через очередь в write.json
-- Все действия логируются в _SESSION_LOG
-
-### 3. Поток данных
-```
-Claude → read_snapshot() → read.json
-Claude → write_queue() → write.json → execute_queue() → Excel
-Действия → _SESSION_LOG
-```
-
-### 4. Долгосрочный (6 мес)
-- Состояние растёт по мере работы
-- Логи помогают отслеживать историю
-- Кеш оптимизирует чтение
-
-## Порядок полей
-1. Пути (workspace_path)
-2. Методы (read, write, log)
 """
 
 import json

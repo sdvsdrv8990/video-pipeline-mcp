@@ -3,33 +3,6 @@ core/engine/engine.py — Основной класс Engine
 
 ## Назначение
 Реестр и исполнитель инструментов. Claude отправляет запрос → Engine находит инструмент → выполняет.
-
-## 4 уровня анализа
-
-### 1. Код
-- Engine класс с методами register, call, list_tools
-- Хранит реестр инструментов (name → handler)
-- Каждый инструмент = callable
-
-### 2. Поведение
-- Claude отправляет tools/list → Engine возвращает список
-- Claude отправляет tools/call → Engine находит и выполняет
-- Ошибки маппятся на ErrorDetail
-
-### 3. Поток данных
-```
-Claude → tools/list → Engine.list_tools() → список инструментов
-Claude → tools/call → Engine.call(name, params) → ToolResult
-```
-
-### 4. Долгосрочный (6 мес)
-- Все инструменты регистрируются через Engine
-- Добавление нового инструмента = register + handler
-- Engine не меняется при добавлении инструментов
-
-## Порядок полей
-1. Реестр инструментов (instruments)
-2. Методы (register, call, list_tools)
 """
 
 from typing import Any, Callable, Awaitable

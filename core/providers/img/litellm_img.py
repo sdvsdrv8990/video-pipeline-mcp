@@ -4,54 +4,6 @@ core/providers/img/litellm_img.py — LiteLLM IMG Adapter
 ## Назначение
 Адаптер для генерации картинок через LiteLLM (облако/локально).
 Claude дёргает img_* инструменты → адаптер общается с LiteLLM → результат.
-
-## 4 уровня анализа
-
-### 1. Код
-- LiteLLMIMGAdapter — класс для работы с LiteLLM Image API
-- Методы: trigger_generation, poll_status, download_image
-- Каждый метод возвращает ToolResult/TaskStatus
-
-### 2. Поведение
-- Claude шлёт trigger_image_generation → получает task_id
-- Claude опрашивает poll_image_status → видит progress
-- Claude скачивает через download_image → получает файл
-- Ошибки маппятся на PROVIDER_FAILED / CONTENT_REJECTED
-
-### 3. Поток данных
-```
-Claude → trigger_image{model, prompt, size, n}
-   → LiteLLM API: /image/generations
-   → ответ: {task_id} или {images: [{url}]}
-   → ToolResult{task_id} или ToolResult{image_paths}
-
-Claude → poll_image_status{task_id}
-   → LiteLLM API: GET /tasks/{task_id}
-   → TaskStatus{status, progress}
-
-Claude → download_image{task_id}
-   → LiteLLM API: GET /tasks/{task_id}/result
-   → файл → verify → ToolResult{file_path, verified}
-```
-
-### 4. Долгосрочный (6 мес)
-- Все IMG-операции через этот адаптер
-- Ошибки модерации будут накапливаться → Claude учится
-- Выбор модели оптимизируется по cost/quality
-
-## Важно: одна сцена → НЕСКОЛЬКО запросов img_*
-Диффузия выдаёт строительные блоки: фон, персонаж, компоненты.
-Готовая сцена — композиция исходников.
-
-## Какие данные нужны для вызова
-- model: str — модель из channel_config.RESOURCE_LIMITS
-- prompt: str — промпт на ОДИН исходник
-- size: str — размер (1024x1024, 1920x1080)
-- n: int — количество вариантов
-
-## Какие данные возвращаются
-- file_path: str — путь к скачанному изображению
-- verified: bool — файл валиден
 """
 
 from core.contracts import ToolResult, ErrorDetail, Recovery, TaskStatus, Fact
