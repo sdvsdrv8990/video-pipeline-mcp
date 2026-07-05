@@ -157,6 +157,85 @@ class TableEngine:
                     reason="Используй одно из значений enum из схемы столбца.",
                 )
 
+    # ═══ АНАЛИЗ ДАННЫХ ═══
+
+    def get_unique_values(self, table: str, sheet: str, column: str, limit: int = 100) -> dict:
+        """Уникальные значения столбца."""
+        values = list(self.get_column(table, sheet, column).values())
+        unique = list(dict.fromkeys(values))
+        truncated = len(unique) > limit
+        return {
+            "column": column,
+            "unique": unique[:limit],
+            "count": len(unique),
+            "truncated": truncated,
+        }
+
+    def get_value_counts(self, table: str, sheet: str, column: str, limit: int = 10) -> dict:
+        """Частотный анализ: top-N наиболее частых значений."""
+        values = list(self.get_column(table, sheet, column).values())
+        counts: dict = {}
+        for v in values:
+            key = str(v) if v is not None else "(пусто)"
+            counts[key] = counts.get(key, 0) + 1
+        sorted_counts = sorted(counts.items(), key=lambda x: -x[1])[:limit]
+        return {
+            "column": column,
+            "total": len(values),
+            "counts": dict(sorted_counts),
+        }
+
+    def find_duplicates(self, table: str, sheet: str, columns: list[str] | None = None) -> dict:
+        """Поиск дубликатов по указанным столбцам (или всем)."""
+        sheet_obj = self._sheet(self._load(table), sheet)
+        rows = self._rows(sheet_obj)
+        schema = self._schema(sheet_obj)
+        cols = columns or list(schema.keys())
+        seen: dict[str, list[str]] = {}
+        for rid, row in rows.items():
+            key_parts = [str(row.get(c, "")) for c in cols]
+            key = "||".join(key_parts)
+            if key not in seen:
+                seen[key] = []
+            seen[key].append(rid)
+        duplicates = {k: v for k, v in seen.items() if len(v) > 1}
+        return {
+            "sheet": sheet,
+            "columns": cols,
+            "duplicate_groups": len(duplicates),
+            "duplicate_rows": sum(len(v) for v in duplicates.values()),
+            "details": duplicates,
+        }
+
+    def find_nulls(self, table: str, sheet: str) -> dict:
+        """Поиск пустых значений по всем столбцам."""
+        sheet_obj = self._sheet(self._load(table), sheet)
+        rows = self._rows(sheet_obj)
+        schema = self._schema(sheet_obj)
+        nulls: dict[str, dict] = {}
+        for col in schema:
+            null_count = 0
+            null_ids = []
+            for rid, row in rows.items():
+                if col not in row or row[col] is None or row[col] == "":
+                    null_count += 1
+                    null_ids.append(rid)
+                    if len(null_ids) >= 10:
+                        null_ids.append("...")
+                        break
+            if null_count > 0:
+                nulls[col] = {
+                    "count": null_count,
+                    "percent": round(null_count / len(rows) * 100, 1) if rows else 0,
+                    "row_ids": null_ids,
+                }
+        return {
+            "sheet": sheet,
+            "total_rows": len(rows),
+            "columns_with_nulls": len(nulls),
+            "nulls": nulls,
+        }
+
     # ═══ ЗАПИСЬ (через очередь) ═══
 
     def set(self, table: str, sheet: str, row_id: str, column: str, value) -> dict:

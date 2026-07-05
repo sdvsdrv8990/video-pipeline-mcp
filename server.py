@@ -189,6 +189,111 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         target.write_text(content, encoding="utf-8")
         return ToolResult(status="success", data={"written": path, "size": len(content), "old_size": old_size}, facts=[Fact(type="FileWritten", data={"path": path, "size": len(content)})])
 
+    async def memory_read(path: str) -> "ToolResult":
+        """Чтение памяти проекта с парсингом структуры.
+
+        Возвращает: заголовок, записи (с полями), количество, существующие ID.
+        Позволяет ИИ понять структуру ДО вставки.
+        """
+        from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
+        import re
+        try:
+            target = _safe_resolve(path)
+        except ValueError:
+            return ToolResult(status="error", error=ErrorDetail(code="PATH_ESCAPE", message=f"Path escapes workspace: {path}", recovery=Recovery(reason="Используй путь внутри workspace")))
+        if not target.exists():
+            return ToolResult(status="success", data={"path": path, "exists": False, "entries": [], "ids": []})
+        content = target.read_text(encoding="utf-8")
+        # Парсим записи: ## [дата] Заголовок
+        entries = []
+        ids_found = []
+        current_entry = None
+        for line in content.split("\n"):
+            match = re.match(r"^## \[(.+?)\]\s*(.+)$", line)
+            if match:
+                if current_entry:
+                    entries.append(current_entry)
+                current_entry = {"date": match.group(1), "title": match.group(2), "fields": {}}
+            elif current_entry and line.startswith("- **"):
+                field_match = re.match(r"^- \*\*(.+?):\*\*\s*(.*)$", line)
+                if field_match:
+                    current_entry["fields"][field_match.group(1)] = field_match.group(2)
+            # Ищем ID в формате PREFIX_hex
+            for id_match in re.finditer(r'\b([A-Z]+_[0-9a-f]{32})\b', line):
+                ids_found.append(id_match.group(1))
+        if current_entry:
+            entries.append(current_entry)
+        return ToolResult(status="success", data={
+            "path": path, "exists": True, "size": len(content),
+            "entries": entries, "entry_count": len(entries),
+            "ids": list(set(ids_found)),
+        }, facts=[Fact(type="MemoryRead", data={"path": path, "entries": len(entries)})])
+
+    async def memory_write(path: str, entry_date: str, title: str,
+                           context: str = "", who_decided: str = "",
+                           decision: str = "", reason: str = "",
+                           result: str = "", after_date: str = "") -> "ToolResult":
+        """Умная дозапись записи в память проекта.
+
+        Вставляет новую запись в правильное место по дате (хронологически).
+        Валидирует структуру: обязательные поля, ссылки на ID,的影响 на соседние записи.
+        """
+        from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
+        import re
+        from datetime import datetime
+        try:
+            target = _safe_resolve(path)
+        except ValueError:
+            return ToolResult(status="error", error=ErrorDetail(code="PATH_ESCAPE", message=f"Path escapes workspace: {path}", recovery=Recovery(reason="Используй путь внутри workspace")))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Формируем запись
+        entry = f"\n## [{entry_date}] Решение: {title}\n"
+        if context:
+            entry += f"- **Контекст:** {context}\n"
+        if who_decided:
+            entry += f"- **Кто решил:** {who_decided}\n"
+        if decision:
+            entry += f"- **Решение:** {decision}\n"
+        if reason:
+            entry += f"- **Почему:** {reason}\n"
+        if result:
+            entry += f"- **Результат:** {result}\n"
+        else:
+            entry += "- **Результат:** [ожидается]\n"
+        # Читаем существующий контент
+        old_content = target.read_text(encoding="utf-8") if target.exists() else ""
+        # Ищем позицию для вставки (по дате)
+        insert_pos = len(old_content)
+        if after_date:
+            # Ищем запись после которой вставлять
+            pattern = rf"## \[{re.escape(after_date)}\]"
+            match = re.search(pattern, old_content)
+            if match:
+                # Ищем конец этой записи (следующий ## или конец файла)
+                next_section = re.search(r"\n## \[", old_content[match.end():])
+                if next_section:
+                    insert_pos = match.end() + next_section.start()
+                else:
+                    insert_pos = len(old_content)
+        elif old_content:
+            # Вставляем перед последней записью (новое сверху)
+            last_entry = re.search(r"\n## \[", old_content)
+            if last_entry:
+                insert_pos = last_entry.start()
+        # Вставляем
+        new_content = old_content[:insert_pos] + entry + old_content[insert_pos:]
+        target.write_text(new_content, encoding="utf-8")
+        # Собираем ID из записи
+        ids_in_entry = re.findall(r'\b([A-Z]+_[0-9a-f]{32})\b', entry)
+        return ToolResult(status="success", data={
+            "path": path, "inserted_at": insert_pos,
+            "entry_date": entry_date, "title": title,
+            "ids_referenced": ids_in_entry,
+            "total_size": len(new_content),
+        }, facts=[Fact(type="MemoryWritten", data={
+            "path": path, "date": entry_date, "title": title,
+            "ids": ids_in_entry, "position": insert_pos})])
+
     async def fs_move(source: str, destination: str) -> "ToolResult":
         """Перемещение файла или каталога."""
         from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
@@ -243,32 +348,84 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
             target.unlink()
         return ToolResult(status="success", data={"deleted": path}, facts=[Fact(type="FileDeleted", data={"path": path})])
 
-    async def fs_smart_search(directory: str = ".", extension: str = "", keyword: str = "") -> "ToolResult":
-        """Поиск файлов по каталогу, расширению и ключевому слову."""
+    # ═══ УМНЫЙ ПОИСК ПО ФАЙЛОВОЙ СИСТЕМЕ ═══
+    from core.search.fs_searcher import FsSearcher, FsSearchTask, FsSearchError
+
+    fs_searcher = FsSearcher(WORKSPACE_PATH)
+
+    async def fs_smart_search(directory: str = ".", extension: str = "", keyword: str = "",
+                              entity_type: str = "", id_pattern: str = "",
+                              name_pattern: str = "", limit: int = 100) -> "ToolResult":
+        """Умный поиск по файловой системе с фильтрами по типу сущности, ID, имени."""
         from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
         try:
-            root = _safe_resolve(directory)
-        except ValueError:
-            return ToolResult(status="error", error=ErrorDetail(code="PATH_ESCAPE", message=f"Path escapes workspace: {directory}", recovery=Recovery(reason="Используй путь внутри workspace")))
-        if not root.exists():
-            return ToolResult(status="error", error=ErrorDetail(code="FILE_NOT_FOUND", message=f"Directory not found: {directory}", recovery=Recovery(reason="Проверь путь")))
-        results = []
-        for item in root.rglob("*"):
-            if not item.is_file():
-                continue
-            if extension and not item.name.endswith(extension):
-                continue
-            if keyword:
-                try:
-                    content = item.read_text(encoding="utf-8", errors="ignore")
-                    if keyword.lower() not in content.lower():
-                        continue
-                except Exception:
-                    continue
-            results.append({"path": str(item.relative_to(WORKSPACE_PATH)), "size": item.stat().st_size, "name": item.name})
-            if len(results) >= 100:
-                break
-        return ToolResult(status="success", data={"results": results, "count": len(results)}, facts=[Fact(type="FileSearch", data={"directory": directory, "extension": extension, "keyword": keyword, "count": len(results)})])
+            task = FsSearchTask(
+                id="quick_search",
+                root=directory,
+                entity_types=[entity_type] if entity_type else [],
+                id_pattern=id_pattern,
+                name_pattern=name_pattern,
+                extensions=[extension] if extension else [],
+                content_keywords=[keyword] if keyword else [],
+                limit=limit,
+            )
+            results = fs_searcher.search(task)
+            return ToolResult(status="success", data={
+                "results": [{"path": r.path, "name": r.name, "size": r.size,
+                             "entity_type": r.entity_type, "entity_id": r.entity_id}
+                            for r in results],
+                "count": len(results),
+            }, facts=[Fact(type="FsSearch", data={"directory": directory, "count": len(results)})])
+        except FsSearchError as e:
+            return _err(e.code, e.message, e.reason)
+        except Exception as e:
+            return _err("INTERNAL_ERROR", f"Ошибка поиска: {e}")
+
+    async def fs_search_yaml(yaml_query: str) -> "ToolResult":
+        """Умный поиск по YAML-запросу (очередь, многопоточность)."""
+        from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
+        try:
+            task = fs_searcher.load_query(yaml_query)
+            results = fs_searcher.search(task)
+            return ToolResult(status="success", data={
+                "results": [{"path": r.path, "name": r.name, "size": r.size,
+                             "modified": r.modified, "entity_type": r.entity_type,
+                             "entity_id": r.entity_id, "parent_path": r.parent_path}
+                            for r in results],
+                "count": len(results),
+                "query_name": task.id,
+            }, facts=[Fact(type="FsSearchYaml", data={"count": len(results)})])
+        except FsSearchError as e:
+            return _err(e.code, e.message, e.reason)
+        except Exception as e:
+            return _err("INTERNAL_ERROR", f"Ошибка поиска: {e}")
+
+    async def fs_search_multi(queries: list[dict]) -> "ToolResult":
+        """Многозадачный поиск (параллельно по нескольким запросам)."""
+        from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
+        try:
+            tasks = []
+            for i, q in enumerate(queries):
+                task = FsSearchTask(
+                    id=f"task_{i}",
+                    root=q.get("root", ""),
+                    entity_types=q.get("entity_types", []),
+                    id_pattern=q.get("id_pattern", ""),
+                    name_pattern=q.get("name_pattern", ""),
+                    extensions=q.get("extensions", []),
+                    content_keywords=q.get("content_keywords", []),
+                    limit=q.get("limit", 100),
+                )
+                tasks.append(task)
+            result = fs_searcher.search_parallel(tasks)
+            return ToolResult(status="success", data={
+                "results": {k: [{"path": r.path, "name": r.name, "entity_type": r.entity_type}
+                                for r in v] for k, v in result["results"].items()},
+                "errors": result["errors"],
+                "total_tasks": len(tasks),
+            }, facts=[Fact(type="FsSearchMulti", data={"tasks": len(tasks)})])
+        except Exception as e:
+            return _err("INTERNAL_ERROR", f"Ошибка поиска: {e}")
 
     async def fs_create_python_script(path: str, description: str = "") -> "ToolResult":
         """Создание Python-скрипта с каркасом."""
@@ -381,7 +538,7 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
             # Ф2: регистрируем узел в реестре связей (для ORPHAN/link).
             link_registry.register({
                 "id": node["node_id"], "type": node["type"], "name": node["name"],
-                "path": node["path"], "parent_ids": node["parent_ids"]})
+                "path": node["path"], "parent_ids": node["parent_ids"], "kind": "node"})
             created_ids.append(node["node_id"])
             facts.append(Fact(type="NodeCreated", data={
                 "id": node["node_id"], "type": node["type"], "name": node["name"],
@@ -391,6 +548,11 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
                     type="FolderCreated" if c["kind"] == "folder" else "FileCreated",
                     data={"path": c["path"]}))
             for t in node["tables_pending"]:
+                # Регистрируем отложенную таблицу с ID в реестре
+                if "file_id" in t:
+                    link_registry.register({
+                        "id": t["file_id"], "type": "table_file", "name": t["path"].split("/")[-1],
+                        "path": t["path"], "parent_ids": [node["node_id"]], "kind": "file"})
                 facts.append(Fact(type="TableDeferred", data=t))
             for d in node["deferred_children"]:
                 facts.append(Fact(type="ChildDeferred", data=d))
@@ -421,6 +583,44 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
             "child_id": res["child"]["id"], "child_type": child_type, "child_name": child_name,
             "parent_id": res["parent_id"], "parent_type": parent_type, "parent_name": parent_name})])
 
+    async def structure_migrate(entity_id: str, new_path: str) -> "ToolResult":
+        """Миграция сущности: физический перенос папки + обновление реестра.
+
+        Используется когда родитель появился позже (напр. конкурент без канала → привязка к каналу).
+        Физически перемещает папку и обновляет path в реестре.
+        """
+        from core.contracts import ToolResult, Fact
+        import shutil
+        # Получаем текущий путь из реестра
+        entity = link_registry.get(entity_id)
+        if not entity:
+            return _err("ENTITY_NOT_FOUND", f"Сущность {entity_id} не найдена в реестре.",
+                        "Сначала создай её через structure_create.", "structure_status")
+        old_path = entity.get("path", "")
+        # Проверяем что старый путь существует
+        try:
+            old_full = _safe_resolve(old_path)
+        except ValueError:
+            return _err("PATH_ESCAPE", f"Старый путь выходит за workspace: {old_path}")
+        if not old_full.exists():
+            return _err("FILE_NOT_FOUND", f"Папка не найдена: {old_path}")
+        # Проверяем что новый путь не занят
+        try:
+            new_full = _safe_resolve(new_path)
+        except ValueError:
+            return _err("PATH_ESCAPE", f"Новый путь выходит за workspace: {new_path}")
+        if new_full.exists():
+            return _err("FILE_EXISTS", f"Путь уже существует: {new_path}")
+        # Физический перенос
+        new_full.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(old_full), str(new_full))
+        # Обновляем реестр
+        ok, res = _safe(lambda: link_registry.migrate(entity_id, new_path))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="EntityMigrated", data={
+            "id": entity_id, "old_path": old_path, "new_path": new_path})])
+
     async def structure_status() -> "ToolResult":
         """Сводка связей: висящие (ORPHAN) + наши каналы без конкурента (мягко).
 
@@ -434,6 +634,17 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         return ToolResult(status="success",
                           data={"orphans": orphans, "our_channels_without_competitor": ours_no_comp},
                           facts=facts)
+
+    async def structure_check_integrity() -> "ToolResult":
+        """Фоновая проверка целостности реестра: висящие ссылки, дубликаты путей, сироты."""
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: link_registry.check_integrity())
+        if not ok:
+            return res
+        facts = []
+        for issue in res.get("issues", []):
+            facts.append(Fact(type="IntegrityIssue", data=issue))
+        return ToolResult(status="success", data=res, facts=facts)
 
     # ─── Категория 3: чтения (проекции) ───
 
@@ -598,6 +809,68 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
             return res
         return ToolResult(status="success", data=res, facts=[Fact(type="FormulasValidated", data={"path": path, "ok": res["ok"], "errors": len(res["errors"])})])
 
+    # ─── Excel: копирование листа ───
+
+    async def excel_copy_sheet(path: str, sheet: str, new_name: str) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: excel_engine.copy_sheet(path, sheet, new_name))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="SheetCopied", data={"path": path, "from": sheet, "to": new_name})])
+
+    # ─── Excel: анализ структуры ───
+
+    async def inspect_file(path: str) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: excel_engine.inspect_file(path))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="FileInspected", data={"path": path, "sheets": res["sheet_count"]})])
+
+    async def get_sheet_info(path: str, sheet: str) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: excel_engine.get_sheet_info(path, sheet))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="SheetInfoRead", data={"path": path, "sheet": sheet, "columns": res["column_count"]})])
+
+    async def get_column_names(path: str, sheet: str) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: excel_engine.get_column_names(path, sheet))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="ColumnNamesRead", data={"path": path, "sheet": sheet, "count": res["count"]})])
+
+    # ─── Таблицы: анализ данных ───
+
+    async def get_unique_values(table: str, sheet: str, column: str, limit: int = 100) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: table_engine.get_unique_values(table, sheet, column, limit))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="UniqueValuesRead", data={"table": table, "sheet": sheet, "column": column, "count": res["count"]})])
+
+    async def get_value_counts(table: str, sheet: str, column: str, limit: int = 10) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: table_engine.get_value_counts(table, sheet, column, limit))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="ValueCountsRead", data={"table": table, "sheet": sheet, "column": column, "total": res["total"]})])
+
+    async def find_duplicates(table: str, sheet: str, columns: list[str] | None = None) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: table_engine.find_duplicates(table, sheet, columns))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="DuplicatesFound", data={"table": table, "sheet": sheet, "groups": res["duplicate_groups"], "rows": res["duplicate_rows"]})])
+
+    async def find_nulls(table: str, sheet: str) -> "ToolResult":
+        from core.contracts import ToolResult, Fact
+        ok, res = _safe(lambda: table_engine.find_nulls(table, sheet))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="NullsFound", data={"table": table, "sheet": sheet, "columns_with_nulls": res["columns_with_nulls"]})])
+
     # ═══ РЕГИСТРАЦИЯ (все хендлеры определены выше) ═══
 
     # Аннотации MCP для инструментов (помогают клиенту определить уровень доступа)
@@ -616,12 +889,59 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         ("fs_move", "Файлы: переместить", "Перемещение файла или каталога", {"type": "object", "properties": {"source": {"type": "string", "description": "Исходный путь"}, "destination": {"type": "string", "description": "Путь назначения"}}, "required": ["source", "destination"]}, fs_move, ANNOTATIONS_MODIFY),
         ("fs_rename", "Файлы: переименовать", "Переименование файла или каталога", {"type": "object", "properties": {"path": {"type": "string", "description": "Текущий путь"}, "new_name": {"type": "string", "description": "Новое имя (без пути)"}}, "required": ["path", "new_name"]}, fs_rename, ANNOTATIONS_MODIFY),
         ("fs_delete", "Файлы: удалить", "Удаление файла или каталога", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу/каталогу"}, "force": {"type": "boolean", "description": "Принудительное удаление каталога с содержимым", "default": False}}, "required": ["path"]}, fs_delete, ANNOTATIONS_MODIFY),
-        ("fs_smart_search", "Файлы: умный поиск", "Поиск файлов по каталогу, расширению и ключевому слову", {"type": "object", "properties": {"directory": {"type": "string", "description": "Каталог для поиска", "default": "."}, "extension": {"type": "string", "description": "Фильтр по расширению (например .py)"}, "keyword": {"type": "string", "description": "Ключевое слово для поиска в содержимом"}}}, fs_smart_search, ANNOTATIONS_READONLY),
+        ("fs_smart_search", "Файлы: умный поиск", "Поиск файлов с фильтрами: тип сущности, ID, имя, расширение, содержимое",
+         {"type": "object", "properties": {
+             "directory": {"type": "string", "description": "Корневой каталог (относительно workspace)", "default": "."},
+             "extension": {"type": "string", "description": "Фильтр по расширению"},
+             "keyword": {"type": "string", "description": "Ключевое слово в содержимом"},
+             "entity_type": {"type": "string", "enum": ["niche", "network", "channel", "video", "competitor_channel", "competitor_video", "asset", "scene", "render"], "description": "Тип сущности"},
+             "id_pattern": {"type": "string", "description": "Regex паттерн ID (напр. VID_*)"},
+             "name_pattern": {"type": "string", "description": "Regex паттерн имени файла"},
+             "limit": {"type": "integer", "description": "Максимум результатов", "default": 100},
+         }},
+         fs_smart_search, ANNOTATIONS_READONLY),
+        ("fs_search_yaml", "Файлы: YAML-поиск", "Умный поиск по YAML-запросу (очередь, многопоточность, фильтры по дате/размеру/содержимому)",
+         {"type": "object", "properties": {
+             "yaml_query": {"type": "string", "description": "YAML-строка с запросом"},
+         }, "required": ["yaml_query"]},
+         fs_search_yaml, ANNOTATIONS_READONLY),
+        ("fs_search_multi", "Файлы: многозадачный поиск", "Параллельный поиск по нескольким запросам",
+         {"type": "object", "properties": {
+             "queries": {"type": "array", "items": {"type": "object", "properties": {
+                 "root": {"type": "string"},
+                 "entity_types": {"type": "array", "items": {"type": "string"}},
+                 "extensions": {"type": "array", "items": {"type": "string"}},
+                 "content_keywords": {"type": "array", "items": {"type": "string"}},
+             }}, "description": "Список запросов"},
+         }, "required": ["queries"]},
+         fs_search_multi, ANNOTATIONS_READONLY),
         ("fs_create_python_script", "Файлы: новый Python-скрипт", "Создание Python-скрипта с каркасом", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к .py файлу"}, "description": {"type": "string", "description": "Описание модуля"}}, "required": ["path"]}, fs_create_python_script, ANNOTATIONS_MODIFY),
         ("fs_create_project_structure", "Файлы: структура проекта", "Материализация структуры каталогов/файлов по шаблону или списку фрагментов", {"type": "object", "properties": {"template": {"type": "string", "description": "Имя шаблона из config/templates/workspace/"}, "fragments": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "type": {"type": "string", "enum": ["directory", "file"]}, "content": {"type": "string"}}}, "description": "Список фрагментов для создания"}}}, fs_create_project_structure, ANNOTATIONS_MODIFY),
     ]
     for name, title, desc, schema, handler, annot in fs_tools:
         engine.register(name=name, title=title, description=desc, input_schema=schema, handler=handler, group="filesystem", annotations=annot)
+
+    # ═══ ПАМЯТЬ ПРОЕКТА (project_memory.md) ═══
+    memory_tools = [
+        ("memory_read", "Память: прочитать", "Чтение памяти проекта с парсингом структуры: записи, поля, существующие ID",
+         {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к project_memory.md"}}, "required": ["path"]},
+         memory_read, ANNOTATIONS_READONLY),
+        ("memory_write", "Память: записать решение", "Умная дозапись записи в память (по дате, с валидацией полей и ссылок на ID)",
+         {"type": "object", "properties": {
+             "path": {"type": "string", "description": "Путь к project_memory.md"},
+             "entry_date": {"type": "string", "description": "Дата записи (ГГГГ-ММ-ДД)"},
+             "title": {"type": "string", "description": "Заголовок решения"},
+             "context": {"type": "string", "description": "Контекст (что произошло, ссылки на ID)"},
+             "who_decided": {"type": "string", "description": "Кто решил (человек / Claude)"},
+             "decision": {"type": "string", "description": "Что именно сделали"},
+             "reason": {"type": "string", "description": "Почему (этого нет в таблицах)"},
+             "result": {"type": "string", "description": "Результат (дописывается позже, ссылки на ID/динамику)"},
+             "after_date": {"type": "string", "description": "Вставить после записи с этой датой (хронология)"},
+         }, "required": ["path", "entry_date", "title", "decision", "reason"]},
+         memory_write, ANNOTATIONS_MODIFY),
+    ]
+    for name, title, desc, schema, handler, annot in memory_tools:
+        engine.register(name=name, title=title, description=desc, input_schema=schema, handler=handler, group="memory", annotations=annot)
 
     engine.register(
         name="json_read_snapshot", title="Таблицы: снапшот (read.json)", description="Чтение снапшота таблицы (read.json)",
@@ -658,6 +978,18 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         ("json_clear_queue", "Таблицы: очередь → очистить", "Очистить очередь без применения (отладка/сброс).",
          {"type": "object", "properties": {"table": _TABLE}, "required": ["table"]},
          json_clear_queue, ANNOTATIONS_MODIFY),
+        ("get_unique_values", "Таблицы: уникальные значения", "Уникальные значения столбца.",
+         {"type": "object", "properties": {"table": _TABLE, "sheet": _SHEET, "column": {"type": "string", "description": "Имя столбца"}, "limit": {"type": "integer", "description": "Максимум значений", "default": 100}}, "required": ["table", "sheet", "column"]},
+         get_unique_values, ANNOTATIONS_READONLY),
+        ("get_value_counts", "Таблицы: частотный анализ", "Top-N наиболее частых значений столбца.",
+         {"type": "object", "properties": {"table": _TABLE, "sheet": _SHEET, "column": {"type": "string", "description": "Имя столбца"}, "limit": {"type": "integer", "description": "Top-N", "default": 10}}, "required": ["table", "sheet", "column"]},
+         get_value_counts, ANNOTATIONS_READONLY),
+        ("find_duplicates", "Таблицы: дубликаты", "Поиск дубликатов по столбцам (или всем).",
+         {"type": "object", "properties": {"table": _TABLE, "sheet": _SHEET, "columns": {"type": "array", "items": {"type": "string"}, "description": "Столбцы для проверки (все если пусто)"}}, "required": ["table", "sheet"]},
+         find_duplicates, ANNOTATIONS_READONLY),
+        ("find_nulls", "Таблицы: пустые значения", "Поиск пустых/пропущенных значений по всем столбцам.",
+         {"type": "object", "properties": {"table": _TABLE, "sheet": _SHEET}, "required": ["table", "sheet"]},
+         find_nulls, ANNOTATIONS_READONLY),
     ]
     for name, title, desc, schema, handler, annot in tables_tools:
         engine.register(name=name, title=title, description=desc, input_schema=schema, handler=handler, group="tables", annotations=annot)
@@ -704,6 +1036,18 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         ("excel_validate_formulas", "Excel: проверить формулы", "Поиск ошибок формул (#REF!/#VALUE!/…) по всем листам.",
          {"type": "object", "properties": {"path": _PATH}, "required": ["path"]},
          excel_validate_formulas, ANNOTATIONS_READONLY),
+        ("excel_copy_sheet", "Excel: копировать лист", "Копирование листа с данными и форматированием.",
+         {"type": "object", "properties": {"path": _PATH, "sheet": _SHEET, "new_name": {"type": "string", "description": "Имя копии листа"}}, "required": ["path", "sheet", "new_name"]},
+         excel_copy_sheet, ANNOTATIONS_MODIFY),
+        ("inspect_file", "Excel: обзор книги", "Обзор структуры: листы, размеры, формат.",
+         {"type": "object", "properties": {"path": _PATH}, "required": ["path"]},
+         inspect_file, ANNOTATIONS_READONLY),
+        ("get_sheet_info", "Excel: анализ листа", "Детальный анализ: колонки, типы, превью данных.",
+         {"type": "object", "properties": {"path": _PATH, "sheet": _SHEET}, "required": ["path", "sheet"]},
+         get_sheet_info, ANNOTATIONS_READONLY),
+        ("get_column_names", "Excel: имена колонок", "Быстрый список колонок листа.",
+         {"type": "object", "properties": {"path": _PATH, "sheet": _SHEET}, "required": ["path", "sheet"]},
+         get_column_names, ANNOTATIONS_READONLY),
     ]
     for name, title, desc, schema, handler, annot in excel_tools:
         engine.register(name=name, title=title, description=desc, input_schema=schema, handler=handler, group="excel", annotations=annot)
@@ -745,6 +1089,19 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         }, "required": ["child_type", "child_name", "parent_type", "parent_name"]},
         handler=structure_link, group="structure", annotations=ANNOTATIONS_MODIFY)
     engine.register(
+        name="structure_migrate",
+        title="Структура: миграция (перенос папки)",
+        description=(
+            "Физический перенос папки сущности + обновление реестра. Используется когда родитель "
+            "появился позже (напр. конкурент был без канала, теперь канал есть — переносим "
+            "competitors/competitor_A/ → competitors/my_channel/competitor_A/). "
+            "Обновляет path в реестре и перемещает файлы на диске."),
+        input_schema={"type": "object", "properties": {
+            "entity_id": {"type": "string", "description": "ID сущности из реестра"},
+            "new_path": {"type": "string", "description": "Новый путь относительно workspace"},
+        }, "required": ["entity_id", "new_path"]},
+        handler=structure_migrate, group="structure", annotations=ANNOTATIONS_MODIFY)
+    engine.register(
         name="structure_status",
         title="Структура: сводка связей (висящие)",
         description=(
@@ -752,6 +1109,140 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
             "и наши каналы без привязанного конкурента. Поверхность серверных уведомлений о непривязанном."),
         input_schema={"type": "object", "properties": {}},
         handler=structure_status, group="structure", annotations=ANNOTATIONS_READONLY)
+    engine.register(
+        name="structure_check_integrity",
+        title="Структура: проверка целостности реестра",
+        description=(
+            "Фоновая проверка: висящие ссылки, дубликаты путей, сироты. "
+            "Возвращает общую статистику + список проблем."),
+        input_schema={"type": "object", "properties": {}},
+        handler=structure_check_integrity, group="structure", annotations=ANNOTATIONS_READONLY)
+
+    # ═══ УМНЫЙ ПОИСК ПО ТАБЛИЦАМ ═══
+    from core.search.query_planner import QueryPlanner, SearchError
+
+    planner = QueryPlanner(table_engine, state_manager.workspace_path)
+
+    async def search_tables(yaml_query: str | None = None, query_dict: dict | None = None) -> "ToolResult":
+        """Умный поиск по таблицам через YAML-запрос.
+
+        Принимает YAML-строку или dict с запросом. Возвращает объединённые
+        результаты с прогрессом выполнения.
+        """
+        from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
+        try:
+            if yaml_query:
+                import yaml
+                data = yaml.safe_load(yaml_query)
+            elif query_dict:
+                data = query_dict
+            else:
+                return _err("VALIDATION_ERROR", "Укажи yaml_query или query_dict")
+
+            plan = planner.load_query_from_dict(data)
+            result = planner.execute_plan(plan)
+
+            return ToolResult(status="success", data=result,
+                              facts=[Fact(type="SearchCompleted", data={
+                                  "query": plan.name,
+                                  "reads": result["metadata"]["reads_executed"],
+                                  "rows": result["metadata"]["total_rows"],
+                                  "errors": result["metadata"]["reads_failed"],
+                              })])
+        except SearchError as e:
+            return _err(e.code, e.message, e.reason)
+        except Exception as e:
+            return _err("INTERNAL_ERROR", f"Ошибка поиска: {e}")
+
+    async def search_quick(table: str, sheet: str, column: str = "",
+                           filter_col: str = "", filter_op: str = "eq",
+                           filter_val: str = "", limit: int = 100) -> "ToolResult":
+        """Быстрый поиск: одно чтение с фильтром (без YAML)."""
+        from core.contracts import ToolResult, Fact
+        query = {
+            "name": "quick_search",
+            "reads": [{
+                "table": table,
+                "sheet": sheet,
+                "columns": [column] if column else [],
+                "filter": {filter_col: {filter_op: filter_val}} if filter_col else {},
+            }],
+            "limit": limit,
+        }
+        plan = planner.load_query_from_dict(query)
+        result = planner.execute_plan(plan)
+        return ToolResult(status="success", data=result,
+                          facts=[Fact(type="QuickSearch", data={
+                              "table": table, "sheet": sheet,
+                              "rows": result["metadata"]["total_rows"],
+                          })])
+
+    async def search_multi(tables: list[dict], join_key: str = "",
+                           filter_after: dict | None = None,
+                           sort_col: str = "", sort_order: str = "asc",
+                           limit: int = 100) -> "ToolResult":
+        """Многотабличный поиск с объединением."""
+        from core.contracts import ToolResult, Fact
+        reads = []
+        for t in tables:
+            reads.append({
+                "table": t.get("table", ""),
+                "sheet": t.get("sheet", ""),
+                "columns": t.get("columns", []),
+                "filter": t.get("filter", {}),
+            })
+        query = {
+            "name": "multi_search",
+            "reads": reads,
+            "join": {"on": join_key, "strategy": "inner"} if join_key else None,
+            "filter": filter_after or {},
+            "sort": {"column": sort_col, "order": sort_order} if sort_col else None,
+            "limit": limit,
+        }
+        plan = planner.load_query_from_dict(query)
+        result = planner.execute_plan(plan)
+        return ToolResult(status="success", data=result,
+                          facts=[Fact(type="MultiSearch", data={
+                              "tables": len(tables),
+                              "rows": result["metadata"]["total_rows"],
+                          })])
+
+    # Регистрация
+    search_tools = [
+        ("search_tables", "Поиск: YAML-запрос", "Умный поиск по таблицам через YAML (очередь, многопоточность, объединение)",
+         {"type": "object", "properties": {
+             "yaml_query": {"type": "string", "description": "YAML-строка с запросом"},
+             "query_dict": {"type": "object", "description": "Dict с запросом (альтернатива YAML)"},
+         }},
+         search_tables, ANNOTATIONS_READONLY),
+        ("search_quick", "Поиск: быстрый", "Быстрый поиск в одной таблице с фильтром (без YAML)",
+         {"type": "object", "properties": {
+             "table": {"type": "string", "description": "Путь к таблице"},
+             "sheet": {"type": "string", "description": "Имя листа"},
+             "column": {"type": "string", "description": "Столбец для выборки (все если пусто)"},
+             "filter_col": {"type": "string", "description": "Столбец фильтра"},
+             "filter_op": {"type": "string", "enum": ["eq", "neq", "gt", "lt", "contains", "in"], "description": "Оператор"},
+             "filter_val": {"type": "string", "description": "Значение фильтра"},
+             "limit": {"type": "integer", "description": "Максимум строк", "default": 100},
+         }, "required": ["table", "sheet"]},
+         search_quick, ANNOTATIONS_READONLY),
+        ("search_multi", "Поиск: многотабличный", "Поиск с объединением нескольких таблиц (JOIN по ключу)",
+         {"type": "object", "properties": {
+             "tables": {"type": "array", "items": {"type": "object", "properties": {
+                 "table": {"type": "string"}, "sheet": {"type": "string"},
+                 "columns": {"type": "array", "items": {"type": "string"}},
+                 "filter": {"type": "object"},
+             }}, "description": "Список таблиц для поиска"},
+             "join_key": {"type": "string", "description": "Ключ для объединения (JOIN)"},
+             "filter_after": {"type": "object", "description": "Фильтр после объединения"},
+             "sort_col": {"type": "string", "description": "Столбец сортировки"},
+             "sort_order": {"type": "string", "enum": ["asc", "desc"], "default": "asc"},
+             "limit": {"type": "integer", "default": 100},
+         }, "required": ["tables"]},
+         search_multi, ANNOTATIONS_READONLY),
+    ]
+    for name, title, desc, schema, handler, annot in search_tools:
+        engine.register(name=name, title=title, description=desc, input_schema=schema, handler=handler, group="search", annotations=annot)
 
 
 def _jsonrpc_error(request_id, code: int, message: str) -> dict:

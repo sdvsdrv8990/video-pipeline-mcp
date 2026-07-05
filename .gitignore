@@ -20,6 +20,11 @@ build/
 # ═══ ДАННЫЕ (не в git сервера!) ═══
 workspace/
 tests/
+# _SESSION_LOG.md — рантайм-лог фактов (пишется state_manager в корень репо), НЕ исходник
+_SESSION_LOG.md
+
+# ═══ Внешний coding-агент (MiMo) — рабочая директория, не часть проекта ═══
+.mimocode/
 
 # ═══ Секреты ═══
 .env

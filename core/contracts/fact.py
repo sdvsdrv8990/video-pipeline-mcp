@@ -46,7 +46,10 @@ from typing import Literal
 KNOWN_FACT_TYPES = {
     "DirectoryTree", "Echo", "FileCreated", "FileRead",
     "FileWritten", "FileMoved", "FileRenamed", "FileDeleted",
-    "FileSearch", "StructureCreated",
+    "FileSearch", "StructureCreated", "FileAppended",
+    "MemoryRead", "MemoryWritten",
+    "SearchCompleted", "QuickSearch", "MultiSearch",
+    "FsSearch", "FsSearchYaml", "FsSearchMulti",
     "RenderCompleted", "SnapshotRead", "TableRead",
     # Таблицы: данные (Категория 3)
     "ColumnRead", "RowRead", "RowSet", "RowAppended", "RowDeleted",
@@ -55,11 +58,18 @@ KNOWN_FACT_TYPES = {
     "WorkbookCreated", "SheetAdded", "SheetRenamed", "SheetDeleted",
     "SheetsReordered", "ColumnAdded", "ColumnDeleted", "ColumnMoved",
     "FormulaInserted", "FormattingApplied", "ValidationSet",
-    "RangeRead", "FormulasValidated",
+    "RangeRead", "FormulasValidated", "SheetCopied",
+    # Анализ данных
+    "FileInspected", "SheetInfoRead", "ColumnNamesRead",
+    "UniqueValuesRead", "ValueCountsRead", "DuplicatesFound", "NullsFound",
     # Шаблоны структуры (TemplateEngine): создание узлов с контролем глубины
     "NodeCreated", "FolderCreated", "ChildDeferred", "TableDeferred",
     # Реестр связей / ORPHAN (Ф2), верификация и здоровье (Ф4)
     "EntityLinked", "EntityOrphaned", "StructureVerified", "HealthChecked",
+    # Проверка целостности реестра
+    "IntegrityIssue",
+    # Миграция структуры
+    "EntityMigrated",
 }
 
 

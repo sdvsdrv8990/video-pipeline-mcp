@@ -86,6 +86,10 @@ KNOWN_ERROR_CODES = {
     "COLUMN_EXISTS", "FORMULA_PROTECTED",
     # Структура: реестр связей / ORPHAN (Ф2)
     "UNLINKED_ENTITY", "ENTITY_NOT_FOUND",
+    # Анализ данных
+    "SHEET_COPY_ERROR",
+    # Проверка целостности
+    "DUPLICATE_ID",
 }
 
 

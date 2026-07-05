@@ -1,0 +1,312 @@
+# channel_config.yaml — конфиг канала (единый источник)
+#
+# Каждый раздел — отдельная логическая единица. Сервер читает при валидации.
+# Правит человек через редактор/чат, ИИ ставит флаги через table_set.
+#
+# ══════════════════════════════════════════════════════════════════════
+# ЛЕГЕНДА: W = человек правит, F = формируется, enum = допустимые значения
+# ══════════════════════════════════════════════════════════════════════
+
+# ═══ 1. WORKFLOW_SEQUENCES — разрешённые переходы + human-gate ═══
+#
+# allow-list + gate, НЕ жёсткий маршрут. Маршрут выбирает Claude.
+# Сервер читает это как ограничение, не как сценарий.
+
+workflow_sequences:
+  - sequence_id: "seq_01"
+    trigger_tool: "scenario_generate"
+    allowed_next_tools:
+      - "prepare_tts_input"
+      - "trigger_tts_generation"
+      - "human_approve"
+    requires_human_approval: false
+    approval_ui_hint: ""
+    fallback_action: "pause"
+
+  - sequence_id: "seq_02"
+    trigger_tool: "trigger_tts_generation"
+    allowed_next_tools:
+      - "poll_tts_status"
+      - "download_and_rename_audio"
+      - "trigger_transcription"
+    requires_human_approval: false
+    approval_ui_hint: ""
+    fallback_action: "retry_with_fallback"
+
+  - sequence_id: "seq_03"
+    trigger_tool: "trigger_transcription"
+    allowed_next_tools:
+      - "parse_timestamps_and_silence"
+      - "poll_transcription_status"
+    requires_human_approval: false
+    approval_ui_hint: ""
+    fallback_action: "retry_smaller_model"
+
+  - sequence_id: "seq_04"
+    trigger_tool: "trigger_image_generation"
+    allowed_next_tools:
+      - "poll_image_status"
+      - "download_and_rename_image"
+    requires_human_approval: false
+    approval_ui_hint: ""
+    fallback_action: "retry_with_fallback"
+
+  - sequence_id: "seq_human"
+    trigger_tool: "human_approve"
+    allowed_next_tools:
+      - "prepare_tts_input"
+      - "trigger_tts_generation"
+      - "trigger_image_generation"
+    requires_human_approval: true
+    approval_ui_hint: "Проверь результат и подтверди/отклони"
+    fallback_action: "pause"
+
+# ═══ 2. PUBLISHING_SCHEDULE — расписание публикаций ═══
+
+publishing_schedule:
+  - schedule_id: "sched_01"
+    day_of_week: "monday"
+    time: "10:00"
+    timezone: "Europe/Moscow"
+    frequency: "WEEKLY"
+    status: "ACTIVE"
+    min_uniqueness_required: 0.70
+
+  - schedule_id: "sched_02"
+    day_of_week: "thursday"
+    time: "18:00"
+    timezone: "Europe/Moscow"
+    frequency: "WEEKLY"
+    status: "ACTIVE"
+    min_uniqueness_required: 0.65
+
+# ═══ 3. RESOURCE_LIMITS — лимиты, провайдеры, модели, media-параметры ═══
+#
+# Единый источник для всех media-инструментов (TTS/STT/IMG).
+# Одна строка на тип ресурса = провайдер + модель + параметры + лимит + fallback.
+# Адаптер читает строку и получает всё для вызова.
+
+resource_limits:
+  # ── TTS ──
+  - resource_type: "tts_characters"
+    provider: "ElevenLabs"
+    fallback_provider: "OpenAI"
+    daily_limit: 100000
+    current_usage: 0
+    warning_threshold: 80000
+    # Media-параметры (конкретные значения для TTS)
+    model: "eleven_multilingual_v2"
+    voice: "Rachel"
+    response_format: "wav"
+    speed: 1.0
+    timeout: 60
+    retry_count: 2
+    retry_delay: 5
+    sync_mode: true
+
+  # ── TTS fallback ──
+  - resource_type: "tts_characters"
+    provider: "OpenAI"
+    fallback_provider: ""
+    daily_limit: 50000
+    current_usage: 0
+    warning_threshold: 40000
+    model: "tts-1"
+    voice: "alloy"
+    response_format: "wav"
+    speed: 1.0
+    timeout: 30
+    retry_count: 1
+    retry_delay: 3
+    sync_mode: true
+
+  # ── STT ──
+  - resource_type: "stt_characters"
+    provider: "Local"
+    fallback_provider: ""
+    daily_limit: -1  # unlimited (локальный)
+    current_usage: 0
+    warning_threshold: -1
+    model: "whisper-large-v3"
+    model_size: "large"  # large → medium → base при деградации
+    timeout: 300
+    retry_count: 2
+    retry_delay: 0
+    sync_mode: true
+
+  # ── IMG ──
+  - resource_type: "image_generations"
+    provider: "Fal"
+    fallback_provider: "OpenAI"
+    daily_limit: 500
+    current_usage: 0
+    warning_threshold: 400
+    model: "flux-pro-1.1"
+    img_size: "1024x1024"
+    img_n: 1
+    timeout: 120
+    retry_count: 2
+    retry_delay: 10
+    sync_mode: false  # async: trigger → task_id → poll → download
+
+  # ── IMG fallback ──
+  - resource_type: "image_generations"
+    provider: "OpenAI"
+    fallback_provider: ""
+    daily_limit: 200
+    current_usage: 0
+    warning_threshold: 150
+    model: "dall-e-3"
+    img_size: "1024x1024"
+    img_n: 1
+    timeout: 90
+    retry_count: 1
+    retry_delay: 5
+    sync_mode: false
+
+  # ── SVG tracing ──
+  - resource_type: "svg_tracing"
+    provider: "Local_vtracer"
+    fallback_provider: ""
+    daily_limit: -1  # unlimited
+    current_usage: 0
+    warning_threshold: -1
+    timeout: 30
+    retry_count: 0
+    sync_mode: true
+
+# ═══ 4. METADATA_DEFAULTS — шаблоны метаданных ═══
+#
+# Переменные {topic}, {niche}, {channel_name} подставляются при генерации.
+
+metadata_defaults:
+  - metadata_type: "title"
+    template_string: "{topic} — {niche} | {channel_name}"
+    variables_allowed:
+      - "topic"
+      - "niche"
+      - "channel_name"
+    example_output: "Биткоин — криптовалюта | CryptoDaily"
+
+  - metadata_type: "description"
+    template_string: "Видео о {topic} в жанре {niche}. Канал: {channel_name}"
+    variables_allowed:
+      - "topic"
+      - "niche"
+      - "channel_name"
+    example_output: "Видео о биткоине в жанре криптовалюта. Канал: CryptoDaily"
+
+  - metadata_type: "tags"
+    template_string: "{topic},{niche},{channel_name}"
+    variables_allowed:
+      - "topic"
+      - "niche"
+      - "channel_name"
+    example_output: "биткоин,криптовалюта,CryptoDaily"
+
+# ═══ 5. AUTOMATION_RULES — когда ИИ сам, когда зовёт человека ═══
+#
+# Конфиг human-gate-логики на уровне канала.
+# severity: CRITICAL → жёсткий блок + человек.
+
+automation_rules:
+  - rule_id: "AUTO_01"
+    condition: "uniqueness_score < 0.50"
+    action: "block"
+    severity: "CRITICAL"
+
+  - rule_id: "AUTO_02"
+    condition: "current_usage >= warning_threshold"
+    action: "alert_human"
+    severity: "HIGH"
+
+  - rule_id: "AUTO_03"
+    condition: "content_rejected_count >= 3"
+    action: "pause_and_notify"
+    severity: "CRITICAL"
+
+  - rule_id: "AUTO_04"
+    condition: "provider_failed_count >= 5"
+    action: "switch_to_fallback"
+    severity: "MED"
+
+# ═══ 6. SCENE_PROFILE — профиль активных типов фрагментов сцены ═══
+#
+# Один тумблер на канал. enabled=false → «тихий столбец» (гасит поведение, не структуру).
+# Per-video сбор идёт ТОЛЬКО из включённых здесь типов.
+
+scene_profile:
+  - fragment_type: "svg_bg"
+    enabled: true
+    niche_weight: 0.3
+    signal_on_reuse: true
+    reuse_threshold: 5
+
+  - fragment_type: "svg_character"
+    enabled: true
+    niche_weight: 0.4
+    signal_on_reuse: true
+    reuse_threshold: 3
+
+  - fragment_type: "svg_component"
+    enabled: true
+    niche_weight: 0.2
+    signal_on_reuse: false
+    reuse_threshold: 0
+
+  - fragment_type: "music"
+    enabled: true
+    niche_weight: 0.5
+    signal_on_reuse: true
+    reuse_threshold: 2
+
+  - fragment_type: "sound"
+    enabled: false
+    niche_weight: 0.0
+    signal_on_reuse: false
+    reuse_threshold: 0
+
+  - fragment_type: "filter"
+    enabled: false
+    niche_weight: 0.0
+    signal_on_reuse: false
+    reuse_threshold: 0
+
+  - fragment_type: "transition"
+    enabled: true
+    niche_weight: 0.1
+    signal_on_reuse: false
+    reuse_threshold: 0
+
+# ═══ 7. RENDER_CONFIG — параметры рендера канала ═══
+#
+# Значения для FFmpeg. H.265/ProRes и пр. встроены в движок, тут — какие использовать.
+
+render_config:
+  - param: "codec"
+    value: "h265"
+    notes: "HEVC для YouTube/Telegram"
+
+  - param: "resolution"
+    value: "1920x1080"
+    notes: "Full HD"
+
+  - param: "aspect_ratio"
+    value: "16:9"
+    notes: "Горизонтальный"
+
+  - param: "fps"
+    value: "30"
+    notes: "Стандарт для Shorts/Reels"
+
+  - param: "crf"
+    value: "20"
+    notes: "Баланс качества и размера"
+
+  - param: "bitrate"
+    value: "8M"
+    notes: "Для 1080p@30fps"
+
+  - param: "container"
+    value: "mp4"
+    notes: "Универсальный контейнер"

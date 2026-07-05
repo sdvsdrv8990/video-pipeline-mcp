@@ -145,6 +145,82 @@ class ExcelEngine:
         self._save(wb, path)
         return {"path": path, "sheets": wb.sheetnames}
 
+    def copy_sheet(self, path: str, sheet: str, new_name: str) -> dict:
+        """Копирование листа с данными и форматированием."""
+        wb = self._load(path)
+        self._sheet(wb, sheet)
+        if new_name in wb.sheetnames:
+            raise ExcelError("SHEET_EXISTS", f"Лист уже существует: {new_name}",
+                             reason="Выбери свободное имя.")
+        source = wb[sheet]
+        copy = wb.copy_worksheet(source)
+        copy.title = new_name
+        self._save(wb, path)
+        return {"path": path, "copied": sheet, "to": new_name, "sheets": wb.sheetnames}
+
+    # ═══ АНАЛИЗ СТРУКТУРЫ ═══
+
+    def inspect_file(self, path: str) -> dict:
+        """Обзор структуры книги: листы, размеры, формат."""
+        wb = self._load(path)
+        sheets = []
+        for name in wb.sheetnames:
+            ws = wb[name]
+            sheets.append({
+                "name": name,
+                "rows": ws.max_row,
+                "columns": ws.max_column,
+            })
+        return {
+            "path": path,
+            "format": self._resolve(path).suffix,
+            "sheet_count": len(wb.sheetnames),
+            "sheets": sheets,
+        }
+
+    def get_sheet_info(self, path: str, sheet: str) -> dict:
+        """Детальный анализ листа: колонки, типы, превью."""
+        wb = self._load(path)
+        ws = self._sheet(wb, sheet)
+        headers = self._headers(ws)
+        columns = []
+        for name, idx in headers.items():
+            col_type = "string"
+            sample_values = []
+            for row in range(2, min(ws.max_row + 1, 7)):
+                val = ws.cell(row=row, column=idx).value
+                if val is not None:
+                    sample_values.append(val)
+                    if isinstance(val, (int, float)):
+                        col_type = "number"
+                    elif isinstance(val, bool):
+                        col_type = "bool"
+            columns.append({
+                "name": name,
+                "index": idx,
+                "type": col_type,
+                "sample": sample_values[:3],
+            })
+        return {
+            "path": path,
+            "sheet": sheet,
+            "row_count": ws.max_row - 1,
+            "column_count": len(headers),
+            "columns": columns,
+        }
+
+    def get_column_names(self, path: str, sheet: str) -> dict:
+        """Быстрый список колонок листа."""
+        wb = self._load(path)
+        ws = self._sheet(wb, sheet)
+        headers = self._headers(ws)
+        return {
+            "path": path,
+            "sheet": sheet,
+            "columns": list(headers.keys()),
+            "count": len(headers),
+        }
+
     # ═══ СТОЛБЦЫ ═══
 
     def add_column(self, path: str, sheet: str, column: str, formula: str | None = None) -> dict:

@@ -153,10 +153,13 @@ class TemplateEngine:
                 skipped.append({"kind": "file", "reason": "no name"})
                 continue
             if fr.get("kind") == "table":
+                # Таблицы отложены, но присваиваем ID для будущего создания
+                file_id = self.ids.generate_simple("FILE")
                 tables_pending.append({
                     "path": f"{node_rel}/{fname}",
                     "table_template": fr.get("table_template"),
                     "required": fr.get("required", False),
+                    "file_id": file_id,
                 })
                 continue
             try:

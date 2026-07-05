@@ -65,13 +65,19 @@ class LinkRegistry:
                 pass
         return {"entities": {}}
 
-    def register(self, entity: dict) -> dict:
+    def register(self, entity: dict, check_unique: bool = False) -> dict:
         """Upsert сущности по id. entity: {id,type,name,path,parent_ids}.
-        parent_ids сливаются (не теряем ранее известных родителей)."""
+        parent_ids сливаются (не теряем ранее известных родителей).
+        check_unique=True → проверяет что ID не занят другой сущностью (для файлов)."""
         with self._lock:
             data = self._load()
             eid = entity["id"]
             prev = data["entities"].get(eid, {})
+            # Проверка уникальности: если ID занят другой сущностью — ошибка
+            if check_unique and prev and prev.get("type") != entity.get("type"):
+                raise LinkError(
+                    "DUPLICATE_ID", f"ID '{eid}' уже занят сущностью типа '{prev.get('type')}'",
+                    "Сгенерируй новый ID или проверь реестр.", "structure_status")
             merged = list(dict.fromkeys(
                 (prev.get("parent_ids") or []) + list(entity.get("parent_ids") or [])))
             rec = {
@@ -80,6 +86,7 @@ class LinkRegistry:
                 "name": entity["name"],
                 "path": entity.get("path", ""),
                 "parent_ids": merged,
+                "kind": entity.get("kind", "node"),
             }
             data["entities"][eid] = rec
             _atomic_write_json(self.path, data)
@@ -136,6 +143,41 @@ class LinkRegistry:
                             "Уточни через id (реестр содержит несколько).", "structure_status")
         return hits[0]
 
+    def check_integrity(self) -> dict:
+        """Проверка целостности реестра: висящие ссылки, дубликаты путей, сироты."""
+        data = self._load()
+        entities = data.get("entities", {})
+        issues = []
+        paths_seen = {}
+        ids_by_type = {}
+        for eid, e in entities.items():
+            # Проверка висящих ссылок (parent_ids ведут на несуществующие ID)
+            for pid in e.get("parent_ids", []):
+                if pid not in entities:
+                    issues.append({"type": "broken_reference", "id": eid, "missing_parent": pid})
+            # Проверка дубликатов путей
+            path = e.get("path", "")
+            if path:
+                if path in paths_seen:
+                    issues.append({"type": "duplicate_path", "id": eid, "path": path,
+                                   "also": paths_seen[path]})
+                else:
+                    paths_seen[path] = eid
+            # Подсчёт по типам
+            t = e.get("type", "unknown")
+            ids_by_type[t] = ids_by_type.get(t, 0) + 1
+        # Проверка сирот
+        orphans = self.find_orphans()
+        for o in orphans:
+            issues.append({"type": "orphan", "id": o["id"], "type": o["type"],
+                           "name": o["name"], "needs": o["needs_parent_type"]})
+        return {
+            "total_entities": len(entities),
+            "by_type": ids_by_type,
+            "issues_count": len(issues),
+            "issues": issues,
+        }
+
     def link(self, child_type: str, child_name: str, parent_type: str, parent_name: str) -> dict:
         """Связать ребёнка с родителем В ОДНОМ месте: добавить parent_id ребёнку."""
         with self._lock:
@@ -147,3 +189,20 @@ class LinkRegistry:
                 rec["parent_ids"].append(parent["id"])
             _atomic_write_json(self.path, data)
             return {"child": rec, "parent_id": parent["id"], "parent_type": parent_type, "parent_name": parent_name}
+
+    def migrate(self, entity_id: str, new_path: str, new_parent_ids: list[str] | None = None) -> dict:
+        """Миграция сущности: физический перенос + обновление реестра.
+        Используется когда родитель появился позже (напр. конкурент без канала → привязка к каналу)."""
+        with self._lock:
+            data = self._load()
+            if entity_id not in data["entities"]:
+                raise LinkError("ENTITY_NOT_FOUND", f"Сущность {entity_id} не найдена в реестре.",
+                                "Сначала создай её через structure_create.", "structure_status")
+            rec = data["entities"][entity_id]
+            old_path = rec.get("path", "")
+            rec["path"] = new_path
+            if new_parent_ids is not None:
+                rec["parent_ids"] = list(dict.fromkeys(rec.get("parent_ids", []) + new_parent_ids))
+            _atomic_write_json(self.path, data)
+            return {"id": entity_id, "old_path": old_path, "new_path": new_path,
+                    "parent_ids": rec["parent_ids"]}

@@ -218,6 +218,24 @@ ENTITY_NOT_FOUND:
     suggested_tool: "structure_status"
     reason: "Проверь имя/тип через structure_status; при необходимости создай через structure_create."
 
+# ═══ Анализ данных ═══
+
+SHEET_COPY_ERROR:
+  class: ai_recoverable
+  message_template: "Ошибка копирования листа: {details}"
+  recovery:
+    suggested_tool: "excel_add_sheet"
+    reason: "Проверь имя листа назначения или создай новый лист вручную."
+
+# ═══ Проверка целостности ═══
+
+DUPLICATE_ID:
+  class: ai_recoverable
+  message_template: "ID '{id}' уже занят сущностью типа '{type}'"
+  recovery:
+    suggested_tool: "structure_check_integrity"
+    reason: "Проверь реестр на дубликаты или сгенерируй новый ID."
+
 # ═══ Fallback ═══
 
 DEFAULT:
