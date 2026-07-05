@@ -287,33 +287,41 @@ class FsSearcher:
         return {"results": results, "errors": errors}
 
     def _detect_entity_type(self, path: Path) -> str:
-        """Определение типа сущности по пути."""
-        parts = path.relative_to(self.workspace).parts
+        """Определение типа сущности по контейнер-маркерам в пути.
 
-        if "niches" in parts:
-            idx = parts.index("niches")
-            remaining = parts[idx + 1:]
+        D37: прежняя логика делала ранний `return "niche"` для ВСЕГО под niches/
+        (remaining[0] = имя ниши ≠ "networks" → всегда niche) и искала competitors
+        под channels, хотя по шаблонам competitors — ребёнок network'а. Иерархия
+        (config/templates/workspace): niches/<n>/networks/<net>/channels/<ch>/videos/<v>
+        и networks/<net>/competitors/<comp>/videos/<v>. Классифицируем по САМОМУ
+        глубокому известному контейнеру, устойчиво к именам ниши/сети/канала.
+        """
+        try:
+            parts = path.relative_to(self.workspace).parts
+        except ValueError:
+            return "unknown"
+        if "niches" not in parts:
+            return "unknown"
 
-            if len(remaining) >= 1 and remaining[0] != "networks":
-                return "niche"
-            if "networks" in remaining:
-                nidx = remaining.index("networks")
-                nremaining = remaining[nidx + 1:]
-                if len(nremaining) >= 1 and nremaining[0] not in ("channels", "competitors"):
-                    return "network"
-                if "channels" in remaining:
-                    cidx = remaining.index("channels")
-                    cremaining = remaining[cidx + 1:]
-                    if len(cremaining) >= 1:
-                        if "competitors" in cremaining:
-                            comp_idx = cremaining.index("competitors")
-                            comp_remaining = cremaining[comp_idx + 1:]
-                            if "videos" in comp_remaining:
-                                return "competitor_video"
-                            return "competitor_channel"
-                        if "videos" in cremaining:
-                            return "video"
-                        return "channel"
+        def has(marker: str) -> bool:
+            return marker in parts
+
+        # Ветка конкурентов (competitors — ребёнок network, содержит competitor_video)
+        if has("competitors"):
+            ci = parts.index("competitors")
+            if has("videos") and parts.index("videos") > ci:
+                return "competitor_video"
+            return "competitor_channel"
+        # Наша ветка: channels → videos
+        if has("videos"):
+            return "video"
+        if has("channels"):
+            return "channel"
+        if has("networks"):
+            return "network"
+        # Что-то прямо под niches/<имя_ниши> (без networks) — уровень ниши
+        if len(parts) > parts.index("niches") + 1:
+            return "niche"
         return "unknown"
 
     def _extract_id(self, path: Path) -> str:
