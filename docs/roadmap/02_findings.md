@@ -41,6 +41,13 @@
 | F17 | 🟠 | Секрет-гигиена: `tunnel.yaml` (D31) — уже в .gitignore, но проверить отсутствие ключей в трекнутых файлах; `.env`-стратегия | grep `token/api_key`, gitleaks | I3, I6 |
 | F18 | 🟡→🟢 | Симуляционные тесты **существуют на диске и теперь в git** (S2): `virus_injection`, `bot_army`, `cache_injection`, `cache_overflow`, `config_change`, `render_draft_final`. Остаётся: подтвердить, что зелёные в CI (часть требует живого сервера, как firewall 1/4) | `find tests/` после I1 | I7 |
 
+## Прогон 4 — Конформность структуре (skill: project-conventions)
+
+| F# | Sev | Находка | Пруф | → |
+|---|---|---|---|---|
+| F23 | 🟠 | **Конфликт спек:** `ИНСТРУКЦИЯ_структура_и_ядро.md` («карта и закон», §2/§5) требует `config/ops/*.ops.yaml` + `model_routing.yaml` + `paths.yaml`; `media_tools_deployment.md §0` их **упраздняет** (консолидация в `channel_config.resource_limits`). Влияет на A1/A3 (переписаны в S4 по media-плану) и наличие `config/ops` как цели | сверка двух спек | ждёт владельца (OQ6) |
+| F24 | 🟠 | Конформность структуре не достигнута: инструменты в монолите `server.py` вместо `tools/<group>/`; `pipeline/` пуст; доки не зеркалят код (`docs/dev/tools/`). Закон §0/§2 нарушен | `ls tools/ pipeline/` ∅ | A2, P5/P6, I8 |
+
 ## Открытые вопросы (решить в фазах)
 
 - **OQ1:** README переписать под факт (быстро) или догнать код до README (долго)? → влияет на A2/A4 vs пересмотр дизайна.
