@@ -123,7 +123,28 @@ firewall 1/4 (env) · tunnel 19/20 (env). Замер 2026-07-05.
 
 ---
 
-## RESUME (следующая сессия) — A1′ часть 2
+## Сессия 9 — 2026-07-05 — Тест-видение + каталог угроз (planning, кода не трогал)
+
+**Триггер:** живой `structure_check_integrity` вернул `total_entities:0` → разбор → каскад требований владельца по тест-эмуляции и защите.
+
+**Сделано:**
+- **F25** — вскрыто integrity-слепое пятно ФС↔реестр (`check_integrity` аудирует только реестр; персист-бага НЕТ — эмпирика venv). **F26/F27** — cold-start advisory отсутствует (пустая ниша = холодный старт, не «нечего рекомендовать»); reconcile-оркестрация ручная. **F28/F29** — delete/move_column молча ломают формулы, `validate_formulas` слеп (grep токенов, openpyxl не пересчитывает). **F30** — устойчивость формул к неполным данным (scene_profile-gating) не в loader. **F31** — нет eval-слоя качества (промпт↔поток-данных). **F32** — симуляции одновариантны, нет agent-swarm. **F33** — outbound-защита клиента = сплошной gap. **F34** — нет write-type allowlist. **F35** — no-root инвариант (эмпирика ЧИСТО, держать). **F36** — DDoS/пакеты двухуровневые (Cloudflare edge), origin-gaps.
+- **`03_testing_plan.md`** — E-матрица: E-A (конфиг-матрица ниши/рекомендации) · E-B (4 точки входа×depth-control) · E-C (проходы 3/2/1 метаморфно) · E-D (деструктив таблиц) · E-E (тайминг ID) · E-F (устойчивость формул) · E-G/H/I (eval: фикстуры/качество-контекста/поиск) · **agent-swarm** харнесс (честные+злоумышленники, обе стороны).
+- **`06_threat_catalog.md`** — НОВЫЙ. Восстанавливает threat_landscape (F16🔨). Inbound IN1–IN10, Outbound OUT1–OUT8, §C принципы, §D приоритет, §F write-allowlist (default-deny), §G no-root + §G.1 deploy-hardening (systemd/seccomp/Landlock/Anthropic-baseline/gVisor-Kata, ист. S1–S7), §H кэш/DDoS/пакеты (двухуровнево edge+origin, ист. C1–C7). Research: MCP-38, «When MCP Servers Attack», NSA/CISA MCP, OWASP LLM Top-10, Cloudflare/PortSwigger.
+- **`tests/agent_swarm/patterns.yaml`** — ВСЕ паттерны каталога как декларативные behavior-модели (36 шт: 5 честных + 10 in + 8 out + 5 escalation + 8 cache/ddos/packet), каждый со `status: implemented|xfail-spec`, `ref`/`surface`/`expect`/`mitigation`/`extends`. + `history.md`.
+
+**Тесты:** кода сервера не трогал → baseline держится (structure 35/35 и пр.).
+
+**Коммит:** `docs(roadmap): testing vision + threat catalog + agent-swarm patterns (session 9)`.
+
+---
+
+## RESUME (следующая сессия) — два открытых трека
+
+### Трек Б (новый, из сессии 9) — реализация защиты + тестов
+P0-митигации из `06 §D`: (1) write-type allowlist (F34, декларативно + choke-point + `FILE_TYPE_FORBIDDEN`); (2) провенанс-маркировка workspace-вывода (F33/OUT1); (3) containment на write/move/delete + destructiveHint (OUT5); (4) app-level auth (D3/G18) → identity-rate. Затем раннер `tests/agent_swarm/test_agent_swarm.py` по `patterns.yaml`. Готовые сейчас тесты (структура готова): **E-A** (циклы рекомендаций) / **E-I** (поиск). Метод: `security-reviewer`/`mcp-developer` → `test-master` → findings+журнал → коммит.
+
+## RESUME (альтернативный трек) — A1′ часть 2
 
 **Два трека, оба готовы:**
 1. **Код (loader):** `core/engine/table_materializer.py` — по `tables_pending` грузит `*.schema.yaml`, материализует книгу через `core/excel` (таблица маппинга в `spec/TABLE_SCHEMA_FORMAT.md`). Контракт ToolResult + факты. Подключить как фаза ТАБЛИЦЫ (отдельный вызов после structure_create — НЕ ломать 35/35). Тесты новые + structure зелёные.
