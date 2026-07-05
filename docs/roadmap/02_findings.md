@@ -45,7 +45,7 @@
 
 | F# | Sev | Находка | Пруф | → |
 |---|---|---|---|---|
-| F23 | 🟠 | **Конфликт спек:** `ИНСТРУКЦИЯ_структура_и_ядро.md` («карта и закон», §2/§5) требует `config/ops/*.ops.yaml` + `model_routing.yaml` + `paths.yaml`; `media_tools_deployment.md §0` их **упраздняет** (консолидация в `channel_config.resource_limits`). Влияет на A1/A3 (переписаны в S4 по media-плану) и наличие `config/ops` как цели | сверка двух спек | ждёт владельца (OQ6) |
+| ~~F23~~ | ✅ | **РЕШЁН S8 (OQ6 = reconcile-by-purpose):** `config/ops/{filesystem,tables,excel}.ops.yaml` = реестр операций tool-обёрток (закон §3) → **строим** (A3, пара к A2); **media** остаётся в `channel_config.resource_limits` (media-план), своего `media.ops.yaml` нет; `model_routing`/`paths` минорно. Оба документа правы в своём скоупе | решение владельца | A3 |
 | F24 | 🟠 | Конформность структуре не достигнута: инструменты в монолите `server.py` вместо `tools/<group>/`; `pipeline/` пуст; доки не зеркалят код (`docs/dev/tools/`). Закон §0/§2 нарушен | `ls tools/ pipeline/` ∅ | A2, P5/P6, I8 |
 
 ## Открытые вопросы (решить в фазах)

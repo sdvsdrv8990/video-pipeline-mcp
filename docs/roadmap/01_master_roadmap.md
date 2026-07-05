@@ -21,7 +21,7 @@
 |---|---|---|---|
 | A1′ | **Таблично-схемный слой** (замена «populate config/ops» — тот упразднён, см. `05`): `scripts/introspect_tables.py` → `config/templates/tables/*.schema.yaml` из ~90 книг + руками лист `SCENES`/статус-столбцы + подключить к `structure_create` фазе ТАБЛИЦЫ. Вход — 7 `*.schema.md` | — | 2–3 |
 | A2 | Разбить `server.py` (1521 стр) → тонкие обёртки `tools/{fs,tables,excel,...}` | — | 2–3 |
-| A3 | ~~Движок потребляет ops~~ **пересмотрен:** движок уже ест `channel_config`+workspace-tpl; остаётся подключить table-схемы (входит в A1′). Отдельный ops-слой НЕ строим | A1′ | — |
+| A3 | **config/ops для tool-категорий** (реконсиляция F23/OQ6): строим `config/ops/{filesystem,tables,excel}.ops.yaml` (декларативный реестр операций, закон §3) + движок их потребляет. Пара к A2. **media — НЕ здесь** (остаётся в `resource_limits`). `model_routing.yaml`/`paths.yaml` — минорно (роутинг в resource_limits; workspace-путь в конфиг если захардкожен) | A2 | 1–2 |
 | ~~A4~~ ✅ | README truth-up под консолидированную архитектуру — СДЕЛАНО S6 (убрано несуществующее, добавлено реальное, маркеры статуса, ссылка на roadmap) | — | done |
 | A5 | Харденинг `core/search` (MiMo-код: 0 тестов, не ревьюен) | I7 | 1–2 |
 | A6 | Система реакций/ошибок: D27 (класс теряется), D4 (fallback), recovery-стратегии | reactions-скил | 1 |
@@ -54,16 +54,17 @@
 | `pipeline/entry_points/` (4 точки = наборы предусловий) + `pipeline/steps/` (единая библиотека шагов) | входы не копируют воркфлоу; шаги переиспользуются | 🔲 пусто | **P5** (steps), **P6** (entry_points) |
 | `scripts/introspect_tables.py` — утилита вне рантайма | только `scripts/`, не `core`/`pipeline` | 🔲 | **A1′** |
 | `docs/dev/tools/<X>` — **зеркалит** `tools/<X>`/`core/providers/<X>` (простое→1 файл, сложное→папка+overview) | доки рядом-параллельно коду | 🔲 | **I8** (docs) |
-| `config/ops/<cat>.ops.yaml`, `config/model_routing.yaml`, `config/paths.yaml` | операции/маршрутизация/пути — декларации | ⚠️ **СПОРНО (F23)** — «закон» требует, media-план упраздняет | **ждёт решения владельца** |
+| `config/ops/{filesystem,tables,excel}.ops.yaml` | реестр операций tool-категорий (закон §3) | 🔲 → **строим** (F23 решён: reconcile-by-purpose) | **A3** (пара к A2) |
+| `config/model_routing.yaml`, `config/paths.yaml`; media-ops | роутинг/пути; media-операции | ⚪ media остаётся в `resource_limits`; routing/paths минорно | — |
 
 **Закон размещения способностей (§5, обобщение для будущих):** любая новая способность = адаптер
 `core/providers/<cap>/` + тонкие инструменты `tools/<category>/` + операции `config/ops/<category>.ops.yaml`
 (+ данные в `workspace/`). Все воркстримы P/A обязаны следовать этому шаблону — иначе файл «окажется где попало».
 
-> **F23 (конфликт спек, ждёт владельца):** `ИНСТРУКЦИЯ_структура_и_ядро.md` (закон) требует `config/ops/*` +
-> `model_routing.yaml`; `media_tools_deployment.md §0` их упраздняет (консолидация в `channel_config.resource_limits`).
-> От ответа зависят **A1/A3** и наличие `config/ops` как цели. До решения — A2/провайдеры/pipeline планируем как есть
-> (эта часть структуры в обоих документах одинакова).
+> **F23 РЕШЁН (OQ6 = reconcile-by-purpose):** `config/ops/{filesystem,tables,excel}.ops.yaml` = декларативный
+> реестр операций для tool-обёрток (ядро архитектуры «обёртка→ops→движок», закон §3) — **строим** (A3, пара к A2).
+> **media** остаётся консолидирован в `channel_config.resource_limits` (media-план) — своего `media.ops.yaml` НЕТ.
+> `model_routing.yaml`/`paths.yaml` — минорно/по мере надобности. Оба документа владельца правы в своём скоупе.
 
 ## Фазовая раскладка (по зависимостям и ценности)
 
