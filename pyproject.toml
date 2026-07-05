@@ -1,0 +1,69 @@
+# pyproject.toml — источник истины для сборки и зависимостей (I2, enterprise-roadmap).
+# Runtime-зависимости — здесь (абстрактно, с полами); точные пины — в requirements.lock.
+# requirements.txt делегирует сюда (`-e .`). Dev-инструменты — в [project.optional-dependencies].
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "video-pipeline-mcp"
+# 0.x — ранняя стадия: продукт (видео-пайплайн) ещё в заглушках (см. docs/roadmap/00_reality_check.md).
+# Внутренняя версия протокола сервера (v2.x в history_*) — отдельная от версии пакета.
+version = "0.1.0"
+description = "MCP-сервер управления видеопайплайном; работает с Claude AI Web через cloudflared-туннель."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "sdvsdrv8990" }]
+keywords = ["mcp", "claude", "video-pipeline", "cloudflared"]
+# LICENSE не задан владельцем — открытый вопрос (см. roadmap F19). Не декларирую лицензию без подтверждения.
+classifiers = [
+    "Private :: Do Not Upload",
+    "Programming Language :: Python :: 3",
+    "Framework :: AsyncIO",
+]
+
+dependencies = [
+    # Ядро
+    "pydantic>=2.0,<3",
+    "openpyxl>=3.1",
+    # Провайдеры (STT/TTS/IMG)
+    "litellm>=1.0",
+    "stable-ts>=2.0",
+    "torch>=2.0",
+    "torchaudio>=2.0",
+    # FFmpeg-обёртка
+    "ffmpeg-python>=0.2",
+    # Транспорт
+    "httpx>=0.24",
+    "aiohttp>=3.8",
+    # Утилиты
+    "pyyaml>=6.0",
+    "jsonschema>=4.0",
+    # NB: cloudflared — бинарь, НЕ pip-пакет (ставится install.sh, D11).
+]
+
+[project.optional-dependencies]
+# Инструменты разработки/CI — задел под I4 (линт/типы) и I3 (CI/безопасность).
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pre-commit>=3.8",
+    "bandit>=1.7",
+    "pip-audit>=2.7",
+]
+
+[project.scripts]
+video-pipeline-mcp = "server:main"
+
+[project.urls]
+Repository = "https://github.com/sdvsdrv8990/video-pipeline-mcp"
+
+# server.py — модуль в корне; core/tools/pipeline — пакеты. Явно, чтобы автодискавери не спотыкался.
+[tool.setuptools]
+py-modules = ["server"]
+
+[tool.setuptools.packages.find]
+include = ["core*", "tools*", "pipeline*"]
+exclude = ["tests*", "workspace*", "docs*"]

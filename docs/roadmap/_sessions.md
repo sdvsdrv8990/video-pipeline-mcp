@@ -36,9 +36,23 @@ firewall 1/4 (env) · tunnel 19/20 (env). Замер 2026-07-05.
 
 ---
 
+## Сессия 3 — 2026-07-05 — Фаза 0 / I2: Packaging
+
+**Сделано:**
+- Создан `pyproject.toml` (PEP 621, setuptools-backend): метаданные, `requires-python>=3.11`, 11 runtime-зависимостей (полы + кап `pydantic<3`), `[project.optional-dependencies].dev` (pytest/ruff/mypy/pre-commit/bandit/pip-audit — задел под I4/I3), console-entry `video-pipeline-mcp = server:main`, явный packages.find (core/tools/pipeline; server.py как py-module).
+- `requirements.txt` → делегирует в pyproject (`-e .`) — единый источник истины, `install.sh` работает без правок.
+- `requirements.lock` — точные пины (`pip freeze`, 90 пакетов) для репро/CI.
+- Push всех коммитов на GitHub выполнен (владелец разрешил).
+- Новая находка **F19** 🟠 — нет `LICENSE` (публичный репо без лицензии); ждёт решения владельца.
+
+**Верификация:** `pyproject` парсится; `pip install -e . --no-deps` OK; `video-pipeline-mcp --help` работает; baseline держится (audit 30/30·search 24/24·structure 35/35·tables 33/33). `*.egg-info` игнорируется.
+
+**Коммит:** `build(packaging): pyproject.toml + lock + delegate requirements (I2)`.
+
+---
+
 ## RESUME (следующая сессия)
 
-**Фаза 0, воркстрим `I2`** — Packaging: `pyproject.toml` (PEP 621), пиннинг зависимостей из `requirements.txt`, entry-points, `install.sh`/`run.sh` truth-up. Затем `I4` (ruff/mypy/pre-commit) → `I3` (CI: lint+типы+pytest+security-scan, теперь есть что гонять — тесты в git).
+**Фаза 0, воркстрим `I4`** — Типизация+линт: `ruff` (lint+format) + `mypy` + `pre-commit`. Конфиги — секциями в `pyproject.toml` (`[tool.ruff]`, `[tool.mypy]`) + `.pre-commit-config.yaml`. dev-инструменты уже объявлены в `[project.optional-dependencies].dev`. Начать с `ruff check` по коду, зафиксировать текущие нарушения как находки, решить: чинить сразу или baseline-игнор. Затем `I3` (CI гоняет ruff+mypy+pytest+bandit/pip-audit; firewall/tunnel = integration/skip).
 
 Метод: воркстрим → `engineering-questions` → домен-скил → правки → тесты зелёные → обновить `02_findings.md` + журнал → коммит с отчётом → память.
-NB для I3: часть сьютов (firewall 1/4, tunnel 19/20) требует живого сервера/cloudflared — в CI помечать как integration/skip, гонять in-process (audit/search/structure/tables).

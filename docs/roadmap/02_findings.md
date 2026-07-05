@@ -24,6 +24,7 @@
 | F9 | 🟠 | `docs/dev/audit/` отсутствует целиком — словарь D#/G# без артефактов, невоспроизводим/нешарибелен | `ls docs/dev/audit` → нет | X1/I8 |
 | F10 | 🟡 | Хардкод-хуки (память audit-v2): stt `device=cuda` захардкожен; ffmpeg `render_full_pipeline` busy-loop без sleep | память `audit-v2-task` deferred-hooks | P1, P3, anti-hardcode |
 | F11 | 🟡 | Провайдеры: api_key-гигиена tts/img; `raw_response` может течь в `_map_error` (D23) | память audit-v2 deferred | I6, P2/P4 |
+| F19 | 🟠 | Нет файла `LICENSE` — публичный репо без лицензии = юридически «all rights reserved», блокирует внешний вклад/использование. Владелец не выбрал лицензию (в pyproject помечено `Private :: Do Not Upload`) | `ls LICENSE*` → нет (S3) | I2/I8 (ждёт решения владельца) |
 
 ## Прогон 3 — Системы / безопасность (skills: security-reviewer + test-master)
 

@@ -1,26 +1,6 @@
-# requirements.txt — зависимости MCP-сервера видеопайплайна
-
-# ═══ ЯДРО ═══
-pydantic>=2.0              # Контракты (ToolResult, ErrorDetail, etc.)
-openpyxl>=3.1              # Работа с Excel
-
-# ═══ ПРОВАЙДЕРЫ ═══
-litellm>=1.0               # TTS/IMG (облако/локально)
-stable-ts>=0.1             # STT (локально)
-torch>=2.0                 # Для stable-ts
-torchaudio>=2.0            # Для stable-ts
-
-# ═══ FFmpeg ═══
-ffmpeg-python>=0.2         # Python-обёртка для FFmpeg CLI
-
-# ═══ ТРАНСПОРТ ═══
-httpx>=0.24                # HTTP-клиент для внешних MCP-серверов
-aiohttp>=3.8               # Async HTTP (для поллинга)
-
-# ═══ УТИЛИТЫ ═══
-pyyaml>=6.0                # Чтение конфигов (ops, reactions, templates)
-jsonschema>=4.0            # D5: валидация params по input_schema инструмента
-
-# ═══ ТУННЕЛЬ ═══
-# cloudflared — НЕ pip-пакет, а бинарь. Ставится через install.sh (D11).
-
+# requirements.txt — делегирует в pyproject.toml (источник истины зависимостей, I2).
+# `pip install -r requirements.txt`  ≡  `pip install -e .`  (runtime-зависимости из pyproject).
+# Dev/CI:      pip install -e ".[dev]"
+# Точные пины: pip install -r requirements.lock   (репродуцируемая установка)
+# cloudflared — бинарь, ставится install.sh (D11), не pip.
+-e .
