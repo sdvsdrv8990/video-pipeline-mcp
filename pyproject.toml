@@ -16,8 +16,10 @@ readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "sdvsdrv8990" }]
 keywords = ["mcp", "claude", "video-pipeline", "cloudflared"]
-# LICENSE не задан владельцем — открытый вопрос (см. roadmap F19). Не декларирую лицензию без подтверждения.
+license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
+# PolyForm Noncommercial 1.0.0 (source-available, некоммерческое использование). Файл: LICENSE. F19 закрыт.
 classifiers = [
+    "License :: Other/Proprietary License",
     "Private :: Do Not Upload",
     "Programming Language :: Python :: 3",
     "Framework :: AsyncIO",
