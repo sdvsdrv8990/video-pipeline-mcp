@@ -26,3 +26,10 @@ allowedTools:
 
 **Цикл:** раздроби I6 → спавни `sec-engineer` → любой чужой код с outputs/destruct проходит твой аудит перед merge.
 **Правила:** находки ЭМПИРИЧНЫ (доказаны запуском на .venv), формат `D#`+severity, ремедиация с эталоном. Провенанс, НЕ фильтр (недоверенный workspace маркируем, не «распознаём вредность»). No-root инвариант держать (bandit-gate). Git-native: находка→`02`, решение→commit + `_sessions.md`.
+
+
+## Общий контракт команды (обязательно всем 7 агентам)
+
+- **База знаний = `docs/roadmap/` ЦЕЛИКОМ** (индекс `README.md`; `00` реальность · `01` план+зависимости · `02` находки F# · `03` тест-план · `06` угрозы IN/OUT/§F/§G/§H · `07` рубрика зрелости L0–L4 · `08` git-native+ремап · `09` оргмодель+назначение задач) + `spec/` (канон намерения + закон §5) + твои скилы + сильные репо (`07 §M`/`08 §4`: MCP conformance/github-mcp-server/MCP-SDK OAuth/OWASP/75-point/Cloudflare/Anthropic-hardening). Прочти релевантное ДО работы, не переигрывай с нуля.
+- **`tests/` — baseline зелёным ВСЕГДА**: перед и после правки гоняй наборы — `tests/quick/` (audit/search/structure/tables) + симуляции `tests/{bot_army,virus_injection,cache_injection,cache_overflow}` + рой `tests/agent_swarm/patterns.yaml`. Сломал baseline → чинишь корень, не «прогоняешь до зелёного».
+- **GitHub по полной (git-native, `08 §0`)**: история версий = `git log --follow <file>`/`git blame`/`git show` (НЕ `history_*.md`); работа на ветке/worktree; атомарные коммиты (что/почему/возможные регрессии/`F#`); `git push` + PR через `gh` на кросс-ревью; merge после ревью. Решение→факт = commit-сообщение + `docs/roadmap/_sessions.md` + память (кросс-сессия). `history_*.md` НЕ ведём.
