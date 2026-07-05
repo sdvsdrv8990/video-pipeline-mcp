@@ -66,9 +66,29 @@ firewall 1/4 (env) · tunnel 19/20 (env). Замер 2026-07-05.
 
 ---
 
+## Сессия 5 — 2026-07-05 — Импорт спек-файлов в репо (OQ4)
+
+**Сделано:**
+- Импортированы **15 спек-файлов** владельца из `/home/admin/projects/` в трекаемый `docs/roadmap/spec/`: `schemas/` (7 `*.schema.md`), `instructions/` (5 `ИНСТРУКЦИЯ_*` + `media_tools_deployment.md`), `Бриф_табличные_инструменты.md`, `project_memory.spec.md`. Оригиналы оставлены.
+- `spec/README.md` — индекс (что задаёт каждый файл + код-зона). `spec/IMPROVEMENTS.md` — ledger предложений улучшений функций (IMP#), засеян 3 реальными: IMP1 reactions DEFAULT-fallback (F5), IMP2 stt device-хардкод (F10), IMP3 ffmpeg busy-loop (F10).
+- **F22 🟠→✅** (OQ4 закрыт). Ссылка на spec/ в roadmap README.
+
+**Тесты:** кода не трогал → baseline держится.
+
+**Коммит:** `docs(spec): import owner design specs into tracked docs/roadmap/spec/ (session 5)`.
+
+---
+
 ## RESUME (следующая сессия)
 
-**Развилка** — ждут решения владельца: **OQ4** (импорт спек-файлов в репо), **OQ5** (порядок: A1′ таблично-схемный слой vs media P2–P4), **OQ1** (README truth-up под факт). До ответа — можно вернуться в **Фазу 0 `I4`** (ruff/mypy/pre-commit; dev-deps уже в pyproject), затем `I3` (CI). Либо, если владелец выбрал продукт — стартовать **A1′** (интроспектор + table-схемы из 7 `*.schema.md`) или **media Фаза 1** (P2 TTS + P3 STT по `media_tools_deployment.md §4`).
+**Ждёт решения владельца:** **OQ5** (порядок продукта: A1′ таблично-схемный слой vs media Фаза 1) · **OQ1** (README truth-up, A4) · **F19** (LICENSE, отложено).
+
+**Варианты старта:**
+- **A1′** — таблично-схемный слой: `scripts/introspect_tables.py` → `config/templates/tables/*.schema.yaml` (вход — `spec/schemas/*.schema.md`) + лист SCENES/статусы. Закрывает «yaml-генерацию таблиц с листами».
+- **media Фаза 1** — P2 TTS + P3 STT по `spec/media_tools_deployment.md §4`.
+- **Фаза 0 `I4`** (default инфра) — ruff/mypy/pre-commit → I3 CI.
+
+Метод: воркстрим → `engineering-questions` → домен-скил → правки → тесты зелёные → `02_findings.md`+журнал → коммит+push → память.
 
 NB для I3: firewall 1/4 + tunnel 19/20 = integration (нужен живой сервер/cloudflared) → в CI skip/mark, гонять in-process (audit/search/structure/tables).
 
