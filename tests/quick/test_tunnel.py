@@ -39,7 +39,8 @@ def check(name, cond, detail=""):
 
 
 def test_command_building():
-    t = CloudflaredTunnel(port=8080, config_path=CFG)
+    # quick-режим = БЕЗ конфига (иначе подхватит машинный named config/tunnel.yaml и тест не изолирован).
+    t = CloudflaredTunnel(port=8080)
     check("cmd quick", t._build_command()[1:] == ["tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:8080"])
 
     t2 = CloudflaredTunnel(port=8080); t2.mode = "named"; t2.tunnel_token = "TOK"
