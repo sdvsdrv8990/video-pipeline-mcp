@@ -60,3 +60,37 @@
 | рой honest+attacker (F32) | `agent_swarm/` (раннер) | это и есть дом роя |
 
 **Итог:** почти всё расширяет существующий тест. Реально НОВЫЕ постоянные наборы на горизонте — только `agent_swarm/test_agent_swarm.py` (раннер роя) и, при утяжелении, `tests/structure_emulation/` (E-матрица структуры). Всё прочее — сценарии внутри уже имеющихся зон.
+
+---
+
+## E. Реестр подтверждения находок (F# → тест → статус) — git-tracked
+
+> Зачем: чтобы ИИ видел, какая находка обмера `02` чем подтверждается и в каком статусе. **Статусы —
+> в git** (полный прогон тестов в лимит контекста не влезает → трекаем инкрементально, как и историю).
+> Метод: **static** = подтверждено чтением/grep/ls (тест не нужен — закрывается lint I4 или постройкой);
+> **behavioral** = нужен C1-тест против кода/живого сервера (§6 ступень C1 = код-пруф теории).
+>
+> Статусы: ✅ подтверждён · ⬜ нужен C1-тест · 🔨 тест пишется · 🟢 регрессия зелёная после фикса.
+
+| F# | Что | Метод | Тест-хозяин (не плодить) | Статус |
+|---|---|---|---|---|
+| **F43** | реестр обходится хендлерами → error без `reaction_class`/`recovery` | behavioral | `test_audit_fixes` (контракт ошибки: вызвать тул с ошибкой → assert error.structuredContent несёт class/recovery) | ⬜ нужен C1 |
+| **F5** | DEFAULT-fallback хардкодит UNKNOWN_ERROR, роняет class, игнорит template | behavioral | `test_audit_fixes` (`Reactions.get_error("НЕИЗВЕСТНЫЙ")` → assert class/template) | ⬜ нужен C1 |
+| **F40** | search-коды `QUERY_NOT_FOUND`/`PATH_NOT_FOUND` НЕ в реестре | behavioral | `test_search` (assert коды search ⊂ `server_reactions.yaml`) | ⬜ нужен C1 |
+| **F42** | `_match_filter`/`_apply_sort` на разнотипном → TypeError | behavioral | `test_search` (фильтр str vs num → assert деградация, не краш) | ⬜ нужен C1 |
+| **F28/F29** | delete/move_column ломает формулы молча; `validate_formulas`=театр | behavioral | `test_tables` (создать .xlsx с формулой → delete_column → assert `validate_formulas` НЕ ловит = красный) | ⬜ нужен C1 (нужен .xlsx с формулами) |
+| **F37** | `_safe` ловит голый ValueError → всегда PATH_ESCAPE | behavioral | `test_audit_fixes` (core бросает не-путёвый ValueError → assert не PATH_ESCAPE) | ⬜ нужен C1 |
+| **F11** | raw_response митигирован (D23-санитайзер) | behavioral | `test_audit_fixes` (ErrorDetail с секретом в raw_response → assert замаскирован) | ⬜ регрессия D23 |
+| **F38** | мёртвый `_lock` в обоих search-классах | static | — (закрывается lint/vulture, I4) | ✅ подтверждён (grep) |
+| **F39** | `QueryPlanner` лезет в приватный `table_engine._load` | static | — (архитектура, фикс A5) | ✅ подтверждён (чтение) |
+| **F41/F46** | таксономия entity_type захардкожена 3× (search+schema+templates) | static→behavioral | `test_structure` (parity: три источника совпадают — metamorphic) | ✅ static; ⬜ parity-тест опционально |
+| **F44** | повторные function-local импорты в ~15 хендлерах | static | — (lint, I4/A2) | ✅ подтверждён (grep) |
+| **F45** | inline Python-skeleton (hardcode) | static | — (A2, вынести в template) | ✅ подтверждён (чтение) |
+| **F10** | stt `device="cuda"` хардкод | static | — (config/anti-hardcode) | ✅ подтверждён (grep) |
+| **F30** | `table_materializer` не построен (loader формул) | static | — (постройка A-tables/Ф3) | ✅ подтверждён (ls ∅) |
+| **F3** | провайдеры = честные стабы (G16) | behavioral | `render_draft_final` (стаб → NotImplementedError-код, не фейк-success) | ✅ покрыт (стаб-контракт) |
+
+**Приоритет C1 (behavioral, самые системные первыми):** F43 → F5 (ядро реакций, B2) · F40 → F42 (search) · F28/F29 (формулы) · F37 · F11. **static-находки** (F38/F39/F41/F44/F45/F10/F30) тестами не подтверждаются — закрываются lint (I4) или постройкой; в реестре помечены ✅ по обмеру.
+
+> **Правило статусов (git-native):** этот реестр — единственный источник «что подтверждено». Обновлять после
+> каждого C1-теста (⬜→🟢), коммитить. Прогон целиком не нужен — гоняем зону находки, статус фиксируем в git.
