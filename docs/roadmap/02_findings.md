@@ -144,6 +144,25 @@ memory/excel/tables/search) + **явные** (structure ×5, часть tables).
 | F45 | 🟡 | **Захардкожен Python-skeleton (DIM-14).** `fs_create_python_script` держит codegen-шаблон `.py` как inline f-string в хендлере (`server.py:440`) — шаблон должен быть файлом в `config/templates/`, не в коде | `server.py:440 skeleton = f'…'` | A2, anti-hardcode |
 | F46 | 🟡 | **Таксономия entity_type захардкожена ТРЕТИЙ раз (расширяет F41).** JSON-schema enum `["niche","network","channel","video","competitor_channel","competitor_video","asset","scene","render"]` в `server.py:897` = та же в `fs_searcher.ENTITY_PATH_PATTERNS` + `templates/workspace` → три источника правды типов сущностей. Дрейф; ломается при кастомной структуре (S14) | `server.py:897` ↔ `fs_searcher.py:145` ↔ templates | A2/A3, A7, anti-hardcode |
 
+### Под-5/6/7 обмера — формулы / провайдеры / контракты-state-transport-engine (S15, подтверждения)
+
+**Под-5 формулы (`excel_core`) — F28/F29/F30 ПОДТВЕРЖДЕНЫ на диске:** `delete_column`/`move_column` = сырой
+openpyxl (`delete_cols`/`insert_cols`) без проверки формульных ссылок (F28); `validate_formulas` = grep токенов
+`#REF!/#VALUE!/…` без пересчёта (F29, театр); `core/engine/table_materializer.py` **НЕ существует** → loader
+формул/устойчивости не построен (F30/F20). **Data-формульный слой незрел** (что должно: loader + пред-проверка ссылок + деградация неполных данных).
+
+**Под-6 провайдеры — подтверждения + позитив:** F3 ✅ — все 4 провайдера (img/tts/stt/ffmpeg) = `NotImplementedError`
+с внятным сообщением → **честные стабы (G16 соблюдён идеально)**, не тихий success. F10 ✅ — stt `device="cuda"`
+захардкожен дефолтом (`stable_ts_adapter.py:20`). **F11 УТОЧНЁН/митигирован:** `raw_response` имеет активный
+санитайзер `ErrorDetail._sanitize_raw_response` (маскирует секреты, D23) → утечка raw_response ЗАКРЫТА; остаётся api_key-гигиена (стабы, не горит).
+
+**Под-7 контракты/state/transport/engine — ЗРЕЛЫЕ (позитив) + уточнения:**
+- **Контракты зрелые:** `ToolResult.status`/`TaskStatus.status` = `Literal[…]` (эталон G15); `ErrorDetail` с санитайзером D23.
+- **Транспорт D30 ЗАКРЫТ:** error-ветка (`transport.py:125–129`) кладёт `code`/`reaction_class`/`recovery` в `structuredContent`; facts → structuredContent (success). Транспорт **готов** донести данные реестра до клиента.
+- **⚠️ Обостряет F43:** раз транспорт готов, единственная причина обеднённого `ErrorDetail` у клиента — **хендлеры (`_err`) не заполняют reaction_class/recovery из реестра**. Фикс F43 даёт полный payoff (данные дойдут).
+- **Коррекция D24:** `log_event` **ВЫЗЫВАЕТСЯ** (`engine.py:130`) — «0 callers» устарело; но пишет сырой `fact.data` в `_SESSION_LOG` (OUT6/B1 exfil подтверждён).
+- **Engine error-path** идёт через реестр (`engine.py:65 get_error`) — как и в под-3.
+
 ## Реестр спорных моментов (обмер S15 — решения владельца, «плохо продумано?»)
 
 > Не дефекты-факты, а **дизайн-споры**: система работает, но продуманность под вопросом. **✅ Все решены владельцем S15** (проверено на диске).
