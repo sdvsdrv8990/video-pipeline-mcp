@@ -120,7 +120,7 @@ path-traversal** (`PATH_ESCAPE` на `/etc`, `../../../../etc`, `docs/../../..`)
 **Новое:**
 | F# | Sev | Находка | Пруф | → |
 |---|---|---|---|---|
-| F43 | 🟠 | **Реестр обходится на доминирующей ветке ошибок (B2-корень).** `_err`/`_safe` эмитят верный код, но отбрасывают `reaction_class`/`message_template`/`recovery.suggested_params` из реестра → клиент получает обеднённый `ErrorDetail` (без класса, без suggested_params), хотя реестр их определяет для всех 9 кодов. Только `engine.execute` идёт через реестр. Это G14/D30 наоборот: реестр богаче эмитируемого | `server.py:498 _err` строит ErrorDetail сам; `engine.py:64` — единственный `get_error` | A6, reactions-errors |
+| F43 | 🟠 | **Реестр обходится на доминирующей ветке ошибок (B2-корень).** `_err`/`_safe` эмитят верный код, но отбрасывают `reaction_class`/`message_template`/`recovery.suggested_params` из реестра → клиент получает обеднённый `ErrorDetail` (без класса), хотя реестр их определяет. Только `engine.execute` идёт через реестр. Это G14/D30 наоборот: реестр богаче эмитируемого. **C1-ПОДТВЕРЖДЁН (S15, strict-xfail):** `table_get_row` на нет-таблице → `reaction_class='unknown'` vs реестр `'ai_recoverable'`. **NB:** `recovery.suggested_tool` СОВПАЛ с реестром — не фикс, а **дубль код↔yaml** (движок хардкодит ту же строку) = B2 вживую | `server.py:498 _err`; `engine.py:64`; `test_audit_fixes` OPEN-CONFIRMED | A6, reactions-errors |
 
 **F5 уточнён:** к DEFAULT-хардкоду (UNKNOWN_ERROR + класс не ставится + message_template игнорится) добавить: **`raw_message` перекрывает `message_template` и для ИЗВЕСТНЫХ кодов** → template реестра почти не используется.
 

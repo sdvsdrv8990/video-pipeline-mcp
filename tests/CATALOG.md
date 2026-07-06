@@ -70,11 +70,15 @@
 > Метод: **static** = подтверждено чтением/grep/ls (тест не нужен — закрывается lint I4 или постройкой);
 > **behavioral** = нужен C1-тест против кода/живого сервера (§6 ступень C1 = код-пруф теории).
 >
-> Статусы: ✅ подтверждён · ⬜ нужен C1-тест · 🔨 тест пишется · 🟢 регрессия зелёная после фикса.
+> Статусы: ✅ подтверждён · ⬜ нужен C1-тест · 🟡 OPEN-CONFIRMED (C1 красный = находка доказана, ждёт фикса) · 🔨 пишется · 🟢 регрессия зелёная после фикса.
+>
+> **Механика strict-xfail** (`test_audit_fixes.py` `xcheck`): открытая находка подтверждается «ожидаемо
+> красным» (`[OPEN-CONFIRMED F#]`), но baseline остаётся зелёным (exit-код держат только регрессии). Если
+> находка внезапно «проходит» (`[UNEXPECTED-PASS F#]`) → сигнал: фикс применён → обнови §E ⬜/🟡→🟢 и перенеси в регрессию.
 
 | F# | Что | Метод | Тест-хозяин (не плодить) | Статус |
 |---|---|---|---|---|
-| **F43** | реестр обходится хендлерами → error без `reaction_class`/`recovery` | behavioral | `test_audit_fixes` (контракт ошибки: вызвать тул с ошибкой → assert error.structuredContent несёт class/recovery) | ⬜ нужен C1 |
+| **F43** | реестр обходится хендлерами → error без `reaction_class` из реестра | behavioral | `test_audit_fixes` (strict-xfail: `table_get_row` на нет-таблице → `reaction_class` сброшен) | 🟡 **OPEN-CONFIRMED C1** (got `unknown` vs реестр `ai_recoverable`); ждёт фикса A6. NB: `suggested_tool` совпал = дубль код↔yaml (B2) |
 | **F5** | DEFAULT-fallback хардкодит UNKNOWN_ERROR, роняет class, игнорит template | behavioral | `test_audit_fixes` (`Reactions.get_error("НЕИЗВЕСТНЫЙ")` → assert class/template) | ⬜ нужен C1 |
 | **F40** | search-коды `QUERY_NOT_FOUND`/`PATH_NOT_FOUND` НЕ в реестре | behavioral | `test_search` (assert коды search ⊂ `server_reactions.yaml`) | ⬜ нужен C1 |
 | **F42** | `_match_filter`/`_apply_sort` на разнотипном → TypeError | behavioral | `test_search` (фильтр str vs num → assert деградация, не краш) | ⬜ нужен C1 |

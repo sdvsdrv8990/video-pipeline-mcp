@@ -37,6 +37,18 @@ def check(name, cond, detail=""):
     print(f"[{'PASS' if cond else 'FAIL'}] {name} {('- ' + str(detail)) if detail else ''}")
 
 
+xopen = []  # открытые находки обмера (strict-xfail): подтверждают F#, не ломают baseline
+
+def xcheck(name, desired_ok, fnum, note=""):
+    """Подтверждение ОТКРЫТОЙ находки. desired_ok=True → находка исчезла (сигнал обновить CATALOG §E)."""
+    if desired_ok:
+        print(f"[UNEXPECTED-PASS {fnum}] {name} → закрыта? обнови CATALOG §E ⬜→🟢, перенеси в регрессию. {note}")
+        xopen.append("fixed")
+    else:
+        print(f"[OPEN-CONFIRMED {fnum}] {name} — подтверждена обмером (ожидаемо красный). {note}")
+        xopen.append("open")
+
+
 async def main():
     engine, transport, firewall = S.create_server()
 
@@ -162,11 +174,30 @@ async def main():
     ok_shape = all({"name", "description", "inputSchema"}.issubset(t.keys()) for t in tools)
     check("D13 tools/list shape ok (name/description/inputSchema)", ok_shape and len(tools) > 0, f"{len(tools)} tools")
 
+    # ═══ ОТКРЫТЫЕ НАХОДКИ ОБМЕРА (strict-xfail: подтверждение, НЕ регрессия) ═══
+    # F43: реестр обходится хендлерами (_safe→_err) → error теряет reaction_class/recovery из server_reactions.yaml.
+    import yaml as _y
+    _reg = _y.safe_load((ROOT / "config" / "server_reactions.yaml").read_text(encoding="utf-8"))
+    rtf = await engine.call("table_get_row", {"table": "нет/такой/таблицы", "sheet": "META", "row_id": "r1"})
+    _code = rtf.error.code if rtf.error else ""
+    check("F43-setup table_get_row on missing table → TABLE_NOT_FOUND", _code == "TABLE_NOT_FOUND", _code)
+    # Чистый пруф F43: reaction_class сброшен (=default 'unknown'), хотя реестр даёт 'ai_recoverable'.
+    # NB (B2): recovery.suggested_tool СОВПАДАЕТ с реестром — не потому что F43 закрыт, а потому что
+    # движок ХАРДКОДИТ ту же строку (дубль код↔yaml). Поэтому проверяем именно класс, не recovery.
+    _reg_class = _reg.get(_code, {}).get("class")
+    _cls = rtf.error.reaction_class if rtf.error else None
+    xcheck("F43 error несёт reaction_class из реестра", _cls == _reg_class and _reg_class is not None, "F43",
+           f"got={_cls!r} vs реестр={_reg_class!r}")
+
     print()
     passed = sum(results)
     total = len(results)
-    print(f"ИТОГО: {passed}/{total} проверок пройдено")
-    return 0 if passed == total else 1
+    n_open = xopen.count("open")
+    n_fixed = xopen.count("fixed")
+    print(f"ИТОГО регрессий: {passed}/{total} проверок пройдено")
+    print(f"ОТКРЫТЫЕ находки (strict-xfail): {n_open} подтверждено открытыми, {n_fixed} внезапно закрыто")
+    # baseline зелёный = все регрессии прошли И ни одна открытая находка не «прошла» внезапно
+    return 0 if (passed == total and n_fixed == 0) else 1
 
 
 if __name__ == "__main__":
