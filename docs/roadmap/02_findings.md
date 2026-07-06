@@ -124,6 +124,26 @@ path-traversal** (`PATH_ESCAPE` на `/etc`, `../../../../etc`, `docs/../../..`)
 
 **F5 уточнён:** к DEFAULT-хардкоду (UNKNOWN_ERROR + класс не ставится + message_template игнорится) добавить: **`raw_message` перекрывает `message_template` и для ИЗВЕСТНЫХ кодов** → template реестра почти не используется.
 
+### Под-4 обмера — монолит `server.py` (карта распила A2, S15)
+
+**Структура (доказано чтением):** `register_basic_tools` (127→1248, ~1120 стр) = **11 `engine.register`**, но 44+
+инструмента → регистрация **циклами по спек-спискам**: `fs_tools`/`memory_tools`/… = `list[tuple(name,
+title,desc,schema,handler,annot)]` + `for …: engine.register(…, group=…)`. Стили: **loop-driven** (filesystem/
+memory/excel/tables/search) + **явные** (structure ×5, часть tables). Хендлеры тонкие (под-1).
+
+**Есть vs должно:**
+- **Есть:** декларативные метаданные инструментов УЖЕ живут как Python-спек-списки + inline JSON-схемы в `server.py`.
+- **Должно (A2/A3):** `tools/<group>/` на группу (filesystem/tables/excel/search/structure/memory) с хендлерами +
+  `config/ops/<group>.ops.yaml` (вынесенный спек-список); `server.py` = `create_server`/`run_server`/`main`.
+  **Подтверждает OQ-B2:** A3 = ВЫНЕСТИ спек-списки в yaml (единый источник), НЕ слой поверх. **Риск НИЗКИЙ** (механика).
+
+**Новое:**
+| F# | Sev | Находка | Пруф | → |
+|---|---|---|---|---|
+| F44 | 🟡 | **Повторные function-local импорты (altitude/DIM-13).** `from core.contracts import ToolResult,ErrorDetail,Recovery,Fact` внутри ~15 хендлеров + разбросанные `re`/`shutil`/`yaml`/`datetime` локально — вместо module-top. Пронизывающий smell монолита; тривиально при A2 | `server.py:140/159/171/182/198/241/299/…` | A2, code-quality |
+| F45 | 🟡 | **Захардкожен Python-skeleton (DIM-14).** `fs_create_python_script` держит codegen-шаблон `.py` как inline f-string в хендлере (`server.py:440`) — шаблон должен быть файлом в `config/templates/`, не в коде | `server.py:440 skeleton = f'…'` | A2, anti-hardcode |
+| F46 | 🟡 | **Таксономия entity_type захардкожена ТРЕТИЙ раз (расширяет F41).** JSON-schema enum `["niche","network","channel","video","competitor_channel","competitor_video","asset","scene","render"]` в `server.py:897` = та же в `fs_searcher.ENTITY_PATH_PATTERNS` + `templates/workspace` → три источника правды типов сущностей. Дрейф; ломается при кастомной структуре (S14) | `server.py:897` ↔ `fs_searcher.py:145` ↔ templates | A2/A3, A7, anti-hardcode |
+
 ## Реестр спорных моментов (обмер S15 — решения владельца, «плохо продумано?»)
 
 > Не дефекты-факты, а **дизайн-споры**: система работает, но продуманность под вопросом. **✅ Все решены владельцем S15** (проверено на диске).
