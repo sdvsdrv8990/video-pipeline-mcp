@@ -94,27 +94,33 @@ def test_ban_after_violations():
 
 
 def test_anomaly_detection():
-    """Тест поведенческого фактора: много разных инструментов."""
-    print("\n=== Anomaly Detection (Behavioral) ===")
+    """Anomaly = EVENT-based (опасные инструменты), НЕ time-based «много разных» (D17 снят, D35 knob мёртв).
 
-    fw = Firewall({"anomaly_detection": {"max_methods_per_window": 3}})
+    Текущая модель (D8/D17/D32): множество РАЗНЫХ безопасных инструментов НЕ блокируется;
+    деструктивный инструмент ПРОПУСКается (log-only), но СЧИТАется сигналом в get_stats.
+    """
+    print("\n=== Anomaly Detection (event-based) ===")
+
+    fw = Firewall({})
     ip = "198.51.100.5"
 
-    # 3 разных инструмента — ок
-    for i in range(3):
+    # Много разных БЕЗОПАСНЫХ инструментов — НЕ блок (D8/D17).
+    for i in range(5):
         res = fw.check(FirewallRequest(
             ip=ip, method="tools/call",
             params={"name": f"tool_{i}"}, timestamp=3000.0 + i
         ))
-        check(f"Инструмент {i+1}: allow", res.decision.value == "allow")
+        check(f"Разный безопасный инструмент {i+1}: allow (не time-based anomaly)",
+              res.decision.value == "allow", f"decision={res.decision.value}")
 
-    # 4-й разный инструмент — block (anomaly)
-    res = fw.check(FirewallRequest(
-        ip=ip, method="tools/call",
-        params={"name": "tool_3"}, timestamp=3000.0 + 3
+    # Деструктивный инструмент: ПРОПУЩЕН (log-only, D32), но ПОСЧИТАН.
+    fw2 = Firewall({})
+    resd = fw2.check(FirewallRequest(
+        ip="198.51.100.6", method="tools/call",
+        params={"name": "fs_delete"}, timestamp=3100.0
     ))
-    check("Инструмент 4: anomaly block", res.decision.value == "block",
-          f"decision={res.decision.value}")
+    check("fs_delete: allow (log-only, не глухой блок — D32)", resd.decision.value == "allow", resd.reason)
+    check("fs_delete: посчитан как аномалия (get_stats)", fw2.get_stats()["anomalies_detected"] == 1)
 
 
 def test_legitimate_after_ban():

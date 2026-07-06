@@ -50,6 +50,15 @@ jobs:
           python3 tests/quick/test_search.py
           python3 tests/quick/test_structure.py
           python3 tests/quick/test_tables.py
+      # C2 adversarial-симуляции — in-process (create_server/Firewall), живой сервер не нужен.
+      - name: adversarial sims (C2)
+        run: |
+          python3 tests/virus_injection/test_virus_injection.py
+          python3 tests/cache_injection/test_cache_injection.py
+          python3 tests/bot_army/test_bot_army.py
+          python3 tests/cache_overflow/test_cache_overflow.py
+          python3 tests/config_change/test_config_change.py
+          python3 tests/render_draft_final/test_render_draft_final.py
 
   security:
     name: security (bandit + pip-audit)
