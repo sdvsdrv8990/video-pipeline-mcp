@@ -12,7 +12,7 @@
 | ~~F2~~ | ⚪ | **ОТОЗВАНО S4:** «config/ops пуст = архитектура сломана» — НЕВЕРНО. ops/model_routing **намеренно упразднены**, консолидированы в `channel_config.yaml → resource_limits` (`media_tools_deployment.md §0`). Не дефект — устаревший README. См. `05` §0 | design-решение владельца | A4 (README), не A1 |
 | F3 | 🟠 | Провайдеры ffmpeg/tts/stt/img = `NotImplementedError` (честные стабы — G16 соблюдён, но продукта нет) | grep `NotImplementedError` | P1–P4 |
 | ~~F4~~ | 🟡 | **ПОНИЖЕНО S15 (обмер под-2):** «0 тестов, не ревьюен» — НЕВЕРНО. `tests/quick/test_search.py` содержателен (happy+контракт+adversarial D36 traversal+edge+QueryPlanner+`_detect_entity_type`); в коде следы D36/D37 (находили+чинили). Остаётся: relevance-eval (F31) + quality-находки F38–F42. Незрелость переоценена | `test_search.py`; D36/D37 в коде | A5, I7 |
-| F5 | 🟠 | Система реакций (проверено по коду `reactions.py`): DEFAULT-fallback хардкодит `UNKNOWN_ERROR` (не из реестра), **не** ставит `reaction_class`, игнорит `DEFAULT.message_template` (берёт только `recovery.reason`). NB: `ErrorDetail.reaction_class` существует — memory-D27 «класс теряется» частично устарел. **S15/OQ-B2: корневая причина — у ошибок НЕТ ядра-единственного-источника** (движки хардкодят message-строки И есть yaml → расхождение). Fix: yaml=SoT, движки эмитят код, ядро подставляет message/recovery | grep `get_error` в `core/reactions/reactions.py`; движки `TableError(message=...)` | A6 |
+| F5 | 🟠 | Система реакций (проверено по коду `reactions.py`): DEFAULT-fallback хардкодит `UNKNOWN_ERROR` (не из реестра), **не** ставит `reaction_class`, игнорит `DEFAULT.message_template` (берёт только `recovery.reason`). NB: `ErrorDetail.reaction_class` существует — memory-D27 «класс теряется» частично устарел. **S15/OQ-B2: корневая причина — у ошибок НЕТ ядра-единственного-источника** (движки хардкодят message-строки И есть yaml → расхождение). **S15 под-3 уточнил:** `raw_message` перекрывает `message_template` и для ИЗВЕСТНЫХ кодов → template почти не используется; доминирующая ветка `_err` реестр вообще обходит (F43). Fix: yaml=SoT, движки эмитят код, ядро подставляет message/recovery | grep `get_error`; `reactions.py:61/73`; `server.py:_err` | A6 |
 | F6 | 🟡 | `id_generator` / `IDGenerator` — D28: dead inject-param / недёрнутые пути (проверить актуальность после table-tools) | память `table-tools-implemented` (D28 частично закрыт) | A6 |
 
 ## Прогон 2 — Стиль / структура (skills: project-conventions + anti-hardcode)
@@ -106,6 +106,23 @@ path-traversal** (`PATH_ESCAPE` на `/etc`, `../../../../etc`, `docs/../../..`)
 | F40 | 🟡 | **Дубль exception-классов + коды мимо реестра (B2 в search).** `FsSearchError` и `SearchError` — два одинаковых по форме класса (code/message/reason); коды `QUERY_NOT_FOUND`/`PATH_NOT_FOUND` **не в** `server_reactions.yaml`; `_safe` (server.py) ловит только `Table/Excel/Template/LinkError` → search-исключения **не в списке** (проверить обёртку search-хендлеров — возможно не мапятся в реакции) | grep реестр: нет `QUERY_NOT_FOUND`/`PATH_NOT_FOUND`; `_safe` except-list без search | A5, A6 (B2-ядро), reactions-errors |
 | F41 | 🟡 | **Захардкожена иерархия workspace + формат ID (DIM-14, дубль конфига).** `ENTITY_PATH_PATTERNS`, маркеры `_detect_entity_type` (`niches/networks/channels/videos/competitors`), `FILE_TYPE_MAP`, ID-regex `[A-Z]+_[0-9a-f]{32}` зашиты в код — та же структура живёт в `config/templates/workspace/*.tpl.yaml` + `IDGenerator`. Два источника правды → дрейф; **ломается при кастомной структуре канала (решение S14 — шаблоны настраиваемы)** | `fs_searcher.py:145/158/324`, дубль `templates/workspace` | A5, A7 (per-project override), anti-hardcode |
 | F42 | 🟡 | **Overclaim «умного» поиска (honest/quality).** `analyze_dependencies` в доке обещает «граф зависимостей + оптимальный порядок», реально = group-by-table (`query_planner.py:151`). «Умный поиск» = структурная фильтрация точных совпадений, не семантика (ties F31 relevance-eval нет). Плюс `_match_filter` gt/lt и `_apply_sort` сравнивают разнотипное (str vs num) → `TypeError` посреди поиска, без guard (ties F30) | дока vs `_parse`/`analyze_dependencies`; `_match_filter:269`, `_apply_sort:329` | A5, test-master (F30/F31) |
+
+### Под-3 обмера — реакции/ошибки (S15, `reactions.py`+`server_reactions.yaml`+движки прочитаны)
+
+**B2-корень ДОКАЗАН — две расходящиеся ветки эмиссии ошибок:**
+- **Ветка хендлеров** (`server.py:_safe`→`_err`, ВСЕ fs/table/excel/structure): `_err(code, message, reason, suggested_tool)` строит `ErrorDetail` **напрямую из полей исключения** (движки хардкодят message: `TableError("INVALID_ACTION","В action отсутствует 'sheet'.",…)`), **реестр `server_reactions.yaml` НЕ трогает**. → теряются `reaction_class` (не ставится), `message_template`, `recovery.suggested_params` (реестр их определяет, клиент не получает).
+- **Ветка `engine.execute`** (`engine.py:64`): единственная, кто **использует** реестр (`get_error`), но `raw_message` перекрывает `message_template` (F5).
+
+**✅ Паритет кодов ЧИСТ (позитив):** все 9 кодов движков (COLUMN_EXISTS/…/VALIDATION_ERROR) есть в реестре (34 кода) — орфан-дрейфа нет. **Но** search-коды `QUERY_NOT_FOUND`/`PATH_NOT_FOUND` (F40) в реестре ОТСУТСТВУЮТ — подтверждено.
+
+**Что есть vs что должно:** есть = пассивный маппер + доминирующая ветка мимо него; должно = **единое ядро** — любой путь через `get_error(code, params)`, движки эмитят ТОЛЬКО код (+динам. параметры), реестр даёт class/message/recovery; DEFAULT — тоже через реестр; `message_template` с подстановкой параметров.
+
+**Новое:**
+| F# | Sev | Находка | Пруф | → |
+|---|---|---|---|---|
+| F43 | 🟠 | **Реестр обходится на доминирующей ветке ошибок (B2-корень).** `_err`/`_safe` эмитят верный код, но отбрасывают `reaction_class`/`message_template`/`recovery.suggested_params` из реестра → клиент получает обеднённый `ErrorDetail` (без класса, без suggested_params), хотя реестр их определяет для всех 9 кодов. Только `engine.execute` идёт через реестр. Это G14/D30 наоборот: реестр богаче эмитируемого | `server.py:498 _err` строит ErrorDetail сам; `engine.py:64` — единственный `get_error` | A6, reactions-errors |
+
+**F5 уточнён:** к DEFAULT-хардкоду (UNKNOWN_ERROR + класс не ставится + message_template игнорится) добавить: **`raw_message` перекрывает `message_template` и для ИЗВЕСТНЫХ кодов** → template реестра почти не используется.
 
 ## Реестр спорных моментов (обмер S15 — решения владельца, «плохо продумано?»)
 
