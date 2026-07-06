@@ -5,8 +5,6 @@ core/firewall/rules/anomaly_detector.py — Детектор аномалий
 Обнаружение подозрительных паттернов поведения.
 """
 
-import time
-from collections import defaultdict
 from dataclasses import dataclass
 
 from ..contracts import FirewallRequest

@@ -6,7 +6,6 @@ core/providers/ffmpeg/ffmpeg_adapter.py — FFmpeg Adapter
 Claude видит только наш интерфейс, внешний MCP скрыт за адаптером.
 """
 
-from typing import Literal
 from core.contracts import ToolResult, ErrorDetail, Recovery, TaskStatus, Fact
 
 

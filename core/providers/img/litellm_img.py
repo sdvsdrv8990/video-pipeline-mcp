@@ -6,7 +6,7 @@ core/providers/img/litellm_img.py — LiteLLM IMG Adapter
 Claude дёргает img_* инструменты → адаптер общается с LiteLLM → результат.
 """
 
-from core.contracts import ToolResult, ErrorDetail, Recovery, TaskStatus, Fact
+from core.contracts import ToolResult, ErrorDetail, Recovery, TaskStatus
 
 
 class LiteLLMIMGAdapter:

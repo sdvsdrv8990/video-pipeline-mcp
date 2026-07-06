@@ -5,10 +5,10 @@ core/engine/engine.py — Основной класс Engine
 Реестр и исполнитель инструментов. Claude отправляет запрос → Engine находит инструмент → выполняет.
 """
 
-from typing import Any, Callable, Awaitable
-from dataclasses import dataclass, field
+from typing import Callable, Awaitable
+from dataclasses import dataclass
 
-from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
+from core.contracts import ToolResult, ErrorDetail, Recovery
 
 
 @dataclass
@@ -205,7 +205,7 @@ class Engine:
         """
         from collections import defaultdict
         groups: dict[str, list[dict]] = defaultdict(list)
-        
+
         for tool in self.tools.values():
             groups[tool.group].append({
                 "name": tool.name,
@@ -213,7 +213,7 @@ class Engine:
                 "description": tool.description,
                 "inputSchema": tool.input_schema
             })
-        
+
         result = []
         for group_name in sorted(groups.keys()):
             tools_sorted = sorted(groups[group_name], key=lambda t: t["name"])
@@ -221,7 +221,7 @@ class Engine:
                 "group": group_name,
                 "tools": tools_sorted
             })
-        
+
         return result
 
     def get_tool(self, name: str) -> ToolDefinition | None:

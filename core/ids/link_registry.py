@@ -148,8 +148,8 @@ class LinkRegistry:
         data = self._load()
         entities = data.get("entities", {})
         issues = []
-        paths_seen = {}
-        ids_by_type = {}
+        paths_seen: dict = {}
+        ids_by_type: dict = {}
         for eid, e in entities.items():
             # Проверка висящих ссылок (parent_ids ведут на несуществующие ID)
             for pid in e.get("parent_ids", []):
@@ -169,7 +169,7 @@ class LinkRegistry:
         # Проверка сирот
         orphans = self.find_orphans()
         for o in orphans:
-            issues.append({"type": "orphan", "id": o["id"], "type": o["type"],
+            issues.append({"type": "orphan", "id": o["id"], "entity_type": o["type"],
                            "name": o["name"], "needs": o["needs_parent_type"]})
         return {
             "total_entities": len(entities),

@@ -92,9 +92,7 @@ workspace/
 import re
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Any
 import concurrent.futures
-import threading
 from datetime import datetime
 
 from core.paths import safe_resolve  # D1/G17: единый containment внутри workspace/
@@ -173,7 +171,6 @@ class FsSearcher:
 
     def __init__(self, workspace: str | Path):
         self.workspace = Path(workspace)
-        self._lock = threading.Lock()
 
     def search(self, task: FsSearchTask) -> list[FileResult]:
         """Выполнение задачи поиска."""

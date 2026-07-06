@@ -6,9 +6,8 @@ core/transport/transport.py — Транспорт к Claude
 """
 
 import json
-from typing import Any, Callable, Awaitable
+from typing import Any
 
-from core.contracts import ToolResult
 
 
 class Transport:

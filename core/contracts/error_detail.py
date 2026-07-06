@@ -84,7 +84,7 @@ class ErrorDetail(BaseModel):
         if v is None:
             return None
         SENSITIVE_KEYS = {"authorization", "api_key", "token", "set-cookie", "cookie", "secret", "password"}
-        sanitized = {}
+        sanitized: dict = {}
         for key, value in v.items():
             if any(s in key.lower() for s in SENSITIVE_KEYS):
                 sanitized[key] = "***REDACTED***"

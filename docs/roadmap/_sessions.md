@@ -119,6 +119,17 @@ C2 симуляции с чтением консоли реал-пруф). B и 
 
 **RESUME:** A6 реакции ✅. Следующий фикс по приоритету/MVP-пулу `04`: **Блок 0 фундамент I4 (ruff+mypy+pre-commit → static F38/F44/F45/F10) → I3 CI** ИЛИ следующий продукт-воркстрим (A2 распил / A-tables формулы F29 / A5 search F42). C2 (симуляции+консоль) — когда накопятся фиксы. Метод §6, ONE воркстрим/сессия.
 
+### Сессия 16 (доп. 1) — Блок 0 I4: линт/типы/pre-commit (F38/F44 ЗАКРЫТЫ)
+
+**Второй воркстрим батча (владелец: «берём всё кроме C2»).** Фундамент под I3 CI.
+- **ruff** сконфигурирован (`[tool.ruff]`: py311, line-length 120, select E4/E7/E9/F/W; per-file-ignores для тестов — sys.path+компактный стиль). Прогон: 157→0. Автофикс + ручные правки. **`All checks passed`.**
+- **mypy** (`[tool.mypy]`: не strict, ignore_missing_imports, explicit_package_bases; `exclude core/providers/` — честные стабы G16, типизируются в P-оси). 23→0: аннотации (current_entry/paths_seen/ids_by_type/flat/sanitized), `bold: bool|None`, `prev … else {}` (под `if not tunnel: continue`), 5× `# type: ignore[arg-type]` на register-loop (mypy виджет спек-лист-кортеж). **`Success: no issues in 35 files`.**
+- **`.pre-commit-config.yaml`** — local/system хуки ruff+mypy (версии = CI; форматтер НЕ включён намеренно). `pre-commit run --all-files` → оба Passed.
+- **Находки:** **F38 ✅** (мёртвый `_lock`+`import threading` в обоих search-классах удалены). **F44 ✅** (53 function-local `core.contracts`-импорта → один module-top; заодно снял 52 F821 на `-> "ToolResult"`). **F601 баг найден+исправлен** (`link_registry.check_integrity`: дубль ключа `"type"` → orphan-issue молча перемаркировался типом сущности; → `"entity_type"`). F45 (inline py-skeleton) и F10 (device=cuda) — НЕ линт, остаются к A2/anti-hardcode.
+- **Baseline держится:** audit_fixes 38/38 · tables 33/33 · structure 35/35 · search 24/24.
+
+**RESUME батча:** I4 ✅ → дальше **I3 CI** (GitHub Actions: ruff+mypy+pytest, firewall/tunnel=integration/skip) → A2 распил монолита → A-tables формулы F29 → A5 search F42. C2 — в конце (накопим фиксы).
+
 ### Сессия 15 (доп. 4) — переход к тестам (ступень C1): реестр подтверждения находок
 
 **Выбор владельца:** сперва **тестами подтвердить найденные проблемы** (§6 C1 = код-пруф), а не Блок 0. Статусы — git-tracked (полный прогон в лимит не влезает).

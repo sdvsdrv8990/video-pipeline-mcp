@@ -47,6 +47,7 @@ from core.state import StateManager
 from core.paths import safe_resolve
 from core.tables import TableEngine, TableError
 from core.excel import ExcelEngine, ExcelError
+from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
 
 
 # ═══ КОНФИГУРАЦИЯ ═══
@@ -137,7 +138,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
 
     async def fs_get_directory_tree(path: str = ".") -> "ToolResult":
         """Получение дерева каталогов."""
-        from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
         try:
             target = _safe_resolve(path)
         except ValueError:
@@ -156,7 +156,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
 
     async def fs_read_file(path: str) -> "ToolResult":
         """Чтение файла."""
-        from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
         try:
             target = _safe_resolve(path)
         except ValueError:
@@ -168,7 +167,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
 
     async def fs_create_file(path: str, content: str = "") -> "ToolResult":
         """Создание файла."""
-        from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
         try:
             target = _safe_resolve(path)
         except ValueError:
@@ -179,7 +177,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
 
     async def fs_write_file(path: str, content: str) -> "ToolResult":
         """Полная перезапись файла."""
-        from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
         try:
             target = _safe_resolve(path)
         except ValueError:
@@ -195,7 +192,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         Возвращает: заголовок, записи (с полями), количество, существующие ID.
         Позволяет ИИ понять структуру ДО вставки.
         """
-        from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
         import re
         try:
             target = _safe_resolve(path)
@@ -207,7 +203,7 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         # Парсим записи: ## [дата] Заголовок
         entries = []
         ids_found = []
-        current_entry = None
+        current_entry: dict | None = None
         for line in content.split("\n"):
             match = re.match(r"^## \[(.+?)\]\s*(.+)$", line)
             if match:
@@ -238,9 +234,7 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         Вставляет новую запись в правильное место по дате (хронологически).
         Валидирует структуру: обязательные поля, ссылки на ID,的影响 на соседние записи.
         """
-        from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
         import re
-        from datetime import datetime
         try:
             target = _safe_resolve(path)
         except ValueError:
@@ -296,7 +290,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
 
     async def fs_move(source: str, destination: str) -> "ToolResult":
         """Перемещение файла или каталога."""
-        from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
         try:
             src, dst = _safe_resolve(source), _safe_resolve(destination)
         except ValueError:
@@ -311,7 +304,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
 
     async def fs_rename(path: str, new_name: str) -> "ToolResult":
         """Переименование файла или каталога."""
-        from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
         try:
             src = _safe_resolve(path)
         except ValueError:
@@ -330,7 +322,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
 
     async def fs_delete(path: str, force: bool = False) -> "ToolResult":
         """Удаление файла или каталога."""
-        from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
         import shutil
         try:
             target = _safe_resolve(path)
@@ -357,7 +348,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
                               entity_type: str = "", id_pattern: str = "",
                               name_pattern: str = "", limit: int = 100) -> "ToolResult":
         """Умный поиск по файловой системе с фильтрами по типу сущности, ID, имени."""
-        from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
         try:
             task = FsSearchTask(
                 id="quick_search",
@@ -383,7 +373,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
 
     async def fs_search_yaml(yaml_query: str) -> "ToolResult":
         """Умный поиск по YAML-запросу (очередь, многопоточность)."""
-        from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
         try:
             task = fs_searcher.load_query(yaml_query)
             results = fs_searcher.search(task)
@@ -402,7 +391,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
 
     async def fs_search_multi(queries: list[dict]) -> "ToolResult":
         """Многозадачный поиск (параллельно по нескольким запросам)."""
-        from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
         try:
             tasks = []
             for i, q in enumerate(queries):
@@ -429,7 +417,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
 
     async def fs_create_python_script(path: str, description: str = "") -> "ToolResult":
         """Создание Python-скрипта с каркасом."""
-        from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
         try:
             target = _safe_resolve(path)
         except ValueError:
@@ -444,7 +431,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
 
     async def fs_create_project_structure(template: str = "", fragments: list[dict] | None = None) -> "ToolResult":
         """Материализация структуры по шаблону или список фрагментов."""
-        from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
         created, skipped = [], []
         if template:
             template_path = CONFIG_PATH / "templates" / "workspace" / f"{template}.yaml"
@@ -475,7 +461,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
 
     async def json_read_snapshot(table: str) -> "ToolResult":
         """Чтение снапшота таблицы."""
-        from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
         try:
             snapshot = state_manager.read_snapshot(table)
         except ValueError:
@@ -501,7 +486,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         Для кода из реестра class/message_template/recovery берутся из server_reactions.yaml
         (raw message сохраняет специфику). reason/suggested_tool — fallback лишь для кодов вне реестра.
         """
-        from core.contracts import ToolResult, ErrorDetail, Recovery
         if engine.reactions is not None and engine.reactions.get_reaction(code) is not None:
             return ToolResult(status="error", error=engine.reactions.get_error(code, raw_message=message))
         return ToolResult(status="error", error=ErrorDetail(
@@ -532,7 +516,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         для явно названных (children={тип:[имена]}). Таблицы (kind:table) отложены в
         фазу таблиц (Ф3) → tables_pending. ID узла присваивает сервер (в facts).
         """
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: template_engine.create_node(type, name, parent_path, None, children))
         if not ok:
             return res
@@ -581,7 +564,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         Один вызов добавляет parent_id ребёнку; не требует правки обоих деревьев
         (экономит токены, исключает рассинхрон). Пример: привязать конкурента к нашему каналу.
         """
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: link_registry.link(child_type, child_name, parent_type, parent_name))
         if not ok:
             return res
@@ -595,7 +577,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         Используется когда родитель появился позже (напр. конкурент без канала → привязка к каналу).
         Физически перемещает папку и обновляет path в реестре.
         """
-        from core.contracts import ToolResult, Fact
         import shutil
         # Получаем текущий путь из реестра
         entity = link_registry.get(entity_id)
@@ -633,7 +614,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         Это поверхность «уведомления от сервера»: у вас есть конкурент, не привязанный
         ни к одному каналу / у вас есть канал без конкурента.
         """
-        from core.contracts import ToolResult, Fact
         orphans = link_registry.find_orphans()
         ours_no_comp = link_registry.find_childless("channel", "competitor_channel")
         facts = [Fact(type="EntityOrphaned", data=o) for o in orphans]
@@ -643,7 +623,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
 
     async def structure_check_integrity() -> "ToolResult":
         """Фоновая проверка целостности реестра: висящие ссылки, дубликаты путей, сироты."""
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: link_registry.check_integrity())
         if not ok:
             return res
@@ -655,7 +634,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
     # ─── Категория 3: чтения (проекции) ───
 
     async def table_get_column(table: str, sheet: str, column: str) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: table_engine.get_column(table, sheet, column))
         if not ok:
             return res
@@ -663,7 +641,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
                           facts=[Fact(type="ColumnRead", data={"table": table, "sheet": sheet, "column": column, "n": len(res)})])
 
     async def table_get_row(table: str, sheet: str, row_id: str) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: table_engine.get_row(table, sheet, row_id))
         if not ok:
             return res
@@ -673,7 +650,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
     # ─── Категория 3: записи (через очередь) ───
 
     async def table_set(table: str, sheet: str, row_id: str, column: str, value=None) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: table_engine.set(table, sheet, row_id, column, value))
         if not ok:
             return res
@@ -681,7 +657,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
                           facts=[Fact(type="RowSet", data={"table": table, "sheet": sheet, "row_id": row_id, "column": column})])
 
     async def table_append(table: str, sheet: str, data: dict | None = None, id_prefix: str = "ROW") -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: table_engine.append(table, sheet, data or {}, id_prefix))
         if not ok:
             return res
@@ -689,7 +664,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
                           facts=[Fact(type="RowAppended", data={"table": table, "sheet": sheet, "row_id": res["row_id"]})])
 
     async def table_delete(table: str, sheet: str, row_id: str) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: table_engine.delete(table, sheet, row_id))
         if not ok:
             return res
@@ -699,7 +673,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
     # ─── Категория 3: очередь (json_*) ───
 
     async def json_push_to_queue(table: str, action: dict) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: table_engine.push_to_queue(table, action))
         if not ok:
             return res
@@ -707,7 +680,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
                           facts=[Fact(type="QueuePushed", data={"table": table, "action": res.get("action")})])
 
     async def json_execute_queue(table: str) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: table_engine.execute_queue(table))
         if not ok:
             return res
@@ -715,7 +687,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
                           facts=[Fact(type="QueueExecuted", data={"table": table, "applied": res["applied"], "skipped": len(res["skipped"])})])
 
     async def json_clear_queue(table: str) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: table_engine.clear_queue(table))
         if not ok:
             return res
@@ -725,91 +696,78 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
     # ─── Категория 2: структура (excel_*) ───
 
     async def excel_create_workbook(path: str, sheet: str = "Sheet1") -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: excel_engine.create_workbook(path, sheet))
         if not ok:
             return res
         return ToolResult(status="success", data=res, facts=[Fact(type="WorkbookCreated", data=res)])
 
     async def excel_add_sheet(path: str, sheet: str) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: excel_engine.add_sheet(path, sheet))
         if not ok:
             return res
         return ToolResult(status="success", data=res, facts=[Fact(type="SheetAdded", data={"path": path, "sheet": sheet})])
 
     async def excel_rename_sheet(path: str, sheet: str, new_name: str) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: excel_engine.rename_sheet(path, sheet, new_name))
         if not ok:
             return res
         return ToolResult(status="success", data=res, facts=[Fact(type="SheetRenamed", data={"path": path, "from": sheet, "to": new_name})])
 
     async def excel_delete_sheet(path: str, sheet: str) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: excel_engine.delete_sheet(path, sheet))
         if not ok:
             return res
         return ToolResult(status="success", data=res, facts=[Fact(type="SheetDeleted", data={"path": path, "sheet": sheet})])
 
     async def excel_reorder_sheets(path: str, order: list) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: excel_engine.reorder_sheets(path, order))
         if not ok:
             return res
         return ToolResult(status="success", data=res, facts=[Fact(type="SheetsReordered", data={"path": path})])
 
     async def excel_add_column(path: str, sheet: str, column: str, formula: str = "") -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: excel_engine.add_column(path, sheet, column, formula or None))
         if not ok:
             return res
         return ToolResult(status="success", data=res, facts=[Fact(type="ColumnAdded", data={"path": path, "sheet": sheet, "column": column})])
 
     async def excel_delete_column(path: str, sheet: str, column: str) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: excel_engine.delete_column(path, sheet, column))
         if not ok:
             return res
         return ToolResult(status="success", data=res, facts=[Fact(type="ColumnDeleted", data={"path": path, "sheet": sheet, "column": column})])
 
     async def excel_move_column(path: str, sheet: str, column: str, to_index: int) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: excel_engine.move_column(path, sheet, column, to_index))
         if not ok:
             return res
         return ToolResult(status="success", data=res, facts=[Fact(type="ColumnMoved", data={"path": path, "sheet": sheet, "column": column, "to": to_index})])
 
     async def excel_insert_formula(path: str, sheet: str, cell: str, formula: str, overwrite: bool = False) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: excel_engine.insert_formula(path, sheet, cell, formula, overwrite))
         if not ok:
             return res
         return ToolResult(status="success", data=res, facts=[Fact(type="FormulaInserted", data={"path": path, "sheet": sheet, "cell": cell})])
 
-    async def excel_apply_formatting(path: str, sheet: str, target: str, fill: str = "", bold: bool = None, font_color: str = "") -> "ToolResult":
-        from core.contracts import ToolResult, Fact
+    async def excel_apply_formatting(path: str, sheet: str, target: str, fill: str = "", bold: bool | None = None, font_color: str = "") -> "ToolResult":
         ok, res = _safe(lambda: excel_engine.apply_formatting(path, sheet, target, fill or None, bold, font_color or None))
         if not ok:
             return res
         return ToolResult(status="success", data=res, facts=[Fact(type="FormattingApplied", data={"path": path, "sheet": sheet, "target": target})])
 
     async def excel_set_validation(path: str, sheet: str, column: str, allowed: list) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: excel_engine.set_validation(path, sheet, column, allowed))
         if not ok:
             return res
         return ToolResult(status="success", data=res, facts=[Fact(type="ValidationSet", data={"path": path, "sheet": sheet, "column": column})])
 
     async def excel_read_range(path: str, sheet: str, cell_range: str) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: excel_engine.read_range(path, sheet, cell_range))
         if not ok:
             return res
         return ToolResult(status="success", data=res, facts=[Fact(type="RangeRead", data={"path": path, "sheet": sheet, "range": cell_range})])
 
     async def excel_validate_formulas(path: str) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: excel_engine.validate_formulas(path))
         if not ok:
             return res
@@ -818,7 +776,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
     # ─── Excel: копирование листа ───
 
     async def excel_copy_sheet(path: str, sheet: str, new_name: str) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: excel_engine.copy_sheet(path, sheet, new_name))
         if not ok:
             return res
@@ -827,21 +784,18 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
     # ─── Excel: анализ структуры ───
 
     async def inspect_file(path: str) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: excel_engine.inspect_file(path))
         if not ok:
             return res
         return ToolResult(status="success", data=res, facts=[Fact(type="FileInspected", data={"path": path, "sheets": res["sheet_count"]})])
 
     async def get_sheet_info(path: str, sheet: str) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: excel_engine.get_sheet_info(path, sheet))
         if not ok:
             return res
         return ToolResult(status="success", data=res, facts=[Fact(type="SheetInfoRead", data={"path": path, "sheet": sheet, "columns": res["column_count"]})])
 
     async def get_column_names(path: str, sheet: str) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: excel_engine.get_column_names(path, sheet))
         if not ok:
             return res
@@ -850,28 +804,24 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
     # ─── Таблицы: анализ данных ───
 
     async def get_unique_values(table: str, sheet: str, column: str, limit: int = 100) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: table_engine.get_unique_values(table, sheet, column, limit))
         if not ok:
             return res
         return ToolResult(status="success", data=res, facts=[Fact(type="UniqueValuesRead", data={"table": table, "sheet": sheet, "column": column, "count": res["count"]})])
 
     async def get_value_counts(table: str, sheet: str, column: str, limit: int = 10) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: table_engine.get_value_counts(table, sheet, column, limit))
         if not ok:
             return res
         return ToolResult(status="success", data=res, facts=[Fact(type="ValueCountsRead", data={"table": table, "sheet": sheet, "column": column, "total": res["total"]})])
 
     async def find_duplicates(table: str, sheet: str, columns: list[str] | None = None) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: table_engine.find_duplicates(table, sheet, columns))
         if not ok:
             return res
         return ToolResult(status="success", data=res, facts=[Fact(type="DuplicatesFound", data={"table": table, "sheet": sheet, "groups": res["duplicate_groups"], "rows": res["duplicate_rows"]})])
 
     async def find_nulls(table: str, sheet: str) -> "ToolResult":
-        from core.contracts import ToolResult, Fact
         ok, res = _safe(lambda: table_engine.find_nulls(table, sheet))
         if not ok:
             return res
@@ -882,7 +832,7 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
     # Аннотации MCP для инструментов (помогают клиенту определить уровень доступа)
     ANNOTATIONS_READONLY = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
     ANNOTATIONS_MODIFY = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
-    ANNOTATIONS_DESTRUCTIVE = {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False}  # шаблон-резерв: не назначен ни одному инструменту (см. history_server.md v2.6 — destructiveHint триггерит auth-гейт коннектора Claude.ai)
+    ANNOTATIONS_DESTRUCTIVE = {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False}  # noqa: F841 — резерв, намеренно не назначен: destructiveHint триггерит auth-гейт коннектора Claude.ai
 
     # Формат кортежа: (name, title, description, schema, handler, annotations).
     # title — человекочитаемая подпись для UI Claude; префикс «Файлы:» делает
@@ -925,7 +875,7 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         ("fs_create_project_structure", "Файлы: структура проекта", "Материализация структуры каталогов/файлов по шаблону или списку фрагментов", {"type": "object", "properties": {"template": {"type": "string", "description": "Имя шаблона из config/templates/workspace/"}, "fragments": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "type": {"type": "string", "enum": ["directory", "file"]}, "content": {"type": "string"}}}, "description": "Список фрагментов для создания"}}}, fs_create_project_structure, ANNOTATIONS_MODIFY),
     ]
     for name, title, desc, schema, handler, annot in fs_tools:
-        engine.register(name=name, title=title, description=desc, input_schema=schema, handler=handler, group="filesystem", annotations=annot)
+        engine.register(name=name, title=title, description=desc, input_schema=schema, handler=handler, group="filesystem", annotations=annot)  # type: ignore[arg-type]
 
     # ═══ ПАМЯТЬ ПРОЕКТА (project_memory.md) ═══
     memory_tools = [
@@ -947,7 +897,7 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
          memory_write, ANNOTATIONS_MODIFY),
     ]
     for name, title, desc, schema, handler, annot in memory_tools:
-        engine.register(name=name, title=title, description=desc, input_schema=schema, handler=handler, group="memory", annotations=annot)
+        engine.register(name=name, title=title, description=desc, input_schema=schema, handler=handler, group="memory", annotations=annot)  # type: ignore[arg-type]
 
     engine.register(
         name="json_read_snapshot", title="Таблицы: снапшот (read.json)", description="Чтение снапшота таблицы (read.json)",
@@ -998,7 +948,7 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
          find_nulls, ANNOTATIONS_READONLY),
     ]
     for name, title, desc, schema, handler, annot in tables_tools:
-        engine.register(name=name, title=title, description=desc, input_schema=schema, handler=handler, group="tables", annotations=annot)
+        engine.register(name=name, title=title, description=desc, input_schema=schema, handler=handler, group="tables", annotations=annot)  # type: ignore[arg-type]
 
     # ═══ КАТЕГОРИЯ 2: структура таблиц (excel_*) ═══
     _PATH = {"type": "string", "description": "Путь к .xlsx относительно workspace"}
@@ -1056,7 +1006,7 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
          get_column_names, ANNOTATIONS_READONLY),
     ]
     for name, title, desc, schema, handler, annot in excel_tools:
-        engine.register(name=name, title=title, description=desc, input_schema=schema, handler=handler, group="excel", annotations=annot)
+        engine.register(name=name, title=title, description=desc, input_schema=schema, handler=handler, group="excel", annotations=annot)  # type: ignore[arg-type]
 
     # ═══ СТРУКТУРА: шаблонное создание (композиция по ссылке + контроль глубины) ═══
     engine.register(
@@ -1135,7 +1085,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         Принимает YAML-строку или dict с запросом. Возвращает объединённые
         результаты с прогрессом выполнения.
         """
-        from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
         try:
             if yaml_query:
                 import yaml
@@ -1164,7 +1113,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
                            filter_col: str = "", filter_op: str = "eq",
                            filter_val: str = "", limit: int = 100) -> "ToolResult":
         """Быстрый поиск: одно чтение с фильтром (без YAML)."""
-        from core.contracts import ToolResult, Fact
         query = {
             "name": "quick_search",
             "reads": [{
@@ -1188,7 +1136,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
                            sort_col: str = "", sort_order: str = "asc",
                            limit: int = 100) -> "ToolResult":
         """Многотабличный поиск с объединением."""
-        from core.contracts import ToolResult, Fact
         reads = []
         for t in tables:
             reads.append({
@@ -1248,7 +1195,7 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
          search_multi, ANNOTATIONS_READONLY),
     ]
     for name, title, desc, schema, handler, annot in search_tools:
-        engine.register(name=name, title=title, description=desc, input_schema=schema, handler=handler, group="search", annotations=annot)
+        engine.register(name=name, title=title, description=desc, input_schema=schema, handler=handler, group="search", annotations=annot)  # type: ignore[arg-type]
 
 
 def _jsonrpc_error(request_id, code: int, message: str) -> dict:
@@ -1266,7 +1213,7 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
     """
     engine, transport, firewall = create_server()
 
-    print(f"=== MCP-сервер видеопайплайна ===")
+    print("=== MCP-сервер видеопайплайна ===")
     print(f"Хост: {host}")
     print(f"Порт: {port}")
     print(f"Workspace: {WORKSPACE_PATH}")
@@ -1403,9 +1350,9 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
                     print("   • токен: экспорт MCP_TUNNEL_TOKEN из дашборда Cloudflare")
                     print("   • credentials: домен + файл credentials (см. tunnel.py)")
             else:
-                tunnel_status_str = f"процесс жив, но соединение НЕ установлено"
+                tunnel_status_str = "процесс жив, но соединение НЕ установлено"
                 print()
-                print(f"⚠️  Туннель запущен, но соединение не установлено.")
+                print("⚠️  Туннель запущен, но соединение не установлено.")
                 if st["last_error"]:
                     print(f"   Причина: {st['last_error']}")
                 print(f"   Uptime: {st['uptime_sec']}s | Попыток перезапуска: {st['attempts']}")
@@ -1429,7 +1376,7 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
         # Мониторинг туннеля: печатаем ТОЛЬКО изменения статуса, а не шум каждые N сек.
         # Восстановление соединения выполняет супервизор в CloudflaredTunnel сам —
         # здесь только наблюдаем его status() и сообщаем переходы в консоль.
-        prev = tunnel.status() if tunnel else None
+        prev = tunnel.status() if tunnel else {}  # dict: блок туннеля ниже под `if not tunnel: continue`
 
         # Хот-релоад декларативного config без рестарта: следим за mtime файлов.
         # firewall.yaml → firewall.reload() (fail-closed), server_reactions.yaml →

@@ -1,5 +1,9 @@
 """Сквозной smoke-тест табличных инструментов (Кат. 3 + Кат. 2)."""
-import asyncio, json, tempfile, os, sys, warnings
+import asyncio
+import json
+import tempfile
+import sys
+import warnings
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]

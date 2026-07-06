@@ -24,7 +24,6 @@ Security / Integration
 """
 
 import asyncio
-import time
 import aiohttp
 
 # Конфигурация сервера (порт можно передать через env)
@@ -102,7 +101,7 @@ async def test_tool_discovery():
     if missing:
         print(f"  ⚠ Отсутствуют: {missing}")
     else:
-        print(f"  ✓ Все ожидаемые инструменты на месте")
+        print("  ✓ Все ожидаемые инструменты на месте")
 
     return True
 

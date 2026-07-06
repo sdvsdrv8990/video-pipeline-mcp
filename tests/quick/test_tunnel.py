@@ -39,7 +39,6 @@ def check(name, cond, detail=""):
 
 
 def test_command_building():
-    import os
     t = CloudflaredTunnel(port=8080, config_path=CFG)
     check("cmd quick", t._build_command()[1:] == ["tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:8080"])
 

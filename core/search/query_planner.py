@@ -23,7 +23,7 @@ reads:
     columns: ["video_id", "title", "status"]
     filter:
       status: "PUBLISHED"
-  
+
   - table: "channels/my_channel/videos/v1"
     sheet: "PERFORMANCE"
     columns: ["views", "like_rate", "engagement_rate"]
@@ -58,9 +58,8 @@ limit: 10
 import yaml
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 import concurrent.futures
-import threading
 
 from core.paths import safe_resolve  # D1/G17: containment внутри workspace/
 
@@ -110,7 +109,6 @@ class QueryPlanner:
     def __init__(self, table_engine, workspace: str | Path):
         self.table_engine = table_engine
         self.workspace = Path(workspace)
-        self._lock = threading.Lock()
 
     def load_query(self, yaml_path: str | Path) -> QueryPlan:
         """Загрузка YAML-файла запроса из workspace/ (путь контейнится — анти-traversal)."""
@@ -235,7 +233,6 @@ class QueryPlanner:
 
             sheet_obj = sheet_data[task.sheet]
             rows = sheet_obj.get("rows", {})
-            schema = sheet_obj.get("schema", {})
 
             result = []
             for rid, row in rows.items():

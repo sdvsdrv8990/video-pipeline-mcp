@@ -6,7 +6,6 @@ core/firewall/rules/rate_limiter.py — Ограничитель частоты
 """
 
 from collections import defaultdict
-import time
 
 
 class RateLimiterResult:

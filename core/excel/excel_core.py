@@ -300,7 +300,7 @@ class ExcelEngine:
         ws = self._sheet(wb, sheet)
         cells = ws[target]
         # нормализуем в плоский список ячеек (одна ячейка → кортеж кортежей у диапазона)
-        flat = []
+        flat: list = []
         if hasattr(cells, "__iter__"):
             for row in cells:
                 flat.extend(row if hasattr(row, "__iter__") else [row])

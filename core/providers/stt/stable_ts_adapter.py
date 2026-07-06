@@ -6,7 +6,7 @@ core/providers/stt/stable_ts_adapter.py — Stable-TS STT Adapter
 Локальная модель, не требует внешнего API.
 """
 
-from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
+from core.contracts import ToolResult, ErrorDetail, Recovery
 
 
 class StableTSAdapter:

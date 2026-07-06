@@ -6,7 +6,7 @@ core/providers/tts/litellm_tts.py — LiteLLM TTS Adapter
 Claude дёргает tts_* инструменты → адаптер общается с LiteLLM → результат.
 """
 
-from core.contracts import ToolResult, ErrorDetail, Recovery, TaskStatus, Fact
+from core.contracts import ToolResult, ErrorDetail, Recovery, TaskStatus
 
 
 class LiteLLMTTSAdapter:
