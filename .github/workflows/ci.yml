@@ -1,0 +1,73 @@
+# I3: CI-гейт под фазу фиксов. Хард-гейты: ruff, mypy, тесты (in-process), bandit, gitleaks.
+# Advisory: pip-audit (уязвимости зависимостей — требуют dep-bump с регрессией на живом сервере).
+# firewall/tunnel + adversarial-симуляции = integration (нужен живой сервер/туннель) → НЕ в этом гейте (C2).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: lint (ruff + mypy)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev]"
+      - name: ruff
+        run: ruff check .
+      - name: mypy
+        run: mypy
+
+  test:
+    name: test (in-process, script exit-code = gate)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev]"
+      # Тесты — самостоятельные скрипты (async, вне pytest-asyncio); каждый exit!=0 при провале.
+      # firewall/tunnel исключены: нужен живой сервер/туннель (integration/C2).
+      - name: quick tests
+        run: |
+          python3 tests/quick/test_audit_fixes.py
+          python3 tests/quick/test_search.py
+          python3 tests/quick/test_structure.py
+          python3 tests/quick/test_tables.py
+
+  security:
+    name: security (bandit + pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - name: bandit (medium+)
+        run: bandit -r core server.py -ll
+      - name: pip-audit (advisory — dep-hardening отдельным воркстримом)
+        run: pip-audit
+        continue-on-error: true
+
+  gitleaks:
+    name: gitleaks (secrets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2

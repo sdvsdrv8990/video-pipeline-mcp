@@ -130,6 +130,19 @@ C2 симуляции с чтением консоли реал-пруф). B и 
 
 **RESUME батча:** I4 ✅ → дальше **I3 CI** (GitHub Actions: ruff+mypy+pytest, firewall/tunnel=integration/skip) → A2 распил монолита → A-tables формулы F29 → A5 search F42. C2 — в конце (накопим фиксы).
 
+### Сессия 16 (доп. 2) — Блок 0 I3: CI-гейт (GitHub Actions)
+
+**Третий воркстрим батча.** `.github/workflows/ci.yml` — 4 джобы:
+- **lint** (matrix py3.11/3.12): `ruff check .` + `mypy` — хард-гейт.
+- **test** (matrix py3.11/3.12): 4 in-process скрипта (audit_fixes/search/structure/tables) — каждый exit!=0 при провале = гейт. Тесты = async-скрипты вне pytest-asyncio → запуск как скрипты. `firewall`/`tunnel` + adversarial-симуляции ИСКЛЮЧЕНЫ (нужен живой сервер/туннель = integration/C2).
+- **security**: `bandit -r core server.py -ll` (чист) хард; `pip-audit` **advisory** (`continue-on-error`) — см. F47.
+- **gitleaks**: `gitleaks/gitleaks-action@v2` (репо публичный, без лицензии).
+- **Локальная симуляция гейтов:** ruff/mypy PASS, 4 теста exit 0, bandit PASS, ci.yml валиден.
+- **F47 (новая, 🟠):** pip-audit нашёл CVE в `aiohttp`/`litellm`/`python-dotenv` → бамп требует регрессии на живом сервере (транспорт) → advisory в CI, отдельный воркстрим dep-hardening (I5/sec).
+- Baseline держится (гейт-команды = те же 4 зелёных скрипта).
+
+**RESUME батча:** I4 ✅ · I3 ✅ → дальше **A2 распил монолита** (`register_basic_tools` ~1120 стр → `tools/<group>/`, риск НИЗКИЙ по обмеру, движки не трогать) → A-tables формулы F29 → A5 search F42. C2 — в конце.
+
 ### Сессия 15 (доп. 4) — переход к тестам (ступень C1): реестр подтверждения находок
 
 **Выбор владельца:** сперва **тестами подтвердить найденные проблемы** (§6 C1 = код-пруф), а не Блок 0. Статусы — git-tracked (полный прогон в лимит не влезает).
