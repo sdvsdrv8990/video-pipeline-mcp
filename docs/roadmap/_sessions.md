@@ -102,4 +102,10 @@ skip/mark, гонять in-process (audit/search/structure/tables).
 - **B3 (два движка):** **дубля нет, но и не CQRS** — ДВА ХРАНИЛИЩА: `read.json` (данные+оба поиска читают его) vs `.xlsx` (структура/формулы), синк НЕ построен (G16). Источник правды данных = `read.json`. ⚠️ **A7-скрипт уникальности читает/пишет `read.json`**, не `.xlsx`-формулы (doc 10 §2 обновлён).
 - **B4 (`_safe` ValueError):** моё решение — типизир. `PathEscapeError(ValueError)` в `core/paths.py`; `_safe` ловит его→`PATH_ESCAPE`, голый `ValueError`→`INTERNAL_ERROR`. Back-compat цел. → A2/A6 с §6-тестом.
 
-**RESUME:** Блок 1 продолжается — глубокие поды по подсистемам (приоритет: `core/search` MiMo 0 тестов F4 · реакции F5/B2 · монолит карта распила A2 · формулы F28–30). Спорные B1–B4 закрыты (влияли на A2/A3/A6/A7). Метод §6.
+### Сессия 15 (доп. 2) — обмер под-2: `core/search` (оба модуля прочитаны, НЕ чиним)
+
+- **❗ F4 НЕВЕРНА → понижена:** search НЕ «0 тестов/не ревьюен». `test_search.py` содержателен (happy+контракт+**adversarial D36 traversal**+edge+QueryPlanner+`_detect_entity_type`); в коде следы **D36/D37** (уже находили+чинили). Незрелость была переоценена; остаётся relevance-eval (F31) + quality-находки.
+- **Новые находки F38–F42:** F38 мёртвый `_lock` в обоих классах (D28); F39 `QueryPlanner` лезет в приватный `table_engine._load` (DIM-13, хрупко); F40 дубль exception-классов + коды `QUERY_NOT_FOUND`/`PATH_NOT_FOUND` мимо реестра + `_safe` их не ловит (B2 в search); F41 захардкожена иерархия workspace+ID-формат (DIM-14, дубль `templates/workspace`, ломается при кастомной структуре S14); F42 overclaim «умного» поиска (`analyze_dependencies`=group-by, не граф; фильтрация≠семантика F31) + разнотипные сравнения → TypeError (F30).
+- **Консистентно с B3:** табличный поиск читает `read.json` через `table_engine._load` (данные-SoT).
+
+**RESUME:** Блок 1 продолжается — след. поды: реакции (F5/B2, ядро ошибок) · монолит `server.py` карта распила A2 · формулы `excel_core` (F28–30) · провайдеры-стабы (F3/F10/F11). НЕ чиним — только обмер. Метод §6 ступень A.
