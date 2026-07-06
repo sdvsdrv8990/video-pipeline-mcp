@@ -39,6 +39,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
+      # LibreOffice — движок пересчёта формул (F29 validate_formulas). Без него F29-тест скипается.
+      - name: install LibreOffice (formula recalc)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-calc
       # Тесты — самостоятельные скрипты (async, вне pytest-asyncio); каждый exit!=0 при провале.
       # firewall/tunnel исключены: нужен живой сервер/туннель (integration/C2).
       - name: quick tests

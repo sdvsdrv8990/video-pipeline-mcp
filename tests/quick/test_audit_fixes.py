@@ -219,16 +219,19 @@ async def main():
     check("F42 разнотипная сортировка не роняет TypeError", _f42_ok and len(_f42_sorted) == 3,
           f"raised? {not _f42_ok}")
 
-    # F29: validate_formulas = grep токенов без пересчёта → формула-ошибка (=1/0) не ловится (театр).
+    # F29: validate_formulas теперь ПЕРЕСЧИТЫВАЕТ формулы (LibreOffice headless) → ловит =1/0 (был театр).
     from core.excel import ExcelEngine
     import shutil as _sh2
     _xe = ExcelEngine(str(ROOT / "workspace"))
     _xp = "test_f29_probe/b.xlsx"
     _xe.create_workbook(_xp, "S1")
     _xe.insert_formula(_xp, "S1", "A1", "=1/0", True)
-    _vres = _xe.validate_formulas(_xp)
-    xcheck("F29 validate_formulas ловит формулу-ошибку =1/0 (нужен пересчёт)", _vres["ok"] is False, "F29",
-           f"ok={_vres['ok']} errors={len(_vres['errors'])}")
+    if _sh2.which("soffice") or _sh2.which("libreoffice"):
+        _vres = _xe.validate_formulas(_xp)
+        check("F29 validate_formulas ловит =1/0 реальным пересчётом (LO)", _vres["ok"] is False,
+              f"ok={_vres['ok']} errors={len(_vres['errors'])}")
+    else:
+        print("[SKIP F29] LibreOffice недоступен — recalc-валидацию не проверяем (CI ставит libreoffice-calc)")
     _sh2.rmtree(ROOT / "workspace" / "test_f29_probe", ignore_errors=True)
 
     # F11: D23-санитайзер маскирует секреты в raw_response (регрессия — должно быть ЗЕЛЁНО).

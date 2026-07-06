@@ -82,7 +82,7 @@
 | **F5** | DEFAULT-fallback игнорит `DEFAULT.message_template` | behavioral | `test_audit_fixes` (`get_error(unknown)` → assert message==template) | 🟢 **ЗАКРЫТ S16 (A6)** — DEFAULT-ветка тянет class/template/recovery из реестра; регрессия зелёная |
 | **F40** | search-коды `QUERY_NOT_FOUND`/`PATH_NOT_FOUND` НЕ в реестре | behavioral | `test_audit_fixes` (assert коды ⊂ реестр) | 🟢 **ЗАКРЫТ S16 (A6)** — коды добавлены в `server_reactions.yaml`; регрессия зелёная. Остаток дубль-классов → A5 |
 | **F42** | `_match_filter`/`_apply_sort` на разнотипном → TypeError | behavioral | `test_audit_fixes` (фильтр str vs int gt + сортировка разнотипного) | 🟢 **ЗАКРЫТ S16 (A5)** — type-safe фильтр+сортировка; регрессия зелёная (2 проверки). Остаток relevance/overclaim → A5 (F31) |
-| **F29** | `validate_formulas`=grep токенов без пересчёта (театр) | behavioral | `test_audit_fixes` (`insert_formula =1/0` → `validate_formulas` не ловит) | 🟡 **OPEN-CONFIRMED C1** (`ok=True` на `=1/0`) |
+| **F29** | `validate_formulas`=grep токенов без пересчёта (театр) | behavioral | `test_audit_fixes` (`=1/0` → `validate_formulas` ловит через LO recalc; гардед по soffice) | 🟢 **ЗАКРЫТ S16 (A-tables)** — LibreOffice headless recalc; регрессия зелёная. F30 loader / F28 → отдельно |
 | **F28** | delete/move_column ломает формулы молча (сырой `delete_cols`) | static | — (эвидентно из чтения `excel_core.py:242/253`; фикс A-tables) | ✅ подтверждён (чтение); одно корневое с F29 (нет пересчёта/зависимостей) |
 | **F37** | `_safe` ловит голый ValueError → всегда PATH_ESCAPE | static | — (тригер контрив; `server.py:513` эвидентен; фикс A2/A6 = типизир. PathEscapeError) | ✅ подтверждён (чтение) |
 | **F11** | raw_response митигирован (D23-санитайзер) | behavioral | `test_audit_fixes` (ErrorDetail с секретом → замаскирован) | 🟢 **регрессия ЗЕЛЁНАЯ** (api_key/nested token → `***REDACTED***`) |
@@ -95,7 +95,7 @@
 | **F30** | `table_materializer` не построен (loader формул) | static | — (постройка A-tables/Ф3) | ✅ подтверждён (ls ∅) |
 | **F3** | провайдеры = честные стабы (G16) | behavioral | `render_draft_final` (стаб → NotImplementedError-код, не фейк-success) | ✅ покрыт (стаб-контракт) |
 
-**Статус C1 (S15) → фиксы (S16):** **A6 (F43·F5·F40) + A5-TypeError (F42) ЗАКРЫТЫ** — strict-xfail→регрессия (`test_audit_fixes` 40/40). Осталось OPEN-CONFIRMED: **F29** (→A-tables формулы, последний). F11 🟢 (регрессия D23). **static-находки** F38/F44 закрыты (I4); F28/F37/F39/F41/F45/F10/F30 — эвидентны из чтения, закрываются A2/A-tables/anti-hardcode.
+**Статус C1 (S15) → фиксы (S16) — ВСЕ behavioral-находки ЗАКРЫТЫ:** A6 (F43·F5·F40) + A5-TypeError (F42) + A-tables (F29) переведены strict-xfail→регрессия. **`test_audit_fixes` 41/41, 0 OPEN.** F11 🟢 (D23). **static-находки** F38/F44 закрыты (I4); остаток F28/F37/F39/F41/F45/F10/F30 — эвидентны из чтения, закрываются A2/A-tables(F30)/anti-hardcode. Дальше — C2 симуляции+консоль (накоплены фиксы).
 
 > **Правило статусов (git-native):** этот реестр — единственный источник «что подтверждено». Обновлять после
 > каждого C1-теста (⬜→🟢), коммитить. Прогон целиком не нужен — гоняем зону находки, статус фиксируем в git.

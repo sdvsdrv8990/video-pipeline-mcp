@@ -340,14 +340,64 @@ class ExcelEngine:
         return {"path": path, "sheet": sheet, "range": cell_range, "values": matrix,
                 "note": "Отладочное чтение сырых ячеек. Рабочее чтение данных — json_read_snapshot."}
 
+    _ERROR_TOKENS = ("#REF!", "#VALUE!", "#DIV/0!", "#NAME?", "#N/A", "#NULL!", "#NUM!")
+
+    def _recalc_via_lo(self, src: Path) -> Path:
+        """Пересчитать формулы реальным движком LibreOffice headless → путь к вычисленной копии.
+
+        openpyxl формулы не считает; LO recalc'ает при загрузке и сохраняет значения.
+        Профиль уникален на вызов (без конфликта параллельных soffice). RECALC_UNAVAILABLE — честно.
+        """
+        import shutil
+        import subprocess
+        import tempfile
+        soffice = shutil.which("soffice") or shutil.which("libreoffice")
+        if not soffice:
+            raise ExcelError("RECALC_UNAVAILABLE", "Движок пересчёта (LibreOffice) недоступен.",
+                             reason="Установи libreoffice-calc для валидации формул реальным пересчётом.")
+        td = Path(tempfile.mkdtemp(prefix="xlsx_recalc_"))
+        try:
+            subprocess.run(
+                [soffice, "--headless", "--calc", f"-env:UserInstallation=file://{td}/profile",
+                 "--convert-to", "xlsx:Calc MS Excel 2007 XML", "--outdir", str(td), str(src)],
+                check=True, capture_output=True, timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            shutil.rmtree(td, ignore_errors=True)
+            raise ExcelError("RECALC_UNAVAILABLE", "Пересчёт формул превысил таймаут.",
+                             reason="Файл слишком большой/сложный или LibreOffice завис.")
+        except subprocess.CalledProcessError as e:
+            shutil.rmtree(td, ignore_errors=True)
+            raise ExcelError("RECALC_UNAVAILABLE", "Пересчёт формул не удался.",
+                             reason=f"LibreOffice вернул ошибку: {e.stderr.decode('utf-8', 'ignore')[:200]}")
+        out = td / src.name
+        if not out.exists():
+            shutil.rmtree(td, ignore_errors=True)
+            raise ExcelError("RECALC_UNAVAILABLE", "Пересчёт не дал выходного файла.",
+                             reason="LibreOffice не создал файл — проверь установку.")
+        return out
+
     def validate_formulas(self, path: str) -> dict:
-        """Поиск ошибок формул (#REF!/#VALUE!/#DIV/0! и пр.) по всем листам."""
-        wb = self._load(path)
-        errors = []
-        tokens = ("#REF!", "#VALUE!", "#DIV/0!", "#NAME?", "#N/A", "#NULL!", "#NUM!")
-        for ws in wb.worksheets:
-            for row in ws.iter_rows():
-                for c in row:
-                    if isinstance(c.value, str) and any(t in c.value for t in tokens):
-                        errors.append({"sheet": ws.title, "cell": c.coordinate, "value": c.value})
+        """Валидация формул РЕАЛЬНЫМ пересчётом (LibreOffice) — ловит #DIV/0!/#REF! и пр. (F29).
+
+        Раньше был греп токенов по несчитанной книге (openpyxl) = театр: `=1/0` не ловился.
+        """
+        import shutil
+        import openpyxl
+        src = self._resolve(path)
+        if not src.exists():
+            raise ExcelError("WORKBOOK_NOT_FOUND", f"Книга не найдена: {path}",
+                             reason="Создай книгу через excel_create_workbook или проверь путь.",
+                             suggested_tool="excel_create_workbook")
+        recalced = self._recalc_via_lo(src)
+        try:
+            wb = openpyxl.load_workbook(recalced, data_only=True)
+            errors = []
+            for ws in wb.worksheets:
+                for row in ws.iter_rows():
+                    for c in row:
+                        if isinstance(c.value, str) and any(t in c.value for t in self._ERROR_TOKENS):
+                            errors.append({"sheet": ws.title, "cell": c.coordinate, "value": c.value})
+        finally:
+            shutil.rmtree(recalced.parent, ignore_errors=True)
         return {"path": path, "errors": errors, "ok": len(errors) == 0}

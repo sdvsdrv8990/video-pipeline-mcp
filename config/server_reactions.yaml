@@ -202,6 +202,12 @@ FORMULA_PROTECTED:
   recovery:
     reason: "Перезапись критической формулы недопустима молча. Передай overwrite=true осознанно."
 
+RECALC_UNAVAILABLE:
+  class: human_required
+  message_template: "Движок пересчёта формул (LibreOffice) недоступен."
+  recovery:
+    reason: "Установи libreoffice-calc в окружении сервера — валидация формул требует реального пересчёта."
+
 # ═══ Структура: реестр связей / ORPHAN (Ф2) ═══
 
 UNLINKED_ENTITY:

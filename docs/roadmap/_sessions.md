@@ -153,6 +153,18 @@ C2 симуляции с чтением консоли реал-пруф). B и 
 
 **RESUME батча:** A6✅ · I4✅ · I3✅ · A5-TypeError✅ → осталось **A2 распил монолита** (крупный структурный) + **A-tables формулы F29** (нужен `formulas`/`pycel` + table_materializer loader F30). Единственная OPEN-находка = F29. C2 — в конце.
 
+### Сессия 16 (доп. 4) — A-tables: F29 формулы через LibreOffice recalc (ПОСЛЕДНЯЯ OPEN закрыта)
+
+**Пятый воркстрим. Развилка F29 решена владельцем → LibreOffice headless recalc.**
+- **`excel_core.validate_formulas`** переписан: `_recalc_via_lo` пересчитывает книгу реальным движком LO (`soffice --headless --calc --convert-to xlsx`, уникальный `-env:UserInstallation` профиль + timeout 120s), затем `openpyxl data_only=True` читает вычисленные значения → `=1/0`→`#DIV/0!` ловится (был греп несчитанных токенов = театр).
+- **Честность (G16):** LO недоступен → `RECALC_UNAVAILABLE` (human_required, новый код в `server_reactions.yaml`), НЕ фейк-`ok=True`.
+- **Спайк подтвердил** инвокацию до реализации (A3=#DIV/0!, A4=10, A5=10).
+- **F29 🟡→🟢** — регрессия `test_audit_fixes` гардед по `shutil.which(soffice)` (скип без LO); **CI-джоб test ставит `libreoffice-calc`** → F29 гейтится в CI. **41/41 регрессий, 0 OPEN.**
+- Остаток A-tables: **F30** (`table_materializer` loader → A1′, RESUME-А) и **F28** (delete/move ломает формулы, тот же корень «нет зависимостей») — отдельно.
+- Гейты: ruff/mypy PASS, tables 33/33.
+
+**RESUME батча:** A6✅·I4✅·I3✅·A5-TypeError✅·A-tables-F29✅ — **все behavioral-находки закрыты, 0 OPEN.** Остался ОДИН крупный воркстрим батча: **A2 распил монолита** (инкрементально по группам, свежий контекст). Потом **C2 симуляции+консоль** (фиксы накоплены: F43/F5/F40/F42/F29 + I4/I3). Затем проход 2 (A5-relevance F31, dep-hardening F47, F30 loader, F28, A3 ops, A7, media).
+
 ### Сессия 15 (доп. 4) — переход к тестам (ступень C1): реестр подтверждения находок
 
 **Выбор владельца:** сперва **тестами подтвердить найденные проблемы** (§6 C1 = код-пруф), а не Блок 0. Статусы — git-tracked (полный прогон в лимит не влезает).
