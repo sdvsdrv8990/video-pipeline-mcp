@@ -227,7 +227,7 @@ class QueryPlanner:
         task.status = "running"
         try:
             # Читаем данные из таблицы
-            sheet_data = self.table_engine._load(task.table)
+            sheet_data = self.table_engine.load_snapshot(task.table)
             if task.sheet not in sheet_data:
                 raise SearchError("SHEET_NOT_FOUND", f"Лист '{task.sheet}' не найден в таблице '{task.table}'")
 

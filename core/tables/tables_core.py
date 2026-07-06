@@ -82,6 +82,10 @@ class TableEngine:
             )
         return snapshot
 
+    def load_snapshot(self, table: str) -> dict:
+        """Публичный read снапшота таблицы (для кросс-модульных читателей, напр. поиск — F39)."""
+        return self._load(table)
+
     def _sheet(self, snapshot: dict, sheet: str) -> dict:
         """Достаёт лист. SHEET_NOT_FOUND если листа нет в снапшоте."""
         if sheet not in snapshot:

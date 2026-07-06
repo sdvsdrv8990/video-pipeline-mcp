@@ -193,6 +193,10 @@ C2 симуляции с чтением консоли реал-пруф). B и 
 
 **Остаток бюджета → безопасный контейнерный фикс.** `_safe` ловил голый `ValueError`→всегда PATH_ESCAPE (любой не-путёвый ValueError из core вводил в заблуждение). Применил решение B4: `core/paths.PathEscapeError(ValueError)`; `safe_resolve` кидает его; `_safe`: `PathEscapeError`→PATH_ESCAPE, прочий `ValueError`→INTERNAL_ERROR. Подтип ValueError → back-compat (fs_*/state_manager ловят `except ValueError`). Регрессия `test_audit_fixes` 44/44 (typed+подтип+distinct); D1 traversal→PATH_ESCAPE держится; ruff/mypy PASS. **F37 ✅.**
 
+### Сессия 16 (доп. 8) — мелкий фикс F39 (инкапсуляция read-API таблиц)
+
+`QueryPlanner` лез в приватный `table_engine._load` (DIM-13, хрупко). Добавил публичный `TableEngine.load_snapshot(table)` (тонкая обёртка), поиск использует его. Приватного кросс-модульного доступа нет (grep чист). Гейты ruff/mypy PASS; search 24/24·tables 33/33·audit 44/44. **F39 ✅.**
+
 ### Сессия 15 (доп. 4) — переход к тестам (ступень C1): реестр подтверждения находок
 
 **Выбор владельца:** сперва **тестами подтвердить найденные проблемы** (§6 C1 = код-пруф), а не Блок 0. Статусы — git-tracked (полный прогон в лимит не влезает).
