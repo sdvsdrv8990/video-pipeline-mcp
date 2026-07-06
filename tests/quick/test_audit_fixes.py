@@ -189,6 +189,30 @@ async def main():
     xcheck("F43 error несёт reaction_class из реестра", _cls == _reg_class and _reg_class is not None, "F43",
            f"got={_cls!r} vs реестр={_reg_class!r}")
 
+    # F5: DEFAULT-fallback игнорит DEFAULT.message_template (хардкодит свою строку без точки).
+    # NB: reaction_class тут совпадёт ('unknown'==DEFAULT.class) — как suggested_tool у F43, не пруф. Меряем шаблон.
+    from core.reactions import Reactions as _Rx
+    _rx = _Rx(ROOT / "config" / "server_reactions.yaml")
+    _r5 = _rx.get_error("КОД_КОТОРОГО_НЕТ_В_РЕЕСТРЕ_XYZ")
+    _def_tmpl = _reg.get("DEFAULT", {}).get("message_template")
+    xcheck("F5 DEFAULT-fallback берёт message_template из реестра", _r5.message == _def_tmpl and bool(_def_tmpl), "F5",
+           f"got={_r5.message!r} vs template={_def_tmpl!r}")
+
+    # F40: коды core/search (QUERY_NOT_FOUND/PATH_NOT_FOUND) должны быть в реестре реакций.
+    _search_codes = {"QUERY_NOT_FOUND", "PATH_NOT_FOUND"}
+    xcheck("F40 search-коды в server_reactions.yaml", _search_codes.issubset(set(_reg.keys())), "F40",
+           f"нет в реестре: {sorted(_search_codes - set(_reg.keys()))}")
+
+    # F42: QueryPlanner._match_filter на разнотипном (str vs num в gt) не должен ронять TypeError.
+    from core.search.query_planner import QueryPlanner as _QP
+    _qp = _QP(table_engine=None, workspace=str(ROOT / "workspace"))
+    try:
+        _qp._match_filter({"x": "abc"}, {"x": {"gt": 5}})
+        _f42_ok = True   # деградировало без краха = желаемое
+    except TypeError:
+        _f42_ok = False  # упало = находка
+    xcheck("F42 разнотипный gt-фильтр не роняет TypeError", _f42_ok, "F42", "str vs int в условии gt")
+
     print()
     passed = sum(results)
     total = len(results)

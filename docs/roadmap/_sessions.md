@@ -117,7 +117,14 @@ C2 симуляции с чтением консоли реал-пруф). B и 
 - **Бонус-инсайт (B2 вживую):** `recovery.suggested_tool` СОВПАЛ с реестром — не фикс, а **дубль код↔yaml** (движок хардкодит ту же строку). Убрал вводящую в заблуждение проверку, оставил чистый пруф по `reaction_class`. Записано в F43.
 - Реестр §E: F43 ⬜→🟡 OPEN-CONFIRMED; добавлена механика strict-xfail в легенду.
 
-**RESUME (C1 по приоритету):** **F5** (DEFAULT-fallback: `Reactions.get_error("НЕИЗВЕСТНЫЙ")` → assert class/template) → F40 (search-коды ⊂ реестр) → F42 (разнотипный фильтр) → F28/F29 (формулы, нужен .xlsx) → F37 → F11. Каждый: strict-xfail подтверждение → §E ⬜→🟡 → коммит. НЕ чиним.
+### Сессия 15 (доп. 6) — C1 F5/F40/F42 подтверждены (strict-xfail, НЕ чиним)
+
+- **F5** OPEN-CONFIRMED: `get_error(unknown).message='Непредвиденная ошибка'` vs `DEFAULT.message_template='Непредвиденная ошибка.'` — шаблон реестра игнорится. NB: `reaction_class='unknown'` совпал с `DEFAULT.class` (как suggested_tool у F43 — не пруф, меряли шаблон).
+- **F40** OPEN-CONFIRMED: `PATH_NOT_FOUND`/`QUERY_NOT_FOUND` (коды core/search) отсутствуют в `server_reactions.yaml`.
+- **F42** OPEN-CONFIRMED: `QueryPlanner._match_filter({"x":"abc"},{"x":{"gt":5}})` → `TypeError` (str vs int), не деградация.
+- Все в hub `test_audit_fixes` (единый xcheck-механизм, не плодим). Baseline **31/31 зелёный**, 4 OPEN-CONFIRMED, 0 unexpected, exit=0. §E: F5/F40/F42 ⬜→🟡.
+
+**RESUME (C1 остаток):** **F28/F29** (формулы — нужен .xlsx с формулой: create→delete_column→assert `validate_formulas` НЕ ловит) → F37 (`_safe` голый ValueError→PATH_ESCAPE) → F11 (D23-санитайзер маскирует секрет). Затем static-находки закрываются в I4/A2 (не тестами). Метод strict-xfail → §E → коммит.
 
 **Итог обмера (7 подов) — БЛОК 1 ступень A ЗАВЕРШЁН:** инфраструктура зрелее памяти (G17-choke-point/контракты-Literal/D23-санитайзер/D30-транспорт/wiring/честные-стабы), незрелы точечно: реакции-эмиссия (F43/B2 — реестр обходится хендлерами), data-формульный слой (F28–30, loader ∅), search-quality (F38–42), продукт (стабы). Новые F37–F46. Спорные B1–B4 решены. **Переоценка зрелости в `07`.** Дальше по плану: Блок 0 (фундамент I4→I3) ИЛИ ступени B/C по воркстримам (не «весь проход» — обмер был только A).
 

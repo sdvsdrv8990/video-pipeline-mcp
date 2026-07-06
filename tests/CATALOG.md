@@ -79,9 +79,9 @@
 | F# | Что | Метод | Тест-хозяин (не плодить) | Статус |
 |---|---|---|---|---|
 | **F43** | реестр обходится хендлерами → error без `reaction_class` из реестра | behavioral | `test_audit_fixes` (strict-xfail: `table_get_row` на нет-таблице → `reaction_class` сброшен) | 🟡 **OPEN-CONFIRMED C1** (got `unknown` vs реестр `ai_recoverable`); ждёт фикса A6. NB: `suggested_tool` совпал = дубль код↔yaml (B2) |
-| **F5** | DEFAULT-fallback хардкодит UNKNOWN_ERROR, роняет class, игнорит template | behavioral | `test_audit_fixes` (`Reactions.get_error("НЕИЗВЕСТНЫЙ")` → assert class/template) | ⬜ нужен C1 |
-| **F40** | search-коды `QUERY_NOT_FOUND`/`PATH_NOT_FOUND` НЕ в реестре | behavioral | `test_search` (assert коды search ⊂ `server_reactions.yaml`) | ⬜ нужен C1 |
-| **F42** | `_match_filter`/`_apply_sort` на разнотипном → TypeError | behavioral | `test_search` (фильтр str vs num → assert деградация, не краш) | ⬜ нужен C1 |
+| **F5** | DEFAULT-fallback игнорит `DEFAULT.message_template` | behavioral | `test_audit_fixes` (`get_error(unknown)` → assert message==template) | 🟡 **OPEN-CONFIRMED C1** (got `'Непредвиденная ошибка'` vs template `'Непредвиденная ошибка.'`). NB: class `'unknown'` совпал (не пруф) |
+| **F40** | search-коды `QUERY_NOT_FOUND`/`PATH_NOT_FOUND` НЕ в реестре | behavioral | `test_audit_fixes` (assert коды ⊂ реестр) | 🟡 **OPEN-CONFIRMED C1** (обоих нет в `server_reactions.yaml`) |
+| **F42** | `_match_filter`/`_apply_sort` на разнотипном → TypeError | behavioral | `test_audit_fixes` (`_match_filter` str vs int gt) | 🟡 **OPEN-CONFIRMED C1** (TypeError, не деградация) |
 | **F28/F29** | delete/move_column ломает формулы молча; `validate_formulas`=театр | behavioral | `test_tables` (создать .xlsx с формулой → delete_column → assert `validate_formulas` НЕ ловит = красный) | ⬜ нужен C1 (нужен .xlsx с формулами) |
 | **F37** | `_safe` ловит голый ValueError → всегда PATH_ESCAPE | behavioral | `test_audit_fixes` (core бросает не-путёвый ValueError → assert не PATH_ESCAPE) | ⬜ нужен C1 |
 | **F11** | raw_response митигирован (D23-санитайзер) | behavioral | `test_audit_fixes` (ErrorDetail с секретом в raw_response → assert замаскирован) | ⬜ регрессия D23 |
