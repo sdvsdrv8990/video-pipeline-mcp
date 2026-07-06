@@ -209,11 +209,15 @@ async def main():
     from core.search.query_planner import QueryPlanner as _QP
     _qp = _QP(table_engine=None, workspace=str(ROOT / "workspace"))
     try:
-        _qp._match_filter({"x": "abc"}, {"x": {"gt": 5}})
+        _f42_match = _qp._match_filter({"x": "abc"}, {"x": {"gt": 5}})
+        _f42_sorted = _qp._apply_sort([{"v": "abc"}, {"v": 3}, {"v": None}], {"column": "v"})
         _f42_ok = True   # деградировало без краха = желаемое
     except TypeError:
         _f42_ok = False  # упало = находка
-    xcheck("F42 разнотипный gt-фильтр не роняет TypeError", _f42_ok, "F42", "str vs int в условии gt")
+    check("F42 разнотипный gt-фильтр не роняет TypeError (str vs int)", _f42_ok and _f42_match is False,
+          f"raised? {not _f42_ok}")
+    check("F42 разнотипная сортировка не роняет TypeError", _f42_ok and len(_f42_sorted) == 3,
+          f"raised? {not _f42_ok}")
 
     # F29: validate_formulas = grep токенов без пересчёта → формула-ошибка (=1/0) не ловится (театр).
     from core.excel import ExcelEngine

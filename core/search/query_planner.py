@@ -263,10 +263,19 @@ class QueryPlanner:
         for key, condition in filter_dict.items():
             value = row.get(key)
             if isinstance(condition, dict):
-                if "gt" in condition and not (value is not None and value > condition["gt"]):
-                    return False
-                if "lt" in condition and not (value is not None and value < condition["lt"]):
-                    return False
+                # gt/lt: несопоставимые типы (str vs num) → строка не проходит фильтр, не TypeError (F42).
+                if "gt" in condition:
+                    try:
+                        if not (value is not None and value > condition["gt"]):
+                            return False
+                    except TypeError:
+                        return False
+                if "lt" in condition:
+                    try:
+                        if not (value is not None and value < condition["lt"]):
+                            return False
+                    except TypeError:
+                        return False
                 if "eq" in condition and value != condition["eq"]:
                     return False
                 if "neq" in condition and value == condition["neq"]:
@@ -319,8 +328,17 @@ class QueryPlanner:
         return [r for r in rows if self._match_filter(r, filter_dict)]
 
     def _apply_sort(self, rows: list[dict], sort_config: dict) -> list[dict]:
-        """Сортировка результатов."""
+        """Сортировка результатов (разнотипные значения не роняют sorted — F42)."""
         column = sort_config.get("column", "")
-        order = sort_config.get("order", "asc")
-        reverse = order == "desc"
-        return sorted(rows, key=lambda r: r.get(column, 0) or 0, reverse=reverse)
+        reverse = sort_config.get("order", "asc") == "desc"
+
+        def _key(r: dict) -> tuple:
+            v = r.get(column)
+            if isinstance(v, bool):  # bool — подтип int, держим предсказуемо
+                v = int(v)
+            # Числа и строки в разных группах → sorted не сравнивает разнотипное.
+            if isinstance(v, (int, float)):
+                return (0, float(v), "")
+            return (1, 0.0, str(v) if v is not None else "")
+
+        return sorted(rows, key=_key, reverse=reverse)
