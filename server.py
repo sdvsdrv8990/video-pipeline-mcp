@@ -44,7 +44,7 @@ from core.transport import Transport
 from core.reactions import Reactions
 from core.ids import IDGenerator, LinkRegistry, LinkError
 from core.state import StateManager
-from core.paths import safe_resolve
+from core.paths import safe_resolve, PathEscapeError
 from core.tables import TableEngine, TableError
 from core.excel import ExcelEngine, ExcelError
 from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
@@ -500,11 +500,14 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         """
         try:
             return True, call()
-        except ValueError:
+        except PathEscapeError:
             return False, _err("PATH_ESCAPE", "Путь выходит за пределы workspace/.",
                                "Используй путь ВНУТРИ workspace, без '..' и абсолютных путей.")
         except (TableError, ExcelError, TemplateError, LinkError) as e:
             return False, _err(e.code, e.message, e.reason, e.suggested_tool)
+        except ValueError as e:
+            # F37: не-путёвый ValueError из глубины core — честно INTERNAL_ERROR, не вводящий в заблуждение PATH_ESCAPE.
+            return False, _err("INTERNAL_ERROR", f"Внутренняя ошибка: {e}")
 
     # ─── Структура: шаблонное создание (Ф1) ───
 

@@ -17,6 +17,11 @@ Path.resolve() → is_relative_to(root) — как в MCP servers filesystem (pa
 from pathlib import Path
 
 
+class PathEscapeError(ValueError):
+    """Путь выходит за пределы workspace/ (traversal). Подтип ValueError — back-compat
+    с `except ValueError` у вызывающих; позволяет отличать escape от прочих ValueError (F37)."""
+
+
 def safe_resolve(path: str, workspace: Path) -> Path:
     """Разрешение пути с containment внутри workspace/.
 
@@ -31,10 +36,10 @@ def safe_resolve(path: str, workspace: Path) -> Path:
         Абсолютный Path внутри workspace/
 
     Raises:
-        ValueError: если путь выходит за пределы workspace/
+        PathEscapeError: если путь выходит за пределы workspace/ (подтип ValueError)
     """
     root = workspace.resolve()
     target = (root / path).resolve()
     if target != root and not target.is_relative_to(root):
-        raise ValueError(f"path escapes workspace: {path}")
+        raise PathEscapeError(f"path escapes workspace: {path}")
     return target

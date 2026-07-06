@@ -219,6 +219,20 @@ async def main():
     check("F42 разнотипная сортировка не роняет TypeError", _f42_ok and len(_f42_sorted) == 3,
           f"raised? {not _f42_ok}")
 
+    # F37: safe_resolve кидает типизированный PathEscapeError (подтип ValueError = back-compat);
+    # _safe теперь мапит escape→PATH_ESCAPE, а прочий ValueError→INTERNAL_ERROR (не вводит в заблуждение).
+    from core.paths import safe_resolve as _sr, PathEscapeError as _PEE
+    from pathlib import Path as _P37
+    _ws37 = _P37("workspace").resolve()
+    try:
+        _sr("../../../../etc", _ws37); _f37_raised = None
+    except _PEE as _e:
+        _f37_raised = _e
+    check("F37 traversal → PathEscapeError", isinstance(_f37_raised, _PEE))
+    check("F37 PathEscapeError — подтип ValueError (back-compat except ValueError)", isinstance(_f37_raised, ValueError))
+    check("F37 обычный ValueError НЕ PathEscapeError (→ пойдёт в INTERNAL_ERROR)",
+          not isinstance(ValueError("bad arg"), _PEE))
+
     # F29: validate_formulas теперь ПЕРЕСЧИТЫВАЕТ формулы (LibreOffice headless) → ловит =1/0 (был театр).
     from core.excel import ExcelEngine
     import shutil as _sh2
