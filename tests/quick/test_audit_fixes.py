@@ -213,6 +213,26 @@ async def main():
         _f42_ok = False  # упало = находка
     xcheck("F42 разнотипный gt-фильтр не роняет TypeError", _f42_ok, "F42", "str vs int в условии gt")
 
+    # F29: validate_formulas = grep токенов без пересчёта → формула-ошибка (=1/0) не ловится (театр).
+    from core.excel import ExcelEngine
+    import shutil as _sh2
+    _xe = ExcelEngine(str(ROOT / "workspace"))
+    _xp = "test_f29_probe/b.xlsx"
+    _xe.create_workbook(_xp, "S1")
+    _xe.insert_formula(_xp, "S1", "A1", "=1/0", True)
+    _vres = _xe.validate_formulas(_xp)
+    xcheck("F29 validate_formulas ловит формулу-ошибку =1/0 (нужен пересчёт)", _vres["ok"] is False, "F29",
+           f"ok={_vres['ok']} errors={len(_vres['errors'])}")
+    _sh2.rmtree(ROOT / "workspace" / "test_f29_probe", ignore_errors=True)
+
+    # F11: D23-санитайзер маскирует секреты в raw_response (регрессия — должно быть ЗЕЛЁНО).
+    from core.contracts import ErrorDetail as _ED, Recovery as _Rec
+    _ed = _ED(code="INTERNAL_ERROR", message="x", recovery=_Rec(reason="y"),
+              raw_response={"api_key": "sk-secret", "nested": {"token": "t0k"}, "safe": "ok"})
+    check("F11/D23 api_key замаскирован", _ed.raw_response["api_key"] == "***REDACTED***", _ed.raw_response["api_key"])
+    check("F11/D23 вложенный token замаскирован", _ed.raw_response["nested"]["token"] == "***REDACTED***")
+    check("F11/D23 несекретное поле не тронуто", _ed.raw_response["safe"] == "ok")
+
     print()
     passed = sum(results)
     total = len(results)

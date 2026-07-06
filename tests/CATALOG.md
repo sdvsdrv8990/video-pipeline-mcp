@@ -82,9 +82,10 @@
 | **F5** | DEFAULT-fallback игнорит `DEFAULT.message_template` | behavioral | `test_audit_fixes` (`get_error(unknown)` → assert message==template) | 🟡 **OPEN-CONFIRMED C1** (got `'Непредвиденная ошибка'` vs template `'Непредвиденная ошибка.'`). NB: class `'unknown'` совпал (не пруф) |
 | **F40** | search-коды `QUERY_NOT_FOUND`/`PATH_NOT_FOUND` НЕ в реестре | behavioral | `test_audit_fixes` (assert коды ⊂ реестр) | 🟡 **OPEN-CONFIRMED C1** (обоих нет в `server_reactions.yaml`) |
 | **F42** | `_match_filter`/`_apply_sort` на разнотипном → TypeError | behavioral | `test_audit_fixes` (`_match_filter` str vs int gt) | 🟡 **OPEN-CONFIRMED C1** (TypeError, не деградация) |
-| **F28/F29** | delete/move_column ломает формулы молча; `validate_formulas`=театр | behavioral | `test_tables` (создать .xlsx с формулой → delete_column → assert `validate_formulas` НЕ ловит = красный) | ⬜ нужен C1 (нужен .xlsx с формулами) |
-| **F37** | `_safe` ловит голый ValueError → всегда PATH_ESCAPE | behavioral | `test_audit_fixes` (core бросает не-путёвый ValueError → assert не PATH_ESCAPE) | ⬜ нужен C1 |
-| **F11** | raw_response митигирован (D23-санитайзер) | behavioral | `test_audit_fixes` (ErrorDetail с секретом в raw_response → assert замаскирован) | ⬜ регрессия D23 |
+| **F29** | `validate_formulas`=grep токенов без пересчёта (театр) | behavioral | `test_audit_fixes` (`insert_formula =1/0` → `validate_formulas` не ловит) | 🟡 **OPEN-CONFIRMED C1** (`ok=True` на `=1/0`) |
+| **F28** | delete/move_column ломает формулы молча (сырой `delete_cols`) | static | — (эвидентно из чтения `excel_core.py:242/253`; фикс A-tables) | ✅ подтверждён (чтение); одно корневое с F29 (нет пересчёта/зависимостей) |
+| **F37** | `_safe` ловит голый ValueError → всегда PATH_ESCAPE | static | — (тригер контрив; `server.py:513` эвидентен; фикс A2/A6 = типизир. PathEscapeError) | ✅ подтверждён (чтение) |
+| **F11** | raw_response митигирован (D23-санитайзер) | behavioral | `test_audit_fixes` (ErrorDetail с секретом → замаскирован) | 🟢 **регрессия ЗЕЛЁНАЯ** (api_key/nested token → `***REDACTED***`) |
 | **F38** | мёртвый `_lock` в обоих search-классах | static | — (закрывается lint/vulture, I4) | ✅ подтверждён (grep) |
 | **F39** | `QueryPlanner` лезет в приватный `table_engine._load` | static | — (архитектура, фикс A5) | ✅ подтверждён (чтение) |
 | **F41/F46** | таксономия entity_type захардкожена 3× (search+schema+templates) | static→behavioral | `test_structure` (parity: три источника совпадают — metamorphic) | ✅ static; ⬜ parity-тест опционально |
@@ -94,7 +95,7 @@
 | **F30** | `table_materializer` не построен (loader формул) | static | — (постройка A-tables/Ф3) | ✅ подтверждён (ls ∅) |
 | **F3** | провайдеры = честные стабы (G16) | behavioral | `render_draft_final` (стаб → NotImplementedError-код, не фейк-success) | ✅ покрыт (стаб-контракт) |
 
-**Приоритет C1 (behavioral, самые системные первыми):** F43 → F5 (ядро реакций, B2) · F40 → F42 (search) · F28/F29 (формулы) · F37 · F11. **static-находки** (F38/F39/F41/F44/F45/F10/F30) тестами не подтверждаются — закрываются lint (I4) или постройкой; в реестре помечены ✅ по обмеру.
+**Статус C1 (S15):** ✅ подтверждены strict-xfail — F43·F5·F40·F42·F29 (🟡 OPEN-CONFIRMED, ждут фикса) + F11 (🟢 регрессия D23). **static-находки** (F28/F37/F38/F39/F41/F44/F45/F10/F30) тестами не подтверждаются — эвидентны из чтения, закрываются lint (I4)/A2/постройкой. **Behavioral C1-набор ЗАКРЫТ** — все находки с наблюдаемым эффектом подтверждены; дальше фиксы по воркстримам (A6 реакции F43/F5/F40 · A5 search F42 · A-tables формулы F29).
 
 > **Правило статусов (git-native):** этот реестр — единственный источник «что подтверждено». Обновлять после
 > каждого C1-теста (⬜→🟢), коммитить. Прогон целиком не нужен — гоняем зону находки, статус фиксируем в git.
