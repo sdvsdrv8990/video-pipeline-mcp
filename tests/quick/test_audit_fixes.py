@@ -181,13 +181,15 @@ async def main():
     rtf = await engine.call("table_get_row", {"table": "нет/такой/таблицы", "sheet": "META", "row_id": "r1"})
     _code = rtf.error.code if rtf.error else ""
     check("F43-setup table_get_row on missing table → TABLE_NOT_FOUND", _code == "TABLE_NOT_FOUND", _code)
-    # Чистый пруф F43: reaction_class сброшен (=default 'unknown'), хотя реестр даёт 'ai_recoverable'.
-    # NB (B2): recovery.suggested_tool СОВПАДАЕТ с реестром — не потому что F43 закрыт, а потому что
-    # движок ХАРДКОДИТ ту же строку (дубль код↔yaml). Поэтому проверяем именно класс, не recovery.
+    # F43 ЗАКРЫТ (A6/B2): _err routes through реестр → error несёт reaction_class И recovery из yaml.
     _reg_class = _reg.get(_code, {}).get("class")
+    _reg_reason = _reg.get(_code, {}).get("recovery", {}).get("reason")
     _cls = rtf.error.reaction_class if rtf.error else None
-    xcheck("F43 error несёт reaction_class из реестра", _cls == _reg_class and _reg_class is not None, "F43",
-           f"got={_cls!r} vs реестр={_reg_class!r}")
+    check("F43 error несёт reaction_class из реестра", _cls == _reg_class and _reg_class is not None,
+          f"got={_cls!r} vs реестр={_reg_class!r}")
+    check("F43 error несёт recovery.reason из реестра (B2: yaml=SoT)",
+          rtf.error.recovery.reason == _reg_reason and bool(_reg_reason),
+          f"got={rtf.error.recovery.reason!r} vs реестр={_reg_reason!r}")
 
     # F5: DEFAULT-fallback игнорит DEFAULT.message_template (хардкодит свою строку без точки).
     # NB: reaction_class тут совпадёт ('unknown'==DEFAULT.class) — как suggested_tool у F43, не пруф. Меряем шаблон.
@@ -195,13 +197,13 @@ async def main():
     _rx = _Rx(ROOT / "config" / "server_reactions.yaml")
     _r5 = _rx.get_error("КОД_КОТОРОГО_НЕТ_В_РЕЕСТРЕ_XYZ")
     _def_tmpl = _reg.get("DEFAULT", {}).get("message_template")
-    xcheck("F5 DEFAULT-fallback берёт message_template из реестра", _r5.message == _def_tmpl and bool(_def_tmpl), "F5",
-           f"got={_r5.message!r} vs template={_def_tmpl!r}")
+    check("F5 DEFAULT-fallback берёт message_template из реестра", _r5.message == _def_tmpl and bool(_def_tmpl),
+          f"got={_r5.message!r} vs template={_def_tmpl!r}")
 
     # F40: коды core/search (QUERY_NOT_FOUND/PATH_NOT_FOUND) должны быть в реестре реакций.
     _search_codes = {"QUERY_NOT_FOUND", "PATH_NOT_FOUND"}
-    xcheck("F40 search-коды в server_reactions.yaml", _search_codes.issubset(set(_reg.keys())), "F40",
-           f"нет в реестре: {sorted(_search_codes - set(_reg.keys()))}")
+    check("F40 search-коды в server_reactions.yaml", _search_codes.issubset(set(_reg.keys())),
+          f"нет в реестре: {sorted(_search_codes - set(_reg.keys()))}")
 
     # F42: QueryPlanner._match_filter на разнотипном (str vs num в gt) не должен ронять TypeError.
     from core.search.query_planner import QueryPlanner as _QP

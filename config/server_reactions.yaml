@@ -218,6 +218,20 @@ ENTITY_NOT_FOUND:
     suggested_tool: "structure_status"
     reason: "Проверь имя/тип через structure_status; при необходимости создай через structure_create."
 
+# ═══ Поиск (core/search) ═══
+
+QUERY_NOT_FOUND:
+  class: ai_recoverable
+  message_template: "Файл запроса не найден."
+  recovery:
+    reason: "Проверь путь к .yaml-запросу внутри workspace или создай его."
+
+PATH_NOT_FOUND:
+  class: ai_recoverable
+  message_template: "Путь не найден."
+  recovery:
+    reason: "Проверь путь внутри workspace (регистр важен)."
+
 # ═══ Анализ данных ═══
 
 SHEET_COPY_ERROR:

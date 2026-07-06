@@ -141,9 +141,9 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         try:
             target = _safe_resolve(path)
         except ValueError:
-            return ToolResult(status="error", error=ErrorDetail(code="PATH_ESCAPE", message=f"Path escapes workspace: {path}", recovery=Recovery(reason="Используй путь внутри workspace")))
+            return _err("PATH_ESCAPE", f"Path escapes workspace: {path}")
         if not target.exists():
-            return ToolResult(status="error", error=ErrorDetail(code="PATH_NOT_FOUND", message=f"Path not found: {path}", recovery=Recovery(reason="Проверь путь")))
+            return _err("PATH_NOT_FOUND", f"Path not found: {path}")
         def build_tree(p: Path) -> dict:
             tree = {}
             for item in sorted(p.iterdir()):
@@ -160,9 +160,9 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         try:
             target = _safe_resolve(path)
         except ValueError:
-            return ToolResult(status="error", error=ErrorDetail(code="PATH_ESCAPE", message=f"Path escapes workspace: {path}", recovery=Recovery(reason="Используй путь внутри workspace")))
+            return _err("PATH_ESCAPE", f"Path escapes workspace: {path}")
         if not target.exists():
-            return ToolResult(status="error", error=ErrorDetail(code="FILE_NOT_FOUND", message=f"File not found: {path}", recovery=Recovery(reason="Создай файл через fs_create_file")))
+            return _err("FILE_NOT_FOUND", f"File not found: {path}")
         content = target.read_text(encoding="utf-8")
         return ToolResult(status="success", data={"content": content, "size": len(content)}, facts=[Fact(type="FileRead", data={"path": path, "size": len(content)})])
 
@@ -172,7 +172,7 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         try:
             target = _safe_resolve(path)
         except ValueError:
-            return ToolResult(status="error", error=ErrorDetail(code="PATH_ESCAPE", message=f"Path escapes workspace: {path}", recovery=Recovery(reason="Используй путь внутри workspace")))
+            return _err("PATH_ESCAPE", f"Path escapes workspace: {path}")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         return ToolResult(status="success", data={"created": path, "size": len(content)}, facts=[Fact(type="FileCreated", data={"path": path, "size": len(content)})])
@@ -183,7 +183,7 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         try:
             target = _safe_resolve(path)
         except ValueError:
-            return ToolResult(status="error", error=ErrorDetail(code="PATH_ESCAPE", message=f"Path escapes workspace: {path}", recovery=Recovery(reason="Используй путь внутри workspace")))
+            return _err("PATH_ESCAPE", f"Path escapes workspace: {path}")
         target.parent.mkdir(parents=True, exist_ok=True)
         old_size = target.stat().st_size if target.exists() else 0
         target.write_text(content, encoding="utf-8")
@@ -200,7 +200,7 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         try:
             target = _safe_resolve(path)
         except ValueError:
-            return ToolResult(status="error", error=ErrorDetail(code="PATH_ESCAPE", message=f"Path escapes workspace: {path}", recovery=Recovery(reason="Используй путь внутри workspace")))
+            return _err("PATH_ESCAPE", f"Path escapes workspace: {path}")
         if not target.exists():
             return ToolResult(status="success", data={"path": path, "exists": False, "entries": [], "ids": []})
         content = target.read_text(encoding="utf-8")
@@ -244,7 +244,7 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         try:
             target = _safe_resolve(path)
         except ValueError:
-            return ToolResult(status="error", error=ErrorDetail(code="PATH_ESCAPE", message=f"Path escapes workspace: {path}", recovery=Recovery(reason="Используй путь внутри workspace")))
+            return _err("PATH_ESCAPE", f"Path escapes workspace: {path}")
         target.parent.mkdir(parents=True, exist_ok=True)
         # Формируем запись
         entry = f"\n## [{entry_date}] Решение: {title}\n"
@@ -300,11 +300,11 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         try:
             src, dst = _safe_resolve(source), _safe_resolve(destination)
         except ValueError:
-            return ToolResult(status="error", error=ErrorDetail(code="PATH_ESCAPE", message="Path escapes workspace", recovery=Recovery(reason="Используй пути внутри workspace")))
+            return _err("PATH_ESCAPE", "Path escapes workspace")
         if not src.exists():
-            return ToolResult(status="error", error=ErrorDetail(code="FILE_NOT_FOUND", message=f"Source not found: {source}", recovery=Recovery(reason="Проверь исходный путь")))
+            return _err("FILE_NOT_FOUND", f"Source not found: {source}")
         if dst.exists():
-            return ToolResult(status="error", error=ErrorDetail(code="FILE_EXISTS", message=f"Destination exists: {destination}", recovery=Recovery(reason="Удали назначение или используй другое имя")))
+            return _err("FILE_EXISTS", f"Destination exists: {destination}")
         dst.parent.mkdir(parents=True, exist_ok=True)
         src.rename(dst)
         return ToolResult(status="success", data={"source": source, "destination": destination}, facts=[Fact(type="FileMoved", data={"source": source, "destination": destination})])
@@ -315,16 +315,16 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         try:
             src = _safe_resolve(path)
         except ValueError:
-            return ToolResult(status="error", error=ErrorDetail(code="PATH_ESCAPE", message=f"Path escapes workspace: {path}", recovery=Recovery(reason="Используй путь внутри workspace")))
+            return _err("PATH_ESCAPE", f"Path escapes workspace: {path}")
         if not src.exists():
-            return ToolResult(status="error", error=ErrorDetail(code="FILE_NOT_FOUND", message=f"Not found: {path}", recovery=Recovery(reason="Проверь путь")))
+            return _err("FILE_NOT_FOUND", f"Not found: {path}")
         dst = src.parent / new_name
         try:
             dst = _safe_resolve(str(dst.relative_to(WORKSPACE_PATH)))
         except ValueError:
-            return ToolResult(status="error", error=ErrorDetail(code="PATH_ESCAPE", message=f"New name escapes workspace: {new_name}", recovery=Recovery(reason="Используй имя внутри workspace")))
+            return _err("PATH_ESCAPE", f"New name escapes workspace: {new_name}")
         if dst.exists():
-            return ToolResult(status="error", error=ErrorDetail(code="FILE_EXISTS", message=f"Name exists: {new_name}", recovery=Recovery(reason="Выбери другое имя")))
+            return _err("FILE_EXISTS", f"Name exists: {new_name}")
         src.rename(dst)
         return ToolResult(status="success", data={"old_path": path, "new_path": str(dst.relative_to(WORKSPACE_PATH))}, facts=[Fact(type="FileRenamed", data={"old": path, "new": new_name})])
 
@@ -335,13 +335,13 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         try:
             target = _safe_resolve(path)
         except ValueError:
-            return ToolResult(status="error", error=ErrorDetail(code="PATH_ESCAPE", message=f"Path escapes workspace: {path}", recovery=Recovery(reason="Используй путь внутри workspace")))
+            return _err("PATH_ESCAPE", f"Path escapes workspace: {path}")
         if not target.exists():
-            return ToolResult(status="error", error=ErrorDetail(code="FILE_NOT_FOUND", message=f"Not found: {path}", recovery=Recovery(reason="Проверь путь")))
+            return _err("FILE_NOT_FOUND", f"Not found: {path}")
         if target.is_dir() and not force:
             contents = list(target.iterdir())
             if contents:
-                return ToolResult(status="error", error=ErrorDetail(code="DIRECTORY_NOT_EMPTY", message=f"Directory not empty: {path} ({len(contents)} items)", recovery=Recovery(reason="Используй force=true для удаления с содержимым")))
+                return _err("DIRECTORY_NOT_EMPTY", f"Directory not empty: {path} ({len(contents)} items)")
         if target.is_dir():
             shutil.rmtree(target)
         else:
@@ -433,9 +433,9 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         try:
             target = _safe_resolve(path)
         except ValueError:
-            return ToolResult(status="error", error=ErrorDetail(code="PATH_ESCAPE", message=f"Path escapes workspace: {path}", recovery=Recovery(reason="Используй путь внутри workspace")))
+            return _err("PATH_ESCAPE", f"Path escapes workspace: {path}")
         if not path.endswith(".py"):
-            return ToolResult(status="error", error=ErrorDetail(code="INVALID_EXTENSION", message=f"Not a Python file: {path}", recovery=Recovery(reason="Используй расширение .py")))
+            return _err("INVALID_EXTENSION", f"Not a Python file: {path}")
         desc = description or target.stem
         skeleton = f'"""\n{desc}\n"""\n\nimport sys\nfrom pathlib import Path\n\n\ndef main():\n    """Main entry point."""\n    print(f"Running {{__file__}}")\n    # TODO: implement\n    pass\n\n\nif __name__ == "__main__":\n    main()\n'
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -449,12 +449,12 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         if template:
             template_path = CONFIG_PATH / "templates" / "workspace" / f"{template}.yaml"
             if not template_path.exists():
-                return ToolResult(status="error", error=ErrorDetail(code="TEMPLATE_NOT_FOUND", message=f"Template not found: {template}", recovery=Recovery(reason="Проверь имя шаблона в config/templates/workspace/")))
+                return _err("TEMPLATE_NOT_FOUND", f"Template not found: {template}")
             import yaml
             tpl = yaml.safe_load(template_path.read_text(encoding="utf-8")) or {}
             fragments = tpl.get("fragments", [])
         if not fragments:
-            return ToolResult(status="error", error=ErrorDetail(code="NO_FRAGMENTS", message="No fragments to create", recovery=Recovery(reason="Укажи template или fragments")))
+            return _err("NO_FRAGMENTS", "No fragments to create")
         for frag in fragments:
             name = frag.get("name", "")
             if not name:
@@ -479,9 +479,9 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
         try:
             snapshot = state_manager.read_snapshot(table)
         except ValueError:
-            return ToolResult(status="error", error=ErrorDetail(code="PATH_ESCAPE", message=f"Path escapes workspace: {table}", recovery=Recovery(reason="Используй путь внутри workspace")))
+            return _err("PATH_ESCAPE", f"Path escapes workspace: {table}")
         if snapshot is None:
-            return ToolResult(status="error", error=ErrorDetail(code="TABLE_NOT_FOUND", message=f"Table not found: {table}", recovery=Recovery(reason="Создай структуру через fs_create_project_structure")))
+            return _err("TABLE_NOT_FOUND", f"Table not found: {table}")
         return ToolResult(status="success", data=snapshot, facts=[Fact(type="SnapshotRead", data={"table": table})])
 
     # ═══ ТАБЛИЦЫ: движки (generic-ядра, тонкие обёртки ниже) ═══
@@ -495,9 +495,15 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
     # Реестр связей (Ф2): анонимные → ORPHAN, link() в одном месте.
     link_registry = LinkRegistry(state_manager.workspace_path)
 
-    def _err(code: str, message: str, reason: str = "", suggested_tool: str | None = None):
-        """Сборка ошибочного ToolResult (единый конверт)."""
+    def _err(code: str, message: str = "", reason: str = "", suggested_tool: str | None = None):
+        """Ошибочный ToolResult через реестр реакций (yaml = единственный источник class/recovery, B2/F43).
+
+        Для кода из реестра class/message_template/recovery берутся из server_reactions.yaml
+        (raw message сохраняет специфику). reason/suggested_tool — fallback лишь для кодов вне реестра.
+        """
         from core.contracts import ToolResult, ErrorDetail, Recovery
+        if engine.reactions is not None and engine.reactions.get_reaction(code) is not None:
+            return ToolResult(status="error", error=engine.reactions.get_error(code, raw_message=message))
         return ToolResult(status="error", error=ErrorDetail(
             code=code, message=message,
             recovery=Recovery(reason=reason, suggested_tool=suggested_tool)))

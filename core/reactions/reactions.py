@@ -67,13 +67,17 @@ class Reactions:
                 raw_response=raw_response
             )
 
-        # Неизвестная ошибка → DEFAULT
+        # Неизвестная ошибка → DEFAULT (единообразно с обычной веткой: класс/шаблон/recovery из реестра).
         default = self.reactions.get("DEFAULT", {})
+        default_recovery = default.get("recovery", {})
         return ErrorDetail(
             code="UNKNOWN_ERROR",
-            message=raw_message or "Непредвиденная ошибка",
+            reaction_class=default.get("class", "unknown"),
+            message=raw_message or default.get("message_template", "Непредвиденная ошибка."),
             recovery=Recovery(
-                reason=default.get("recovery", {}).get("reason", "Обратитесь к администратору")
+                suggested_tool=default_recovery.get("suggested_tool"),
+                suggested_params=default_recovery.get("suggested_params"),
+                reason=default_recovery.get("reason", "Обратитесь к администратору")
             ),
             raw_response=raw_response
         )
