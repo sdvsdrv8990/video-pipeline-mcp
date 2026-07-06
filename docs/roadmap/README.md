@@ -25,7 +25,7 @@
 ## Механика программы
 
 - **Единица работы** — воркстрим (`P1`, `A2`, `I3`…) из мастер-roadmap. Сессия берёт 1–2.
-- **3 прогона** (оси ревью, не разовые): `quality` (code-quality), `style/structure` (project-conventions + anti-hardcode), `systems/security` (security-reviewer + test-master). Каждый прогон сеет находки в `02_findings.md`.
+- **3 прогона** (оси ревью, не разовые): `quality` (code-quality), `style/structure` (project-conventions + anti-hardcode), `systems/security` (security-reviewer + test-master). Каждый прогон сеет находки в `02_findings.md`, привязан к измерениям зрелости (`08 §3.1`) и **честно закрывается по `08 §6`** (обмер всех файлов → адаптация GitHub кроме sec → простые тесты + симуляции с чтением консоли).
 - **Каждая сессия:** делает работу → обновляет `02_findings.md` + `_sessions.md` → коммит в git с отчётом → обновляет память проекта.
 - **Правило истории (обновлено 2026-07-05):** `docs/dev/` удалён → решения→факты пишем в `_sessions.md` + commit-сообщение + память (НЕ в `docs/dev/history_*.md`). Полный ремап — `08_pass_closure.md §1`.
 - **Тесты зелёные** до и после каждого изменения (baseline см. `_sessions.md`).
