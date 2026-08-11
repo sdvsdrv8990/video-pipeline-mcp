@@ -214,7 +214,23 @@ C2 симуляции с чтением консоли реал-пруф). B и 
   чистом клоне `structure_create` падал `TemplateError: Шаблон не найден: niche`. Якорь `/workspace/` +
   шаблоны закоммичены. Локально этот класс не ловится в принципе.
 
-**RESUME:** старт **A2** (распил монолита, `12_a2_split_plan.md`) — шаг 1 скелет `tools/_context.py`.
+- **CI зелёный ВПЕРВЫЕ** (6/6 джоб: lint ×2, test ×2, security, gitleaks) — `gh run 31519297997`.
+
+### Сессия 17 (доп. 1) — A2 шаг 1: скелет `tools/_context.py` + механический критерий приёмки
+
+- **`tests/quick/test_tools_inventory.py` + `tools_inventory.golden.json`** — сеть безопасности под все 8
+  шагов распила: 52 инструмента × (group/title/description/annotations/input_schema) как контракт клиента.
+  59 проверок; `--bless` обновляет эталон осознанно (diff виден в ревью). Подключён в CI.
+- **`tools/_context.py`:** `ToolContext` (движки tables/excel/template/links + `resolve`/`err`/`safe`) +
+  `build_context` + `ANNOTATIONS_*`. Отклонение от плана: хелперы — **методы**, не поля-`Callable`
+  (поля стирают сигнатуру для mypy). `tools/` заведён в `[tool.mypy] files`.
+- **`server.py`:** `register_basic_tools` строит `ctx`; 52 хендлера НЕ тронуты (локальные имена = мост).
+  Ушли 11 импортов (`TableError`/`ExcelError`/`TemplateError`/`LinkError`/`PathEscapeError`/`ErrorDetail`/
+  `Recovery`/движки) — маппинг исключений теперь в контексте. Диффы `core/*` = 0.
+- Гейты: ruff PASS, mypy 36 files PASS, инвентарь 59/59, audit 44/44, search 24/24, structure 35/35, tables 33/33.
+
+**RESUME:** A2 шаг 2 — перенести 12 fs-хендлеров + спек-лист `fs_tools` в `tools/filesystem/` (эталон
+паттерна для остальных 5 групп), затем memory → structure → search → tables+analysis → excel → финал.
 
 ### Сессия 15 (доп. 4) — переход к тестам (ступень C1): реестр подтверждения находок
 

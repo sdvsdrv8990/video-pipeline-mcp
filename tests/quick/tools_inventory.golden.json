@@ -1,0 +1,1675 @@
+{
+ "excel_add_column": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Добавить столбец (заголовок в строку 1). formula — опционально.",
+  "group": "excel",
+  "input_schema": {
+   "properties": {
+    "column": {
+     "description": "Имя столбца (заголовок)",
+     "type": "string"
+    },
+    "formula": {
+     "description": "Формула-образец (опц.)",
+     "type": "string"
+    },
+    "path": {
+     "description": "Путь к .xlsx относительно workspace",
+     "type": "string"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path",
+    "sheet",
+    "column"
+   ],
+   "type": "object"
+  },
+  "title": "Excel: добавить столбец"
+ },
+ "excel_add_sheet": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Добавить лист в книгу.",
+  "group": "excel",
+  "input_schema": {
+   "properties": {
+    "path": {
+     "description": "Путь к .xlsx относительно workspace",
+     "type": "string"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path",
+    "sheet"
+   ],
+   "type": "object"
+  },
+  "title": "Excel: добавить лист"
+ },
+ "excel_apply_formatting": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Стили на ячейку/диапазон (заливка/жирный/цвет шрифта).",
+  "group": "excel",
+  "input_schema": {
+   "properties": {
+    "bold": {
+     "description": "Жирный",
+     "type": "boolean"
+    },
+    "fill": {
+     "description": "HEX заливки RRGGBB",
+     "type": "string"
+    },
+    "font_color": {
+     "description": "HEX цвета шрифта RRGGBB",
+     "type": "string"
+    },
+    "path": {
+     "description": "Путь к .xlsx относительно workspace",
+     "type": "string"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    },
+    "target": {
+     "description": "Ячейка или диапазон (A1 / A1:C3)",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path",
+    "sheet",
+    "target"
+   ],
+   "type": "object"
+  },
+  "title": "Excel: форматирование"
+ },
+ "excel_copy_sheet": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Копирование листа с данными и форматированием.",
+  "group": "excel",
+  "input_schema": {
+   "properties": {
+    "new_name": {
+     "description": "Имя копии листа",
+     "type": "string"
+    },
+    "path": {
+     "description": "Путь к .xlsx относительно workspace",
+     "type": "string"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path",
+    "sheet",
+    "new_name"
+   ],
+   "type": "object"
+  },
+  "title": "Excel: копировать лист"
+ },
+ "excel_create_workbook": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Создать новый .xlsx (не перезаписывает существующий).",
+  "group": "excel",
+  "input_schema": {
+   "properties": {
+    "path": {
+     "description": "Путь к .xlsx относительно workspace",
+     "type": "string"
+    },
+    "sheet": {
+     "default": "Sheet1",
+     "description": "Имя первого листа",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path"
+   ],
+   "type": "object"
+  },
+  "title": "Excel: новая книга"
+ },
+ "excel_delete_column": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Удалить столбец по имени заголовка.",
+  "group": "excel",
+  "input_schema": {
+   "properties": {
+    "column": {
+     "description": "Имя столбца",
+     "type": "string"
+    },
+    "path": {
+     "description": "Путь к .xlsx относительно workspace",
+     "type": "string"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path",
+    "sheet",
+    "column"
+   ],
+   "type": "object"
+  },
+  "title": "Excel: удалить столбец"
+ },
+ "excel_delete_sheet": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Удалить лист (нельзя последний).",
+  "group": "excel",
+  "input_schema": {
+   "properties": {
+    "path": {
+     "description": "Путь к .xlsx относительно workspace",
+     "type": "string"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path",
+    "sheet"
+   ],
+   "type": "object"
+  },
+  "title": "Excel: удалить лист"
+ },
+ "excel_insert_formula": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Формула в ячейку. Не перезаписывает существующую молча (overwrite).",
+  "group": "excel",
+  "input_schema": {
+   "properties": {
+    "cell": {
+     "description": "Ячейка (напр. C2)",
+     "type": "string"
+    },
+    "formula": {
+     "description": "Формула (с '=' или без)",
+     "type": "string"
+    },
+    "overwrite": {
+     "default": false,
+     "description": "Перезаписать существующую формулу",
+     "type": "boolean"
+    },
+    "path": {
+     "description": "Путь к .xlsx относительно workspace",
+     "type": "string"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path",
+    "sheet",
+    "cell",
+    "formula"
+   ],
+   "type": "object"
+  },
+  "title": "Excel: вставить формулу"
+ },
+ "excel_move_column": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Переместить столбец на позицию to_index (1-based).",
+  "group": "excel",
+  "input_schema": {
+   "properties": {
+    "column": {
+     "description": "Имя столбца",
+     "type": "string"
+    },
+    "path": {
+     "description": "Путь к .xlsx относительно workspace",
+     "type": "string"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    },
+    "to_index": {
+     "description": "Новая позиция (1-based)",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "path",
+    "sheet",
+    "column",
+    "to_index"
+   ],
+   "type": "object"
+  },
+  "title": "Excel: переместить столбец"
+ },
+ "excel_read_range": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "ОТЛАДКА: сырой 2D-массив ячеек. Рабочее чтение — json_read_snapshot.",
+  "group": "excel",
+  "input_schema": {
+   "properties": {
+    "cell_range": {
+     "description": "Диапазон (напр. A1:C10)",
+     "type": "string"
+    },
+    "path": {
+     "description": "Путь к .xlsx относительно workspace",
+     "type": "string"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path",
+    "sheet",
+    "cell_range"
+   ],
+   "type": "object"
+  },
+  "title": "Excel: сырой диапазон (отладка)"
+ },
+ "excel_rename_sheet": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Переименовать лист.",
+  "group": "excel",
+  "input_schema": {
+   "properties": {
+    "new_name": {
+     "description": "Новое имя листа",
+     "type": "string"
+    },
+    "path": {
+     "description": "Путь к .xlsx относительно workspace",
+     "type": "string"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path",
+    "sheet",
+    "new_name"
+   ],
+   "type": "object"
+  },
+  "title": "Excel: переименовать лист"
+ },
+ "excel_reorder_sheets": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Переупорядочить листы (order = все листы книги).",
+  "group": "excel",
+  "input_schema": {
+   "properties": {
+    "order": {
+     "description": "Полный список листов в новом порядке",
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "path": {
+     "description": "Путь к .xlsx относительно workspace",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path",
+    "order"
+   ],
+   "type": "object"
+  },
+  "title": "Excel: порядок листов"
+ },
+ "excel_set_validation": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Data Validation (dropdown) на столбец — материализует enum из схемы.",
+  "group": "excel",
+  "input_schema": {
+   "properties": {
+    "allowed": {
+     "description": "Список допустимых значений",
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "column": {
+     "description": "Имя столбца",
+     "type": "string"
+    },
+    "path": {
+     "description": "Путь к .xlsx относительно workspace",
+     "type": "string"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path",
+    "sheet",
+    "column",
+    "allowed"
+   ],
+   "type": "object"
+  },
+  "title": "Excel: выпадающий список"
+ },
+ "excel_validate_formulas": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Поиск ошибок формул (#REF!/#VALUE!/…) по всем листам.",
+  "group": "excel",
+  "input_schema": {
+   "properties": {
+    "path": {
+     "description": "Путь к .xlsx относительно workspace",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path"
+   ],
+   "type": "object"
+  },
+  "title": "Excel: проверить формулы"
+ },
+ "find_duplicates": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Поиск дубликатов по столбцам (или всем).",
+  "group": "tables",
+  "input_schema": {
+   "properties": {
+    "columns": {
+     "description": "Столбцы для проверки (все если пусто)",
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    },
+    "table": {
+     "description": "Путь к таблице (сущности) относительно workspace",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table",
+    "sheet"
+   ],
+   "type": "object"
+  },
+  "title": "Таблицы: дубликаты"
+ },
+ "find_nulls": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Поиск пустых/пропущенных значений по всем столбцам.",
+  "group": "tables",
+  "input_schema": {
+   "properties": {
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    },
+    "table": {
+     "description": "Путь к таблице (сущности) относительно workspace",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table",
+    "sheet"
+   ],
+   "type": "object"
+  },
+  "title": "Таблицы: пустые значения"
+ },
+ "fs_create_file": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Создание файла",
+  "group": "filesystem",
+  "input_schema": {
+   "properties": {
+    "content": {
+     "description": "Содержимое файла",
+     "type": "string"
+    },
+    "path": {
+     "description": "Путь к файлу",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path"
+   ],
+   "type": "object"
+  },
+  "title": "Файлы: создать файл"
+ },
+ "fs_create_project_structure": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Материализация структуры каталогов/файлов по шаблону или списку фрагментов",
+  "group": "filesystem",
+  "input_schema": {
+   "properties": {
+    "fragments": {
+     "description": "Список фрагментов для создания",
+     "items": {
+      "properties": {
+       "content": {
+        "type": "string"
+       },
+       "name": {
+        "type": "string"
+       },
+       "type": {
+        "enum": [
+         "directory",
+         "file"
+        ],
+        "type": "string"
+       }
+      },
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "template": {
+     "description": "Имя шаблона из config/templates/workspace/",
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "title": "Файлы: структура проекта"
+ },
+ "fs_create_python_script": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Создание Python-скрипта с каркасом",
+  "group": "filesystem",
+  "input_schema": {
+   "properties": {
+    "description": {
+     "description": "Описание модуля",
+     "type": "string"
+    },
+    "path": {
+     "description": "Путь к .py файлу",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path"
+   ],
+   "type": "object"
+  },
+  "title": "Файлы: новый Python-скрипт"
+ },
+ "fs_delete": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Удаление файла или каталога",
+  "group": "filesystem",
+  "input_schema": {
+   "properties": {
+    "force": {
+     "default": false,
+     "description": "Принудительное удаление каталога с содержимым",
+     "type": "boolean"
+    },
+    "path": {
+     "description": "Путь к файлу/каталогу",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path"
+   ],
+   "type": "object"
+  },
+  "title": "Файлы: удалить"
+ },
+ "fs_get_directory_tree": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Получение дерева каталогов",
+  "group": "filesystem",
+  "input_schema": {
+   "properties": {
+    "path": {
+     "description": "Путь относительно workspace",
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "title": "Файлы: дерево каталогов"
+ },
+ "fs_move": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Перемещение файла или каталога",
+  "group": "filesystem",
+  "input_schema": {
+   "properties": {
+    "destination": {
+     "description": "Путь назначения",
+     "type": "string"
+    },
+    "source": {
+     "description": "Исходный путь",
+     "type": "string"
+    }
+   },
+   "required": [
+    "source",
+    "destination"
+   ],
+   "type": "object"
+  },
+  "title": "Файлы: переместить"
+ },
+ "fs_read_file": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Чтение файла",
+  "group": "filesystem",
+  "input_schema": {
+   "properties": {
+    "path": {
+     "description": "Путь к файлу",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path"
+   ],
+   "type": "object"
+  },
+  "title": "Файлы: прочитать файл"
+ },
+ "fs_rename": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Переименование файла или каталога",
+  "group": "filesystem",
+  "input_schema": {
+   "properties": {
+    "new_name": {
+     "description": "Новое имя (без пути)",
+     "type": "string"
+    },
+    "path": {
+     "description": "Текущий путь",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path",
+    "new_name"
+   ],
+   "type": "object"
+  },
+  "title": "Файлы: переименовать"
+ },
+ "fs_search_multi": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Параллельный поиск по нескольким запросам",
+  "group": "filesystem",
+  "input_schema": {
+   "properties": {
+    "queries": {
+     "description": "Список запросов",
+     "items": {
+      "properties": {
+       "content_keywords": {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       "entity_types": {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       "extensions": {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       "root": {
+        "type": "string"
+       }
+      },
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "queries"
+   ],
+   "type": "object"
+  },
+  "title": "Файлы: многозадачный поиск"
+ },
+ "fs_search_yaml": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Умный поиск по YAML-запросу (очередь, многопоточность, фильтры по дате/размеру/содержимому)",
+  "group": "filesystem",
+  "input_schema": {
+   "properties": {
+    "yaml_query": {
+     "description": "YAML-строка с запросом",
+     "type": "string"
+    }
+   },
+   "required": [
+    "yaml_query"
+   ],
+   "type": "object"
+  },
+  "title": "Файлы: YAML-поиск"
+ },
+ "fs_smart_search": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Поиск файлов с фильтрами: тип сущности, ID, имя, расширение, содержимое",
+  "group": "filesystem",
+  "input_schema": {
+   "properties": {
+    "directory": {
+     "default": ".",
+     "description": "Корневой каталог (относительно workspace)",
+     "type": "string"
+    },
+    "entity_type": {
+     "description": "Тип сущности",
+     "enum": [
+      "niche",
+      "network",
+      "channel",
+      "video",
+      "competitor_channel",
+      "competitor_video",
+      "asset",
+      "scene",
+      "render"
+     ],
+     "type": "string"
+    },
+    "extension": {
+     "description": "Фильтр по расширению",
+     "type": "string"
+    },
+    "id_pattern": {
+     "description": "Regex паттерн ID (напр. VID_*)",
+     "type": "string"
+    },
+    "keyword": {
+     "description": "Ключевое слово в содержимом",
+     "type": "string"
+    },
+    "limit": {
+     "default": 100,
+     "description": "Максимум результатов",
+     "type": "integer"
+    },
+    "name_pattern": {
+     "description": "Regex паттерн имени файла",
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "title": "Файлы: умный поиск"
+ },
+ "fs_write_file": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Полная перезапись файла",
+  "group": "filesystem",
+  "input_schema": {
+   "properties": {
+    "content": {
+     "description": "Новое содержимое файла",
+     "type": "string"
+    },
+    "path": {
+     "description": "Путь к файлу",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path",
+    "content"
+   ],
+   "type": "object"
+  },
+  "title": "Файлы: перезаписать файл"
+ },
+ "get_column_names": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Быстрый список колонок листа.",
+  "group": "excel",
+  "input_schema": {
+   "properties": {
+    "path": {
+     "description": "Путь к .xlsx относительно workspace",
+     "type": "string"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path",
+    "sheet"
+   ],
+   "type": "object"
+  },
+  "title": "Excel: имена колонок"
+ },
+ "get_sheet_info": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Детальный анализ: колонки, типы, превью данных.",
+  "group": "excel",
+  "input_schema": {
+   "properties": {
+    "path": {
+     "description": "Путь к .xlsx относительно workspace",
+     "type": "string"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path",
+    "sheet"
+   ],
+   "type": "object"
+  },
+  "title": "Excel: анализ листа"
+ },
+ "get_unique_values": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Уникальные значения столбца.",
+  "group": "tables",
+  "input_schema": {
+   "properties": {
+    "column": {
+     "description": "Имя столбца",
+     "type": "string"
+    },
+    "limit": {
+     "default": 100,
+     "description": "Максимум значений",
+     "type": "integer"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    },
+    "table": {
+     "description": "Путь к таблице (сущности) относительно workspace",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table",
+    "sheet",
+    "column"
+   ],
+   "type": "object"
+  },
+  "title": "Таблицы: уникальные значения"
+ },
+ "get_value_counts": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Top-N наиболее частых значений столбца.",
+  "group": "tables",
+  "input_schema": {
+   "properties": {
+    "column": {
+     "description": "Имя столбца",
+     "type": "string"
+    },
+    "limit": {
+     "default": 10,
+     "description": "Top-N",
+     "type": "integer"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    },
+    "table": {
+     "description": "Путь к таблице (сущности) относительно workspace",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table",
+    "sheet",
+    "column"
+   ],
+   "type": "object"
+  },
+  "title": "Таблицы: частотный анализ"
+ },
+ "inspect_file": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Обзор структуры: листы, размеры, формат.",
+  "group": "excel",
+  "input_schema": {
+   "properties": {
+    "path": {
+     "description": "Путь к .xlsx относительно workspace",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path"
+   ],
+   "type": "object"
+  },
+  "title": "Excel: обзор книги"
+ },
+ "json_clear_queue": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Очистить очередь без применения (отладка/сброс).",
+  "group": "tables",
+  "input_schema": {
+   "properties": {
+    "table": {
+     "description": "Путь к таблице (сущности) относительно workspace",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table"
+   ],
+   "type": "object"
+  },
+  "title": "Таблицы: очередь → очистить"
+ },
+ "json_execute_queue": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Применить очередь к read.json (RMW). Синк в .xlsx отложен.",
+  "group": "tables",
+  "input_schema": {
+   "properties": {
+    "table": {
+     "description": "Путь к таблице (сущности) относительно workspace",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table"
+   ],
+   "type": "object"
+  },
+  "title": "Таблицы: очередь → применить"
+ },
+ "json_push_to_queue": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Положить пишущую операцию (set/append/delete) в write.json.",
+  "group": "tables",
+  "input_schema": {
+   "properties": {
+    "action": {
+     "description": "{action: set|append|delete, sheet, ...}",
+     "type": "object"
+    },
+    "table": {
+     "description": "Путь к таблице (сущности) относительно workspace",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table",
+    "action"
+   ],
+   "type": "object"
+  },
+  "title": "Таблицы: очередь → добавить"
+ },
+ "json_read_snapshot": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Чтение снапшота таблицы (read.json)",
+  "group": "tables",
+  "input_schema": {
+   "properties": {
+    "table": {
+     "description": "Путь к таблице (сущности) относительно workspace",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table"
+   ],
+   "type": "object"
+  },
+  "title": "Таблицы: снапшот (read.json)"
+ },
+ "memory_read": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Чтение памяти проекта с парсингом структуры: записи, поля, существующие ID",
+  "group": "memory",
+  "input_schema": {
+   "properties": {
+    "path": {
+     "description": "Путь к project_memory.md",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path"
+   ],
+   "type": "object"
+  },
+  "title": "Память: прочитать"
+ },
+ "memory_write": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Умная дозапись записи в память (по дате, с валидацией полей и ссылок на ID)",
+  "group": "memory",
+  "input_schema": {
+   "properties": {
+    "after_date": {
+     "description": "Вставить после записи с этой датой (хронология)",
+     "type": "string"
+    },
+    "context": {
+     "description": "Контекст (что произошло, ссылки на ID)",
+     "type": "string"
+    },
+    "decision": {
+     "description": "Что именно сделали",
+     "type": "string"
+    },
+    "entry_date": {
+     "description": "Дата записи (ГГГГ-ММ-ДД)",
+     "type": "string"
+    },
+    "path": {
+     "description": "Путь к project_memory.md",
+     "type": "string"
+    },
+    "reason": {
+     "description": "Почему (этого нет в таблицах)",
+     "type": "string"
+    },
+    "result": {
+     "description": "Результат (дописывается позже, ссылки на ID/динамику)",
+     "type": "string"
+    },
+    "title": {
+     "description": "Заголовок решения",
+     "type": "string"
+    },
+    "who_decided": {
+     "description": "Кто решил (человек / Claude)",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path",
+    "entry_date",
+    "title",
+    "decision",
+    "reason"
+   ],
+   "type": "object"
+  },
+  "title": "Память: записать решение"
+ },
+ "search_multi": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Поиск с объединением нескольких таблиц (JOIN по ключу)",
+  "group": "search",
+  "input_schema": {
+   "properties": {
+    "filter_after": {
+     "description": "Фильтр после объединения",
+     "type": "object"
+    },
+    "join_key": {
+     "description": "Ключ для объединения (JOIN)",
+     "type": "string"
+    },
+    "limit": {
+     "default": 100,
+     "type": "integer"
+    },
+    "sort_col": {
+     "description": "Столбец сортировки",
+     "type": "string"
+    },
+    "sort_order": {
+     "default": "asc",
+     "enum": [
+      "asc",
+      "desc"
+     ],
+     "type": "string"
+    },
+    "tables": {
+     "description": "Список таблиц для поиска",
+     "items": {
+      "properties": {
+       "columns": {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       "filter": {
+        "type": "object"
+       },
+       "sheet": {
+        "type": "string"
+       },
+       "table": {
+        "type": "string"
+       }
+      },
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "tables"
+   ],
+   "type": "object"
+  },
+  "title": "Поиск: многотабличный"
+ },
+ "search_quick": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Быстрый поиск в одной таблице с фильтром (без YAML)",
+  "group": "search",
+  "input_schema": {
+   "properties": {
+    "column": {
+     "description": "Столбец для выборки (все если пусто)",
+     "type": "string"
+    },
+    "filter_col": {
+     "description": "Столбец фильтра",
+     "type": "string"
+    },
+    "filter_op": {
+     "description": "Оператор",
+     "enum": [
+      "eq",
+      "neq",
+      "gt",
+      "lt",
+      "contains",
+      "in"
+     ],
+     "type": "string"
+    },
+    "filter_val": {
+     "description": "Значение фильтра",
+     "type": "string"
+    },
+    "limit": {
+     "default": 100,
+     "description": "Максимум строк",
+     "type": "integer"
+    },
+    "sheet": {
+     "description": "Имя листа",
+     "type": "string"
+    },
+    "table": {
+     "description": "Путь к таблице",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table",
+    "sheet"
+   ],
+   "type": "object"
+  },
+  "title": "Поиск: быстрый"
+ },
+ "search_tables": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Умный поиск по таблицам через YAML (очередь, многопоточность, объединение)",
+  "group": "search",
+  "input_schema": {
+   "properties": {
+    "query_dict": {
+     "description": "Dict с запросом (альтернатива YAML)",
+     "type": "object"
+    },
+    "yaml_query": {
+     "description": "YAML-строка с запросом",
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "title": "Поиск: YAML-запрос"
+ },
+ "structure_check_integrity": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Фоновая проверка: висящие ссылки, дубликаты путей, сироты. Возвращает общую статистику + список проблем.",
+  "group": "structure",
+  "input_schema": {
+   "properties": {},
+   "type": "object"
+  },
+  "title": "Структура: проверка целостности реестра"
+ },
+ "structure_create": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Материализует узел (niche/network/channel/video/competitor_channel/competitor_video) по шаблону: свои папки/файлы + контейнеры детей. В детей спускается ТОЛЬКО для явно названных (children={тип:[имена]}) — так 'создать канал кроме видео' = не называть видео, а 'назвать видео' = создать всё его поддерево. Таблицы (kind:table) отложены в фазу таблиц. ID узла присваивает сервер (в facts NodeCreated).",
+  "group": "structure",
+  "input_schema": {
+   "properties": {
+    "children": {
+     "additionalProperties": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "description": "Каких детей развернуть: {тип_ребёнка: [имена]}. Не названные — отложены (ChildDeferred).",
+     "type": "object"
+    },
+    "name": {
+     "description": "Имя экземпляра (один сегмент пути, без '/')",
+     "type": "string"
+    },
+    "parent_path": {
+     "default": "",
+     "description": "Контейнер-путь родителя относительно workspace (пусто → корень типа; для niche = niches/)",
+     "type": "string"
+    },
+    "type": {
+     "description": "Тип узла (ключ шаблона)",
+     "enum": [
+      "niche",
+      "network",
+      "channel",
+      "video",
+      "competitor_channel",
+      "competitor_video"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "type",
+    "name"
+   ],
+   "type": "object"
+  },
+  "title": "Структура: создать узел по шаблону"
+ },
+ "structure_link": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Связывает сущность с родителем В ОДНОМ месте (реестр связей — источник истины): например конкурента с нашим каналом. Один вызов, не нужно править оба дерева — экономит токены и исключает рассинхрон. Снимает уведомление UNLINKED_ENTITY.",
+  "group": "structure",
+  "input_schema": {
+   "properties": {
+    "child_name": {
+     "description": "Имя привязываемой сущности",
+     "type": "string"
+    },
+    "child_type": {
+     "description": "Тип привязываемой сущности (напр. competitor_channel)",
+     "type": "string"
+    },
+    "parent_name": {
+     "description": "Имя родителя",
+     "type": "string"
+    },
+    "parent_type": {
+     "description": "Тип родителя (напр. channel)",
+     "type": "string"
+    }
+   },
+   "required": [
+    "child_type",
+    "child_name",
+    "parent_type",
+    "parent_name"
+   ],
+   "type": "object"
+  },
+  "title": "Структура: связать сущности"
+ },
+ "structure_migrate": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Физический перенос папки сущности + обновление реестра. Используется когда родитель появился позже (напр. конкурент был без канала, теперь канал есть — переносим competitors/competitor_A/ → competitors/my_channel/competitor_A/). Обновляет path в реестре и перемещает файлы на диске.",
+  "group": "structure",
+  "input_schema": {
+   "properties": {
+    "entity_id": {
+     "description": "ID сущности из реестра",
+     "type": "string"
+    },
+    "new_path": {
+     "description": "Новый путь относительно workspace",
+     "type": "string"
+    }
+   },
+   "required": [
+    "entity_id",
+    "new_path"
+   ],
+   "type": "object"
+  },
+  "title": "Структура: миграция (перенос папки)"
+ },
+ "structure_status": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Сводка реестра связей: висящие сущности (ORPHAN — напр. конкурент без нашего канала) и наши каналы без привязанного конкурента. Поверхность серверных уведомлений о непривязанном.",
+  "group": "structure",
+  "input_schema": {
+   "properties": {},
+   "type": "object"
+  },
+  "title": "Структура: сводка связей (висящие)"
+ },
+ "table_append": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Добавить строку. ID присваивает сервер (приходит в facts).",
+  "group": "tables",
+  "input_schema": {
+   "properties": {
+    "data": {
+     "description": "Поля новой строки {column: value}",
+     "type": "object"
+    },
+    "id_prefix": {
+     "default": "ROW",
+     "description": "Префикс ID строки",
+     "type": "string"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    },
+    "table": {
+     "description": "Путь к таблице (сущности) относительно workspace",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table",
+    "sheet",
+    "data"
+   ],
+   "type": "object"
+  },
+  "title": "Таблицы: новая строка"
+ },
+ "table_delete": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Удалить строку по ID (через очередь).",
+  "group": "tables",
+  "input_schema": {
+   "properties": {
+    "row_id": {
+     "description": "ID строки",
+     "type": "string"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    },
+    "table": {
+     "description": "Путь к таблице (сущности) относительно workspace",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table",
+    "sheet",
+    "row_id"
+   ],
+   "type": "object"
+  },
+  "title": "Таблицы: удалить строку"
+ },
+ "table_get_column": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Проекция одного столбца листа: {row_id: value}",
+  "group": "tables",
+  "input_schema": {
+   "properties": {
+    "column": {
+     "description": "Имя столбца",
+     "type": "string"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    },
+    "table": {
+     "description": "Путь к таблице (сущности) относительно workspace",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table",
+    "sheet",
+    "column"
+   ],
+   "type": "object"
+  },
+  "title": "Таблицы: столбец {id:value}"
+ },
+ "table_get_row": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Одна строка целиком: {column: value}",
+  "group": "tables",
+  "input_schema": {
+   "properties": {
+    "row_id": {
+     "description": "ID строки",
+     "type": "string"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    },
+    "table": {
+     "description": "Путь к таблице (сущности) относительно workspace",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table",
+    "sheet",
+    "row_id"
+   ],
+   "type": "object"
+  },
+  "title": "Таблицы: строка {col:value}"
+ },
+ "table_set": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Изменить поле строки (RMW через очередь). Защита формул + enum.",
+  "group": "tables",
+  "input_schema": {
+   "properties": {
+    "column": {
+     "description": "Имя столбца",
+     "type": "string"
+    },
+    "row_id": {
+     "description": "ID строки",
+     "type": "string"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    },
+    "table": {
+     "description": "Путь к таблице (сущности) относительно workspace",
+     "type": "string"
+    },
+    "value": {
+     "description": "Новое значение (любой JSON-тип)"
+    }
+   },
+   "required": [
+    "table",
+    "sheet",
+    "row_id",
+    "column",
+    "value"
+   ],
+   "type": "object"
+  },
+  "title": "Таблицы: изменить поле"
+ }
+}

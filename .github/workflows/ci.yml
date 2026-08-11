@@ -46,6 +46,7 @@ jobs:
       # firewall/tunnel исключены: нужен живой сервер/туннель (integration/C2).
       - name: quick tests
         run: |
+          python3 tests/quick/test_tools_inventory.py
           python3 tests/quick/test_audit_fixes.py
           python3 tests/quick/test_search.py
           python3 tests/quick/test_structure.py

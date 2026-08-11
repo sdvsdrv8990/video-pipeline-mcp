@@ -38,16 +38,16 @@ import yaml
 # Добавляем корень проекта в путь
 sys.path.insert(0, str(Path(__file__).parent))
 
-from core.engine import Engine, TemplateEngine, TemplateError
+from core.engine import Engine
 from core.firewall import Firewall, FirewallRequest, FirewallDecision
 from core.transport import Transport
 from core.reactions import Reactions
-from core.ids import IDGenerator, LinkRegistry, LinkError
+from core.ids import IDGenerator
 from core.state import StateManager
-from core.paths import safe_resolve, PathEscapeError
-from core.tables import TableEngine, TableError
-from core.excel import ExcelEngine, ExcelError
-from core.contracts import ToolResult, ErrorDetail, Recovery, Fact
+from core.paths import safe_resolve
+from core.contracts import ToolResult, Fact
+# A2: движки, маппинг исключений ядра и аннотации MCP — общие для групп, живут в контексте.
+from tools._context import ANNOTATIONS_MODIFY, ANNOTATIONS_READONLY, build_context
 
 
 # ═══ КОНФИГУРАЦИЯ ═══
@@ -469,45 +469,17 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
             return _err("TABLE_NOT_FOUND", f"Table not found: {table}")
         return ToolResult(status="success", data=snapshot, facts=[Fact(type="SnapshotRead", data={"table": table})])
 
-    # ═══ ТАБЛИЦЫ: движки (generic-ядра, тонкие обёртки ниже) ═══
-    # Категория 3 (данные) — TableEngine поверх read.json/write.json.
-    # Категория 2 (структура) — ExcelEngine поверх .xlsx (openpyxl).
-    table_engine = TableEngine(state_manager, id_generator)
-    excel_engine = ExcelEngine(state_manager.workspace_path)
-    # Движок шаблонов структуры (Ф1): композиция по ссылке + контроль глубины.
-    template_engine = TemplateEngine(
-        state_manager.workspace_path, id_generator, CONFIG_PATH / "templates" / "workspace")
-    # Реестр связей (Ф2): анонимные → ORPHAN, link() в одном месте.
-    link_registry = LinkRegistry(state_manager.workspace_path)
-
-    def _err(code: str, message: str = "", reason: str = "", suggested_tool: str | None = None):
-        """Ошибочный ToolResult через реестр реакций (yaml = единственный источник class/recovery, B2/F43).
-
-        Для кода из реестра class/message_template/recovery берутся из server_reactions.yaml
-        (raw message сохраняет специфику). reason/suggested_tool — fallback лишь для кодов вне реестра.
-        """
-        if engine.reactions is not None and engine.reactions.get_reaction(code) is not None:
-            return ToolResult(status="error", error=engine.reactions.get_error(code, raw_message=message))
-        return ToolResult(status="error", error=ErrorDetail(
-            code=code, message=message,
-            recovery=Recovery(reason=reason, suggested_tool=suggested_tool)))
-
-    def _safe(call):
-        """Выполнить sync-вызов ядра, смаппив исключения в ToolResult.
-
-        Returns (ok, value_or_error_result): при ok=False во втором элементе —
-        готовый ошибочный ToolResult, иначе — результат ядра.
-        """
-        try:
-            return True, call()
-        except PathEscapeError:
-            return False, _err("PATH_ESCAPE", "Путь выходит за пределы workspace/.",
-                               "Используй путь ВНУТРИ workspace, без '..' и абсолютных путей.")
-        except (TableError, ExcelError, TemplateError, LinkError) as e:
-            return False, _err(e.code, e.message, e.reason, e.suggested_tool)
-        except ValueError as e:
-            # F37: не-путёвый ValueError из глубины core — честно INTERNAL_ERROR, не вводящий в заблуждение PATH_ESCAPE.
-            return False, _err("INTERNAL_ERROR", f"Внутренняя ошибка: {e}")
+    # ═══ ДВИЖКИ + ХЕЛПЕРЫ: единая точка (A2 шаг 1 — tools/_context.py) ═══
+    # Группы инструментов будут переезжать в tools/<group>/ по одной; там closures
+    # недоступны, поэтому все общие ссылки идут через ctx. Локальные имена ниже —
+    # мост, чтобы хендлеры не правились на шаге переноса движков.
+    ctx = build_context(engine, id_generator, state_manager, CONFIG_PATH)
+    table_engine = ctx.table_engine
+    excel_engine = ctx.excel_engine
+    template_engine = ctx.template_engine
+    link_registry = ctx.link_registry
+    _err = ctx.err
+    _safe = ctx.safe
 
     # ─── Структура: шаблонное создание (Ф1) ───
 
@@ -832,10 +804,6 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
 
     # ═══ РЕГИСТРАЦИЯ (все хендлеры определены выше) ═══
 
-    # Аннотации MCP для инструментов (помогают клиенту определить уровень доступа)
-    ANNOTATIONS_READONLY = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
-    ANNOTATIONS_MODIFY = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
-    ANNOTATIONS_DESTRUCTIVE = {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False}  # noqa: F841 — резерв, намеренно не назначен: destructiveHint триггерит auth-гейт коннектора Claude.ai
 
     # Формат кортежа: (name, title, description, schema, handler, annotations).
     # title — человекочитаемая подпись для UI Claude; префикс «Файлы:» делает
