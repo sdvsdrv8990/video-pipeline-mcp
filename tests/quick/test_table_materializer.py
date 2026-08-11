@@ -134,6 +134,42 @@ ok(phase_real["materialized"] and (Path(ws3) / phase_real["materialized"][0]["pa
 ok(all(f["code"] == "TEMPLATE_NOT_FOUND" for f in phase_real["failed"]),
    "книги без схемы честно отчитались TEMPLATE_NOT_FOUND (G16: не молчаливый успех)")
 
+print("== 7. Директива владельца: клиент передаёт ИМЕНА, книги делает сервер ==")
+import asyncio
+from core.engine import Engine
+from core.ids import LinkRegistry
+from core.reactions import Reactions
+from core.state import StateManager
+from tools._context import ToolContext
+from tools import structure as structure_group
+
+ws4 = Path(tempfile.mkdtemp(prefix="tm4_"))
+CFG = ROOT / "config"
+sm = StateManager(ws4)
+ids = IDGenerator()
+eng = Engine(reactions=Reactions(CFG / "server_reactions.yaml"), state_manager=sm)
+ctx = ToolContext(eng, ids, sm, None, ExcelEngine(ws4),
+                  TemplateEngine(ws4, ids, CFG / "templates" / "workspace"),
+                  LinkRegistry(ws4), ws4, CFG)
+structure_group.register(eng, ctx)
+
+res = asyncio.run(eng.tools["structure_create"].handler(
+    type="network", name="fit_net",
+    children={"channel": ["ch_A"], "competitor_channel": [f"comp_{i}" for i in range(20)]}))
+data = res.data
+ok(res.status == "success", "пакетное создание (сетка + канал + 20 конкурентов) одним вызовом")
+ok(len(list(ws4.rglob("*.xlsx"))) == len(data["tables_materialized"]),
+   "книг на диске ровно столько, сколько отчитано материализованными")
+ok(data["tables_materialized"] and data["tables_materialized"][0]["book"] == "network_config",
+   "книга создана у созданной сущности (сетка), без участия клиента")
+ok(not list(ws4.rglob("videos/*/")),
+   "видео не названы → сущностей видео нет, книг видео тоже нет (умное создание)")
+ok(all(f["code"] == "TEMPLATE_NOT_FOUND" for f in data["tables_deferred"]),
+   "книги без декларации отложены честно, а не «созданы» (G16)")
+ok(any(f.type == "TableMaterialized" for f in res.facts),
+   "факт TableMaterialized доехал в контракт (тип заведён в KNOWN_FACT_TYPES, D25)")
+
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

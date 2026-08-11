@@ -23,8 +23,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """Материализация узла структуры по шаблону с контролем глубины.
 
         Создаёт СВОИ папки/файлы узла + контейнеры детей; в детей спускается ТОЛЬКО
-        для явно названных (children={тип:[имена]}). Таблицы (kind:table) отложены в
-        фазу таблиц (Ф3) → tables_pending. ID узла присваивает сервер (в facts).
+        для явно названных (children={тип:[имена]}). Книги (kind:table) созданных сущностей
+        материализуются здесь же — клиент передаёт только имена. ID узла присваивает сервер.
         """
         ok, res = ctx.safe(lambda: ctx.template_engine.create_node(type, name, parent_path, None, children))
         if not ok:
@@ -59,6 +59,19 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 _walk(sub)
 
         _walk(res)
+
+        # Фаза ТАБЛИЦЫ идёт сразу и целиком на сервере (решение владельца S17): клиент передаёт
+        # ИМЕНА, книги материализует движок. Создаются книги ТОЛЬКО созданных сущностей — тот же
+        # принцип, что у файловой структуры: канал создан ≠ видео-проект существует, книг видео нет.
+        pending = [f.data for f in facts if f.type == "TableDeferred"]
+        phase = materializer.materialize_pending(pending)
+        for m in phase["materialized"]:
+            facts.append(Fact(type="TableMaterialized", data={
+                "path": m["path"], "book": m["book"], "file_id": m.get("file_id", ""),
+                "sheets": [s["sheet"] for s in m["sheets"]], "columns": m["columns_total"]}))
+        res["tables_materialized"] = phase["materialized"]
+        # Книги без заведённой декларации остаются честно отложенными (G16), а не «успешно созданными».
+        res["tables_deferred"] = phase["failed"]
 
         # Ф2: уведомление о висящих среди только что созданных (напр. конкурент без нашего канала).
         orphan_notices = [o for o in ctx.link_registry.find_orphans() if o["id"] in created_ids]
@@ -149,7 +162,9 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "Материализует узел (niche/network/channel/video/competitor_channel/competitor_video) "
             "по шаблону: свои папки/файлы + контейнеры детей. В детей спускается ТОЛЬКО для явно "
             "названных (children={тип:[имена]}) — так 'создать канал кроме видео' = не называть видео, "
-            "а 'назвать видео' = создать всё его поддерево. Таблицы (kind:table) отложены в фазу таблиц. "
+            "а 'назвать видео' = создать всё его поддерево. Книги .xlsx созданных сущностей "
+            "материализуются СРАЗУ по декларациям config/templates/tables/ (клиент передаёт только имена, "
+            "листы/столбцы/формулы/enum подставляет сервер); книги неназванных сущностей не создаются. "
             "ID узла присваивает сервер (в facts NodeCreated)."),
         input_schema={"type": "object", "properties": {
             "type": {"type": "string",
@@ -213,7 +228,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         name="structure_materialize_tables",
         title="Структура: фаза ТАБЛИЦЫ (материализация книг)",
         description=(
-            "Фаза ТАБЛИЦЫ: создаёт .xlsx-книги по отложенным записям structure_create "
+            "ДОГОНЯЮЩАЯ фаза ТАБЛИЦЫ (обычно не нужна: structure_create материализует книги сам). "
+            "Создаёт .xlsx-книги по отложенным записям structure_create "
             "(факты TableDeferred: path + table_template). Форма книги берётся из декларации "
             "config/templates/tables/<table_template>.schema.yaml — листы, столбцы, формулы "
             "вычисляемых колонок, выпадающие списки enum. Отказ одной книги не отменяет остальные: "

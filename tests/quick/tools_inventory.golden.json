@@ -1376,7 +1376,7 @@
    "idempotentHint": false,
    "readOnlyHint": false
   },
-  "description": "Материализует узел (niche/network/channel/video/competitor_channel/competitor_video) по шаблону: свои папки/файлы + контейнеры детей. В детей спускается ТОЛЬКО для явно названных (children={тип:[имена]}) — так 'создать канал кроме видео' = не называть видео, а 'назвать видео' = создать всё его поддерево. Таблицы (kind:table) отложены в фазу таблиц. ID узла присваивает сервер (в facts NodeCreated).",
+  "description": "Материализует узел (niche/network/channel/video/competitor_channel/competitor_video) по шаблону: свои папки/файлы + контейнеры детей. В детей спускается ТОЛЬКО для явно названных (children={тип:[имена]}) — так 'создать канал кроме видео' = не называть видео, а 'назвать видео' = создать всё его поддерево. Книги .xlsx созданных сущностей материализуются СРАЗУ по декларациям config/templates/tables/ (клиент передаёт только имена, листы/столбцы/формулы/enum подставляет сервер); книги неназванных сущностей не создаются. ID узла присваивает сервер (в facts NodeCreated).",
   "group": "structure",
   "input_schema": {
    "properties": {
@@ -1463,7 +1463,7 @@
    "idempotentHint": false,
    "readOnlyHint": false
   },
-  "description": "Фаза ТАБЛИЦЫ: создаёт .xlsx-книги по отложенным записям structure_create (факты TableDeferred: path + table_template). Форма книги берётся из декларации config/templates/tables/<table_template>.schema.yaml — листы, столбцы, формулы вычисляемых колонок, выпадающие списки enum. Отказ одной книги не отменяет остальные: результат содержит materialized и failed с кодом реакции на каждую неудачу.",
+  "description": "ДОГОНЯЮЩАЯ фаза ТАБЛИЦЫ (обычно не нужна: structure_create материализует книги сам). Создаёт .xlsx-книги по отложенным записям structure_create (факты TableDeferred: path + table_template). Форма книги берётся из декларации config/templates/tables/<table_template>.schema.yaml — листы, столбцы, формулы вычисляемых колонок, выпадающие списки enum. Отказ одной книги не отменяет остальные: результат содержит materialized и failed с кодом реакции на каждую неудачу.",
   "group": "structure",
   "input_schema": {
    "properties": {
