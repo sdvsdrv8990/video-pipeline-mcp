@@ -1,0 +1,9 @@
+# Шаблон ВИДЕО КОНКУРЕНТА. ИНСТРУКЦИЯ_шаблоны.md §4. Лист дерева.
+# Создаётся автоматически целиком, когда ИИ называет видео конкурента в родителе.
+competitor_video:
+  folders: []
+  files:
+    - { name: "competitor_video_data.xlsx", kind: table, table_template: competitor_video_data, required: true }
+    - { name: "read.json", kind: file, required: true, content: "{}" }
+    - { name: "write.json", kind: file, required: true, content: "[]" }
+  children: []

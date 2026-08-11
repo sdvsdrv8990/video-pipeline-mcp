@@ -1,0 +1,12 @@
+# Шаблон уровня НИША (наши). Формат — ИНСТРУКЦИЯ_шаблоны.md §1/§3.
+# Композиция по ссылке: ниша знает только ИМЯ типа ребёнка (network), не его устройство.
+# `required` — источник истины внутри самого фрагмента. ID присваивает сервер (в facts).
+niche:
+  folders:
+    - { name: "networks", required: true }
+  files:
+    - { name: "_NICHE_INDEX.md", kind: file, required: true }
+    - { name: "niche_read.json", kind: file, required: true, content: "{}" }
+    - { name: "niche_write.json", kind: file, required: true, content: "[]" }
+  children:
+    - { type: network, container: "networks/" }

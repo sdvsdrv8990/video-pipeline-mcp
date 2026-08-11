@@ -1,0 +1,17 @@
+# Шаблон уровня СЕТКА (наши). ИНСТРУКЦИЯ_шаблоны.md §3.
+# ДВЕ ветки детей: наши channel (channels/) и конкуренты competitor_channel (competitors/).
+# Конкуренты группируются по нашему каналу: реальный путь competitors/{наш_канал}/{конкурент}/ —
+# сегмент {наш_канал} движок подставляет из parent_ids при создании/связывании (§4).
+network:
+  folders:
+    - { name: "channels", required: true }
+    - { name: "competitors", required: true }
+  files:
+    - { name: "_NETWORK_INDEX.md", kind: file, required: true }
+    - { name: "network_dashboard.xlsx", kind: table, table_template: network_dashboard, required: true }
+    - { name: "network_config.xlsx", kind: table, table_template: network_config, required: true }
+    # Агрегат по конкурентам ниши живёт на уровне competitors/ (§4). Необязателен при голом создании сетки.
+    - { name: "competitors/niche_network_data.xlsx", kind: table, table_template: niche_network_data, required: false }
+  children:
+    - { type: channel, container: "channels/" }
+    - { type: competitor_channel, container: "competitors/" }   # + группировка по нашему каналу (§4)

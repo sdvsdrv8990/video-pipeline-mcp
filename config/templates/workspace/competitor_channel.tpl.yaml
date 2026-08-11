@@ -1,0 +1,14 @@
+# Шаблон КАНАЛ КОНКУРЕНТА. ИНСТРУКЦИЯ_шаблоны.md §4.
+# Родитель — НАШ канал (контейнер competitors/{наш_канал}/), не сетка напрямую.
+# Файлы с префиксом competitor_, парные competitor_channel_read/write.json.
+# Видео конкурента НЕ разворачиваются при создании канала (контроль глубины) — только контейнер videos/.
+competitor_channel:
+  folders:
+    - { name: "videos", required: true }
+  files:
+    - { name: "channel_meta.json", kind: file, required: true, content: "{}" }
+    - { name: "competitor_channel_data.xlsx", kind: table, table_template: competitor_channel_data, required: true }
+    - { name: "competitor_channel_read.json", kind: file, required: true, content: "{}" }
+    - { name: "competitor_channel_write.json", kind: file, required: true, content: "[]" }
+  children:
+    - { type: competitor_video, container: "videos/" }

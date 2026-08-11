@@ -18,7 +18,9 @@ build/
 *.egg-info/
 
 # ═══ ДАННЫЕ (не в git сервера!) ═══
-workspace/
+# F49: слэш ВЕДУЩИЙ обязателен — 'workspace/' без него ловит любую папку с таким именем
+# на любой глубине и утаскивал в игнор config/templates/workspace/ (шаблоны структуры = исходники).
+/workspace/
 # _SESSION_LOG.md — рантайм-лог фактов (пишется state_manager в корень репо), НЕ исходник
 _SESSION_LOG.md
 

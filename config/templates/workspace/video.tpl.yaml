@@ -1,0 +1,15 @@
+# Шаблон уровня ВИДЕО (наше). ИНСТРУКЦИЯ_шаблоны.md §1/§3. Лист дерева — детей-сущностей нет.
+# Когда ИИ называет видео в родителе, ВСЕ эти фрагменты («дети видео») создаются автоматически.
+video:
+  folders:
+    - { name: "assets/svg", required: true }
+    - { name: "assets/scenes", required: true }
+    - { name: "assets/audio", required: true }
+    - { name: "assets/transitions", required: true }
+    - { name: "renders", required: true }
+  files:
+    - { name: "video_data.xlsx", kind: table, table_template: video_data, required: true }
+    - { name: "read.json", kind: file, required: true, content: "{}" }
+    - { name: "write.json", kind: file, required: true, content: "[]" }
+    - { name: "project_memory.md", kind: file, required: true }
+  children: []
