@@ -49,6 +49,7 @@ dependencies = [
 # Инструменты разработки/CI — задел под I4 (линт/типы) и I3 (CI/безопасность).
 dev = [
     "pytest>=8.0",
+    "coverage[toml]>=7.6",
     "ruff>=0.6",
     "mypy>=1.11",
     "pre-commit>=3.8",

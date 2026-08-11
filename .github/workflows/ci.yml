@@ -53,11 +53,11 @@ jobs:
         env:
           VPM_COVERAGE: "1"
         run: |
-          coverage erase
-          pytest -m "not live"
-          coverage combine
-          coverage report --fail-under=60
-          coverage xml
+          python -m coverage erase
+          python -m pytest -m "not live"
+          python -m coverage combine
+          python -m coverage report --fail-under=60
+          python -m coverage xml
       - name: coverage artifact
         if: always()
         uses: actions/upload-artifact@v4
