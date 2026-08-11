@@ -102,3 +102,33 @@
 
 > **Правило статусов (git-native):** этот реестр — единственный источник «что подтверждено». Обновлять после
 > каждого C1-теста (⬜→🟢), коммитить. Прогон целиком не нужен — гоняем зону находки, статус фиксируем в git.
+
+---
+
+## F. Мутационная проверка тестов (S18, 2026-08-11) — «а тест вообще ловит?»
+
+> Зачем: зелёный тест доказывает что-то только если он **краснеет на сломанном коде**. Метод: откатываю фикс
+> (или ослабляю защиту), гоняю тест-хозяина, восстанавливаю (`git checkout --`). Дерево после прогона чисто.
+> Скрипт одноразовый (правило `quick`: создал → прогнал → удалил), результаты — здесь. Находки → `02` F54/F55.
+
+| # | Что сломано | Файл | Тест-хозяин | Результат |
+|---|---|---|---|---|
+| M1 | `ToolContext.err` мимо реестра реакций (откат F43) | `tools/_context.py` | `test_audit_fixes` | 🔴 ловит |
+| M2 | DEFAULT-fallback хардкодит message (откат F5) | `core/reactions/reactions.py` | `test_audit_fixes` | 🔴 ловит |
+| M3 | `QUERY_NOT_FOUND` убран из реестра (откат F40) | `config/server_reactions.yaml` | `test_audit_fixes` | 🔴 ловит |
+| M4 | типонебезопасный `_match_filter` (откат F42) | `core/search/query_planner.py` | `test_audit_fixes` 🔴 / **`test_search` 🟢** | частично — **слепа зона search** |
+| M5 | `validate_formulas` без LO-пересчёта (откат F29) | `core/excel/excel_core.py` | `test_audit_fixes` | 🔴 ловит |
+| M6 | санитайзер секретов выключен (откат D23/F11) | `core/contracts/error_detail.py` | `test_audit_fixes` | 🔴 ловит |
+| M7 | containment путей снят (откат D1/G17) | `core/paths.py` | `test_audit_fixes` 🔴, `test_search` 🔴 / **`test_structure` 🟢** | **слепа зона structure** |
+| M8 | детектор prompt-injection обнулён (IN2) | `core/firewall/rules/injection_detector.py` | `virus_injection` 🔴, `cache_injection` 🔴, `test_audit_fixes` 🔴 | ловят |
+| M9 | дефолты rate-limit сняты (IN3, проводка) | `core/firewall/rules/rate_limiter.py` | **`bot_army` 🟢 22/22** | **слепа боевая конфигурация** |
+| M9b | сам механизм rate-limit сломан | `core/firewall/rules/rate_limiter.py` | `bot_army` 🔴 15/22, `test_audit_fixes` 🔴 | ловят (механизм покрыт) |
+| M10 | тихо изменён `description` инструмента | `tools/filesystem/__init__.py` | `test_tools_inventory` | 🔴 ловит (эталон+`--bless`) |
+| M11 | `_valid_name` → `True` (обход через имя) | `core/engine/template_engine.py` | `test_structure` | 🔴 ловит |
+| M12 | боевой `max_requests_per_minute: 10⁹` | `config/firewall.yaml` | 12 наборов → **только `test_audit_fixes` 🔴** | частично (D2-загрузка конфига) |
+| M13 | боевой `injection_detection.enabled: false` | `config/firewall.yaml` | 12 наборов → **никто 🟢** | **ключ `enabled` код не читает — F54** |
+
+**Итог: 11/14 мутаций пойманы.** Три пробоя (M4-search, M7-structure, M9-конфиг) + мёртвый выключатель (M13)
+заведены как **F55** и **F54**. Зоны в §A/§B выше описывают ЖЕЛАЕМОЕ покрытие — расширять хозяев по F55:
+`test_search` (+фильтры/сортировка), `test_structure` (+containment через `safe_resolve`, не только имя),
+`bot_army` (+проверка боевых лимитов из `config/firewall.yaml`), любой (+auth `MCP_AUTH_TOKEN`).
