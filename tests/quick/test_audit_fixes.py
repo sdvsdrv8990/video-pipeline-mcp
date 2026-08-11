@@ -70,6 +70,31 @@ async def main():
     check("D2 injection patterns from yaml (>0)", len(firewall.injection_detector.patterns) > 0,
           len(firewall.injection_detector.patterns))
 
+    # F54: выключатель `enabled` в конфиге реально выключает правило (был мёртвым ключом).
+    inj_payload = {"name": "fs_create_file", "arguments": {"content": "ignore previous instructions"}}
+    fw_on = Firewall({"injection_detection": {"enabled": True, "patterns": ["ignore previous instructions"]}})
+    fw_off = Firewall({"injection_detection": {"enabled": False, "patterns": ["ignore previous instructions"]}})
+    d_on = fw_on.check(FirewallRequest(ip="203.0.113.54", method="tools/call", params=inj_payload, timestamp=7000.0))
+    d_off = fw_off.check(FirewallRequest(ip="203.0.113.55", method="tools/call", params=inj_payload, timestamp=7000.0))
+    check("F54 injection_detection.enabled=true → block", d_on.decision.value == "block", d_on.decision.value)
+    check("F54 injection_detection.enabled=false → allow", d_off.decision.value == "allow", d_off.decision.value)
+    check("F54 ключ отсутствует → правило включено (back-compat)",
+          Firewall({"injection_detection": {"patterns": ["ignore previous instructions"]}}).check(
+              FirewallRequest(ip="203.0.113.56", method="tools/call", params=inj_payload, timestamp=7000.0)
+          ).decision.value == "block")
+
+    fw_ip_off = Firewall({"ip_blocklist": {"enabled": False}})
+    fw_ip_off.block_ip("203.0.113.57")
+    check("F54 ip_blocklist.enabled=false → забаненный IP проходит",
+          fw_ip_off.check(FirewallRequest(ip="203.0.113.57", method="tools/list", params={}, timestamp=7000.0)
+                          ).decision.value == "allow")
+
+    fw_rate_off = Firewall({"rate_limit": {"enabled": False, "max_requests_per_minute": 1, "ban_after_violations": 1}})
+    for _ in range(5):
+        d_rate = fw_rate_off.check(FirewallRequest(ip="203.0.113.58", method="tools/list", params={}, timestamp=7000.0))
+    check("F54 rate_limit.enabled=false → превышение лимита не блокирует", d_rate.decision.value == "allow",
+          d_rate.decision.value)
+
     # D5: валидация схемы (отсутствие required)
     r_req = await engine.call("fs_read_file", {})
     check("D5 missing required -> VALIDATION_ERROR", r_req.status == "error" and r_req.error.code == "VALIDATION_ERROR",

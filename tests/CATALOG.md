@@ -4,7 +4,7 @@
 >
 > Полный тест-план (E-матрица, слои, приоритеты) — `docs/roadmap/03_testing_plan.md`. Угрозы для симуляций — `docs/roadmap/06_threat_catalog.md`. Скил — `test-master`.
 >
-> **Машинерия тестирования** (раннер, фикстуры, харнесс живого сервера, гейт, покрытие) — `docs/roadmap/14_testing_system_plan.md`, этапы T0–T9. ⚠️ До этапа T0 **`pytest` на репо даёт ложный зелёный** (F50): гоняй наборы скриптами (`python3 tests/<...>/test_<...>.py`, exit 0 = ok), как это делает `ci.yml`.
+> **Машинерия тестирования** (раннер, фикстуры, харнесс живого сервера, гейт, покрытие) — `docs/roadmap/14_testing_system_plan.md`, этапы T0–T10. **T0 закрыт (S18):** гейт = `pytest -m "not live"`, наборы находит `tests/test_suites.py` сам (новый файл попадает в CI без правки `ci.yml`); напрямую набор по-прежнему запускается скриптом (`python3 tests/<...>/test_<...>.py`, exit 0 = ok).
 
 ## Правило «не плодить» (жёстко)
 
@@ -98,7 +98,7 @@
 | **F30** | `table_materializer` не построен (loader формул) | static | — (постройка A-tables/Ф3) | ✅ подтверждён (ls ∅) |
 | **F3** | провайдеры = честные стабы (G16) | behavioral | `render_draft_final` (стаб → NotImplementedError-код, не фейк-success) | ✅ покрыт (стаб-контракт) |
 
-**Статус C1 (S15) → фиксы (S16) — ВСЕ behavioral-находки ЗАКРЫТЫ:** A6 (F43·F5·F40) + A5-TypeError (F42) + A-tables (F29) переведены strict-xfail→регрессия. **`test_audit_fixes` 41/41, 0 OPEN.** F11 🟢 (D23). **static-находки** F38/F44 закрыты (I4); остаток F28/F37/F39/F41/F45/F10/F30 — эвидентны из чтения, закрываются A2/A-tables(F30)/anti-hardcode. Дальше — C2 симуляции+консоль (накоплены фиксы).
+**Статус C1 (S15) → фиксы (S16) — ВСЕ behavioral-находки ЗАКРЫТЫ:** A6 (F43·F5·F40) + A5-TypeError (F42) + A-tables (F29) переведены strict-xfail→регрессия. **`test_audit_fixes` 49/49, 0 OPEN** (S18: +5 проверок F54 «выключатель выключает»). F11 🟢 (D23). **static-находки** F38/F44 закрыты (I4); остаток F28/F37/F39/F41/F45/F10/F30 — эвидентны из чтения, закрываются A2/A-tables(F30)/anti-hardcode. Дальше — C2 симуляции+консоль (накоплены фиксы).
 
 > **Правило статусов (git-native):** этот реестр — единственный источник «что подтверждено». Обновлять после
 > каждого C1-теста (⬜→🟢), коммитить. Прогон целиком не нужен — гоняем зону находки, статус фиксируем в git.
@@ -126,7 +126,9 @@
 | M10 | тихо изменён `description` инструмента | `tools/filesystem/__init__.py` | `test_tools_inventory` | 🔴 ловит (эталон+`--bless`) |
 | M11 | `_valid_name` → `True` (обход через имя) | `core/engine/template_engine.py` | `test_structure` | 🔴 ловит |
 | M12 | боевой `max_requests_per_minute: 10⁹` | `config/firewall.yaml` | 12 наборов → **только `test_audit_fixes` 🔴** | частично (D2-загрузка конфига) |
-| M13 | боевой `injection_detection.enabled: false` | `config/firewall.yaml` | 12 наборов → **никто 🟢** | **ключ `enabled` код не читает — F54** |
+| M13 | боевой `injection_detection.enabled: false` | `config/firewall.yaml` | 12 наборов → **никто 🟢** | **было:** ключ `enabled` код не читал (F54). **S18: исправлено** — см. M14 |
+| M14 | откат фикса F54 (`enabled` снова игнорируется) | `core/firewall/firewall.py` | `test_audit_fixes` (5 новых проверок) | 🔴 ловит ✅ |
+| M15 | детектор injection обнулён — проверка САМОГО ГЕЙТА `pytest -m "not live"` | `core/firewall/rules/injection_detector.py` | `pytest` → 3 failed, 11 passed | 🔴 ловит ✅ (гейт T0 живой) |
 
 **Итог: 11/14 мутаций пойманы.** Три пробоя (M4-search, M7-structure, M9-конфиг) + мёртвый выключатель (M13)
 заведены как **F55** и **F54**. Зоны в §A/§B выше описывают ЖЕЛАЕМОЕ покрытие — расширять хозяев по F55:

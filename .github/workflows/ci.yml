@@ -1,6 +1,7 @@
 # I3: CI-гейт под фазу фиксов. Хард-гейты: ruff, mypy, тесты (in-process), bandit, gitleaks.
 # Advisory: pip-audit (уязвимости зависимостей — требуют dep-bump с регрессией на живом сервере).
-# firewall/tunnel + adversarial-симуляции = integration (нужен живой сервер/туннель) → НЕ в этом гейте (C2).
+# Тесты — через pytest-раннер (T0): наборы находятся автоматически, `-m "not live"` отсекает те,
+# что требуют поднятого сервера/туннеля (вернутся с харнессом T2). Симуляции C2 — in-process, в гейте.
 name: CI
 
 on:
@@ -42,25 +43,11 @@ jobs:
       # LibreOffice — движок пересчёта формул (F29 validate_formulas). Без него F29-тест скипается.
       - name: install LibreOffice (formula recalc)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-calc
-      # Тесты — самостоятельные скрипты (async, вне pytest-asyncio); каждый exit!=0 при провале.
-      # firewall/tunnel исключены: нужен живой сервер/туннель (integration/C2).
-      - name: quick tests
-        run: |
-          python3 tests/quick/test_tools_inventory.py
-          python3 tests/quick/test_audit_fixes.py
-          python3 tests/quick/test_search.py
-          python3 tests/quick/test_structure.py
-          python3 tests/quick/test_tables.py
-          python3 tests/quick/test_table_materializer.py
-      # C2 adversarial-симуляции — in-process (create_server/Firewall), живой сервер не нужен.
-      - name: adversarial sims (C2)
-        run: |
-          python3 tests/virus_injection/test_virus_injection.py
-          python3 tests/cache_injection/test_cache_injection.py
-          python3 tests/bot_army/test_bot_army.py
-          python3 tests/cache_overflow/test_cache_overflow.py
-          python3 tests/config_change/test_config_change.py
-          python3 tests/render_draft_final/test_render_draft_final.py
+      # I7 T0: единый раннер вместо ручного перечисления файлов (F50 — забытая строка = тест вне гейта).
+      # tests/test_suites.py находит все наборы сам и гоняет каждый подпроцессом (exit-код = вердикт).
+      # `not live` отсекает наборы, которым нужен поднятый сервер/туннель — вернутся с харнессом (T2).
+      - name: tests (pytest gate)
+        run: pytest -m "not live"
 
   security:
     name: security (bandit + pip-audit)

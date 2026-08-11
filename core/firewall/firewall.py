@@ -24,6 +24,7 @@ class Firewall:
         injection_detector: Детектор prompt injection
         ip_blocklist: Блок-лист IP
         anomaly_detector: Детектор аномалий
+        enabled: Флаги включения правил из конфига (F54: `enabled: false` реально выключает)
     """
 
     def __init__(self, config: dict | None = None):
@@ -62,12 +63,18 @@ class Firewall:
         anomaly_detector = AnomalyDetector(
             dangerous_tools=config.get("anomaly_detection", {}).get("dangerous_tools", None)
         )
-        return rate_limiter, injection_detector, ip_blocklist, anomaly_detector
+        # F54: `enabled` раньше объявлялся в firewall.yaml, но не читался — выключатель был мёртвым.
+        # Отсутствие ключа = правило включено (обратная совместимость со старым конфигом).
+        enabled = {
+            section: bool(config.get(section, {}).get("enabled", True))
+            for section in ("rate_limit", "ip_blocklist", "injection_detection", "anomaly_detection")
+        }
+        return rate_limiter, injection_detector, ip_blocklist, anomaly_detector, enabled
 
     def _assign(self, rules):
         """Присвоить собранный набор правил (атомарная точка подмены)."""
         (self.rate_limiter, self.injection_detector,
-         self.ip_blocklist, self.anomaly_detector) = rules
+         self.ip_blocklist, self.anomaly_detector, self.enabled) = rules
 
     def reload(self, config: dict | None) -> bool:
         """Горячая перезагрузка правил из нового config БЕЗ пересоздания файрвола.
@@ -107,7 +114,7 @@ class Firewall:
             FirewallResult с решением
         """
         # 1. Проверка IP blocklist
-        if self.ip_blocklist.is_blocked(request.ip):
+        if self.enabled["ip_blocklist"] and self.ip_blocklist.is_blocked(request.ip):
             return FirewallResult(
                 decision=FirewallDecision.BLOCK,
                 reason=f"IP {request.ip} заблокирован",
@@ -115,7 +122,7 @@ class Firewall:
 
         # 2. Проверка rate limit
         rate_result = self.rate_limiter.check(request.ip, request.timestamp)
-        if not rate_result.allowed:
+        if self.enabled["rate_limit"] and not rate_result.allowed:
             # D6: бан НЕ с первого превышения. Мягкий 429 до порога ban_after,
             # и только после N нарушений — фактический бан IP. За туннелем Claude
             # сидит за одним IP: один всплеск не должен блокировать его на 24ч.
@@ -130,7 +137,7 @@ class Firewall:
         # D7: блокируем ТОЛЬКО текущий запрос, без авто-бана IP. Эвристика на
         # подстроках даёт ложные срабатывания (легитимный "act as a narrator"),
         # а Claude — доверенная сторона; бан за это — операционная мина.
-        if self.injection_detector.detect(request.params):
+        if self.enabled["injection_detection"] and self.injection_detector.detect(request.params):
             return FirewallResult(
                 decision=FirewallDecision.BLOCK,
                 reason="Обнаружена prompt injection",
@@ -138,7 +145,7 @@ class Firewall:
 
         # 4. Детекция аномалий
         anomaly = self.anomaly_detector.check(request)
-        if anomaly.detected:
+        if self.enabled["anomaly_detection"] and anomaly.detected:
             return FirewallResult(
                 decision=FirewallDecision.BLOCK,
                 reason=anomaly.reason,

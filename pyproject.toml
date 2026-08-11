@@ -84,6 +84,23 @@ select = ["E4", "E7", "E9", "F", "W"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["E402", "E701", "E702", "E731", "F841"]
 
+# ═══ I7 T0: pytest — канонический раннер ═══
+# Собираем ТОЛЬКО tests/test_suites.py: наборы — самостоятельные скрипты, их внутренние
+# test_*-функции ничего не ассертят (F50 «ложный зелёный»), а тело модуля исполняется при
+# импорте. Гейт = exit-код набора в подпроцессе. Пофайловая миграция в идиоматичный pytest —
+# по мере касания набора; тогда файл добавляется в python_files.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_suites.py"]
+xfail_strict = true
+addopts = "-ra"
+markers = [
+    "live: нужен запущенный сервер/туннель (вне основного гейта до харнесса T2)",
+    "sim: adversarial-симуляция",
+    "slow: длительный прогон",
+    "eval: оценка качества, opt-in вне гейта",
+]
+
 [tool.mypy]
 python_version = "3.11"
 files = ["core", "tools", "server.py"]
