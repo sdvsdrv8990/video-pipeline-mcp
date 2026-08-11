@@ -229,8 +229,24 @@ C2 симуляции с чтением консоли реал-пруф). B и 
   `Recovery`/движки) — маппинг исключений теперь в контексте. Диффы `core/*` = 0.
 - Гейты: ruff PASS, mypy 36 files PASS, инвентарь 59/59, audit 44/44, search 24/24, structure 35/35, tables 33/33.
 
-**RESUME:** A2 шаг 2 — перенести 12 fs-хендлеров + спек-лист `fs_tools` в `tools/filesystem/` (эталон
-паттерна для остальных 5 групп), затем memory → structure → search → tables+analysis → excel → финал.
+### Сессия 17 (доп. 2) — A2 ЗАКРЫТ: монолит распилен (шаги 2–8, каждый = зелёный коммит)
+
+- **Порядок:** filesystem (эталон паттерна) → memory → structure → search → tables+analysis → excel → финал.
+  Паттерн группы: модуль экспортирует `register(engine, ctx)`, хендлеры — closures над `ctx`, спек-лист и
+  цикл `engine.register` рядом с хендлерами, функционально-локальные импорты подняты наверх (F44).
+- **Побочная находка (не в плане):** фрагменты JSON-схем `_TABLE`/`_SHEET` разделяются группами данных и
+  структуры → вынесены в `tools/_schemas.py`, иначе у одного параметра завелись бы два описания.
+- **Мёртвое после переезда удалено:** `_safe_resolve` (D28), мост-локали (`table_engine`/`excel_engine`/
+  `template_engine`/`link_registry`/`_err`/`_safe`), 11+ импортов. Ловил ruff (F841/F401) на каждом шаге.
+- **Итог:** `server.py` 1477 → 402 строки; `tools/` = 1110 строк в 6 группах + контекст + схемы.
+  Диффы `core/*` = 0 за весь распил. **F1 закрыт.**
+- **Реал-пруф (живой сервер, `python server.py`):** `tools/list` = 52 через транспорт; смоук-вызов из
+  КАЖДОЙ группы (fs_get_directory_tree · json_read_snapshot · inspect_file · structure_status ·
+  search_quick · memory_read) — ошибки доезжают до MCP-границы с `reaction_class`/recovery (G14/D30 цел).
+
+**RESUME:** вторая крупная задача — **A1′ табличный loader** (`13_a1_table_loader_plan.md`): шаг 1 —
+`table_materializer` материализует `network_config.schema.yaml` e2e. Открытый вопрос владельцу перед
+шагом 4 (авторинг 6 схем): интроспектор существующих `.xlsx` (F21) vs ручной авторинг?
 
 ### Сессия 15 (доп. 4) — переход к тестам (ступень C1): реестр подтверждения находок
 

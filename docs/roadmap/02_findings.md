@@ -8,7 +8,7 @@
 
 | F# | Sev | Находка | Пруф | → |
 |---|---|---|---|---|
-| F1 | 🔴 | `server.py` — 1521-строчный монолит: вся регистрация/логика инструментов в одном файле вместо тонких обёрток | `wc -l server.py` | A2 |
+| ~~F1~~ | ✅ | **ЗАКРЫТ S17 (A2, 8 зелёных коммитов):** монолит распилен — `server.py` 1477 → 402 строки (транспорт/JSON-RPC/auth/firewall/запуск), 52 хендлера в `tools/<group>/` (filesystem 12 · memory 2 · tables 13 · excel 17 · structure 5 · search 3), общие зависимости — `tools/_context.py` (`ToolContext`), общие фрагменты схем — `tools/_schemas.py`. `register_basic_tools` = `build_context` + 6 вызовов. Диффы `core/*` = 0. Контракт клиента доказан механически (`test_tools_inventory` + эталон) и на живом сервере | ранее: `wc -l server.py` = 1521; теперь `wc -l` = 402, `tools/list` = 52 через транспорт | A2 ✔ |
 | ~~F2~~ | ⚪ | **ОТОЗВАНО S4:** «config/ops пуст = архитектура сломана» — НЕВЕРНО. ops/model_routing **намеренно упразднены**, консолидированы в `channel_config.yaml → resource_limits` (`media_tools_deployment.md §0`). Не дефект — устаревший README. См. `05` §0 | design-решение владельца | A4 (README), не A1 |
 | F3 | 🟠 | Провайдеры ffmpeg/tts/stt/img = `NotImplementedError` (честные стабы — G16 соблюдён, но продукта нет) | grep `NotImplementedError` | P1–P4 |
 | ~~F4~~ | 🟡 | **ПОНИЖЕНО S15 (обмер под-2):** «0 тестов, не ревьюен» — НЕВЕРНО. `tests/quick/test_search.py` содержателен (happy+контракт+adversarial D36 traversal+edge+QueryPlanner+`_detect_entity_type`); в коде следы D36/D37 (находили+чинили). Остаётся: relevance-eval (F31) + quality-находки F38–F42. Незрелость переоценена | `test_search.py`; D36/D37 в коде | A5, I7 |

@@ -1,6 +1,12 @@
-# A2 — план распила монолита `server.py` (готов к исполнению)
+# A2 — распил монолита `server.py` (ИСПОЛНЕНО)
 
-> Статус: **В РАБОТЕ (S17)** — шаг 1 (скелет) ✅, шаги 2–8 впереди. Единственный незакрытый воркстрим батча фиксов.
+> Статус: **✅ ЗАКРЫТО (S17, 8 шагов = 8 зелёных коммитов).** `server.py` 1477 → 402 строки;
+> `register_basic_tools` = `build_context` + 6 вызовов `register`. Хендлеры — в `tools/<group>/`
+> (filesystem 12 · memory 2 · tables 13 · excel 17 · structure 5 · search 3 = 52). Диффы `core/*` = 0.
+> **Приёмка:** инвентарь 59/59 (контракт каждого инструмента идентичен эталону), audit 44/44,
+> search 24/24, structure 35/35, tables 33/33, C2 6/6 симуляций, ruff/mypy PASS,
+> реал-пруф на живом сервере: `tools/list` = 52 через транспорт + смоук-вызов из каждой группы
+> (`reaction_class`/recovery доезжают до MCP-границы). **F1 закрыт.**
 >
 > **Сеть безопасности готова (S17):** `tests/quick/test_tools_inventory.py` + эталон
 > `tools_inventory.golden.json` — 52 инструмента с точными group/title/description/annotations/input_schema.
