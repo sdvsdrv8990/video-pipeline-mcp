@@ -240,6 +240,12 @@ PATH_NOT_FOUND:
 
 # ═══ Анализ данных ═══
 
+SCHEMA_INVALID:
+  class: human_required
+  message_template: "Декларация таблицы некорректна: {details}"
+  recovery:
+    reason: "Схема книги (config/templates/tables/*.schema.yaml) не соответствует формату spec/TABLE_SCHEMA_FORMAT.md — правит человек, автоматически не чинится."
+
 SHEET_COPY_ERROR:
   class: ai_recoverable
   message_template: "Ошибка копирования листа: {details}"

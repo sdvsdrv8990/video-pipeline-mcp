@@ -1,0 +1,124 @@
+"""
+core/engine/table_materializer.py — материализация книг .xlsx по декларации (A1′, фаза ТАБЛИЦЫ).
+
+## Зачем
+`structure_create` для файла с `kind: table` только ОТКЛАДЫВАЕТ книгу: присваивает `file_id`
+и кладёт запись в `tables_pending` (`template_engine.py:155`), сам `.xlsx` не создаёт.
+Этот модуль достраивает фазу: `table_template` → `config/templates/tables/<book>.schema.yaml`
+→ форма книги через `core/excel` (листы, столбцы, формулы, дропдауны enum).
+
+## Декларативность
+Что материализуется — целиком в `.schema.yaml` (формат: `docs/roadmap/spec/TABLE_SCHEMA_FORMAT.md`).
+Здесь нет ни имён книг, ни имён листов/столбцов: добавить книгу = добавить YAML, не код.
+
+## Флаги колонок
+`id` (ключ) · `W` (writable) · `F` (вычисляемая: `formula:` если спека её задала, иначе
+плейсхолдер-заголовок) · `fk` (внешний ключ). Тип `enum` несёт `enum: [...]` → `set_validation`.
+"""
+
+from pathlib import Path
+
+import yaml
+
+from core.excel import ExcelEngine, ExcelError
+
+
+class TableMaterializerError(Exception):
+    """Ошибка материализации в формате контракта (код из server_reactions.yaml)."""
+
+    def __init__(self, code: str, message: str, reason: str = "", suggested_tool: str | None = None):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.reason = reason
+        self.suggested_tool = suggested_tool
+
+
+class TableMaterializer:
+    """Материализатор книг таблиц по `*.schema.yaml` поверх ExcelEngine."""
+
+    def __init__(self, excel: ExcelEngine, schemas_dir: str | Path):
+        self.excel = excel
+        self.schemas_dir = Path(schemas_dir)
+
+    def load_schema(self, book: str) -> dict:
+        """Прочитать декларацию книги. Схема-источник истины, не код."""
+        path = self.schemas_dir / f"{book}.schema.yaml"
+        if not path.exists():
+            raise TableMaterializerError(
+                "TEMPLATE_NOT_FOUND", f"Схема книги не найдена: {book}",
+                reason=f"Заведи {path.name} в config/templates/tables/ (формат — spec/TABLE_SCHEMA_FORMAT.md).")
+        schema = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        sheets = schema.get("sheets") or []
+        if not sheets:
+            raise TableMaterializerError(
+                "SCHEMA_INVALID", f"В схеме '{book}' нет ни одного листа (sheets).",
+                reason="Опиши хотя бы один лист с колонками; книга без листов не материализуется.")
+        for sheet in sheets:
+            if not sheet.get("name"):
+                raise TableMaterializerError(
+                    "SCHEMA_INVALID", f"В схеме '{book}' есть лист без имени.",
+                    reason="У каждого листа обязательно поле name.")
+        return schema
+
+    def materialize(self, book: str, path: str) -> dict:
+        """Создать книгу по декларации: листы → столбцы → формулы → валидации.
+
+        Идемпотентности НЕТ намеренно: существующая книга — это данные владельца,
+        молча перезаписывать её нельзя (ExcelEngine отдаёт FILE_EXISTS).
+        """
+        schema = self.load_schema(book)
+        sheets = schema["sheets"]
+        try:
+            self.excel.create_workbook(path, sheet=sheets[0]["name"])
+            for sheet in sheets[1:]:
+                self.excel.add_sheet(path, sheet["name"])
+
+            created = []
+            for sheet in sheets:
+                name = sheet["name"]
+                columns = sheet.get("columns") or []
+                for col in columns:
+                    col_name = col.get("name")
+                    if not col_name:
+                        raise TableMaterializerError(
+                            "SCHEMA_INVALID", f"Лист '{name}' книги '{book}': колонка без имени.",
+                            reason="У каждой колонки обязательно поле name.")
+                    # F = вычисляемая: формула из спеки, иначе только заголовок-плейсхолдер.
+                    formula = col.get("formula") if col.get("flag") == "F" else None
+                    self.excel.add_column(path, name, col_name, formula=formula)
+                    if col.get("type") == "enum" and col.get("enum"):
+                        self.excel.set_validation(path, name, col_name, allowed=col["enum"])
+                created.append({"sheet": name, "columns": [c["name"] for c in columns]})
+        except ExcelError as e:
+            # Ошибка формы книги — код движка Excel уже в реестре реакций, не переобёртываем.
+            raise TableMaterializerError(e.code, e.message, e.reason, e.suggested_tool) from e
+
+        return {
+            "book": book, "path": path, "level": schema.get("level", ""),
+            "sheets": created,
+            "columns_total": sum(len(s["columns"]) for s in created),
+        }
+
+    def materialize_pending(self, pending: list[dict]) -> dict:
+        """Фаза ТАБЛИЦЫ: пройти `tables_pending` от structure_create.
+
+        Одна книга не роняет остальные: отказы собираются в `failed` с кодом реакции —
+        неполные входные данные не должны останавливать материализацию соседних книг.
+        """
+        materialized, failed = [], []
+        for item in pending:
+            book = item.get("table_template")
+            path = item.get("path")
+            if not book or not path:
+                failed.append({"path": path, "book": book, "code": "SCHEMA_INVALID",
+                               "message": "В записи tables_pending нет table_template или path."})
+                continue
+            try:
+                result = self.materialize(book, path)
+                result["file_id"] = item.get("file_id", "")
+                materialized.append(result)
+            except TableMaterializerError as e:
+                failed.append({"path": path, "book": book, "code": e.code, "message": e.message})
+        return {"materialized": materialized, "failed": failed,
+                "total": len(pending), "created": len(materialized)}

@@ -49,6 +49,8 @@ KNOWN_ERROR_CODES = {
     "SHEET_COPY_ERROR",
     # Проверка целостности
     "DUPLICATE_ID",
+    # Таблицы: материализация книг по декларации (A1′, фаза ТАБЛИЦЫ)
+    "SCHEMA_INVALID",
 }
 
 

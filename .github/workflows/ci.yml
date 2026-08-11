@@ -51,6 +51,7 @@ jobs:
           python3 tests/quick/test_search.py
           python3 tests/quick/test_structure.py
           python3 tests/quick/test_tables.py
+          python3 tests/quick/test_table_materializer.py
       # C2 adversarial-симуляции — in-process (create_server/Firewall), живой сервер не нужен.
       - name: adversarial sims (C2)
         run: |
