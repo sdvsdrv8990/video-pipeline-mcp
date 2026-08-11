@@ -82,4 +82,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      # Официальный action требует GITLEAKS_LICENSE и fail-closed'ится при rate-limit проверки
+      # лицензии (F48) — гоняем пиннутый бинарь: детерминированно и без внешней зависимости.
+      - name: gitleaks (pinned binary, full history)
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar -xz gitleaks
+          ./gitleaks git . --redact --no-banner

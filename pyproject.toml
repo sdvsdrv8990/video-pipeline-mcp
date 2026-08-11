@@ -18,8 +18,8 @@ authors = [{ name = "sdvsdrv8990" }]
 keywords = ["mcp", "claude", "video-pipeline", "cloudflared"]
 license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
 # PolyForm Noncommercial 1.0.0 (source-available, некоммерческое использование). Файл: LICENSE. F19 закрыт.
+# PEP 639: при `license = "<SPDX>"` классификатор `License :: *` запрещён (setuptools>=77 роняет сборку).
 classifiers = [
-    "License :: Other/Proprietary License",
     "Private :: Do Not Upload",
     "Programming Language :: Python :: 3",
     "Framework :: AsyncIO",
