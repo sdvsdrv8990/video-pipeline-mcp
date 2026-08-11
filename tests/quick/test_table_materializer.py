@@ -115,6 +115,25 @@ ok(all(m["file_id"] for m in phase["materialized"]), "file_id из tables_pendin
 ok((Path(ws2) / "networks" / "n2" / "network_config.xlsx").exists(),
    "отказ соседней книги не помешал материализации следующей")
 
+print("== 6. Контракт с structure_create: pending РЕАЛЬНОГО движка шаблонов ==")
+from core.engine import TemplateEngine
+from core.ids import IDGenerator
+
+ws3 = tempfile.mkdtemp(prefix="tm3_")
+tpl = TemplateEngine(ws3, IDGenerator(), ROOT / "config" / "templates" / "workspace")
+node = tpl.create_node("network", "net_A")
+pending_real = node["tables_pending"]
+ok(len(pending_real) >= 2, f"structure_create отложил книги сетки: {len(pending_real)}")
+ok(any(p["table_template"] == "network_config" for p in pending_real),
+   "среди отложенного есть network_config (единственная заведённая схема)")
+
+phase_real = TableMaterializer(ExcelEngine(ws3), SCHEMAS).materialize_pending(pending_real)
+ok(phase_real["created"] == 1, f"материализована ровно 1 книга — та, чья схема заведена ({phase_real['created']})")
+ok(phase_real["materialized"] and (Path(ws3) / phase_real["materialized"][0]["path"]).exists(),
+   "книга легла ровно по пути из tables_pending")
+ok(all(f["code"] == "TEMPLATE_NOT_FOUND" for f in phase_real["failed"]),
+   "книги без схемы честно отчитались TEMPLATE_NOT_FOUND (G16: не молчаливый успех)")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core.contracts import ErrorDetail, Recovery, ToolResult
-from core.engine import Engine, TemplateEngine, TemplateError
+from core.engine import Engine, TableMaterializerError, TemplateEngine, TemplateError
 from core.excel import ExcelEngine, ExcelError
 from core.ids import IDGenerator, LinkError, LinkRegistry
 from core.paths import PathEscapeError, safe_resolve
@@ -76,7 +76,7 @@ class ToolContext:
         except PathEscapeError:
             return False, self.err("PATH_ESCAPE", "Путь выходит за пределы workspace/.",
                                    "Используй путь ВНУТРИ workspace, без '..' и абсолютных путей.")
-        except (TableError, ExcelError, TemplateError, LinkError) as e:
+        except (TableError, ExcelError, TemplateError, TableMaterializerError, LinkError) as e:
             return False, self.err(e.code, e.message, e.reason, e.suggested_tool)
         except ValueError as e:
             # F37: не-путёвый ValueError из глубины core — честно INTERNAL_ERROR, не мислейбл PATH_ESCAPE.

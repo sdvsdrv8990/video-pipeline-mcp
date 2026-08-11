@@ -1457,6 +1457,49 @@
   },
   "title": "Структура: связать сущности"
  },
+ "structure_materialize_tables": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Фаза ТАБЛИЦЫ: создаёт .xlsx-книги по отложенным записям structure_create (факты TableDeferred: path + table_template). Форма книги берётся из декларации config/templates/tables/<table_template>.schema.yaml — листы, столбцы, формулы вычисляемых колонок, выпадающие списки enum. Отказ одной книги не отменяет остальные: результат содержит materialized и failed с кодом реакции на каждую неудачу.",
+  "group": "structure",
+  "input_schema": {
+   "properties": {
+    "pending": {
+     "description": "Отложенные книги из фактов TableDeferred",
+     "items": {
+      "properties": {
+       "file_id": {
+        "description": "ID файла, присвоенный structure_create",
+        "type": "string"
+       },
+       "path": {
+        "description": "Путь книги относительно workspace",
+        "type": "string"
+       },
+       "table_template": {
+        "description": "Имя декларации без .schema.yaml",
+        "type": "string"
+       }
+      },
+      "required": [
+       "path",
+       "table_template"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "pending"
+   ],
+   "type": "object"
+  },
+  "title": "Структура: фаза ТАБЛИЦЫ (материализация книг)"
+ },
  "structure_migrate": {
   "annotations": {
    "destructiveHint": false,

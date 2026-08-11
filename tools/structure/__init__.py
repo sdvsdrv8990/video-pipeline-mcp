@@ -7,12 +7,14 @@ tools/structure — материализация структуры workspace п
 """
 
 from core.contracts import Fact, ToolResult
-from core.engine import Engine
+from core.engine import Engine, TableMaterializer
 from tools._context import ANNOTATIONS_MODIFY, ANNOTATIONS_READONLY, ToolContext
 
 
 def register(engine: Engine, ctx: ToolContext) -> None:
     """Регистрация группы structure в движке."""
+
+    materializer = TableMaterializer(ctx.excel_engine, ctx.config_path / "templates" / "tables")
 
     # ─── Структура: шаблонное создание (Ф1) ───
 
@@ -188,6 +190,17 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "new_path": {"type": "string", "description": "Новый путь относительно workspace"},
         }, "required": ["entity_id", "new_path"]},
         handler=structure_migrate, group="structure", annotations=ANNOTATIONS_MODIFY)
+    async def structure_materialize_tables(pending: list[dict] | None = None) -> "ToolResult":
+        """Фаза ТАБЛИЦЫ: материализация отложенных книг по декларациям (A1′)."""
+        ok, res = ctx.safe(lambda: materializer.materialize_pending(pending or []))
+        if not ok:
+            return res
+        facts = [Fact(type="TableMaterialized", data={
+            "path": m["path"], "book": m["book"], "file_id": m.get("file_id", ""),
+            "sheets": [s["sheet"] for s in m["sheets"]], "columns": m["columns_total"]})
+            for m in res["materialized"]]
+        return ToolResult(status="success", data=res, facts=facts)
+
     engine.register(
         name="structure_status",
         title="Структура: сводка связей (висящие)",
@@ -196,6 +209,24 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "и наши каналы без привязанного конкурента. Поверхность серверных уведомлений о непривязанном."),
         input_schema={"type": "object", "properties": {}},
         handler=structure_status, group="structure", annotations=ANNOTATIONS_READONLY)
+    engine.register(
+        name="structure_materialize_tables",
+        title="Структура: фаза ТАБЛИЦЫ (материализация книг)",
+        description=(
+            "Фаза ТАБЛИЦЫ: создаёт .xlsx-книги по отложенным записям structure_create "
+            "(факты TableDeferred: path + table_template). Форма книги берётся из декларации "
+            "config/templates/tables/<table_template>.schema.yaml — листы, столбцы, формулы "
+            "вычисляемых колонок, выпадающие списки enum. Отказ одной книги не отменяет остальные: "
+            "результат содержит materialized и failed с кодом реакции на каждую неудачу."),
+        input_schema={"type": "object", "properties": {
+            "pending": {"type": "array", "description": "Отложенные книги из фактов TableDeferred",
+                        "items": {"type": "object", "properties": {
+                            "path": {"type": "string", "description": "Путь книги относительно workspace"},
+                            "table_template": {"type": "string", "description": "Имя декларации без .schema.yaml"},
+                            "file_id": {"type": "string", "description": "ID файла, присвоенный structure_create"},
+                        }, "required": ["path", "table_template"]}},
+        }, "required": ["pending"]},
+        handler=structure_materialize_tables, group="structure", annotations=ANNOTATIONS_MODIFY)
     engine.register(
         name="structure_check_integrity",
         title="Структура: проверка целостности реестра",
