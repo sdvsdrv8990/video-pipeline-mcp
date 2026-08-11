@@ -36,7 +36,7 @@
 | I4 | Типизация+линт: `mypy`, `ruff`, `pre-commit` | I2 | 1 |
 | I5 | Логирование+observability: `structlog`, метрики, `/health`, tracing + **audit-trail** (auth/authz/tool-invocations→principal/scope/context — DIM-7) + **экон-контейнмент** (quotas/budgets на media — DIM-11) | — | 1–2 |
 | I6 | Безопасность (сессия 9 расширила): **OAuth 2.1+PKCE Resource Server** (DIM-2, D3) + secrets-mgmt + D29 + **P0-митигации `06 §D`**: провенанс workspace-вывода (F33/OUT1), containment write/move/delete+destructiveHint (OUT5), **write-type allowlist** (F34/§F), **deploy-hardening** (seccomp/Landlock/cap-drop `06 §G.1`), identity-rate+slowloris-таймауты (F36/§H) | security-прогон | 3–4 |
-| I7 | Программа тестового покрытия (`03_testing_plan.md`): **E-матрица** (E-A…E-I) + **agent-swarm-раннер** (`tests/agent_swarm/patterns.yaml`, F32) + **conformance** (`modelcontextprotocol/conformance`, DIM-1) + eval-слой качества | I1 | сквозная |
+| I7 | Программа тестового покрытия (`03_testing_plan.md`): **E-матрица** (E-A…E-I) + **agent-swarm-раннер** (`tests/agent_swarm/patterns.yaml`, F32) + **conformance** (`modelcontextprotocol/conformance`, DIM-1) + eval-слой качества. **Порядок исполнения и машинерия — `14_testing_system_plan.md`** (T0 раннер → T1 покрытие → T2 харнесс+консоль → T4/T6 сценарии): без T0/T2 ни C2, ни E-матрица не пишутся (F50/F51) | I1 | сквозная |
 | I8 | Публикуемые доки: architecture/API; реконструкция аудит-артефактов D#/G# | — | 1–2 |
 
 **Cross-cutting X1** — реконструкция аудит-словаря: `D#/G#` живут только в памяти; либо восстановить `docs/dev/audit/`, либо слить в `02_findings.md` как единый источник. (Входит в I8.)
