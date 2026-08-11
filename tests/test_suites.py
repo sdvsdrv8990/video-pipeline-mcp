@@ -8,6 +8,7 @@
 без правки `ci.yml` (это и была вторая половина F50).
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -40,10 +41,22 @@ def _params():
         yield pytest.param(rel, marks=marks, id=str(rel))
 
 
+def _cmd(suite: Path) -> list[str]:
+    """`VPM_COVERAGE=1` → набор гоняется под `coverage run --parallel-mode` (T1).
+
+    Вся работа происходит в подпроцессе, поэтому обычный `--cov` мерит только родителя и
+    показывает 0%. Явный флаг честнее авто-магии: `coverage combine && coverage report`
+    после прогона. Настройки — `[tool.coverage.run]` в pyproject.
+    """
+    if os.environ.get("VPM_COVERAGE") == "1":
+        return [sys.executable, "-m", "coverage", "run", "--parallel-mode", str(suite)]
+    return [sys.executable, str(suite)]
+
+
 @pytest.mark.parametrize("suite", _params())
 def test_suite_passes(suite: Path, repo_root: Path):
     """Набор отрабатывает с exit 0; иначе — его stdout попадает в отчёт."""
-    p = subprocess.run([sys.executable, str(suite)], cwd=repo_root, capture_output=True, text=True, timeout=900)
+    p = subprocess.run(_cmd(suite), cwd=repo_root, capture_output=True, text=True, timeout=900)
     assert p.returncode == 0, f"{suite} exit={p.returncode}\n{p.stdout[-4000:]}\n{p.stderr[-2000:]}"
 
 

@@ -25,6 +25,22 @@
 `tests/quick/` как скрипты: audit **30/30** · search **24/24** · structure **35/35** · tables **33/33** ·
 firewall **1/4** (env: нужен живой сервер :8080) · tunnel **19/20** (env: cloudflared quick). Держать при рефакторах.
 
+## Покрытие — ПОСЧИТАНО (S18, T1)
+
+`VPM_COVERAGE=1 pytest -m "not live"` + `coverage combine/report` (провайдеры-стабы исключены).
+**Итого 61%** (2545 строк). Ratchet-порог в CI = 60. Самые крупные дыры — не «весь код», а конкретные зоны:
+
+| Зона | Покрытие | Почему и что закроет |
+|---|---|---|
+| `tools/memory/` | 14% | инструменты памяти не покрыты ни одним набором — кандидат в `test_tables`/новый сценарий |
+| `server.py` (транспорт/JSON-RPC/auth) | 24% | нужен ЖИВОЙ сервер → **T2 харнесс**; auth-ветки — **S1** |
+| `tools/filesystem/` | 29% | `fs_*` гоняются точечно; добить через harness + write-allowlist (**S2**) |
+| `tools/search/` 32% · `core/search/query_planner.py` 38% | | relevance-eval **T8/E-I**, дубль-классы A5 |
+| `core/transport/transport.py` 58% · `tunnel.py` 61% | | live-часть — T2 |
+| `tools/excel/` 57% · `structure/` 52% · `tables_core` 66% | | E-D/E-E/E-F (**T5**) и E-матрица (**T4**) |
+
+Хорошо покрыты (>90%): `reactions` 96% · `state_manager` 94% · `tools/_context` 94% · contracts/ids/engine.
+
 ## Порядок построения (в рамках I7)
 
 > **Детализировано в `14_testing_system_plan.md`** (этапы T0–T9 с приёмкой). Здесь — исходный каркас;

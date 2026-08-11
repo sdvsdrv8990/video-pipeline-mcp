@@ -27,6 +27,10 @@ _SESSION_LOG.md
 # ═══ Тесты (I1): КОД версионируется; артефакты прогона — нет ═══
 .pytest_cache/
 tests/**/__pycache__/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 
 # ═══ Внешний coding-агент (MiMo) — рабочая директория, не часть проекта ═══
 .mimocode/

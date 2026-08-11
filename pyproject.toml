@@ -101,6 +101,18 @@ markers = [
     "eval: оценка качества, opt-in вне гейта",
 ]
 
+# ═══ I7 T1: покрытие ═══
+# Наборы гоняются подпроцессами (test_suites.py) → parallel-mode + combine, иначе цифра = 0%.
+# Порог — ratchet от ФАКТА (не «красивое число»): падение ниже = красный гейт, рост фиксируем.
+[tool.coverage.run]
+source = ["core", "tools", "server"]
+parallel = true
+omit = ["*/__pycache__/*", "core/providers/*"]
+
+[tool.coverage.report]
+exclude_also = ["if __name__ == .__main__.:", "raise NotImplementedError"]
+skip_covered = false
+
 [tool.mypy]
 python_version = "3.11"
 files = ["core", "tools", "server.py"]

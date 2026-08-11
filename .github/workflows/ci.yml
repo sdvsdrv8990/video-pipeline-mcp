@@ -46,8 +46,25 @@ jobs:
       # I7 T0: единый раннер вместо ручного перечисления файлов (F50 — забытая строка = тест вне гейта).
       # tests/test_suites.py находит все наборы сам и гоняет каждый подпроцессом (exit-код = вердикт).
       # `not live` отсекает наборы, которым нужен поднятый сервер/туннель — вернутся с харнессом (T2).
-      - name: tests (pytest gate)
-        run: pytest -m "not live"
+      - name: tests (pytest gate) + покрытие
+        # T1: VPM_COVERAGE=1 → наборы гоняются под `coverage run --parallel-mode` (иначе подпроцессы
+        # не считаются и цифра = 0%). Порог — RATCHET от факта S18 (61%): падение ниже = красный гейт.
+        # Поднимать порог по мере роста покрытия, не «целевые 80%» с потолка.
+        env:
+          VPM_COVERAGE: "1"
+        run: |
+          coverage erase
+          pytest -m "not live"
+          coverage combine
+          coverage report --fail-under=60
+          coverage xml
+      - name: coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage.xml
+          if-no-files-found: ignore
 
   security:
     name: security (bandit + pip-audit)
