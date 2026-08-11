@@ -51,7 +51,7 @@ audit 41/41·structure 35/35·tables 33/33·search 24/24 · интеграция
 | # | Задача | План | Статус |
 |---|---|---|---|
 | 1 | **A2 распил монолита** `server.py` → `tools/<group>/` | [`12_a2_split_plan.md`](12_a2_split_plan.md) | ✅ **ЗАКРЫТО (S17)** — 8 шагов = 8 зелёных коммитов; 1477 → 402 строки, 52 инструмента целы (реал-пруф на живом сервере), F1 закрыт |
-| 2 | **A1′ табличный loader** (`table_materializer`, F20/F30/F28) | [`13_a1_table_loader_plan.md`](13_a1_table_loader_plan.md) | 📋 ЗАПЛАНИРОВАНО (формат+proof готовы; строить loader+фазу+схемы) |
+| 2 | **A1′ табличный loader** (`table_materializer`, F20/F30/F28) | [`13_a1_table_loader_plan.md`](13_a1_table_loader_plan.md) | 🔨 **В РАБОТЕ (S17)** — шаги 1–2 готовы (loader + фаза `structure_materialize_tables`, 24 теста); дальше F30-деградация, авторинг схем (ждёт ответа владельца), F28 |
 
 **Хвост прохода 2** (меньше объёмом): A5-relevance (F31 rapidfuzz/bm25) · dep-hardening (F47 CVE) · A3 ops-слой ·
 A7 уникальность ([`10_pattern_uniqueness_system.md`](10_pattern_uniqueness_system.md)) · media P2–P4 ([`05_data_template_media_system.md`](05_data_template_media_system.md)). Детали и RESUME — `_sessions.md`.

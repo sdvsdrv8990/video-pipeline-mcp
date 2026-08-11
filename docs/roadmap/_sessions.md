@@ -244,9 +244,23 @@ C2 симуляции с чтением консоли реал-пруф). B и 
   КАЖДОЙ группы (fs_get_directory_tree · json_read_snapshot · inspect_file · structure_status ·
   search_quick · memory_read) — ошибки доезжают до MCP-границы с `reaction_class`/recovery (G14/D30 цел).
 
-**RESUME:** вторая крупная задача — **A1′ табличный loader** (`13_a1_table_loader_plan.md`): шаг 1 —
-`table_materializer` материализует `network_config.schema.yaml` e2e. Открытый вопрос владельцу перед
-шагом 4 (авторинг 6 схем): интроспектор существующих `.xlsx` (F21) vs ручной авторинг?
+### Сессия 17 (доп. 3) — A1′ шаги 1–2: loader + фаза ТАБЛИЦЫ
+
+- **Шаг 1:** `core/engine/table_materializer.py` — `load_schema`/`materialize`/`materialize_pending`.
+  Полностью декларативен (имён книг/листов/столбцов в коде нет). Новый код реакции `SCHEMA_INVALID`
+  (human_required) заведён в ОБА реестра — `server_reactions.yaml` + `KNOWN_ERROR_CODES` (G14).
+  Идемпотентности намеренно нет: существующая книга = данные владельца → `FILE_EXISTS`.
+- **Шаг 2:** инструмент `structure_materialize_tables` (53-й, группа structure) по фактам
+  `TableDeferred`; `ctx.safe` научен ловить `TableMaterializerError` (код доезжает до клиента).
+  Эталон инвентаря обновлён `--bless`: diff = +1 инструмент, 0 удалений — существующие контракты целы.
+- **Тест** `tests/quick/test_table_materializer.py` (24 проверки): e2e proof-схема (4 листа/17 столбцов/
+  enum→дропдаун), 3 контракта ошибок, фаза (2 из 4, отказ соседа не мешает), §6 — контракт с реальным
+  `TemplateEngine` (сетка откладывает 3 книги → материализуется ровно та, чья схема заведена).
+
+**RESUME:** A1′ шаг 3 — **F30 декларативная деградация неполных данных** (флаги `scene_profile.enabled`,
+`niche_weight`, `automation_rules.condition`, `signal_on_reuse` из спеки; формулы дают пусто/PENDING/0,
+не `#DIV/0!`). Затем шаг 4 (авторинг 6 схем) — **ждёт ответа владельца:** интроспектор существующих
+~90 `.xlsx` (F21) vs ручной авторинг? Затем шаг 5 (F28 dependency-aware delete/move).
 
 ### Сессия 15 (доп. 4) — переход к тестам (ступень C1): реестр подтверждения находок
 
