@@ -4,7 +4,9 @@
 >
 > Наш surface: `fs_*` (read/write/create/delete/move/rename/get_directory_tree) · `table_*` (get_row/get_column/append/set/delete/file) · `excel_*` (12 структурных) · `search_*` (quick/multi/tables) · `structure_*` (create/link/migrate/status/check_integrity) · `media_*` (ffmpeg/tts/stt/img — стабы P1–P4).
 >
-> Порядок firewall: IP-blocklist → rate → injection → anomaly (`core/firewall/firewall.py`). Ключевой контекст: **G18** — за туннелем один клиент, IP-гранулярность бесполезна, auth обязан быть app-level; **D3** (открыт) — нет app-level auth.
+> Порядок firewall: IP-blocklist → rate → injection → anomaly (`core/firewall/firewall.py`). Ключевой контекст: **G18** — за туннелем один клиент, IP-гранулярность бесполезна, auth обязан быть app-level; **D3** — bearer-auth в коде ЕСТЬ (`server.py:181`), но **fail-open по умолчанию** (`MCP_AUTH_TOKEN` не задан ⇒ выключена) и это статический общий токен, не OAuth 2.1 (уточнено S18, F14).
+>
+> **Каталог = «что нам угрожает». Программа постройки защиты = [`15_security_system_plan.md`](15_security_system_plan.md)** (этапы S0–S8 с приёмкой и тест-хозяином), исполнение — блоками из [`16_execution_matrix.md`](16_execution_matrix.md). Приоритеты §D ниже разложены по этапам S#.
 >
 > Источники: наш `references/malicious-server-threats.md` (T1–T7); MCP-38 таксономия (arXiv 2603.18063); «When MCP Servers Attack» (2509.24272); NSA/CISA «MCP Security Design» (2026); OWASP LLM Top-10 2025 (LLM01 prompt injection, RAG/vector-poisoning); Willison «lethal trifecta». Адаптировано под наш код, не слепая копия.
 

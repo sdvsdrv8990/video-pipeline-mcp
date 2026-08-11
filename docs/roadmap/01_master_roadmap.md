@@ -35,7 +35,7 @@
 | I3 | CI/CD: `.github/workflows` — линт+типы+тесты+security-scan (bandit/gitleaks) | I1, I2, I4 | 1–2 |
 | I4 | Типизация+линт: `mypy`, `ruff`, `pre-commit` | I2 | 1 |
 | I5 | Логирование+observability: `structlog`, метрики, `/health`, tracing + **audit-trail** (auth/authz/tool-invocations→principal/scope/context — DIM-7) + **экон-контейнмент** (quotas/budgets на media — DIM-11) | — | 1–2 |
-| I6 | Безопасность (сессия 9 расширила): **OAuth 2.1+PKCE Resource Server** (DIM-2, D3) + secrets-mgmt + D29 + **P0-митигации `06 §D`**: провенанс workspace-вывода (F33/OUT1), containment write/move/delete+destructiveHint (OUT5), **write-type allowlist** (F34/§F), **deploy-hardening** (seccomp/Landlock/cap-drop `06 §G.1`), identity-rate+slowloris-таймауты (F36/§H) | security-прогон | 3–4 |
+| I6 | **Программа исполнения — `15_security_system_plan.md`** (этапы S0–S8 с приёмкой). Безопасность (сессия 9 расширила): **OAuth 2.1+PKCE Resource Server** (DIM-2, D3) + secrets-mgmt + D29 + **P0-митигации `06 §D`**: провенанс workspace-вывода (F33/OUT1), containment write/move/delete+destructiveHint (OUT5), **write-type allowlist** (F34/§F), **deploy-hardening** (seccomp/Landlock/cap-drop `06 §G.1`), identity-rate+slowloris-таймауты (F36/§H) | security-прогон | 3–4 |
 | I7 | Программа тестового покрытия (`03_testing_plan.md`): **E-матрица** (E-A…E-I) + **agent-swarm-раннер** (`tests/agent_swarm/patterns.yaml`, F32) + **conformance** (`modelcontextprotocol/conformance`, DIM-1) + eval-слой качества. **Порядок исполнения и машинерия — `14_testing_system_plan.md`** (T0 раннер → T1 покрытие → T2 харнесс+консоль → T4/T6 сценарии): без T0/T2 ни C2, ни E-матрица не пишутся (F50/F51) | I1 | сквозная |
 | I8 | Публикуемые доки: architecture/API; реконструкция аудит-артефактов D#/G# | — | 1–2 |
 
@@ -67,6 +67,10 @@
 > реестр операций для tool-обёрток (ядро архитектуры «обёртка→ops→движок», закон §3) — **строим** (A3, пара к A2).
 > **media** остаётся консолидирован в `channel_config.resource_limits` (media-план) — своего `media.ops.yaml` НЕТ.
 > `model_routing.yaml`/`paths.yaml` — минорно/по мере надобности. Оба документа владельца правы в своём скоупе.
+
+> **Как это исполняется (S18):** воркстримы не берутся поодиночке — сессия берёт **блок** из
+> [`16_execution_matrix.md`](16_execution_matrix.md) = «фикс `F#` + тест `T#` ([`14`](14_testing_system_plan.md)) + защита `S#` ([`15`](15_security_system_plan.md))».
+> Директива владельца: **сначала фиксы**, тест и защита идут в том же блоке, а не откладываются.
 
 ## Фазовая раскладка (по зависимостям и ценности)
 
