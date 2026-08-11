@@ -28,6 +28,7 @@
 | `test_structure.py` | `TemplateEngine` Ф1 (depth-control, PATH_ESCAPE, ID) | структура/шаблоны/глубина | E-A/E-B/E-C эмуляция, `structure_link/migrate`, F25 reconcile | эмуляция «реальной работы ИИ» станет тяжёлой сценарной (→ dir) |
 | `test_tables.py` | table/excel smoke-контракт (Кат.2+3) | инструменты таблиц отвечают контрактом | E-D деструктив, формулы/устойчивость (F30), `table_materializer` (Ф3) | деструктив-над-таблицами станет adversarial-симуляцией |
 | `test_tunnel.py` | `core/transport/tunnel` парсер+автомат оффлайн (D11) | регрессия логики туннеля без cloudflared | новые режимы туннеля, форматы логов | — (узкая стабильная зона) |
+| `test_tools_inventory.py` | **Контракт инвентаря** `tools/list`: состав 52 + group/title/description/annotations/input_schema против эталона `tools_inventory.golden.json` | структурные правки (A2-распил, переезды групп) не двигают контракт клиента молча | новые инструменты/группы (эталон обновляется `--bless`, diff виден в ревью) | никогда — это единый дом инвентаря; поведение инструмента проверяют тесты его зоны |
 
 ## B. Симуляции (adversarial / system)
 
