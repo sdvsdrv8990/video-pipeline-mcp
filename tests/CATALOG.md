@@ -154,6 +154,10 @@
 | M32 | пометка `instruction_like` отключена | `core/contracts/untrusted.py` | `test_structure` | 🔴 ловит ✅ (128/129) |
 | M33 | детектор берёт свою копию паттернов вместо `firewall.yaml` | `tools/_context.py` | `test_structure` | 🔴 ловит ✅ (127/129) |
 
+| M34 | пустой ожидаемый токен снова «открывает» сервер (откат F14 fail-open) | `core/auth.py` | `test_audit_fixes` | 🔴 ловит ✅ (62/63) |
+| M35 | права `0600` на файле секрета не выставляются | `core/auth.py` | `test_audit_fixes` | 🔴 ловит ✅ (61/63) |
+| M36 | `compare_digest` по строкам (не-ASCII токен → 500 вместо 401) | `core/auth.py` | `test_audit_fixes` | 🔴 ловит ✅ |
+
 **Итог: 11/14 мутаций пойманы.** Три пробоя (M4-search, M7-structure, M9-конфиг) + мёртвый выключатель (M13)
 заведены как **F55** и **F54**. Зоны в §A/§B выше описывают ЖЕЛАЕМОЕ покрытие — расширять хозяев по F55:
 `test_search` (+фильтры/сортировка), `test_structure` (+containment через `safe_resolve`, не только имя),

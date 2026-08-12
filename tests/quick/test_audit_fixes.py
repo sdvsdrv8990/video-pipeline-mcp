@@ -281,6 +281,48 @@ async def main():
     check("F11/D23 вложенный token замаскирован", _ed.raw_response["nested"]["token"] == "***REDACTED***")
     check("F11/D23 несекретное поле не тронуто", _ed.raw_response["safe"] == "ok")
 
+    # ═══ F14/S1: ключ сервер выдаёт себе сам, fail-closed, секрет не утекает ═══
+    print("== F14/S1: ключ доступа ==")
+    import tempfile as _tf
+
+    from core.auth import check_auth, ensure_token, rotate_token, token_file_mode
+
+    _d = Path(_tf.mkdtemp(prefix="s1_"))
+    _env = _d / ".env"
+    _tok, _created = ensure_token(_env, env={})
+    check("F14 первый старт выпускает ключ", _created and len(_tok) >= 32, f"len={len(_tok)}")
+    check("F14 файл секрета с правами 0600", token_file_mode(_env) == 0o600, oct(token_file_mode(_env)))
+    _tok2, _created2 = ensure_token(_env, env={})
+    check("F14 повторный старт НЕ перевыпускает ключ", _tok2 == _tok and not _created2)
+    _env.write_text(_env.read_text(encoding="utf-8") + "OTHER=1\n", encoding="utf-8")
+    _new = rotate_token(_env)
+    check("F14 ротация меняет ключ", _new != _tok)
+    check("F14 ротация не трогает соседние переменные", "OTHER=1" in _env.read_text(encoding="utf-8"))
+    check("F14 после ротации права сохранены", token_file_mode(_env) == 0o600)
+    check("F14 переменная окружения имеет приоритет над файлом",
+          ensure_token(_env, env={"MCP_AUTH_TOKEN": "from-env"}) == ("from-env", False))
+
+    check("F14 свой ключ через Bearer → доступ", check_auth({"Authorization": f"Bearer {_new}"}, _new) == "")
+    check("F14 свой ключ через X-Api-Key → доступ (allowlist коннектора)",
+          check_auth({"x-api-key": _new}, _new) == "")
+    check("F14 чужой ключ → AUTH_FAILED", check_auth({"Authorization": "Bearer wrong"}, _new) == "AUTH_FAILED")
+    check("F14 не-ASCII токен не роняет обработчик (500 → 401)",
+          check_auth({"Authorization": "Bearer чужой"}, _new) == "AUTH_FAILED")
+    check("F14 без заголовка → AUTH_REQUIRED", check_auth({}, _new) == "AUTH_REQUIRED")
+    check("F14 пустой ожидаемый токен НЕ открывает сервер (fail-closed)",
+          check_auth({"x-api-key": "anything"}, "") == "AUTH_REQUIRED")
+
+    # S1/§3-тер: секрет недостижим для файловых инструментов ПО ПОСТРОЕНИЮ (.env вне workspace/)
+    from core.paths import PathEscapeError, safe_resolve
+    _ws = Path(_tf.mkdtemp(prefix="s1ws_")) / "workspace"
+    _ws.mkdir(parents=True)
+    _escaped = False
+    try:
+        safe_resolve("../.env", _ws)
+    except PathEscapeError:
+        _escaped = True
+    check("F14 .env вне workspace: путь к секрету не резолвится инструментами", _escaped)
+
     print()
     passed = sum(results)
     total = len(results)

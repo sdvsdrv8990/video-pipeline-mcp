@@ -30,7 +30,6 @@ server.py — Точка входа MCP-сервера видеопайплай�
 import asyncio
 import json
 import os
-import secrets
 import sys
 import time
 from pathlib import Path
@@ -44,6 +43,7 @@ from core.engine import Engine
 from core.firewall import Firewall, FirewallRequest, FirewallDecision
 from core.transport import Transport
 from core.reactions import Reactions
+from core.auth import ENV_FILE, check_auth, ensure_token, rotate_token, token_file_mode
 from core.ids import IDGenerator
 from core.state import StateManager
 # A2: движки, маппинг исключений ядра и аннотации MCP живут в контексте групп.
@@ -64,8 +64,12 @@ CONFIG_PATH = BASE_PATH / "config"
 # D12: если задан — валидируем заголовок Origin (анти-DNS-rebinding).
 ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("MCP_ALLOWED_ORIGINS", "").split(",") if o.strip()]
 
-# D3: bearer-токен для аутентификации. Если не задан — auth отключена (локальная разработка).
-MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")
+# S1/F14: ключ сервер выдаёт себе сам (см. core/auth). Пустой токен больше НЕ означает
+# «auth отключена» — это fail-closed: без ключа сервер не стартует, если явно не разрешено.
+ENV_PATH = BASE_PATH / ENV_FILE
+MCP_AUTH_TOKEN = ""
+# Явная и громкая калитка для локальной разработки и тестов (по умолчанию закрыта).
+ALLOW_NO_AUTH = os.environ.get("MCP_ALLOW_NO_AUTH", "") == "1"
 
 
 # ═══ ХЕЛПЕРЫ ═══
@@ -143,6 +147,23 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
         port: Порт
         use_tunnel: Поднять Cloudflare-туннель вместе с сервером (D11)
     """
+    global MCP_AUTH_TOKEN
+    if not ALLOW_NO_AUTH:
+        MCP_AUTH_TOKEN, created = ensure_token(ENV_PATH)
+        if not MCP_AUTH_TOKEN:
+            print(f"ОТКАЗ СТАРТА: не удалось получить ключ доступа ({ENV_PATH}).", file=sys.stderr)
+            print("Задай MCP_AUTH_TOKEN или дай серверу право создать .env; "
+                  "работа без ключа — только с MCP_ALLOW_NO_AUTH=1.", file=sys.stderr)
+            raise SystemExit(2)
+        if created:
+            print("─" * 60)
+            print(f"Выпущен ключ доступа (сохранён в {ENV_FILE}, права 0600):")
+            print(f"  {MCP_AUTH_TOKEN}")
+            print("Вставь его в коннекторе Claude AI Web: Request headers →")
+            print("  authorization: Bearer <ключ>    (или x-api-key: <ключ>)")
+            print("Больше он показан не будет; перевыпуск — server.py --rotate-key")
+            print("─" * 60)
+
     engine, transport, firewall = create_server()
 
     print("=== MCP-сервер видеопайплайна ===")
@@ -151,7 +172,10 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
     print(f"Workspace: {WORKSPACE_PATH}")
     print(f"Инструментов: {len(engine.tools)}")
     print(f"Файрвол: активен (config: {'загружен' if (CONFIG_PATH / 'firewall.yaml').exists() else 'дефолт'})")
-    print(f"Аутентификация: {'активна (bearer-токен)' if MCP_AUTH_TOKEN else 'отключена (MCP_AUTH_TOKEN не задан)'}")
+    if ALLOW_NO_AUTH:
+        print("Аутентификация: ⚠ ОТКЛЮЧЕНА (MCP_ALLOW_NO_AUTH=1) — только локальная разработка")
+    else:
+        print(f"Аутентификация: активна (Authorization: Bearer / X-Api-Key), ключ в {ENV_FILE} (0600)")
     print()
 
     from aiohttp import web
@@ -176,20 +200,16 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
         except json.JSONDecodeError as e:
             return web.json_response(_jsonrpc_error(None, -32700, f"Parse error: {e}"), status=400)
 
-        # D3: bearer-аутентификация ДО файрвола. Если MCP_AUTH_TOKEN не задан — пропускаем (локальная разработка).
-        if MCP_AUTH_TOKEN:
-            auth_header = request.headers.get("Authorization", "")
-            if not auth_header.startswith("Bearer "):
+        # S1: аутентификация ДО файрвола. Принимаем оба заголовка из allowlist коннектора
+        # Claude AI Web (Authorization: Bearer / X-Api-Key) — иначе клиент не сможет прислать ключ.
+        if not ALLOW_NO_AUTH:
+            deny = check_auth(request.headers, MCP_AUTH_TOKEN)
+            if deny:
+                hint = ("Требуется заголовок Authorization: Bearer <token> или X-Api-Key: <token>"
+                        if deny == "AUTH_REQUIRED" else "Неверный токен аутентификации")
                 return web.json_response(
                     _jsonrpc_error(req_data.get("id") if isinstance(req_data, dict) else None,
-                                   -32001, "AUTH_REQUIRED: Требуется заголовок Authorization: Bearer <token>"),
-                    status=401
-                )
-            token = auth_header[7:]  # strip "Bearer "
-            if not secrets.compare_digest(token, MCP_AUTH_TOKEN):
-                return web.json_response(
-                    _jsonrpc_error(req_data.get("id") if isinstance(req_data, dict) else None,
-                                   -32001, "AUTH_FAILED: Неверный токен аутентификации"),
+                                   -32001, f"{deny}: {hint}"),
                     status=401
                 )
 
@@ -397,7 +417,15 @@ def main():
     parser.add_argument("--host", default=HOST, help="Хост (по умолчанию: %(default)s)")
     parser.add_argument("--port", type=int, default=PORT, help="Порт (по умолчанию: %(default)s)")
     parser.add_argument("--tunnel", action="store_true", help="Поднять Cloudflare-туннель вместе с сервером (D11)")
+    parser.add_argument("--rotate-key", action="store_true", help="Перевыпустить ключ доступа и выйти (S1)")
     args = parser.parse_args()
+
+    if args.rotate_key:
+        new_token = rotate_token(ENV_PATH)
+        print(f"Новый ключ доступа (сохранён в {ENV_FILE}, права {oct(token_file_mode(ENV_PATH))}):")
+        print(f"  {new_token}")
+        print("Обнови значение в коннекторе Claude AI Web — прежний ключ больше не действует.")
+        return
 
     asyncio.run(run_server(args.host, args.port, use_tunnel=args.tunnel))
 
