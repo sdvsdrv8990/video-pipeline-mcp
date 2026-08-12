@@ -478,6 +478,80 @@ _pats = (_yaml.safe_load((ROOT / "config" / "firewall.yaml").read_text(encoding=
 ok(_pats and _ctx.injection_flagger.patterns == _pats,
    "детектор берёт БОЕВЫЕ паттерны из firewall.yaml, второй копии в коде нет")
 
+print("== 28. S9: подпись артефактов и отпечаток машины (идея владельца) ==")
+from core.integrity import SIGNING_AVAILABLE, InstanceIdentity, chain_hash, machine_fingerprint
+
+ok(SIGNING_AVAILABLE, "подпись доступна (cryptography установлен)")
+ws28 = Path(tempfile.mkdtemp(prefix="vpm_s9_"))
+keys28 = Path(tempfile.mkdtemp(prefix="vpm_keys_"))
+ident28 = InstanceIdentity(keys28, ws28)
+ok(ident28.ensure_key() and ident28.key_path.exists(), "ключ инстанса выпущен при первом старте")
+import stat as _stat
+ok(_stat.S_IMODE(ident28.key_path.stat().st_mode) == 0o600, "ключ подписи лежит с правами 0600")
+ok(ident28.key_path.parent != ws28, "ключ лежит ВНЕ workspace (инструментам недоступен)")
+
+reg28 = LinkRegistry(ws28, identity=ident28)
+reg28.register({"id": "VID_s9", "type": "video", "name": "v", "path": "n/v", "parent_ids": []})
+raw = __import__("json").loads((ws28 / "_id_registry.json").read_text(encoding="utf-8"))
+ok(raw.get("_seal", {}).get("sig") and raw["_seal"]["alg"] == "ed25519", "запись реестра подписана")
+ok(raw["_seal"]["machine"] == machine_fingerprint(ws28), "рядом с подписью — отпечаток машины")
+ok(reg28.get("VID_s9") is not None, "своя запись читается и применяется")
+
+# Чужой сервер с другим ключом в том же workspace
+alien = InstanceIdentity(Path(tempfile.mkdtemp(prefix="vpm_alien_")), ws28)
+alien.ensure_key()
+reg_alien = LinkRegistry(ws28, identity=alien)
+ok(reg_alien.get("VID_s9") is not None, "чужой сервер ЧИТАЕТ (данные не заперты)")
+try:
+    reg_alien.register({"id": "VID_alien", "type": "video", "name": "x", "path": "n/x", "parent_ids": []})
+    ok(False, "чужая запись должна была быть отклонена")
+except LinkError as e:
+    ok(e.code == "FOREIGN_WRITE", "чужая запись → FOREIGN_WRITE")
+ok(reg28.get("VID_alien") is None, "состояние НЕ изменилось после отказа")
+
+# Ручная правка файла мимо сервера
+tampered = __import__("json").loads((ws28 / "_id_registry.json").read_text(encoding="utf-8"))
+tampered["entities"]["VID_s9"]["name"] = "подменено"
+(ws28 / "_id_registry.json").write_text(__import__("json").dumps(tampered), encoding="utf-8")
+try:
+    reg28.register({"id": "VID_2", "type": "video", "name": "y", "path": "n/y", "parent_ids": []})
+    ok(False, "правка мимо сервера должна была быть замечена")
+except LinkError as e:
+    ok(e.code == "FOREIGN_WRITE", "правка файла вне сервера → FOREIGN_WRITE при следующей записи")
+
+# Присвоение после законного переноса — не кирпич
+reg28.re_adopt()
+reg28.register({"id": "VID_3", "type": "video", "name": "z", "path": "n/z", "parent_ids": []})
+ok(reg28.get("VID_3") is not None, "--re-adopt возвращает право записи (владелец не заперт в своих данных)")
+
+# Отпечаток машины: смена окружения ≠ подделка
+seal_moved = dict(ident28.seal({"entities": {}}))
+seal_moved["machine"] = "0" * 32
+ok(ident28.verify({"entities": {}}, seal_moved) == "MACHINE_MISMATCH",
+   "другая машина при нашей подписи → MACHINE_MISMATCH, а не FOREIGN_WRITE")
+
+# Журнал: хэш-цепочка
+h0 = "0" * 64
+h1 = chain_hash(h0, {"e": 1})
+h2 = chain_hash(h1, {"e": 2})
+ok(chain_hash(chain_hash(h0, {"e": 1}), {"e": 2}) == h2, "цепочка воспроизводима")
+ok(chain_hash(h0, {"e": 2}) != h2, "вырезанная запись рвёт цепочку")
+
+print("== 29. Ревизия защит: следим за тем, что существует (D8/D33) ==")
+import yaml as _y
+
+_fw = _y.safe_load((ROOT / "config" / "firewall.yaml").read_text(encoding="utf-8"))
+_dang = _fw["anomaly_detection"]["dangerous_tools"]
+import json as _json
+_golden = _json.loads((ROOT / "tests" / "quick" / "tools_inventory.golden.json").read_text(encoding="utf-8"))
+_names = set(_golden)   # эталон инвентаря: {имя_инструмента: контракт}
+ok(all(t in _names for t in _dang), f"в dangerous_tools нет призраков: {[t for t in _dang if t not in _names]}")
+_real = {n for n in _names if any(k in n for k in ("delete", "move", "rename", "write", "clear"))}
+ok(_real <= set(_dang), f"все разрушающие инструменты отслеживаются: не хватает {sorted(_real - set(_dang))}")
+ok(not any("sql" in p.lower() or "drop table" in p.lower()
+           for p in _fw["injection_detection"]["patterns"]),
+   "SQL-паттернов нет: у сервера нет БД, такая защита не сработала бы никогда (D33)")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

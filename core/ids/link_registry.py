@@ -50,20 +50,62 @@ class LinkError(Exception):
 class LinkRegistry:
     """Реестр сущностей + их связей. Персист в workspace/_id_registry.json."""
 
-    def __init__(self, workspace_path):
+    def __init__(self, workspace_path, identity=None):
         self.ws = Path(workspace_path)
         self.path = self.ws / REGISTRY_FILE
         self._lock = threading.Lock()
+        # S9: личность инстанса. None → подпись не ставится и не проверяется (локальные
+        # прогоны и тесты); в бою её выдаёт build_context, и тогда чужие записи отклоняются.
+        self.identity = identity
 
     def _load(self) -> dict:
         if self.path.exists():
             try:
                 data = json.loads(self.path.read_text(encoding="utf-8"))
                 if isinstance(data, dict) and isinstance(data.get("entities"), dict):
+                    self._verdict = self._check_seal(data)
                     return data
             except (json.JSONDecodeError, OSError):
                 pass
+        self._verdict = ""
         return {"entities": {}}
+
+    def _check_seal(self, data: dict) -> str:
+        """S9: чья это запись. "" — наша (или проверка не подключена)."""
+        if self.identity is None:
+            return ""
+        seal = data.get("_seal") or {}
+        if not seal:
+            # Реестр без подписи — наследство до S9. Усыновляем при первой же нашей записи,
+            # дальше отсутствие подписи означает постороннюю правку.
+            return ""
+        return self.identity.verify({"entities": data["entities"]}, seal)
+
+    def _guard_write(self, data: dict) -> None:
+        """Отказ записи поверх чужого артефакта (S9): состояние не меняем."""
+        verdict = getattr(self, "_verdict", "") or self._check_seal(data)
+        if not verdict:
+            return
+        if verdict == "MACHINE_MISMATCH":
+            raise LinkError(
+                "MACHINE_MISMATCH",
+                "Реестр создан на другой машине: запись заблокирована, чтение доступно.",
+                "Если это ваш перенос (смена железа/восстановление), подтвердите его "
+                "запуском server.py --re-adopt.", "structure_check_integrity")
+        raise LinkError(
+            "FOREIGN_WRITE",
+            "Реестр подписан другим сервером или изменён вне этого сервера.",
+            "Состояние не изменено. Проверьте, кто ещё пишет в этот workspace; "
+            "восстановите файл из бэкапа или подтвердите присвоение через --re-adopt.",
+            "structure_check_integrity")
+
+    def _save(self, data: dict) -> None:
+        """Атомарная запись с подписью инстанса (S9)."""
+        if self.identity is not None:
+            seal = self.identity.seal({"entities": data["entities"]})
+            if seal:
+                data["_seal"] = seal
+        _atomic_write_json(self.path, data)
 
     @staticmethod
     def _norm(path: str) -> str:
@@ -92,6 +134,7 @@ class LinkRegistry:
         занятый путь — раздвоение личности каталога (S18-h) → DUPLICATE_PATH."""
         with self._lock:
             data = self._load()
+            self._guard_write(data)
             eid = entity["id"]
             prev = data["entities"].get(eid, {})
             # Проверка уникальности: если ID занят другой сущностью — ошибка
@@ -120,7 +163,7 @@ class LinkRegistry:
                 "kind": entity.get("kind", "node"),
             }
             data["entities"][eid] = rec
-            _atomic_write_json(self.path, data)
+            self._save(data)
             return rec
 
     def get(self, entity_id: str) -> dict | None:
@@ -253,10 +296,11 @@ class LinkRegistry:
             child = self.resolve_ref(child_id, child_path, child_type, child_name)
             parent = self.resolve_ref(parent_id, parent_path, parent_type, parent_name)
             data = self._load()
+            self._guard_write(data)
             rec = data["entities"][child["id"]]
             if parent["id"] not in rec["parent_ids"]:
                 rec["parent_ids"].append(parent["id"])
-            _atomic_write_json(self.path, data)
+            self._save(data)
             return {"child": rec, "parent_id": parent["id"],
                     "parent_type": parent["type"], "parent_name": parent["name"]}
 
@@ -282,6 +326,7 @@ class LinkRegistry:
         """
         with self._lock:
             data = self._load()
+            self._guard_write(data)
             rec = data["entities"].get(entity_id)
             if not rec:
                 raise LinkError("ENTITY_NOT_FOUND", f"Сущности {entity_id} нет в реестре.",
@@ -295,7 +340,7 @@ class LinkRegistry:
                 rec["tags"] = merged[: self.TAGS_MAX]
             if source:
                 rec["source"] = self._clean(source, self.TAG_MAX * 2)
-            _atomic_write_json(self.path, data)
+            self._save(data)
             return rec
 
     def search(self, name: str = "", etype: str = "", tag: str = "", text: str = "",
@@ -325,6 +370,19 @@ class LinkRegistry:
                 break
         return out
 
+    def re_adopt(self) -> dict:
+        """S9: присвоить существующий реестр этому инстансу (явное действие владельца).
+
+        Нужен после законного переноса — смены железа, переезда VM, восстановления из бэкапа.
+        Данные не меняются, меняется только подпись: чужой артефакт становится нашим осознанно,
+        а не автоматически.
+        """
+        with self._lock:
+            data = self._load()
+            self._verdict = ""          # снимаем вердикт: владелец подтвердил присвоение
+            self._save(data)
+            return {"entities": len(data["entities"])}
+
     def all(self) -> list[dict]:
         """Все записи реестра (снимок). Для индексов на стороне читателей (поиск)."""
         return list(self._load()["entities"].values())
@@ -350,6 +408,7 @@ class LinkRegistry:
         moved = []
         with self._lock:
             data = self._load()
+            self._guard_write(data)
             for rec in data["entities"].values():
                 p = self._norm(rec.get("path", ""))
                 if p != old and not p.startswith(old + "/"):
@@ -357,7 +416,7 @@ class LinkRegistry:
                 rec["path"] = new + p[len(old):]
                 moved.append({"id": rec["id"], "type": rec["type"], "old_path": p, "new_path": rec["path"]})
             if moved:
-                _atomic_write_json(self.path, data)
+                self._save(data)
         return moved
 
     def forget_subtree(self, path: str) -> list[dict]:
@@ -366,12 +425,13 @@ class LinkRegistry:
         dropped = []
         with self._lock:
             data = self._load()
+            self._guard_write(data)
             for eid in list(data["entities"]):
                 p = self._norm(data["entities"][eid].get("path", ""))
                 if p == want or p.startswith(want + "/"):
                     dropped.append(data["entities"].pop(eid))
             if dropped:
-                _atomic_write_json(self.path, data)
+                self._save(data)
         return dropped
 
     def migrate(self, entity_id: str, new_path: str, new_parent_ids: list[str] | None = None) -> dict:
@@ -387,6 +447,6 @@ class LinkRegistry:
             rec["path"] = new_path
             if new_parent_ids is not None:
                 rec["parent_ids"] = list(dict.fromkeys(rec.get("parent_ids", []) + new_parent_ids))
-            _atomic_write_json(self.path, data)
+            self._save(data)
             return {"id": entity_id, "old_path": old_path, "new_path": new_path,
                     "parent_ids": rec["parent_ids"]}

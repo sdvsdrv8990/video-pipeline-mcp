@@ -418,7 +418,22 @@ def main():
     parser.add_argument("--port", type=int, default=PORT, help="Порт (по умолчанию: %(default)s)")
     parser.add_argument("--tunnel", action="store_true", help="Поднять Cloudflare-туннель вместе с сервером (D11)")
     parser.add_argument("--rotate-key", action="store_true", help="Перевыпустить ключ доступа и выйти (S1)")
+    parser.add_argument("--re-adopt", action="store_true", help="Присвоить рабочую область этому серверу после переноса (S9)")
     args = parser.parse_args()
+
+    if args.re_adopt:
+        # S9: явное подтверждение владельца, что перенос/восстановление — его действие.
+        from core.integrity import InstanceIdentity
+        from core.ids import LinkRegistry
+        ident = InstanceIdentity(BASE_PATH, WORKSPACE_PATH)
+        if not ident.ensure_key():
+            print("Подпись недоступна (нет cryptography) — присваивать нечего.", file=sys.stderr)
+            return
+        reg = LinkRegistry(WORKSPACE_PATH, identity=ident)
+        reg.re_adopt()
+        print(f"Рабочая область присвоена этому серверу (instance_id {ident.instance_id[:16]}…).")
+        print("Прежние подписи считаются недействительными; запись снова разрешена.")
+        return
 
     if args.rotate_key:
         new_token = rotate_token(ENV_PATH)

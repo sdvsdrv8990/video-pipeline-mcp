@@ -26,6 +26,7 @@ from core.firewall.rules.injection_detector import InjectionDetector
 from core.engine import Engine, TableMaterializerError, TemplateEngine, TemplateError
 from core.excel import ExcelEngine, ExcelError
 from core.ids import ChainResolver, IDGenerator, LinkError, LinkRegistry, Taxonomy, TaxonomyError
+from core.integrity import InstanceIdentity
 from core.paths import PathEscapeError, safe_resolve
 from core.state import StateManager
 from core.tables import TableEngine, TableError
@@ -112,6 +113,9 @@ def build_context(engine: Engine, id_generator: IDGenerator, state_manager: Stat
                   config_path: Path) -> ToolContext:
     """Собрать контекст: движки поднимаются здесь, группы их только используют."""
     workspace_path = state_manager.workspace_path
+    # S9: личность инстанса — ключ подписи выпускается рядом с .env (вне workspace/).
+    identity = InstanceIdentity(config_path.parent, workspace_path)
+    identity.ensure_key()
     return ToolContext(
         engine=engine,
         id_generator=id_generator,
@@ -122,8 +126,9 @@ def build_context(engine: Engine, id_generator: IDGenerator, state_manager: Stat
         excel_engine=ExcelEngine(workspace_path),
         # Ф1: композиция по ссылке + контроль глубины.
         template_engine=TemplateEngine(workspace_path, id_generator, config_path / "templates" / "workspace"),
-        # Ф2: анонимные → ORPHAN, link() в одном месте.
-        link_registry=LinkRegistry(workspace_path),
+        # Ф2 + S9: анонимные → ORPHAN, link() в одном месте; записи подписаны личностью
+        # инстанса (ключ лежит рядом с .env, вне workspace) — чужие правки отклоняются.
+        link_registry=LinkRegistry(workspace_path, identity=identity),
         workspace_path=workspace_path,
         config_path=config_path,
     )

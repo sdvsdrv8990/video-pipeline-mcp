@@ -53,6 +53,8 @@ KNOWN_ERROR_CODES = {
     "SCHEMA_INVALID",
     # Иерархия ID: цепочка по каталогу назначения (S18-g/S18-h)
     "DUPLICATE_PATH", "CHAIN_UNRESOLVED", "TEMPLATE_INVALID",
+    # Целостность артефактов: подпись инстанса и отпечаток машины (S9)
+    "FOREIGN_WRITE", "MACHINE_MISMATCH",
 }
 
 

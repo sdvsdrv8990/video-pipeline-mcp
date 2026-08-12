@@ -158,6 +158,10 @@
 | M35 | права `0600` на файле секрета не выставляются | `core/auth.py` | `test_audit_fixes` | 🔴 ловит ✅ (61/63) |
 | M36 | `compare_digest` по строкам (не-ASCII токен → 500 вместо 401) | `core/auth.py` | `test_audit_fixes` | 🔴 ловит ✅ |
 
+| M37 | защита записи снята: чужой инстанс пишет в реестр (откат S9) | `core/ids/link_registry.py` | `test_structure` | 🔴 ловит ✅ (144/147) |
+| M38 | отпечаток машины не проверяется | `core/integrity.py` | `test_structure` | 🔴 ловит ✅ (146/147) |
+| M39 | разрушающие инструменты выпали из `dangerous_tools` | `config/firewall.yaml` | `test_structure` | 🔴 ловит ✅ (146/147) |
+
 **Итог: 11/14 мутаций пойманы.** Три пробоя (M4-search, M7-structure, M9-конфиг) + мёртвый выключатель (M13)
 заведены как **F55** и **F54**. Зоны в §A/§B выше описывают ЖЕЛАЕМОЕ покрытие — расширять хозяев по F55:
 `test_search` (+фильтры/сортировка), `test_structure` (+containment через `safe_resolve`, не только имя),

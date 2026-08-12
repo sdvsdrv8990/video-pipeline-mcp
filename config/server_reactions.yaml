@@ -284,6 +284,21 @@ TEMPLATE_INVALID:
   recovery:
     reason: "Правится в config/templates/workspace/*.tpl.yaml (блок id: с prefix и ancestors) — это объявление, а не данные клиента."
 
+FOREIGN_WRITE:
+  class: integrity
+  message_template: "Артефакт подписан другим сервером или изменён извне: {path}"
+  recovery:
+    suggested_tool: "structure_check_integrity"
+    suggested_params: { }
+    reason: "Состояние НЕ изменено. Кто-то ещё пишет в этот workspace (второй сервер, другой агент, ручная правка). Проверь целостность, восстанови файл из бэкапа или подтверди присвоение запуском server.py --re-adopt."
+
+MACHINE_MISMATCH:
+  class: integrity
+  message_template: "Рабочая область создана на другой машине (отпечаток не совпал)"
+  recovery:
+    suggested_tool: "structure_check_integrity"
+    reason: "Чтение доступно, запись заблокирована. Если это ваш перенос — смена железа, переезд VM, восстановление из бэкапа — подтвердите его: server.py --re-adopt."
+
 # ═══ Fallback ═══
 
 DEFAULT:

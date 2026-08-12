@@ -36,11 +36,26 @@ injection_detection:
 # dangerous_tools — деструктивные инструменты: считаются как сигнал, НЕ блокируются.
 anomaly_detection:
   enabled: true
+  # Список сверен с ЖИВЫМ инвентарём (S19): выброшены призраки из generic-шаблона
+  # (config_delete / system_shutdown / system_restart — таких инструментов у сервера нет
+  # и не было), добавлены реально разрушающие и пишущие. Правило D8: следим за тем, что
+  # существует, иначе сигнал не сработает никогда.
   dangerous_tools:
+    # Файловая система
     - "fs_delete"
-    - "config_delete"
-    - "system_shutdown"
-    - "system_restart"
+    - "fs_move"
+    - "fs_rename"
+    - "fs_write_file"
+    # Таблицы: структура книги (необратимо при отсутствии бэкапа)
+    - "excel_delete_sheet"
+    - "excel_delete_column"
+    - "excel_move_column"
+    - "excel_rename_sheet"
+    # Таблицы: данные и очередь
+    - "table_delete"
+    - "json_clear_queue"
+    # Память проекта (перезапись решений)
+    - "memory_write"
 
 # ═══ ЛОГИРОВАНИЕ ═══
 logging:
