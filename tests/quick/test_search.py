@@ -2,8 +2,8 @@
 """tests/quick/test_search.py — покрытие core/search (FsSearcher + QueryPlanner).
 
 Постоянный набор (регрессия+coverage, НЕ удалять). Реальное поведение на временном
-workspace: поиск (ext/name/content/limit), контракт FileResult, _extract_id,
-_detect_entity_type по всей иерархии, D36 traversal-containment, QueryPlanner.
+workspace: поиск (ext/name/content/limit), контракт FileResult, личность из реестра (F60),
+_detect_entity_type по объявленной раскладке, D36 traversal-containment, QueryPlanner.
 Тесты 6 SERVER-инструментов против живого сервера (L2) — долг (DNS pending).
 """
 import sys
@@ -14,6 +14,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from core.search.fs_searcher import FsSearcher, FsSearchTask, FsSearchError
+from core.ids import LinkRegistry, Taxonomy
+
+TPL_DIR = Path(__file__).resolve().parents[2] / "config" / "templates" / "workspace"
 from core.search.query_planner import QueryPlanner, QueryPlan, SearchError
 
 _checks = 0
@@ -68,10 +71,41 @@ def main():
         check("FileResult поля заполнены (name/size/entity_type/parent_path)",
               bool(fr.name) and fr.size > 0 and fr.entity_type and fr.parent_path is not None)
 
-        print("== FsSearcher: _extract_id (PREFIX_<32hex>) ==")
-        eid = fs._extract_id(ws / "niches/gaming/networks/n1/channels/ch/videos/v" / ("VID_" + "a" * 32 + ".xlsx"))
-        check("извлекает VID_<32hex> из имени", eid == "VID_" + "a" * 32, f"got {eid!r}")
-        check("нет ID в обычном имени → ''", fs._extract_id(ws / "docs" / "a.txt") == "")
+        print("== FsSearcher: личность файла из РЕЕСТРА, не из имени (F60) ==")
+        # Было: _extract_id разбирал имя файла регуляркой → entity_id пустой у всех,
+        # id_pattern с реальным ID давал 0. Теперь источник — реестр по вместимости.
+        check("метод разбора имени удалён (имя больше не источник ID)", not hasattr(fs, "_extract_id"))
+        vid_id = "VID_" + "a" * 32
+        vpath = "niches/gaming/networks/n1/channels/ch/videos/v"
+        (ws / vpath).mkdir(parents=True, exist_ok=True)
+        (ws / vpath / "read.json").write_text("{}")
+        reg_ws = LinkRegistry(ws)
+        reg_ws.register({"id": vid_id, "type": "video", "name": "v", "path": vpath, "parent_ids": []})
+        fs_reg = FsSearcher(ws, registry=reg_ws, taxonomy=Taxonomy(TPL_DIR))
+        hits = fs_reg.search(FsSearchTask(id="t", root="", id_pattern=vid_id))
+        check("поиск по РЕАЛЬНОМУ ID находит файлы сущности (раньше 0)", len(hits) == 2, f"got {len(hits)}")
+        check("имя файла больше ни при чём — найдены оба файла видео",
+              {h.name for h in hits} == {"read.json", "VID_" + "a" * 32 + ".xlsx"})
+        check("у результата есть владелец", hits[0].owner_id == vid_id, hits[0].owner_id)
+        check("owner_id-фильтр отдаёт то же", len(fs_reg.search(
+            FsSearchTask(id="t", root="", owner_id=vid_id))) == 2)
+        check("несуществующий ID → пусто, а не всё подряд",
+              fs_reg.search(FsSearchTask(id="t", root="", id_pattern="VID_нет")) == [])
+        # chain_prefix = поддерево: цепочка владельцев начинается с указанного префикса
+        reg_ws.register({"id": "NICHE_" + "b" * 32, "type": "niche", "name": "gaming",
+                         "path": "niches/gaming", "parent_ids": []})
+        reg_ws.register({"id": "NET_" + "c" * 32, "type": "network", "name": "n1",
+                         "path": "niches/gaming/networks/n1", "parent_ids": ["NICHE_" + "b" * 32]})
+        fs_reg2 = FsSearcher(ws, registry=reg_ws, taxonomy=Taxonomy(TPL_DIR))
+        in_net = fs_reg2.search(FsSearchTask(id="t", root="", chain_prefix="NICHE_" + "b" * 32 + "/NET_" + "c" * 32))
+        check("chain_prefix отбирает поддерево сетки", len(in_net) == 2, f"got {len(in_net)}")
+        check("chain_prefix чужой сетки → пусто",
+              fs_reg2.search(FsSearchTask(id="t", root="", chain_prefix="NET_" + "d" * 32)) == [])
+        check("цепочка владельцев доехала в результат",
+              in_net[0].chain.startswith("NICHE_" + "b" * 32 + "/NET_"), in_net[0].chain)
+        check("тип сущности выводится из таксономии", hits[0].entity_type == "video", hits[0].entity_type)
+        check("без таксономии тип не выдумывается",
+              FsSearcher(ws).search(FsSearchTask(id="t", root="docs"))[0].entity_type == "unknown")
 
         print("== FsSearcher: adversarial D36 (path traversal) ==")
         def esc(root):
@@ -110,8 +144,9 @@ def main():
                   getattr(e, "code", "") == "PATH_ESCAPE")
 
         print("== FsSearcher: _detect_entity_type (D37 FIXED — все уровни иерархии) ==")
+        fs_tx = FsSearcher(ws, taxonomy=Taxonomy(TPL_DIR))
         def det(rel):
-            return fs._detect_entity_type(ws / rel / "x.yaml")
+            return fs_tx._detect_entity_type(ws / rel / "x.yaml")
         check("D37 niche", det("niches/gaming") == "niche", det("niches/gaming"))
         check("D37 network", det("niches/gaming/networks/n1") == "network", det("niches/gaming/networks/n1"))
         check("D37 channel", det("niches/gaming/networks/n1/channels/ch") == "channel",
@@ -122,7 +157,14 @@ def main():
               det("niches/gaming/networks/n1/competitors/c1"))
         check("D37 competitor_video", det("niches/gaming/networks/n1/competitors/c1/videos/v") == "competitor_video",
               det("niches/gaming/networks/n1/competitors/c1/videos/v"))
-        check("D37 вне niches → unknown", fs._detect_entity_type(ws / "docs" / "a.txt") == "unknown")
+        check("D37 вне niches → unknown", fs_tx._detect_entity_type(ws / "docs" / "a.txt") == "unknown")
+        # §4: конкурент может лежать под сегментом НАШЕГО канала — раскладка та же декларация
+        check("D37 конкурент под нашим каналом",
+              det("niches/gaming/networks/n1/competitors/chA/c1") == "competitor_channel",
+              det("niches/gaming/networks/n1/competitors/chA/c1"))
+        check("D37 видео конкурента под нашим каналом",
+              det("niches/gaming/networks/n1/competitors/chA/c1/videos/v") == "competitor_video",
+              det("niches/gaming/networks/n1/competitors/chA/c1/videos/v"))
 
         print(f"\n{'=' * 50}")
         passed = _checks - len(_fails)

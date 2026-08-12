@@ -759,6 +759,9 @@
      "description": "Список запросов",
      "items": {
       "properties": {
+       "chain_prefix": {
+        "type": "string"
+       },
        "content_keywords": {
         "items": {
          "type": "string"
@@ -776,6 +779,9 @@
          "type": "string"
         },
         "type": "array"
+       },
+       "owner_id": {
+        "type": "string"
        },
        "root": {
         "type": "string"
@@ -821,10 +827,14 @@
    "idempotentHint": true,
    "readOnlyHint": true
   },
-  "description": "Поиск файлов с фильтрами: тип сущности, ID, имя, расширение, содержимое",
+  "description": "Поиск файлов с фильтрами: тип сущности, ID/владелец/поддерево, имя, расширение, содержимое. ID берётся из реестра (по вместимости), а не из имени файла: у каждого результата есть owner_id и chain — видно, чьё это",
   "group": "filesystem",
   "input_schema": {
    "properties": {
+    "chain_prefix": {
+     "description": "Всё поддерево по префиксу цепочки владельцев (напр. NICHE_…/NET_… = вся сетка)",
+     "type": "string"
+    },
     "directory": {
      "default": ".",
      "description": "Корневой каталог (относительно workspace)",
@@ -850,7 +860,7 @@
      "type": "string"
     },
     "id_pattern": {
-     "description": "Regex паттерн ID (напр. VID_*)",
+     "description": "Regex по ID (собственный ID файла ИЛИ его владельцы). ЭТО REGEX, не glob: VID_ найдёт все видео, VID_9f2c — конкретное",
      "type": "string"
     },
     "keyword": {
@@ -864,6 +874,10 @@
     },
     "name_pattern": {
      "description": "Regex паттерн имени файла",
+     "type": "string"
+    },
+    "owner_id": {
+     "description": "Всё, что принадлежит сущности: её файлы и файлы её потомков",
      "type": "string"
     }
    },

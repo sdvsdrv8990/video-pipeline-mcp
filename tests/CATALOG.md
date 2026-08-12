@@ -26,7 +26,7 @@
 |---|---|---|---|---|
 | `test_audit_fixes.py` | **Дом ВСЕХ регрессий закрытых `D#`** (D1–D13) | откат фикса → красный | +регрессия на каждый новый закрытый `D#`/`F#` | никогда — это единый дом D#-регрессий |
 | `test_firewall.py` | firewall happy/block контракт (injection/rate/IP) против живого сервера | защита отклоняет атаки, пропускает легит | новые firewall-правила, векторы IN2/IN3/IN5, identity-rate | правило переросло в отдельную СИМУЛЯЦИЮ (→ dir) |
-| `test_search.py` | `core/search` coverage+регрессия (FsSearcher/QueryPlanner, D36 traversal) | search-контракт/поведение | relevance-eval (E-I), новые `search_*`, poisoning-outbound | search-качество как отдельный eval-слой перерастёт unit |
+| `test_search.py` | `core/search` coverage+регрессия (FsSearcher/QueryPlanner, D36 traversal) **+ личность файлов из реестра и фильтры owner_id/chain_prefix (F60)** | search-контракт/поведение | relevance-eval (E-I), новые `search_*`, poisoning-outbound | search-качество как отдельный eval-слой перерастёт unit |
 | `test_structure.py` | `TemplateEngine` Ф1 (depth-control, PATH_ESCAPE, ID) **+ система ID: таксономия из шаблонов, реестр связей, резолвер цепочки, ручная ветка ФС (S18-g/S18-h)** | структура/шаблоны/глубина/адресация | E-A/E-B/E-C эмуляция, `structure_link/migrate`, F25 reconcile | эмуляция «реальной работы ИИ» станет тяжёлой сценарной (→ dir) |
 | `test_tables.py` | table/excel smoke-контракт (Кат.2+3) | инструменты таблиц отвечают контрактом | E-D деструктив, формулы/устойчивость (F30), `table_materializer` (Ф3) | деструктив-над-таблицами станет adversarial-симуляцией |
 | `test_tunnel.py` | `core/transport/tunnel` парсер+автомат оффлайн (D11) | регрессия логики туннеля без cloudflared | новые режимы туннеля, форматы логов | — (узкая стабильная зона) |
@@ -143,6 +143,9 @@
 
 | M25 | подстановка `{parent:channel}` снята (откат F62) | `core/engine/template_engine.py` | `test_structure` | 🔴 ловит ✅ (103/107) |
 | M26 | неоднозначность без списка кандидатов (откат F64) | `core/ids/link_registry.py` | `test_structure` | 🔴 ловит ✅ |
+
+| M27 | личность файла не из реестра (откат F60) | `core/search/fs_searcher.py` | `test_search` | 🔴 ловит ✅ |
+| M28 | `chain_prefix` игнорируется | `core/search/fs_searcher.py` | `test_search` | 🔴 ловит ✅ (32/35) |
 
 **Итог: 11/14 мутаций пойманы.** Три пробоя (M4-search, M7-structure, M9-конфиг) + мёртвый выключатель (M13)
 заведены как **F55** и **F54**. Зоны в §A/§B выше описывают ЖЕЛАЕМОЕ покрытие — расширять хозяев по F55:

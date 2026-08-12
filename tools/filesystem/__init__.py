@@ -24,7 +24,8 @@ from tools._context import ANNOTATIONS_MODIFY, ANNOTATIONS_READONLY, ToolContext
 def register(engine: Engine, ctx: ToolContext) -> None:
     """Регистрация группы filesystem в движке."""
 
-    fs_searcher = FsSearcher(ctx.workspace_path)
+    # F60: поиск получает реестр (личность файлов) и таксономию (раскладка из объявлений).
+    fs_searcher = FsSearcher(ctx.workspace_path, registry=ctx.link_registry, taxonomy=ctx.taxonomy)
 
     # Общий хвост описаний создающих инструментов: сервер сам объявляет владельца (S18-g).
     OWNER = (" Владельца сервер определяет ПО КАТАЛОГУ и всегда возвращает (owner_id + chain). "
@@ -215,7 +216,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
 
     async def fs_smart_search(directory: str = ".", extension: str = "", keyword: str = "",
                               entity_type: str = "", id_pattern: str = "",
-                              name_pattern: str = "", limit: int = 100) -> "ToolResult":
+                              name_pattern: str = "", owner_id: str = "", chain_prefix: str = "", limit: int = 100) -> "ToolResult":
         """Умный поиск по файловой системе с фильтрами по типу сущности, ID, имени."""
         try:
             task = FsSearchTask(
@@ -226,12 +227,15 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 name_pattern=name_pattern,
                 extensions=[extension] if extension else [],
                 content_keywords=[keyword] if keyword else [],
+                owner_id=owner_id,
+                chain_prefix=chain_prefix,
                 limit=limit,
             )
             results = fs_searcher.search(task)
             return ToolResult(status="success", data={
                 "results": [{"path": r.path, "name": r.name, "size": r.size,
-                             "entity_type": r.entity_type, "entity_id": r.entity_id}
+                             "entity_type": r.entity_type, "entity_id": r.entity_id,
+                             "owner_id": r.owner_id, "chain": r.chain}
                             for r in results],
                 "count": len(results),
             }, facts=[Fact(type="FsSearch", data={"directory": directory, "count": len(results)})])
@@ -248,7 +252,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             return ToolResult(status="success", data={
                 "results": [{"path": r.path, "name": r.name, "size": r.size,
                              "modified": r.modified, "entity_type": r.entity_type,
-                             "entity_id": r.entity_id, "parent_path": r.parent_path}
+                             "entity_id": r.entity_id, "parent_path": r.parent_path,
+                             "owner_id": r.owner_id, "chain": r.chain}
                             for r in results],
                 "count": len(results),
                 "query_name": task.id,
@@ -271,6 +276,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                     name_pattern=q.get("name_pattern", ""),
                     extensions=q.get("extensions", []),
                     content_keywords=q.get("content_keywords", []),
+                    owner_id=q.get("owner_id", ""),
+                    chain_prefix=q.get("chain_prefix", ""),
                     limit=q.get("limit", 100),
                 )
                 tasks.append(task)
@@ -339,14 +346,16 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         ("fs_move", "Файлы: переместить", "Перемещение файла или каталога. Адрес цели сервер считает ДО переноса (new_owner_id/new_chain в ответе), реестр переезжает вместе с диском: собственные ID сущностей не меняются, меняется только цепочка владельцев — ошибочный перенос чинится повторным переносом", {"type": "object", "properties": {"source": {"type": "string", "description": "Исходный путь"}, "destination": {"type": "string", "description": "Путь назначения"}}, "required": ["source", "destination"]}, fs_move, ANNOTATIONS_MODIFY),
         ("fs_rename", "Файлы: переименовать", "Переименование файла или каталога", {"type": "object", "properties": {"path": {"type": "string", "description": "Текущий путь"}, "new_name": {"type": "string", "description": "Новое имя (без пути)"}}, "required": ["path", "new_name"]}, fs_rename, ANNOTATIONS_MODIFY),
         ("fs_delete", "Файлы: удалить", "Удаление файла или каталога. Сущности удалённого поддерева снимаются с реестра и перечисляются в ответе (entities_dropped)", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу/каталогу"}, "force": {"type": "boolean", "description": "Принудительное удаление каталога с содержимым", "default": False}}, "required": ["path"]}, fs_delete, ANNOTATIONS_MODIFY),
-        ("fs_smart_search", "Файлы: умный поиск", "Поиск файлов с фильтрами: тип сущности, ID, имя, расширение, содержимое",
+        ("fs_smart_search", "Файлы: умный поиск", "Поиск файлов с фильтрами: тип сущности, ID/владелец/поддерево, имя, расширение, содержимое. ID берётся из реестра (по вместимости), а не из имени файла: у каждого результата есть owner_id и chain — видно, чьё это",
          {"type": "object", "properties": {
              "directory": {"type": "string", "description": "Корневой каталог (относительно workspace)", "default": "."},
              "extension": {"type": "string", "description": "Фильтр по расширению"},
              "keyword": {"type": "string", "description": "Ключевое слово в содержимом"},
              "entity_type": {"type": "string", "enum": ["niche", "network", "channel", "video", "competitor_channel", "competitor_video", "asset", "scene", "render"], "description": "Тип сущности"},
-             "id_pattern": {"type": "string", "description": "Regex паттерн ID (напр. VID_*)"},
+             "id_pattern": {"type": "string", "description": "Regex по ID (собственный ID файла ИЛИ его владельцы). ЭТО REGEX, не glob: VID_ найдёт все видео, VID_9f2c — конкретное"},
              "name_pattern": {"type": "string", "description": "Regex паттерн имени файла"},
+             "owner_id": {"type": "string", "description": "Всё, что принадлежит сущности: её файлы и файлы её потомков"},
+             "chain_prefix": {"type": "string", "description": "Всё поддерево по префиксу цепочки владельцев (напр. NICHE_…/NET_… = вся сетка)"},
              "limit": {"type": "integer", "description": "Максимум результатов", "default": 100},
          }},
          fs_smart_search, ANNOTATIONS_READONLY),
@@ -362,6 +371,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                  "entity_types": {"type": "array", "items": {"type": "string"}},
                  "extensions": {"type": "array", "items": {"type": "string"}},
                  "content_keywords": {"type": "array", "items": {"type": "string"}},
+                 "owner_id": {"type": "string"},
+                 "chain_prefix": {"type": "string"},
              }}, "description": "Список запросов"},
          }, "required": ["queries"]},
          fs_search_multi, ANNOTATIONS_READONLY),

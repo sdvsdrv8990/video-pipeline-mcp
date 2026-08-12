@@ -260,6 +260,10 @@ class LinkRegistry:
             return {"child": rec, "parent_id": parent["id"],
                     "parent_type": parent["type"], "parent_name": parent["name"]}
 
+    def all(self) -> list[dict]:
+        """Все записи реестра (снимок). Для индексов на стороне читателей (поиск)."""
+        return list(self._load()["entities"].values())
+
     def find_under(self, path: str) -> list[dict]:
         """Сущности, лежащие по этому пути или под ним (поддерево)."""
         want = self._norm(path)

@@ -118,6 +118,25 @@ class Taxonomy:
                 return c["type"]
         return ""
 
+    def child_matches(self, parent_type: str, segments: list[str]) -> list[tuple[str, int]]:
+        """Все варианты «какой ребёнок начинается здесь и сколько сегментов занял контейнер».
+
+        Токен `{parent:<тип>}` (`competitors/{parent:channel}/`) может быть подставлен, а может
+        отсутствовать — когда наш канал неизвестен, сегмент опускается (§4). Поэтому вариантов
+        бывает несколько, а выбирает из них вызывающий — по тому, какой разбор уходит глубже.
+        """
+        out = []
+        for c in self._get(parent_type)["children"]:
+            parts = [p for p in c["container"].split("/") if p]
+            literal = [p for p in parts if not (p.startswith("{parent:") and p.endswith("}"))]
+            for variant in ({tuple(parts), tuple(literal)} if len(literal) != len(parts) else {tuple(parts)}):
+                if not variant or len(variant) > len(segments):
+                    continue
+                if all((p.startswith("{parent:") and p.endswith("}")) or p == segments[i]
+                       for i, p in enumerate(variant)):
+                    out.append((c["type"], len(variant)))
+        return out
+
     def _load_file_classes(self) -> dict[str, dict]:
         if self._file_classes is not None:
             return self._file_classes
