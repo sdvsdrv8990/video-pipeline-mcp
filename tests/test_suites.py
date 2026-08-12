@@ -53,7 +53,7 @@ def _cmd(suite: Path) -> list[str]:
     return [sys.executable, str(suite)]
 
 
-@pytest.mark.parametrize("suite", _params())
+@pytest.mark.parametrize("suite", list(_params()))  # pytest 10 снимет поддержку генераторов
 def test_suite_passes(suite: Path, repo_root: Path):
     """Набор отрабатывает с exit 0; иначе — его stdout попадает в отчёт."""
     p = subprocess.run(_cmd(suite), cwd=repo_root, capture_output=True, text=True, timeout=900)

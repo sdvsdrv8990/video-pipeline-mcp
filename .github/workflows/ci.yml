@@ -77,9 +77,13 @@ jobs:
       - run: pip install -e ".[dev]"
       - name: bandit (medium+)
         run: bandit -r core server.py -ll
-      - name: pip-audit (advisory — dep-hardening отдельным воркстримом)
+      # S8/F47: из advisory в ХАРД-ГЕЙТ. Полы в pyproject подняты выше известных CVE —
+      # красный здесь означает новую уязвимость, а не старый долг. Исключения только явные,
+      # списком `--ignore-vuln` с причиной, а не `continue-on-error` на весь шаг.
+      # Без `--strict`: он валится на неаудируемом локальном пакете (`-e .` нет на PyPI),
+      # то есть красил бы гейт всегда. Обычный pip-audit = exit 1 только на реальной уязвимости.
+      - name: pip-audit (hard gate)
         run: pip-audit
-        continue-on-error: true
 
   gitleaks:
     name: gitleaks (secrets)

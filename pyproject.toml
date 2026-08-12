@@ -30,15 +30,18 @@ dependencies = [
     "pydantic>=2.0,<3",
     "openpyxl>=3.1",
     # Провайдеры (STT/TTS/IMG)
-    "litellm>=1.0",
+    # Полы подняты по advisory (S8/F47, 2026-08-12): ниже них известные CVE.
+    "litellm>=1.84.0",
     "stable-ts>=2.0",
-    "torch>=2.0",
-    "torchaudio>=2.0",
+    "torch>=2.13.0",
+    # torchaudio отстаёт от torch на минор: 2.11.0 — максимум, существующий на PyPI (проверено 2026-08-12).
+    "torchaudio>=2.11.0",
     # FFmpeg-обёртка
     "ffmpeg-python>=0.2",
     # Транспорт
     "httpx>=0.24",
-    "aiohttp>=3.8",
+    # aiohttp — публичный транспорт за туннелем: 9 advisory ниже 3.14.3 (S8/F47).
+    "aiohttp>=3.14.3",
     # Утилиты
     "pyyaml>=6.0",
     "jsonschema>=4.0",
