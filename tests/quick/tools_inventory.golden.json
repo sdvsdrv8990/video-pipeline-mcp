@@ -1275,7 +1275,7 @@
    ],
    "type": "object"
   },
-  "title": "Поиск: многотабличный"
+  "title": "Таблицы: поиск с объединением (JOIN)"
  },
  "search_quick": {
   "annotations": {
@@ -1331,7 +1331,7 @@
    ],
    "type": "object"
   },
-  "title": "Поиск: быстрый"
+  "title": "Таблицы: быстрый поиск"
  },
  "search_tables": {
   "annotations": {
@@ -1354,7 +1354,7 @@
    },
    "type": "object"
   },
-  "title": "Поиск: YAML-запрос"
+  "title": "Таблицы: умный поиск (YAML)"
  },
  "structure_check_integrity": {
   "annotations": {
@@ -1640,7 +1640,7 @@
    ],
    "type": "object"
   },
-  "title": "Таблицы: столбец {id:value}"
+  "title": "Таблицы: столбец"
  },
  "table_get_row": {
   "annotations": {
@@ -1672,7 +1672,7 @@
    ],
    "type": "object"
   },
-  "title": "Таблицы: строка {col:value}"
+  "title": "Таблицы: строка"
  },
  "table_set": {
   "annotations": {

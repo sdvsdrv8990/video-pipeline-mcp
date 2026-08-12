@@ -122,10 +122,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
     # ═══ КАТЕГОРИЯ 3: данные таблиц (json_* очередь + 5 примитивов) ═══
     # Формат кортежа: (name, title, description, schema, handler, annotations).
     tables_tools = [
-        ("table_get_column", "Таблицы: столбец {id:value}", "Проекция одного столбца листа: {row_id: value}",
+        ("table_get_column", "Таблицы: столбец", "Проекция одного столбца листа: {row_id: value}",
          {"type": "object", "properties": {"table": TABLE, "sheet": SHEET, "column": {"type": "string", "description": "Имя столбца"}}, "required": ["table", "sheet", "column"]},
          table_get_column, ANNOTATIONS_READONLY),
-        ("table_get_row", "Таблицы: строка {col:value}", "Одна строка целиком: {column: value}",
+        ("table_get_row", "Таблицы: строка", "Одна строка целиком: {column: value}",
          {"type": "object", "properties": {"table": TABLE, "sheet": SHEET, "row_id": {"type": "string", "description": "ID строки"}}, "required": ["table", "sheet", "row_id"]},
          table_get_row, ANNOTATIONS_READONLY),
         ("table_set", "Таблицы: изменить поле", "Изменить поле строки (RMW через очередь). Защита формул + enum.",

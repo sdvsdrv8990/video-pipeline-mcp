@@ -100,13 +100,13 @@ def register(engine: Engine, ctx: ToolContext) -> None:
 
     # Регистрация
     search_tools = [
-        ("search_tables", "Поиск: YAML-запрос", "Умный поиск по таблицам через YAML (очередь, многопоточность, объединение)",
+        ("search_tables", "Таблицы: умный поиск (YAML)", "Умный поиск по таблицам через YAML (очередь, многопоточность, объединение)",
          {"type": "object", "properties": {
              "yaml_query": {"type": "string", "description": "YAML-строка с запросом"},
              "query_dict": {"type": "object", "description": "Dict с запросом (альтернатива YAML)"},
          }},
          search_tables, ANNOTATIONS_READONLY),
-        ("search_quick", "Поиск: быстрый", "Быстрый поиск в одной таблице с фильтром (без YAML)",
+        ("search_quick", "Таблицы: быстрый поиск", "Быстрый поиск в одной таблице с фильтром (без YAML)",
          {"type": "object", "properties": {
              "table": {"type": "string", "description": "Путь к таблице"},
              "sheet": {"type": "string", "description": "Имя листа"},
@@ -117,7 +117,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
              "limit": {"type": "integer", "description": "Максимум строк", "default": 100},
          }, "required": ["table", "sheet"]},
          search_quick, ANNOTATIONS_READONLY),
-        ("search_multi", "Поиск: многотабличный", "Поиск с объединением нескольких таблиц (JOIN по ключу)",
+        ("search_multi", "Таблицы: поиск с объединением (JOIN)", "Поиск с объединением нескольких таблиц (JOIN по ключу)",
          {"type": "object", "properties": {
              "tables": {"type": "array", "items": {"type": "object", "properties": {
                  "table": {"type": "string"}, "sheet": {"type": "string"},
