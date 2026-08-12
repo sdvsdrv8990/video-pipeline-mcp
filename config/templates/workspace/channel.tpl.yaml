@@ -13,7 +13,9 @@ channel:
     - { name: "videos", required: true }
   files:
     - { name: "channel_data.xlsx", kind: table, table_template: channel_data, required: true }
-    - { name: "channel_config.xlsx", kind: table, table_template: channel_config, required: true }
+    # Конфиг канала — КОПИЯ серверного дефолта (doc 10 §5.0), не книга: спека описывает YAML,
+    # а не листы Excel. Правится инструментами в копии; config/ остаётся декларацией.
+    - { name: "channel_config.yaml", kind: config, source: channel_config.yaml, required: true }
     - { name: "project_memory.md", kind: file, required: true }
   children:
     - { type: video, container: "videos/" }

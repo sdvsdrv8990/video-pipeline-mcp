@@ -131,7 +131,7 @@ def build_context(engine: Engine, id_generator: IDGenerator, state_manager: Stat
         # Категория 2 (структура) — ExcelEngine поверх .xlsx (openpyxl).
         excel_engine=ExcelEngine(workspace_path),
         # Ф1: композиция по ссылке + контроль глубины.
-        template_engine=TemplateEngine(workspace_path, id_generator, config_path / "templates" / "workspace"),
+        template_engine=TemplateEngine(workspace_path, id_generator, config_path / "templates" / "workspace", config_path),
         # Ф2 + S9: анонимные → ORPHAN, link() в одном месте; записи подписаны личностью
         # инстанса (ключ лежит рядом с .env, вне workspace) — чужие правки отклоняются.
         link_registry=LinkRegistry(workspace_path, identity=identity),

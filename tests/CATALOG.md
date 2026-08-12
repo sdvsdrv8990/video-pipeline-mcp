@@ -173,6 +173,10 @@
 | M45 | `fs_rename`/`fs_move` не проверяют тип цели (обход allowlist) | `tools/filesystem/__init__.py` | `test_structure` | 🔴 ловит ✅ (4 провала) |
 | M46 | каркас скрипта пишет мимо единой двери (`description` от ИИ не проверяется) | `tools/filesystem/__init__.py` | `test_structure` | 🔴 ловит ✅ (2 провала) |
 
+| M47 | `kind: config` игнорируется — копии конфига проекта нет | `core/engine/template_engine.py` | `test_structure` | 🔴 ловит ✅ (3 провала) |
+| M48 | копия затирается серверным дефолтом при каждом проходе (правка проекта теряется) | `core/engine/template_engine.py` | `test_structure` | 🔴 ловит ✅ |
+| M49 | нет дефолта на диске → выдуманный файл вместо честного пропуска | `core/engine/template_engine.py` | `test_structure` | 🔴 ловит ✅ (падением) |
+
 **Итог: 11/14 мутаций пойманы.** Три пробоя (M4-search, M7-structure, M9-конфиг) + мёртвый выключатель (M13)
 заведены как **F55** и **F54**. Зоны в §A/§B выше описывают ЖЕЛАЕМОЕ покрытие — расширять хозяев по F55:
 `test_search` (+фильтры/сортировка), `test_structure` (+containment через `safe_resolve`, не только имя),

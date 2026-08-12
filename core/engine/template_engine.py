@@ -18,6 +18,9 @@ core/engine/template_engine.py — Движок шаблонов структу�
 - **Таблицы отложены (Ф3, G16).** Фрагменты `kind: table` здесь НЕ строятся — они
   честно уходят в `tables_pending` (фаза таблиц строит .xlsx отдельно). Структура на
   уровне папок/json работает сразу.
+- **Конфиг проекта — копия, а не ссылка (`kind: config`, doc 10 §5.0).** Серверный дефолт
+  из `config/` копируется в узел: инструменты правят КОПИЮ (данные проекта), git-декларация
+  остаётся неизменной. Нет дефолта на диске → фрагмент пропущен с причиной, не выдуманный файл.
 
 ## Границы
 - Containment: все пути через `core.paths.safe_resolve` (ValueError → PATH_ESCAPE у обёртки, D29/G17).
@@ -53,10 +56,12 @@ class TemplateEngine:
         tpl_dir: config/templates/workspace/
     """
 
-    def __init__(self, workspace_path, id_generator, templates_dir):
+    def __init__(self, workspace_path, id_generator, templates_dir, config_dir=None):
         self.ws = Path(workspace_path)
         self.ids = id_generator
         self.tpl_dir = Path(templates_dir)
+        # Корень серверных деклараций — источник копий для `kind: config`.
+        self.config_dir = Path(config_dir) if config_dir else self.tpl_dir.parents[1]
         self.taxonomy = Taxonomy(templates_dir)   # префиксы и контейнеры — из шаблонов, не из кода
         self._cache: dict[str, dict] = {}
 
@@ -178,6 +183,19 @@ class TemplateEngine:
                 f = safe_resolve(f"{node_rel}/{fname}", self.ws)
             except ValueError:
                 skipped.append({"kind": "file", "name": fname, "reason": "path escape"})
+                continue
+            if fr.get("kind") == "config":
+                # Per-project override: копия серверного дефолта в данные проекта (doc 10 §5.0).
+                src = self.config_dir / str(fr.get("source", fname))
+                if not src.is_file():
+                    skipped.append({"kind": "config", "name": fname, "reason": "no default",
+                                    "source": str(fr.get("source", fname))})
+                    continue
+                f.parent.mkdir(parents=True, exist_ok=True)
+                if not f.exists():   # уже правленную копию не затираем
+                    f.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+                created.append({"kind": "config", "path": f"{node_rel}/{fname}",
+                                "source": str(fr.get("source", fname))})
                 continue
             f.parent.mkdir(parents=True, exist_ok=True)
             if not f.exists():

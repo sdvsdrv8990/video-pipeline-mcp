@@ -70,7 +70,9 @@ ok(res["children"] == [], "видео НЕ созданы (не названы)"
 ok(any(d["type"] == "video" for d in res["deferred_children"]), "video отложен")
 ok(list((base / "videos").iterdir()) == [], "videos/ пуст — ни одного видео")
 tp = {t["path"].split("/")[-1] for t in res["tables_pending"]}
-ok(tp == {"channel_data.xlsx", "channel_config.xlsx"}, "обе таблицы отложены (tables_pending), не на диске")
+ok(tp == {"channel_data.xlsx"}, "книга канала отложена (tables_pending), не на диске")
+ok((base / "channel_config.yaml").exists(),
+   "конфиг канала — копия рядом, не отложенная книга (doc 10 §5.0)")
 ok(not (base / "channel_data.xlsx").exists(), "channel_data.xlsx НЕ создан (фаза таблиц, Ф3)")
 
 print("== 3. названное видео → всё поддерево видео ==")
@@ -645,6 +647,41 @@ ok(call("fs_rename", path=f"{V2}/data.txt", new_name="data.md").status == "succe
 (ws18 / V2 / "folder").mkdir(parents=True, exist_ok=True)
 ok(call("fs_rename", path=f"{V2}/folder", new_name="folder2").status == "success",
    "каталог переименовывается: правило про тип файла, а не про папки")
+
+print("== 33. Конфиг проекта: копия серверного дефолта, а не ссылка (doc 10 §5.0) ==")
+_ws33 = Path(tempfile.mkdtemp(prefix="vpm_cfg_"))
+_eng33 = TemplateEngine(_ws33, IDGenerator(), TPL_DIR, ROOT / "config")
+_r33 = _eng33.create_node("channel", "chA", parent_path="niches/n/networks/net1/channels/")
+_cfg33 = _ws33 / "niches/n/networks/net1/channels/chA/channel_config.yaml"
+_srv33 = ROOT / "config" / "channel_config.yaml"
+ok(_cfg33.exists(), "конфиг канала материализован копией в workspace")
+ok(_cfg33.read_text(encoding="utf-8") == _srv33.read_text(encoding="utf-8"),
+   "копия идентична серверному дефолту")
+ok(any(c.get("kind") == "config" for c in _r33["created"]), "фрагмент отмечен как config, не как file")
+_cfg33.write_text("# ПРАВКА ПРОЕКТА\n", encoding="utf-8")
+_eng33.create_node("channel", "chA", parent_path="niches/n/networks/net1/channels/")
+ok(_cfg33.read_text(encoding="utf-8").startswith("# ПРАВКА"),
+   "правка проекта переживает повторную материализацию (копию не затираем)")
+ok(len(_srv33.read_text(encoding="utf-8").splitlines()) == 312,
+   "серверная декларация не тронута правкой проекта")
+_bad33 = Path(tempfile.mkdtemp()) / "cfg"
+_shutil.copytree(ROOT / "config", _bad33)
+(_bad33 / "channel_config.yaml").unlink()
+_r33b = TemplateEngine(Path(tempfile.mkdtemp(prefix="vpm_cfg2_")), IDGenerator(),
+                       _bad33 / "templates" / "workspace", _bad33).create_node("channel", "chB", parent_path="x/")
+ok(any(s.get("kind") == "config" and s.get("reason") == "no default" for s in _r33b["skipped"]),
+   "нет дефолта на диске → честный пропуск с причиной, а не выдуманный файл")
+# Объявленное обязано иметь источник: книга без схемы = вечный TEMPLATE_NOT_FOUND
+_declared = set()
+for _t in TPL_DIR.glob("*.tpl.yaml"):
+    _key = _t.name.replace(".tpl.yaml", "")   # stem дал бы "channel.tpl", корневой ключ — "channel"
+    _declared |= {f["table_template"] for f in
+                  ((_y.safe_load(_t.read_text(encoding="utf-8")) or {}).get(_key) or {}).get("files", [])
+                  if f.get("kind") == "table"}
+_have = {p.name.replace(".schema.yaml", "") for p in (ROOT / "config/templates/tables").glob("*.schema.yaml")}
+_specs = {p.name.replace(".schema.md", "") for p in (ROOT / "docs/roadmap/spec/schemas").glob("*.schema.md")}
+ok(_declared <= _specs, f"у каждой объявленной книги есть спека-источник: без спеки {sorted(_declared - _specs)}")
+print(f"    (схем собрано {len(_declared & _have)}/{len(_declared)}: ждут авторинга {sorted(_declared - _have)})")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
