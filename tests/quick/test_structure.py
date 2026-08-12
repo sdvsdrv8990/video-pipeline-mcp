@@ -295,6 +295,40 @@ ok(solo.status == "success" and solo.data["skipped_levels"] == ["network"],
    "канал без сетки → skipped_levels=[network] в ответе")
 ok("NET_" not in solo.data["entities"][0]["chain"], "сегмента сетки в цепочке нет (без заглушек)")
 
+print("== 21. Ручная ветка ФС: владелец по вместимости и перенос через реестр (F61/F65) ==")
+from tools import filesystem as _fs_group
+
+_fs_group.register(_eng, _ctx)
+vid_id = call("structure_create", type="video", name="clip",
+              parent_path="niches/gaming/networks/net1/channels/chA/videos/").data["entities"][0]["id"]
+manual = call("fs_create_file",
+              path="niches/gaming/networks/net1/channels/chA/videos/clip/assets/notes.md", content="x")
+ok(manual.data["owner_id"] == vid_id and manual.data["owner_type"] == "video",
+   "файл, созданный вручную, получает владельца по вместимости (было: ничего)")
+ok(manual.data["chain"].count("/") == 3 and manual.data["chain"].endswith(vid_id),
+   "и цепочку владельцев сверху вниз, заканчивающуюся самим видео")
+ok(any(f.type == "FileCreated" and f.data.get("owner_id") for f in manual.facts),
+   "владелец доехал и в факт, не только в data")
+ok(call("structure_check_integrity").data["issues_count"] == 0,
+   "после создания реестр и диск согласованы (книги регистрируются только после материализации)")
+
+mv = call("fs_move", source="niches/gaming/networks/net1/channels/chA/videos/clip",
+          destination="niches/gaming/networks/net1/channels/chA/videos/clip_v2")
+ok(mv.data["new_chain"] and mv.data["new_owner_id"],
+   "адрес цели посчитан ДО переноса (ИИ может сверить корректность)")
+ok([m["id"] for m in mv.data["entities_moved"]] == [vid_id],
+   "запись реестра переехала вместе с диском (было: путь протухал молча)")
+ok(_ctx.link_registry.get(vid_id)["path"].endswith("clip_v2") and
+   _ctx.link_registry.get(vid_id)["id"] == vid_id,
+   "адрес изменился, СОБСТВЕННЫЙ сегмент — нет (ссылки не рвутся, S18-g)")
+ok(call("structure_check_integrity").data["issues_count"] == 0,
+   "после переноса рассинхрона нет (раньше check_integrity давал 0 issues при битом реестре)")
+
+dl = call("fs_delete", path="niches/gaming/networks/net1/channels/chA/videos/clip_v2", force=True)
+ok([d["id"] for d in dl.data["entities_dropped"]] == [vid_id], "удаление снимает записи поддерева с реестра")
+ok(_ctx.link_registry.get(vid_id) is None and call("structure_check_integrity").data["issues_count"] == 0,
+   "реестр не переживает диск")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

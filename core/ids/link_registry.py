@@ -226,6 +226,51 @@ class LinkRegistry:
             _atomic_write_json(self.path, data)
             return {"child": rec, "parent_id": parent["id"], "parent_type": parent_type, "parent_name": parent_name}
 
+    def find_under(self, path: str) -> list[dict]:
+        """Сущности, лежащие по этому пути или под ним (поддерево)."""
+        want = self._norm(path)
+        if not want:
+            return []
+        out = []
+        for e in self._load()["entities"].values():
+            p = self._norm(e.get("path", ""))
+            if p == want or p.startswith(want + "/"):
+                out.append(e)
+        return out
+
+    def migrate_subtree(self, old_path: str, new_path: str) -> list[dict]:
+        """Перенос поддерева: путь сущности и всех её потомков переписывается (F65).
+
+        Собственные ID неизменны — меняется только адрес (S18-g), поэтому ссылки не рвутся.
+        """
+        old, new = self._norm(old_path), self._norm(new_path)
+        moved = []
+        with self._lock:
+            data = self._load()
+            for rec in data["entities"].values():
+                p = self._norm(rec.get("path", ""))
+                if p != old and not p.startswith(old + "/"):
+                    continue
+                rec["path"] = new + p[len(old):]
+                moved.append({"id": rec["id"], "type": rec["type"], "old_path": p, "new_path": rec["path"]})
+            if moved:
+                _atomic_write_json(self.path, data)
+        return moved
+
+    def forget_subtree(self, path: str) -> list[dict]:
+        """Забыть сущности поддерева (удаление с диска). Возвращает снятые записи."""
+        want = self._norm(path)
+        dropped = []
+        with self._lock:
+            data = self._load()
+            for eid in list(data["entities"]):
+                p = self._norm(data["entities"][eid].get("path", ""))
+                if p == want or p.startswith(want + "/"):
+                    dropped.append(data["entities"].pop(eid))
+            if dropped:
+                _atomic_write_json(self.path, data)
+        return dropped
+
     def migrate(self, entity_id: str, new_path: str, new_parent_ids: list[str] | None = None) -> dict:
         """Миграция сущности: физический перенос + обновление реестра.
         Используется когда родитель появился позже (напр. конкурент без канала → привязка к каналу)."""

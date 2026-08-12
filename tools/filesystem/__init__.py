@@ -25,6 +25,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
 
     fs_searcher = FsSearcher(ctx.workspace_path)
 
+    # Общий хвост описаний создающих инструментов: сервер сам объявляет владельца (S18-g).
+    OWNER = (" Владельца сервер определяет по каталогу (owner_id + chain в ответе): "
+             "файл внутри сущности принадлежит ей, отдельного ID файлу не заводится.")
+
     async def fs_get_directory_tree(path: str = ".") -> "ToolResult":
         """Получение дерева каталогов."""
         try:
@@ -54,15 +58,31 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         content = target.read_text(encoding="utf-8")
         return ToolResult(status="success", data={"content": content, "size": len(content)}, facts=[Fact(type="FileRead", data={"path": path, "size": len(content)})])
 
+    def _owner_of(path: str) -> dict:
+        """Владелец файла по ВМЕСТИМОСТИ: ближайший зарегистрированный предок пути (S18-g).
+
+        Файл, созданный вручную, собственного ID не получает, но перестаёт быть безымянным:
+        сервер сообщает, чьей сущности он принадлежит и какова цепочка владельцев.
+        """
+        try:
+            plan = ctx.chain_resolver.resolve(str(Path(path).parent))
+        except ValueError:
+            return {"owner_id": "", "chain": "", "owner_type": "", "owner_path": ""}
+        nearest = plan["chain"][-1] if plan["chain"] else {}
+        return {"owner_id": plan["owner_id"], "chain": plan["chain_id"],
+                "owner_type": nearest.get("type", ""), "owner_path": nearest.get("path", "")}
+
     async def fs_create_file(path: str, content: str = "") -> "ToolResult":
-        """Создание файла."""
+        """Создание файла (сервер сообщает владельца по вместимости, S18-g)."""
         try:
             target = ctx.resolve(path)
         except ValueError:
             return ctx.err("PATH_ESCAPE", f"Path escapes workspace: {path}")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        return ToolResult(status="success", data={"created": path, "size": len(content)}, facts=[Fact(type="FileCreated", data={"path": path, "size": len(content)})])
+        owner = _owner_of(path)
+        return ToolResult(status="success", data={"created": path, "size": len(content), **owner},
+                          facts=[Fact(type="FileCreated", data={"path": path, "size": len(content), **owner})])
 
     async def fs_write_file(path: str, content: str) -> "ToolResult":
         """Полная перезапись файла."""
@@ -73,10 +93,13 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         old_size = target.stat().st_size if target.exists() else 0
         target.write_text(content, encoding="utf-8")
-        return ToolResult(status="success", data={"written": path, "size": len(content), "old_size": old_size}, facts=[Fact(type="FileWritten", data={"path": path, "size": len(content)})])
+        owner = _owner_of(path)
+        return ToolResult(status="success",
+                          data={"written": path, "size": len(content), "old_size": old_size, **owner},
+                          facts=[Fact(type="FileWritten", data={"path": path, "size": len(content), **owner})])
 
     async def fs_move(source: str, destination: str) -> "ToolResult":
-        """Перемещение файла или каталога."""
+        """Перемещение файла или каталога (реестр переезжает вместе с диском, F65)."""
         try:
             src, dst = ctx.resolve(source), ctx.resolve(destination)
         except ValueError:
@@ -85,9 +108,19 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             return ctx.err("FILE_NOT_FOUND", f"Source not found: {source}")
         if dst.exists():
             return ctx.err("FILE_EXISTS", f"Destination exists: {destination}")
+        # S18-h: адрес цели считается ДО переноса — ИИ видит, куда сущность попадёт.
+        ok, plan = ctx.safe(lambda: ctx.chain_resolver.resolve(str(Path(destination).parent)))
+        if not ok:
+            return plan
         dst.parent.mkdir(parents=True, exist_ok=True)
         src.rename(dst)
-        return ToolResult(status="success", data={"source": source, "destination": destination}, facts=[Fact(type="FileMoved", data={"source": source, "destination": destination})])
+        moved = ctx.link_registry.migrate_subtree(source, destination)
+        facts = [Fact(type="FileMoved", data={"source": source, "destination": destination})]
+        facts += [Fact(type="EntityRegistered", data=m) for m in moved]
+        return ToolResult(status="success", data={
+            "source": source, "destination": destination,
+            "new_owner_id": plan["owner_id"], "new_chain": plan["chain_id"],
+            "entities_moved": moved}, facts=facts)
 
     async def fs_rename(path: str, new_name: str) -> "ToolResult":
         """Переименование файла или каталога."""
@@ -105,7 +138,13 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         if dst.exists():
             return ctx.err("FILE_EXISTS", f"Name exists: {new_name}")
         src.rename(dst)
-        return ToolResult(status="success", data={"old_path": path, "new_path": str(dst.relative_to(ctx.workspace_path))}, facts=[Fact(type="FileRenamed", data={"old": path, "new": new_name})])
+        new_path = str(dst.relative_to(ctx.workspace_path))
+        moved = ctx.link_registry.migrate_subtree(path, new_path)
+        facts = [Fact(type="FileRenamed", data={"old": path, "new": new_name})]
+        facts += [Fact(type="EntityRegistered", data=m) for m in moved]
+        return ToolResult(status="success",
+                          data={"old_path": path, "new_path": new_path, "entities_moved": moved},
+                          facts=facts)
 
     async def fs_delete(path: str, force: bool = False) -> "ToolResult":
         """Удаление файла или каталога."""
@@ -123,7 +162,13 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             shutil.rmtree(target)
         else:
             target.unlink()
-        return ToolResult(status="success", data={"deleted": path}, facts=[Fact(type="FileDeleted", data={"path": path})])
+        # Реестр не должен переживать диск: снятые записи возвращаются клиенту явно (F65).
+        dropped = ctx.link_registry.forget_subtree(path)
+        return ToolResult(status="success",
+                          data={"deleted": path,
+                                "entities_dropped": [{"id": d["id"], "type": d["type"], "path": d["path"]}
+                                                     for d in dropped]},
+                          facts=[Fact(type="FileDeleted", data={"path": path})])
 
     # ─── Умный поиск по файловой системе ───
 
@@ -211,7 +256,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         skeleton = f'"""\n{desc}\n"""\n\nimport sys\nfrom pathlib import Path\n\n\ndef main():\n    """Main entry point."""\n    print(f"Running {{__file__}}")\n    # TODO: implement\n    pass\n\n\nif __name__ == "__main__":\n    main()\n'
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(skeleton, encoding="utf-8")
-        return ToolResult(status="success", data={"created": path, "size": len(skeleton)}, facts=[Fact(type="FileCreated", data={"path": path, "type": "python_script"})])
+        owner = _owner_of(path)
+        return ToolResult(status="success", data={"created": path, "size": len(skeleton), **owner}, facts=[Fact(type="FileCreated", data={"path": path, "size": len(skeleton), **owner})])
 
     async def fs_create_project_structure(template: str = "", fragments: list[dict] | None = None) -> "ToolResult":
         """Материализация структуры по шаблону или список фрагментов."""
@@ -248,11 +294,11 @@ def register(engine: Engine, ctx: ToolContext) -> None:
     fs_tools = [
         ("fs_get_directory_tree", "Файлы: дерево каталогов", "Получение дерева каталогов", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь относительно workspace"}}}, fs_get_directory_tree, ANNOTATIONS_READONLY),
         ("fs_read_file", "Файлы: прочитать файл", "Чтение файла", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу"}}, "required": ["path"]}, fs_read_file, ANNOTATIONS_READONLY),
-        ("fs_create_file", "Файлы: создать файл", "Создание файла", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу"}, "content": {"type": "string", "description": "Содержимое файла"}}, "required": ["path"]}, fs_create_file, ANNOTATIONS_MODIFY),
-        ("fs_write_file", "Файлы: перезаписать файл", "Полная перезапись файла", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу"}, "content": {"type": "string", "description": "Новое содержимое файла"}}, "required": ["path", "content"]}, fs_write_file, ANNOTATIONS_MODIFY),
-        ("fs_move", "Файлы: переместить", "Перемещение файла или каталога", {"type": "object", "properties": {"source": {"type": "string", "description": "Исходный путь"}, "destination": {"type": "string", "description": "Путь назначения"}}, "required": ["source", "destination"]}, fs_move, ANNOTATIONS_MODIFY),
+        ("fs_create_file", "Файлы: создать файл", "Создание файла." + OWNER, {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу"}, "content": {"type": "string", "description": "Содержимое файла"}}, "required": ["path"]}, fs_create_file, ANNOTATIONS_MODIFY),
+        ("fs_write_file", "Файлы: перезаписать файл", "Полная перезапись файла." + OWNER, {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу"}, "content": {"type": "string", "description": "Новое содержимое файла"}}, "required": ["path", "content"]}, fs_write_file, ANNOTATIONS_MODIFY),
+        ("fs_move", "Файлы: переместить", "Перемещение файла или каталога. Адрес цели сервер считает ДО переноса (new_owner_id/new_chain в ответе), реестр переезжает вместе с диском: собственные ID сущностей не меняются, меняется только цепочка владельцев — ошибочный перенос чинится повторным переносом", {"type": "object", "properties": {"source": {"type": "string", "description": "Исходный путь"}, "destination": {"type": "string", "description": "Путь назначения"}}, "required": ["source", "destination"]}, fs_move, ANNOTATIONS_MODIFY),
         ("fs_rename", "Файлы: переименовать", "Переименование файла или каталога", {"type": "object", "properties": {"path": {"type": "string", "description": "Текущий путь"}, "new_name": {"type": "string", "description": "Новое имя (без пути)"}}, "required": ["path", "new_name"]}, fs_rename, ANNOTATIONS_MODIFY),
-        ("fs_delete", "Файлы: удалить", "Удаление файла или каталога", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу/каталогу"}, "force": {"type": "boolean", "description": "Принудительное удаление каталога с содержимым", "default": False}}, "required": ["path"]}, fs_delete, ANNOTATIONS_MODIFY),
+        ("fs_delete", "Файлы: удалить", "Удаление файла или каталога. Сущности удалённого поддерева снимаются с реестра и перечисляются в ответе (entities_dropped)", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу/каталогу"}, "force": {"type": "boolean", "description": "Принудительное удаление каталога с содержимым", "default": False}}, "required": ["path"]}, fs_delete, ANNOTATIONS_MODIFY),
         ("fs_smart_search", "Файлы: умный поиск", "Поиск файлов с фильтрами: тип сущности, ID, имя, расширение, содержимое",
          {"type": "object", "properties": {
              "directory": {"type": "string", "description": "Корневой каталог (относительно workspace)", "default": "."},
@@ -279,8 +325,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
              }}, "description": "Список запросов"},
          }, "required": ["queries"]},
          fs_search_multi, ANNOTATIONS_READONLY),
-        ("fs_create_python_script", "Файлы: новый Python-скрипт", "Создание Python-скрипта с каркасом", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к .py файлу"}, "description": {"type": "string", "description": "Описание модуля"}}, "required": ["path"]}, fs_create_python_script, ANNOTATIONS_MODIFY),
-        ("fs_create_project_structure", "Файлы: структура проекта", "Материализация структуры каталогов/файлов по шаблону или списку фрагментов", {"type": "object", "properties": {"template": {"type": "string", "description": "Имя шаблона из config/templates/workspace/"}, "fragments": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "type": {"type": "string", "enum": ["directory", "file"]}, "content": {"type": "string"}}}, "description": "Список фрагментов для создания"}}}, fs_create_project_structure, ANNOTATIONS_MODIFY),
+        ("fs_create_python_script", "Файлы: новый Python-скрипт", "Создание Python-скрипта с каркасом." + OWNER, {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к .py файлу"}, "description": {"type": "string", "description": "Описание модуля"}}, "required": ["path"]}, fs_create_python_script, ANNOTATIONS_MODIFY),
+        ("fs_create_project_structure", "Файлы: структура проекта", "Материализация структуры каталогов/файлов по шаблону или списку фрагментов (сырые папки/файлы без ID; для узлов проекта с ID и цепочкой владельцев — structure_create)", {"type": "object", "properties": {"template": {"type": "string", "description": "Имя шаблона из config/templates/workspace/"}, "fragments": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "type": {"type": "string", "enum": ["directory", "file"]}, "content": {"type": "string"}}}, "description": "Список фрагментов для создания"}}}, fs_create_project_structure, ANNOTATIONS_MODIFY),
     ]
     for name, title, desc, schema, handler, annot in fs_tools:
         engine.register(name=name, title=title, description=desc, input_schema=schema, handler=handler, group="filesystem", annotations=annot)  # type: ignore[arg-type]

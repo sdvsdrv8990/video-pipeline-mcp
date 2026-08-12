@@ -526,7 +526,7 @@
    "idempotentHint": false,
    "readOnlyHint": false
   },
-  "description": "Создание файла",
+  "description": "Создание файла. Владельца сервер определяет по каталогу (owner_id + chain в ответе): файл внутри сущности принадлежит ей, отдельного ID файлу не заводится.",
   "group": "filesystem",
   "input_schema": {
    "properties": {
@@ -552,7 +552,7 @@
    "idempotentHint": false,
    "readOnlyHint": false
   },
-  "description": "Материализация структуры каталогов/файлов по шаблону или списку фрагментов",
+  "description": "Материализация структуры каталогов/файлов по шаблону или списку фрагментов (сырые папки/файлы без ID; для узлов проекта с ID и цепочкой владельцев — structure_create)",
   "group": "filesystem",
   "input_schema": {
    "properties": {
@@ -593,7 +593,7 @@
    "idempotentHint": false,
    "readOnlyHint": false
   },
-  "description": "Создание Python-скрипта с каркасом",
+  "description": "Создание Python-скрипта с каркасом. Владельца сервер определяет по каталогу (owner_id + chain в ответе): файл внутри сущности принадлежит ей, отдельного ID файлу не заводится.",
   "group": "filesystem",
   "input_schema": {
    "properties": {
@@ -619,7 +619,7 @@
    "idempotentHint": false,
    "readOnlyHint": false
   },
-  "description": "Удаление файла или каталога",
+  "description": "Удаление файла или каталога. Сущности удалённого поддерева снимаются с реестра и перечисляются в ответе (entities_dropped)",
   "group": "filesystem",
   "input_schema": {
    "properties": {
@@ -665,7 +665,7 @@
    "idempotentHint": false,
    "readOnlyHint": false
   },
-  "description": "Перемещение файла или каталога",
+  "description": "Перемещение файла или каталога. Адрес цели сервер считает ДО переноса (new_owner_id/new_chain в ответе), реестр переезжает вместе с диском: собственные ID сущностей не меняются, меняется только цепочка владельцев — ошибочный перенос чинится повторным переносом",
   "group": "filesystem",
   "input_schema": {
    "properties": {
@@ -867,7 +867,7 @@
    "idempotentHint": false,
    "readOnlyHint": false
   },
-  "description": "Полная перезапись файла",
+  "description": "Полная перезапись файла. Владельца сервер определяет по каталогу (owner_id + chain в ответе): файл внутри сущности принадлежит ей, отдельного ID файлу не заводится.",
   "group": "filesystem",
   "input_schema": {
    "properties": {

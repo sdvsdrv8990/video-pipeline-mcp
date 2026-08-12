@@ -100,11 +100,9 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                     type="FolderCreated" if c["kind"] == "folder" else "FileCreated",
                     data={"path": c["path"]}))
             for t in node["tables_pending"]:
-                # Регистрируем отложенную таблицу с ID в реестре
-                if "file_id" in t:
-                    ctx.link_registry.register({
-                        "id": t["file_id"], "type": "table_file", "name": t["path"].split("/")[-1],
-                        "path": t["path"], "parent_ids": [node["node_id"]], "kind": "file"})
+                # ID книге присвоен, но в реестр она попадёт ТОЛЬКО после материализации:
+                # запись о несуществующем файле — ложь, которую ловит check_integrity (F65).
+                t["owner_id"] = node["node_id"]
                 facts.append(Fact(type="TableDeferred", data=t))
             for d in node["deferred_children"]:
                 facts.append(Fact(type="ChildDeferred", data=d))
@@ -119,6 +117,12 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         pending = [f.data for f in facts if f.type == "TableDeferred"]
         phase = materializer.materialize_pending(pending)
         for m in phase["materialized"]:
+            # Книга существует на диске → теперь её можно регистрировать (владелец из pending).
+            owner = next((p.get("owner_id", "") for p in pending if p["path"] == m["path"]), "")
+            if m.get("file_id"):
+                ctx.link_registry.register({
+                    "id": m["file_id"], "type": "table_file", "name": m["path"].split("/")[-1],
+                    "path": m["path"], "parent_ids": [owner] if owner else [], "kind": "file"})
             facts.append(Fact(type="TableMaterialized", data={
                 "path": m["path"], "book": m["book"], "file_id": m.get("file_id", ""),
                 "sheets": [s["sheet"] for s in m["sheets"]], "columns": m["columns_total"]}))
