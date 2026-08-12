@@ -91,7 +91,7 @@ async def test_draft_render():
     # Читаем и проверяем
     r = await engine.call("fs_read_file", {"path": "renders/draft_001.json"})
     check("Draft читается", r.status == "success")
-    data = json.loads(r.data["content"])
+    data = json.loads(r.data["content"]["value"])   # S3: содержимое в конверте провенанса
     check("Draft task_id = draft_001", data["task_id"] == "draft_001")
     check("Draft status = completed", data["status"] == "completed")
 
@@ -119,7 +119,7 @@ async def test_final_render():
 
     # Проверяем привязку
     r = await engine.call("fs_read_file", {"path": "renders/final_001.json"})
-    data = json.loads(r.data["content"])
+    data = json.loads(r.data["content"]["value"])   # S3: содержимое в конверте провенанса
     check("Final привязан к draft", data["derived_from_render_id"] == "draft_001")
     check("Final status = completed", data["status"] == "completed")
 
@@ -142,7 +142,7 @@ async def test_facts():
     check("Facts создан", r.status == "success")
 
     r = await engine.call("fs_read_file", {"path": "renders/facts.json"})
-    data = json.loads(r.data["content"])
+    data = json.loads(r.data["content"]["value"])   # S3: содержимое в конверте провенанса
     check("draft_render_id = draft_001", data["draft_render_id"] == "draft_001")
     check("final_render_id = final_001", data["final_render_id"] == "final_001")
 

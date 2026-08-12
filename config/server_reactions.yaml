@@ -299,6 +299,20 @@ MACHINE_MISMATCH:
     suggested_tool: "structure_check_integrity"
     reason: "Чтение доступно, запись заблокирована. Если это ваш перенос — смена железа, переезд VM, восстановление из бэкапа — подтвердите его: server.py --re-adopt."
 
+FILE_TYPE_FORBIDDEN:
+  class: human_required
+  message_template: "Запись файлов этого типа запрещена: {path}"
+  recovery:
+    reason: "Сервер материализует только объявленные типы (данные, книги, документы, ассеты, .py). Исполняемое и веб-содержимое (.sh/.html/.exe/.bat) не создаётся намеренно. Список — config/firewall.yaml → write_allowlist; менять его должен человек, а не диалог."
+
+CONFIRM_REQUIRED:
+  class: ai_recoverable
+  message_template: "Операция необратима и требует подтверждения: {path}"
+  recovery:
+    suggested_tool: "fs_delete"
+    suggested_params: { force: true }
+    reason: "Повтори вызов с force=true, если удаление действительно нужно. Подтверждение обязательно всегда: так инъекция в данных не превращается в тихую потерю файлов."
+
 # ═══ Fallback ═══
 
 DEFAULT:

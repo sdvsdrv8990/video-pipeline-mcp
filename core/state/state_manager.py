@@ -31,6 +31,25 @@ def _atomic_write_json(path: Path, data: Any):
     os.replace(tmp, path)
 
 
+# S3/F33: журнал сервера — не место для содержимого рабочей области и секретов.
+# Значения усекаются, секретные ключи маскируются: лог остаётся следом событий,
+# а не копией пользовательских данных.
+LOG_VALUE_MAX = 200
+LOG_SENSITIVE = {"authorization", "api_key", "token", "secret", "password", "cookie"}
+
+
+def _sanitize_for_log(data: dict) -> dict:
+    """Подготовить Fact.data к записи в журнал: маскировка секретов + усечение значений."""
+    out: dict = {}
+    for key, value in (data or {}).items():
+        if any(s in str(key).lower() for s in LOG_SENSITIVE):
+            out[key] = "***REDACTED***"
+            continue
+        text = str(value).replace("\n", " ")
+        out[key] = text if len(text) <= LOG_VALUE_MAX else text[:LOG_VALUE_MAX] + f"…(+{len(text)-LOG_VALUE_MAX})"
+    return out
+
+
 class StateManager:
     """Управление состоянием сервера.
 
@@ -38,13 +57,14 @@ class StateManager:
         workspace_path: Путь к рабочему пространству
     """
 
-    def __init__(self, workspace_path: str | Path):
+    def __init__(self, workspace_path: str | Path, log_path=None):
         """Инициализация.
 
         Args:
             workspace_path: Путь к workspace/
         """
         self.workspace_path = Path(workspace_path)
+        self.log_path = Path(log_path) if log_path else None
         # D9: сериализуем read-modify-write очереди в пределах процесса.
         # Кросс-процессную блокировку (несколько инстансов) добавит filelock.
         self._lock = threading.Lock()
@@ -180,11 +200,12 @@ class StateManager:
             event_type: Тип события
             data: Данные события
         """
-        # Лог в корне проекта (не в workspace/)
-        log_file = Path(__file__).resolve().parents[2] / "_SESSION_LOG.md"
+        # Лог в корне проекта (не в workspace/); путь переопределяем — иначе поведение
+        # санитизации нельзя проверить, не пачкая боевой журнал.
+        log_file = self.log_path or (Path(__file__).resolve().parents[2] / "_SESSION_LOG.md")
 
         entry = f"\n## [{time.strftime('%Y-%m-%d %H:%M:%S')}] {event_type}\n"
-        for key, value in data.items():
+        for key, value in _sanitize_for_log(data).items():
             entry += f"- **{key}:** {value}\n"
 
         with open(log_file, "a", encoding="utf-8") as f:

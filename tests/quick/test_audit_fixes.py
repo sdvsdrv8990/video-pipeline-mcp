@@ -60,7 +60,9 @@ async def main():
     check("D1 traversal ../server.py blocked", r2.status == "error" and r2.error.code == "PATH_ESCAPE")
     await engine.call("fs_create_file", {"path": "ok/inside.txt", "content": "hi"})
     r3 = await engine.call("fs_read_file", {"path": "ok/inside.txt"})
-    check("D1 legit path inside workspace works", r3.status == "success" and r3.data.get("content") == "hi")
+    check("D1 legit path inside workspace works",
+          r3.status == "success" and r3.data.get("content", {}).get("value") == "hi",
+          "S3: содержимое теперь в конверте провенанса {value, provenance, trust, flags}")
 
     # D2: firewall.yaml реально загружен
     check("D2 firewall.yaml loaded (max_requests=60)", firewall.rate_limiter.max_requests == 60,

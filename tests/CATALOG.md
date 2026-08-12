@@ -162,6 +162,11 @@
 | M38 | отпечаток машины не проверяется | `core/integrity.py` | `test_structure` | 🔴 ловит ✅ (146/147) |
 | M39 | разрушающие инструменты выпали из `dangerous_tools` | `config/firewall.yaml` | `test_structure` | 🔴 ловит ✅ (146/147) |
 
+| M40 | allowlist типов выключен (пишем `.sh`/`.exe`) | `core/write_policy.py` | `test_structure` | 🔴 ловит ✅ |
+| M41 | удаление без подтверждения снова молчит | `tools/filesystem/__init__.py` | `test_structure` | 🔴 ловит ✅ |
+| M42 | конверт содержимого без провенанса и пометки | `tools/filesystem/__init__.py` | `test_structure` | 🔴 ловит ✅ (170/172) |
+| M43 | журнал пишет сырой `Fact.data` | `core/state/state_manager.py` | `test_structure` | 🔴 ловит ✅ (170/172) |
+
 **Итог: 11/14 мутаций пойманы.** Три пробоя (M4-search, M7-structure, M9-конфиг) + мёртвый выключатель (M13)
 заведены как **F55** и **F54**. Зоны в §A/§B выше описывают ЖЕЛАЕМОЕ покрытие — расширять хозяев по F55:
 `test_search` (+фильтры/сортировка), `test_structure` (+containment через `safe_resolve`, не только имя),

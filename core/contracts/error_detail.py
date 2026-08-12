@@ -55,6 +55,10 @@ KNOWN_ERROR_CODES = {
     "DUPLICATE_PATH", "CHAIN_UNRESOLVED", "TEMPLATE_INVALID",
     # Целостность артефактов: подпись инстанса и отпечаток машины (S9)
     "FOREIGN_WRITE", "MACHINE_MISMATCH",
+    # Тип файла запрещён к записи (S2)
+    "FILE_TYPE_FORBIDDEN",
+    # Подтверждение необратимой операции (S3)
+    "CONFIRM_REQUIRED",
 }
 
 
