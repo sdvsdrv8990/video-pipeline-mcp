@@ -34,18 +34,25 @@ class ChainResolver:
             p = p[2:]
         return p.strip("/")
 
-    def _ancestor_paths(self, rel: str) -> list[str]:
-        """Пути-предки сверху вниз (без самого rel)."""
+    def _self_and_ancestors(self, rel: str) -> list[str]:
+        """Сам путь и все его предки, сверху вниз. Пустой путь (корень workspace) — пустой список."""
         parts = PurePosixPath(rel).parts if rel else ()
-        return ["/".join(parts[: i + 1]) for i in range(len(parts) - 1)]
+        return ["/".join(parts[: i + 1]) for i in range(len(parts))]
 
     def _infer_type(self, chain: list[dict], parent_rel: str) -> str:
         """Тип нового узла — из объявления родителя (`children[].container`), не из карты путей."""
         if not chain:
-            return ""
+            # Нет зарегистрированных предков — узел ложится в корневой контейнер (niches/ → niche).
+            return self.taxonomy.type_for_root_container(PurePosixPath(parent_rel).name if parent_rel else "")
         nearest = chain[-1]
         container = self._norm(parent_rel[len(self._norm(nearest["path"])):]) if parent_rel else ""
         return self.taxonomy.child_type_for(nearest["type"], container)
+
+    def infer_type_at(self, path: str) -> str:
+        """Тип сущности, которая ЛЕЖИТ по этому пути (для усыновления незарегистрированных каталогов)."""
+        rel = self._norm(path)
+        parent = str(PurePosixPath(rel).parent) if "/" in rel else ""
+        return self.resolve("" if parent == "." else parent)["node_type"]
 
     def resolve(self, target_dir: str, node_type: str = "") -> dict:
         """Разрешить цепочку для каталога назначения.
@@ -66,7 +73,7 @@ class ChainResolver:
         chain: list[dict] = []
         unresolved: list[dict] = []
         containers = self.taxonomy.containers
-        for anc in self._ancestor_paths(rel + "/x"):  # +сегмент, чтобы сам rel попал в предки
+        for anc in self._self_and_ancestors(rel):
             name = PurePosixPath(anc).name
             if name in containers:
                 continue  # контейнер — не сущность

@@ -22,7 +22,7 @@ from typing import Any, Callable
 from core.contracts import ErrorDetail, Recovery, ToolResult
 from core.engine import Engine, TableMaterializerError, TemplateEngine, TemplateError
 from core.excel import ExcelEngine, ExcelError
-from core.ids import IDGenerator, LinkError, LinkRegistry
+from core.ids import ChainResolver, IDGenerator, LinkError, LinkRegistry, Taxonomy, TaxonomyError
 from core.paths import PathEscapeError, safe_resolve
 from core.state import StateManager
 from core.tables import TableEngine, TableError
@@ -52,6 +52,16 @@ class ToolContext:
         """D1+D29: путь с containment внутри workspace/ (единая точка — core/paths, G17)."""
         return safe_resolve(path, self.workspace_path)
 
+    @property
+    def taxonomy(self) -> Taxonomy:
+        """Объявленная иерархия типов (живёт в шаблонах, поднимается движком шаблонов)."""
+        return self.template_engine.taxonomy
+
+    @property
+    def chain_resolver(self) -> ChainResolver:
+        """Резолвер цепочки по каталогу назначения (S18-h) — собран из уже имеющихся частей."""
+        return ChainResolver(self.workspace_path, self.link_registry, self.taxonomy)
+
     def err(self, code: str, message: str = "", reason: str = "",
             suggested_tool: str | None = None) -> ToolResult:
         """Ошибочный ToolResult через реестр реакций (yaml = источник class/recovery, B2/F43).
@@ -76,7 +86,8 @@ class ToolContext:
         except PathEscapeError:
             return False, self.err("PATH_ESCAPE", "Путь выходит за пределы workspace/.",
                                    "Используй путь ВНУТРИ workspace, без '..' и абсолютных путей.")
-        except (TableError, ExcelError, TemplateError, TableMaterializerError, LinkError) as e:
+        except (TableError, ExcelError, TemplateError, TableMaterializerError, LinkError,
+                TaxonomyError) as e:
             return False, self.err(e.code, e.message, e.reason, e.suggested_tool)
         except ValueError as e:
             # F37: не-путёвый ValueError из глубины core — честно INTERNAL_ERROR, не мислейбл PATH_ESCAPE.

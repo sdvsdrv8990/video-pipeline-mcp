@@ -110,6 +110,14 @@ class Taxonomy:
                 return c["type"]
         return ""
 
+    def type_for_root_container(self, container: str) -> str:
+        """Обратно: какой тип живёт в корневом контейнере (`niches` → niche)."""
+        want = (container or "").strip("/")
+        for t, body in self._load().items():
+            if body["root_container"] and body["root_container"] == want:
+                return t
+        return ""
+
     def root_container(self, node_type: str) -> str:
         """Контейнер для типа без родителя-шаблона (ниша → `niches/`). Пусто, если родитель есть."""
         return self._get(node_type)["root_container"]

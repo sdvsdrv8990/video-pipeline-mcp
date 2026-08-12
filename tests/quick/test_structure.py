@@ -232,6 +232,69 @@ integ = reg13.check_integrity()
 ok(any(i["type"] == "missing_path" and i["id"] == "CH_solo" for i in integ["issues"]),
    "перенос мимо реестра → missing_path (раньше 0 issues)")
 
+print("== 18. Инструменты: создание ВТОРЫМ вызовом наследует цепочку (F63, сценарий владельца) ==")
+import asyncio
+
+from core.engine import Engine
+from core.excel import ExcelEngine
+from core.reactions import Reactions
+from core.state import StateManager
+from tools import structure as _structure_group
+from tools._context import ToolContext
+
+CFG = ROOT / "config"
+ws18 = Path(tempfile.mkdtemp(prefix="vpm_tool_"))
+_sm = StateManager(ws18)
+_ids = IDGenerator()
+_eng = Engine(reactions=Reactions(CFG / "server_reactions.yaml"), state_manager=_sm)
+_ctx = ToolContext(_eng, _ids, _sm, None, ExcelEngine(ws18),
+                   TemplateEngine(ws18, _ids, TPL_DIR), LinkRegistry(ws18), ws18, CFG)
+_structure_group.register(_eng, _ctx)
+
+
+def call(tool, **kw):
+    return asyncio.run(_eng.tools[tool].handler(**kw))
+
+
+s1 = call("structure_create", type="niche", name="gaming", children={"network": ["net1"], "channel": ["chA"]})
+ok(s1.status == "success" and len(s1.data["entities"]) == 3, "сессия 1: ниша+сетка+канал, 3 блока entities[]")
+ok(all({"id", "name", "path", "chain", "qualified_id", "owner_id"} <= set(e) for e in s1.data["entities"]),
+   "каждый блок несёт имя, путь, id и цепочку (пост-контракт S18-g)")
+ok(any(f.type == "EntityRegistered" for f in s1.facts), "факт EntityRegistered доехал в контракт (D25)")
+
+s2 = call("structure_create", type="video", name="intro",
+          parent_path="niches/gaming/networks/net1/channels/chA/videos/")
+ev = s2.data["entities"][0]
+ok(s2.status == "success" and ev["chain"].count("/") == 2,
+   "видео вторым вызовом получило цепочку из 3 предков (было parent_ids=[])")
+ok(ev["owner_id"] == s1.data["entities"][2]["id"], "владелец = ГОТОВЫЙ ID существующего канала")
+ok(_ctx.link_registry.get(ev["id"])["parent_ids"] != [], "реестр знает предков видео")
+ok(ev["qualified_id"] == f"{ev['chain']}/{ev['id']}", "квалифицированный адрес = цепочка + собственный сегмент")
+
+print("== 19. Инструменты: предпросмотр и усыновление (S18-h) ==")
+prev = call("structure_resolve", path="niches/gaming/networks/net1/channels/chA/videos/")
+ok(prev.status == "success" and prev.data["node_type"] == "video", "structure_resolve выводит тип узла")
+ok(prev.data["owner_id"] == ev["owner_id"], "предпросмотр отдаёт ТОТ ЖЕ адрес, что присвоит создание")
+ok(not (ws18 / "niches/gaming/networks/net1/channels/chA/videos/ghost").exists(),
+   "предпросмотр ничего не создал")
+(ws18 / "niches/gaming/networks/ghostnet/channels/chX/videos").mkdir(parents=True)
+blocked = call("structure_create", type="video", name="v1",
+               parent_path="niches/gaming/networks/ghostnet/channels/chX/videos/")
+ok(blocked.status == "error" and blocked.error.code == "CHAIN_UNRESOLVED",
+   "предки на диске без записи → CHAIN_UNRESOLVED, а не выдуманный ID")
+ok(blocked.error.recovery.suggested_tool == "structure_resolve", "ошибка ведёт к предпросмотру (F59)")
+adopted = call("structure_create", type="video", name="v1", adopt=True,
+               parent_path="niches/gaming/networks/ghostnet/channels/chX/videos/")
+ok(adopted.status == "success" and [a["type"] for a in adopted.data["adopted"]] == ["network", "channel"],
+   "adopt=true усыновляет предков с типами из шаблонов")
+ok(any(f.type == "EntityAdopted" for f in adopted.facts), "усыновление отражено фактом, а не молча")
+
+print("== 20. Инструменты: пропуск уровня доезжает до клиента (S18-g) ==")
+solo = call("structure_create", type="channel", name="chSolo", parent_path="niches/gaming/channels/")
+ok(solo.status == "success" and solo.data["skipped_levels"] == ["network"],
+   "канал без сетки → skipped_levels=[network] в ответе")
+ok("NET_" not in solo.data["entities"][0]["chain"], "сегмента сетки в цепочке нет (без заглушек)")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

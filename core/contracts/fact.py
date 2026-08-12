@@ -35,6 +35,8 @@ KNOWN_FACT_TYPES = {
     "TableMaterialized",
     # Реестр связей / ORPHAN (Ф2), верификация и здоровье (Ф4)
     "EntityLinked", "EntityOrphaned", "StructureVerified", "HealthChecked",
+    # Иерархия ID: цепочка по каталогу назначения (S18-g/S18-h)
+    "EntityRegistered", "EntityAdopted", "ChainResolved",
     # Проверка целостности реестра
     "IntegrityIssue",
     # Миграция структуры
