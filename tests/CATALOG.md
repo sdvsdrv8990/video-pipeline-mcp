@@ -182,6 +182,9 @@
 | M51 | shebang под `.md` из шаблона проходит (проверка содержимого снята) | `core/engine/template_engine.py` | `test_structure` §34 | 🔴 ловит ✅ (в тех же 5) |
 | M52 | `kind: config` без containment — `source: ../.env` вычерпывает секрет сервера | `core/engine/template_engine.py` | `test_structure` §34 | 🔴 ловит ✅ (3 провала) |
 
+| M53 | ротация снова печатает значение ключа (секрет оседает в логах) | `server.py` | `test_audit_fixes` | 🔴 ловит ✅ (static) |
+| M54 | `.env` выпал из `.gitignore` (класс F70) | `.gitignore` | `test_audit_fixes` | 🔴 ловит ✅ |
+
 **Итог (обновлено S21): 53 мутации, поймано 39+.** первый прогон S18 дал 11/14. Три пробоя (M4-search, M7-structure, M9-конфиг) + мёртвый выключатель (M13)
 заведены как **F55** и **F54**. Зоны в §A/§B выше описывают ЖЕЛАЕМОЕ покрытие — расширять хозяев по F55:
 `test_search` (+фильтры/сортировка), `test_structure` (+containment через `safe_resolve`, не только имя),

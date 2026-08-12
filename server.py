@@ -43,7 +43,8 @@ from core.engine import Engine
 from core.firewall import Firewall, FirewallRequest, FirewallDecision
 from core.transport import Transport
 from core.reactions import Reactions
-from core.auth import ENV_FILE, check_auth, ensure_token, rotate_token, token_file_mode
+from core.auth import (ENV_FILE, check_auth, ensure_token, rotate_token, token_file_mode,
+                       token_fingerprint)
 from core.ids import IDGenerator
 from core.state import StateManager
 # A2: движки, маппинг исключений ядра и аннотации MCP живут в контексте групп.
@@ -157,11 +158,12 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
             raise SystemExit(2)
         if created:
             print("─" * 60)
-            print(f"Выпущен ключ доступа (сохранён в {ENV_FILE}, права 0600):")
-            print(f"  {MCP_AUTH_TOKEN}")
-            print("Вставь его в коннекторе Claude AI Web: Request headers →")
+            print(f"Выпущен ключ доступа (сохранён в {ENV_FILE}, права 0600), "
+                  f"отпечаток {token_fingerprint(MCP_AUTH_TOKEN)}")
+            print("Значение в лог старта не печатаем — покажет server.py --show-key.")
+            print("Вставляется в коннекторе Claude AI Web: Request headers →")
             print("  authorization: Bearer <ключ>    (или x-api-key: <ключ>)")
-            print("Больше он показан не будет; перевыпуск — server.py --rotate-key")
+            print("Перевыпуск — server.py --rotate-key")
             print("─" * 60)
 
     engine, transport, firewall = create_server()
@@ -418,6 +420,7 @@ def main():
     parser.add_argument("--port", type=int, default=PORT, help="Порт (по умолчанию: %(default)s)")
     parser.add_argument("--tunnel", action="store_true", help="Поднять Cloudflare-туннель вместе с сервером (D11)")
     parser.add_argument("--rotate-key", action="store_true", help="Перевыпустить ключ доступа и выйти (S1)")
+    parser.add_argument("--show-key", action="store_true", help="Показать значение ключа (по умолчанию печатается только отпечаток)")
     parser.add_argument("--re-adopt", action="store_true", help="Присвоить рабочую область этому серверу после переноса (S9)")
     args = parser.parse_args()
 
@@ -435,11 +438,18 @@ def main():
         print("Прежние подписи считаются недействительными; запись снова разрешена.")
         return
 
-    if args.rotate_key:
-        new_token = rotate_token(ENV_PATH)
-        print(f"Новый ключ доступа (сохранён в {ENV_FILE}, права {oct(token_file_mode(ENV_PATH))}):")
-        print(f"  {new_token}")
-        print("Обнови значение в коннекторе Claude AI Web — прежний ключ больше не действует.")
+    if args.rotate_key or args.show_key:
+        token = rotate_token(ENV_PATH) if args.rotate_key else ensure_token(ENV_PATH)[0]
+        what = "Новый ключ доступа" if args.rotate_key else "Действующий ключ доступа"
+        print(f"{what} (файл {ENV_FILE}, права {oct(token_file_mode(ENV_PATH))}), "
+              f"отпечаток {token_fingerprint(token)}")
+        if args.show_key:
+            # Значение — только по явному требованию: иначе секрет оседает в логах и историях сессий.
+            print(f"  {token}")
+            print("Обнови значение в коннекторе Claude AI Web — прежний ключ больше не действует.")
+        else:
+            print("Значение не печатаем. Показать: server.py --show-key "
+                  "(вставляется в коннекторе Claude AI Web → Request headers).")
         return
 
     asyncio.run(run_server(args.host, args.port, use_tunnel=args.tunnel))

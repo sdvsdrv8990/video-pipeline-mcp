@@ -325,6 +325,28 @@ async def main():
         _escaped = True
     check("F14 .env вне workspace: путь к секрету не резолвится инструментами", _escaped)
 
+    # S21: секрет не должен оседать в логах — ротация называет отпечаток, не значение
+    from core.auth import token_fingerprint
+    _fp = token_fingerprint(_new)
+    check("S21 отпечаток не раскрывает ключ", _fp and _fp not in _new and _new not in _fp, _fp)
+    check("S21 отпечаток различает ключи", token_fingerprint(_tok) != _fp)
+    check("S21 отпечаток стабилен", token_fingerprint(_new) == _fp)
+    _srv = (ROOT / "server.py").read_text(encoding="utf-8")
+    _rot = _srv[_srv.index("if args.rotate_key or args.show_key:"):]
+    _rot = _rot[:_rot.index("\n        return")]
+    check("S21 значение ключа печатается ТОЛЬКО под --show-key (static)",
+          _rot.count("{token}") == 1 and "if args.show_key:" in _rot
+          and _rot.index("if args.show_key:") < _rot.index("{token}"))
+
+    # F70-класс: секреты на диске обязаны быть закрыты правилом .gitignore
+    import subprocess as _sp
+    for _secret in (".env", "instance_key.pem"):
+        _ign = _sp.run(["git", "check-ignore", "-q", _secret], cwd=ROOT).returncode == 0
+        check(f"F70 {_secret} закрыт от гита правилом .gitignore", _ign)
+    check("F70 боевой .env не в индексе git",
+          _sp.run(["git", "ls-files", "--error-unmatch", ".env"], cwd=ROOT,
+                  capture_output=True).returncode != 0)
+
     print()
     passed = sum(results)
     total = len(results)
