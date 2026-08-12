@@ -27,7 +27,7 @@
 | `test_audit_fixes.py` | **Дом ВСЕХ регрессий закрытых `D#`** (D1–D13) | откат фикса → красный | +регрессия на каждый новый закрытый `D#`/`F#` | никогда — это единый дом D#-регрессий |
 | `test_firewall.py` | firewall happy/block контракт (injection/rate/IP) против живого сервера | защита отклоняет атаки, пропускает легит | новые firewall-правила, векторы IN2/IN3/IN5, identity-rate | правило переросло в отдельную СИМУЛЯЦИЮ (→ dir) |
 | `test_search.py` | `core/search` coverage+регрессия (FsSearcher/QueryPlanner, D36 traversal) | search-контракт/поведение | relevance-eval (E-I), новые `search_*`, poisoning-outbound | search-качество как отдельный eval-слой перерастёт unit |
-| `test_structure.py` | `TemplateEngine` Ф1 (depth-control, PATH_ESCAPE, ID) | структура/шаблоны/глубина | E-A/E-B/E-C эмуляция, `structure_link/migrate`, F25 reconcile | эмуляция «реальной работы ИИ» станет тяжёлой сценарной (→ dir) |
+| `test_structure.py` | `TemplateEngine` Ф1 (depth-control, PATH_ESCAPE, ID) **+ система ID: таксономия из шаблонов, реестр связей, резолвер цепочки, ручная ветка ФС (S18-g/S18-h)** | структура/шаблоны/глубина/адресация | E-A/E-B/E-C эмуляция, `structure_link/migrate`, F25 reconcile | эмуляция «реальной работы ИИ» станет тяжёлой сценарной (→ dir) |
 | `test_tables.py` | table/excel smoke-контракт (Кат.2+3) | инструменты таблиц отвечают контрактом | E-D деструктив, формулы/устойчивость (F30), `table_materializer` (Ф3) | деструктив-над-таблицами станет adversarial-симуляцией |
 | `test_tunnel.py` | `core/transport/tunnel` парсер+автомат оффлайн (D11) | регрессия логики туннеля без cloudflared | новые режимы туннеля, форматы логов | — (узкая стабильная зона) |
 | `test_tools_inventory.py` | **Контракт инвентаря** `tools/list`: состав 52 + group/title/description/annotations/input_schema против эталона `tools_inventory.golden.json` | структурные правки (A2-распил, переезды групп) не двигают контракт клиента молча | новые инструменты/группы (эталон обновляется `--bless`, diff виден в ревью) | никогда — это единый дом инвентаря; поведение инструмента проверяют тесты его зоны |
@@ -129,6 +129,14 @@
 | M13 | боевой `injection_detection.enabled: false` | `config/firewall.yaml` | 12 наборов → **никто 🟢** | **было:** ключ `enabled` код не читал (F54). **S18: исправлено** — см. M14 |
 | M14 | откат фикса F54 (`enabled` снова игнорируется) | `core/firewall/firewall.py` | `test_audit_fixes` (5 новых проверок) | 🔴 ловит ✅ |
 | M15 | детектор injection обнулён — проверка САМОГО ГЕЙТА `pytest -m "not live"` | `core/firewall/rules/injection_detector.py` | `pytest` → 3 failed, 11 passed | 🔴 ловит ✅ (гейт T0 живой) |
+
+| M16 | инвариант пути снят (второй ID на занятый каталог) | `core/ids/link_registry.py` | `test_structure` | 🔴 ловит ✅ |
+| M17 | `check_integrity` не сверяет путь с диском (откат F65) | `core/ids/link_registry.py` | `test_structure` | 🔴 ловит ✅ |
+| M18 | резолвер не берёт готовых предков (`find_by_path` → None) | `core/ids/chain_resolver.py` | `test_structure` | 🔴 ловит ✅ |
+| M19 | `structure_create` снова с `parent_ids=None` (откат F63) | `tools/structure/__init__.py` | `test_structure` | 🔴 ловит ✅ (71/82) |
+| M20 | молчаливое усыновление (снята блокировка `unresolved`) | `tools/structure/__init__.py` | `test_structure` | 🔴 ловит ✅ |
+| M21 | перенос мимо реестра (откат F65) | `tools/filesystem/__init__.py` | `test_structure` | 🔴 ловит ✅ (77/82) |
+| M22 | ручное создание без владельца (откат F61) | `tools/filesystem/__init__.py` | `test_structure` | 🔴 ловит ✅ |
 
 **Итог: 11/14 мутаций пойманы.** Три пробоя (M4-search, M7-structure, M9-конфиг) + мёртвый выключатель (M13)
 заведены как **F55** и **F54**. Зоны в §A/§B выше описывают ЖЕЛАЕМОЕ покрытие — расширять хозяев по F55:
