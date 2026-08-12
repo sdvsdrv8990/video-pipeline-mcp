@@ -16,6 +16,7 @@ import yaml
 
 from core.contracts import Fact, ToolResult
 from core.engine import Engine
+from core.ids import LinkError
 from core.search.fs_searcher import FsSearcher, FsSearchError, FsSearchTask
 from tools._context import ANNOTATIONS_MODIFY, ANNOTATIONS_READONLY, ToolContext
 
@@ -26,8 +27,12 @@ def register(engine: Engine, ctx: ToolContext) -> None:
     fs_searcher = FsSearcher(ctx.workspace_path)
 
     # Общий хвост описаний создающих инструментов: сервер сам объявляет владельца (S18-g).
-    OWNER = (" Владельца сервер определяет по каталогу (owner_id + chain в ответе): "
-             "файл внутри сущности принадлежит ей, отдельного ID файлу не заводится.")
+    OWNER = (" Владельца сервер определяет ПО КАТАЛОГУ и всегда возвращает (owner_id + chain). "
+             "assign_id=true дополнительно выдаёт файлу СОБСТВЕННЫЙ ID: префикс берётся из класса файла "
+             "(.md→MEM, .json→DATA, .xlsx→TBL, .py→SCRIPT, ассеты→AST), в ответе приходят id, file_class "
+             "и qualified_id — можно сверить, что префикс соответствует файлу. Без флага файл создаётся "
+             "без собственного ID (это нормальный режим). Уже зарегистрированный путь отдаёт свой ID "
+             "(reused=true), второго не заводится.")
 
     async def fs_get_directory_tree(path: str = ".") -> "ToolResult":
         """Получение дерева каталогов."""
@@ -72,20 +77,56 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         return {"owner_id": plan["owner_id"], "chain": plan["chain_id"],
                 "owner_type": nearest.get("type", ""), "owner_path": nearest.get("path", "")}
 
-    async def fs_create_file(path: str, content: str = "") -> "ToolResult":
-        """Создание файла (сервер сообщает владельца по вместимости, S18-g)."""
+    def _assign_id(path: str) -> dict:
+        """Выдать файлу СОБСТВЕННЫЙ ID по запросу (директива владельца S19).
+
+        Генерация — отдельный шаг, а не побочный эффект записи: ИИ сам решает, нужна ли
+        файлу личность, и может сверить выданный префикс с классом файла. Уже
+        зарегистрированный путь отдаёт СВОЙ ID, второго не заводим (инвариант S18-h).
+        """
+        existing = ctx.link_registry.find_by_path(path)
+        if existing:
+            return {"id": existing["id"], "reused": True, "file_class": ctx.taxonomy.file_class(path)}
+        plan = ctx.chain_resolver.resolve(str(Path(path).parent))
+        blocking = [u["path"] for u in plan["unresolved"] if u["exists"]]
+        if blocking:
+            raise LinkError("CHAIN_UNRESOLVED",
+                            f"Каталоги-предки существуют, но не зарегистрированы: {', '.join(blocking)}",
+                            "Усынови их через structure_create(adopt=true) или создай файл без ID "
+                            "(assign_id=false) — сервер не выдумывает предков.", "structure_resolve")
+        file_class = ctx.taxonomy.file_class(path)
+        eid = ctx.id_generator.generate_simple(ctx.taxonomy.file_prefix(path))
+        ctx.link_registry.register({
+            "id": eid, "type": file_class, "name": Path(path).name, "path": path,
+            "parent_ids": [plan["owner_id"]] if plan["owner_id"] else [], "kind": "file"})
+        return {"id": eid, "reused": False, "file_class": file_class}
+
+    def _created_result(path: str, size: int, assign_id: bool, fact_type: str):
+        """Единый пост-контракт создания файла: владелец всегда, собственный ID — по запросу."""
+        owner = _owner_of(path)
+        entity = {"path": path, **owner}
+        if assign_id:
+            try:
+                entity.update(_assign_id(path))
+            except LinkError as e:
+                return ctx.err(e.code, e.message, e.reason, e.suggested_tool)
+            entity["qualified_id"] = f"{entity['chain']}/{entity['id']}" if entity["chain"] else entity["id"]
+        data = {"created": path, "size": size, **entity}
+        return ToolResult(status="success", data=data,
+                          facts=[Fact(type=fact_type, data={"path": path, "size": size, **entity})])
+
+    async def fs_create_file(path: str, content: str = "", assign_id: bool = False) -> "ToolResult":
+        """Создание файла: владелец по вместимости всегда, собственный ID — по запросу (S18-g/S19)."""
         try:
             target = ctx.resolve(path)
         except ValueError:
             return ctx.err("PATH_ESCAPE", f"Path escapes workspace: {path}")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        owner = _owner_of(path)
-        return ToolResult(status="success", data={"created": path, "size": len(content), **owner},
-                          facts=[Fact(type="FileCreated", data={"path": path, "size": len(content), **owner})])
+        return _created_result(path, len(content), assign_id, "FileCreated")
 
-    async def fs_write_file(path: str, content: str) -> "ToolResult":
-        """Полная перезапись файла."""
+    async def fs_write_file(path: str, content: str, assign_id: bool = False) -> "ToolResult":
+        """Полная перезапись файла (владелец всегда, собственный ID — по запросу)."""
         try:
             target = ctx.resolve(path)
         except ValueError:
@@ -93,10 +134,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         old_size = target.stat().st_size if target.exists() else 0
         target.write_text(content, encoding="utf-8")
-        owner = _owner_of(path)
-        return ToolResult(status="success",
-                          data={"written": path, "size": len(content), "old_size": old_size, **owner},
-                          facts=[Fact(type="FileWritten", data={"path": path, "size": len(content), **owner})])
+        res = _created_result(path, len(content), assign_id, "FileWritten")
+        if res.status == "success":
+            res.data["old_size"] = old_size
+        return res
 
     async def fs_move(source: str, destination: str) -> "ToolResult":
         """Перемещение файла или каталога (реестр переезжает вместе с диском, F65)."""
@@ -243,7 +284,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         except Exception as e:
             return ctx.err("INTERNAL_ERROR", f"Ошибка поиска: {e}")
 
-    async def fs_create_python_script(path: str, description: str = "") -> "ToolResult":
+    async def fs_create_python_script(path: str, description: str = "", assign_id: bool = False) -> "ToolResult":
         """Создание Python-скрипта с каркасом."""
         try:
             target = ctx.resolve(path)
@@ -256,8 +297,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         skeleton = f'"""\n{desc}\n"""\n\nimport sys\nfrom pathlib import Path\n\n\ndef main():\n    """Main entry point."""\n    print(f"Running {{__file__}}")\n    # TODO: implement\n    pass\n\n\nif __name__ == "__main__":\n    main()\n'
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(skeleton, encoding="utf-8")
-        owner = _owner_of(path)
-        return ToolResult(status="success", data={"created": path, "size": len(skeleton), **owner}, facts=[Fact(type="FileCreated", data={"path": path, "size": len(skeleton), **owner})])
+        return _created_result(path, len(skeleton), assign_id, "FileCreated")
 
     async def fs_create_project_structure(template: str = "", fragments: list[dict] | None = None) -> "ToolResult":
         """Материализация структуры по шаблону или список фрагментов."""
@@ -294,8 +334,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
     fs_tools = [
         ("fs_get_directory_tree", "Файлы: дерево каталогов", "Получение дерева каталогов", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь относительно workspace"}}}, fs_get_directory_tree, ANNOTATIONS_READONLY),
         ("fs_read_file", "Файлы: прочитать файл", "Чтение файла", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу"}}, "required": ["path"]}, fs_read_file, ANNOTATIONS_READONLY),
-        ("fs_create_file", "Файлы: создать файл", "Создание файла." + OWNER, {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу"}, "content": {"type": "string", "description": "Содержимое файла"}}, "required": ["path"]}, fs_create_file, ANNOTATIONS_MODIFY),
-        ("fs_write_file", "Файлы: перезаписать файл", "Полная перезапись файла." + OWNER, {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу"}, "content": {"type": "string", "description": "Новое содержимое файла"}}, "required": ["path", "content"]}, fs_write_file, ANNOTATIONS_MODIFY),
+        ("fs_create_file", "Файлы: создать файл", "Создание файла." + OWNER, {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу"}, "content": {"type": "string", "description": "Содержимое файла"}, "assign_id": {"type": "boolean", "default": False, "description": "Выдать файлу собственный ID (префикс по классу файла) и зарегистрировать его"}}, "required": ["path"]}, fs_create_file, ANNOTATIONS_MODIFY),
+        ("fs_write_file", "Файлы: перезаписать файл", "Полная перезапись файла." + OWNER, {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу"}, "content": {"type": "string", "description": "Новое содержимое файла"}, "assign_id": {"type": "boolean", "default": False, "description": "Выдать файлу собственный ID (префикс по классу файла) и зарегистрировать его"}}, "required": ["path", "content"]}, fs_write_file, ANNOTATIONS_MODIFY),
         ("fs_move", "Файлы: переместить", "Перемещение файла или каталога. Адрес цели сервер считает ДО переноса (new_owner_id/new_chain в ответе), реестр переезжает вместе с диском: собственные ID сущностей не меняются, меняется только цепочка владельцев — ошибочный перенос чинится повторным переносом", {"type": "object", "properties": {"source": {"type": "string", "description": "Исходный путь"}, "destination": {"type": "string", "description": "Путь назначения"}}, "required": ["source", "destination"]}, fs_move, ANNOTATIONS_MODIFY),
         ("fs_rename", "Файлы: переименовать", "Переименование файла или каталога", {"type": "object", "properties": {"path": {"type": "string", "description": "Текущий путь"}, "new_name": {"type": "string", "description": "Новое имя (без пути)"}}, "required": ["path", "new_name"]}, fs_rename, ANNOTATIONS_MODIFY),
         ("fs_delete", "Файлы: удалить", "Удаление файла или каталога. Сущности удалённого поддерева снимаются с реестра и перечисляются в ответе (entities_dropped)", {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к файлу/каталогу"}, "force": {"type": "boolean", "description": "Принудительное удаление каталога с содержимым", "default": False}}, "required": ["path"]}, fs_delete, ANNOTATIONS_MODIFY),
@@ -325,7 +365,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
              }}, "description": "Список запросов"},
          }, "required": ["queries"]},
          fs_search_multi, ANNOTATIONS_READONLY),
-        ("fs_create_python_script", "Файлы: новый Python-скрипт", "Создание Python-скрипта с каркасом." + OWNER, {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к .py файлу"}, "description": {"type": "string", "description": "Описание модуля"}}, "required": ["path"]}, fs_create_python_script, ANNOTATIONS_MODIFY),
+        ("fs_create_python_script", "Файлы: новый Python-скрипт", "Создание Python-скрипта с каркасом." + OWNER, {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к .py файлу"}, "description": {"type": "string", "description": "Описание модуля"}, "assign_id": {"type": "boolean", "default": False, "description": "Выдать файлу собственный ID (префикс по классу файла) и зарегистрировать его"}}, "required": ["path"]}, fs_create_python_script, ANNOTATIONS_MODIFY),
         ("fs_create_project_structure", "Файлы: структура проекта", "Материализация структуры каталогов/файлов по шаблону или списку фрагментов (сырые папки/файлы без ID; для узлов проекта с ID и цепочкой владельцев — structure_create)", {"type": "object", "properties": {"template": {"type": "string", "description": "Имя шаблона из config/templates/workspace/"}, "fragments": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "type": {"type": "string", "enum": ["directory", "file"]}, "content": {"type": "string"}}}, "description": "Список фрагментов для создания"}}}, fs_create_project_structure, ANNOTATIONS_MODIFY),
     ]
     for name, title, desc, schema, handler, annot in fs_tools:

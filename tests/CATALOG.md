@@ -138,6 +138,9 @@
 | M21 | перенос мимо реестра (откат F65) | `tools/filesystem/__init__.py` | `test_structure` | 🔴 ловит ✅ (77/82) |
 | M22 | ручное создание без владельца (откат F61) | `tools/filesystem/__init__.py` | `test_structure` | 🔴 ловит ✅ |
 
+| M23 | повторный `assign_id` плодит второй ID на путь | `tools/filesystem/__init__.py` | `test_structure` | 🔴 ловит ✅ |
+| M24 | префикс файла мимо объявленного класса | `core/ids/taxonomy.py` | `test_structure` | 🔴 ловит ✅ (92/95) |
+
 **Итог: 11/14 мутаций пойманы.** Три пробоя (M4-search, M7-structure, M9-конфиг) + мёртвый выключатель (M13)
 заведены как **F55** и **F54**. Зоны в §A/§B выше описывают ЖЕЛАЕМОЕ покрытие — расширять хозяев по F55:
 `test_search` (+фильтры/сортировка), `test_structure` (+containment через `safe_resolve`, не только имя),

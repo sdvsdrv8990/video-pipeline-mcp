@@ -31,6 +31,10 @@ class TaxonomyError(Exception):
 # Укороченный `scoped8` требует проверки уникальности в реестре и пока не подключён (G16).
 SUPPORTED_STRATEGIES = {"hex"}
 
+# Классы файлов (префиксы ID) объявлены рядом с шаблонами, но отдельным файлом:
+# у файла нет шаблона папок, только личность.
+FILE_CLASSES_FILE = "_file_classes.yaml"
+
 
 class Taxonomy:
     """Объявленная иерархия типов узлов (из шаблонов workspace)."""
@@ -38,6 +42,7 @@ class Taxonomy:
     def __init__(self, templates_dir):
         self.dir = Path(templates_dir)
         self._types: dict[str, dict] | None = None
+        self._file_classes: dict[str, dict] | None = None
 
     def _load(self) -> dict[str, dict]:
         if self._types is not None:
@@ -73,6 +78,9 @@ class Taxonomy:
                     {"type": c.get("type", ""), "container": str(c.get("container", "")).strip("/")}
                     for c in (body.get("children") or [])
                 ],
+                # Папки, объявленные шаблоном (assets/svg, renders…): структура, а не сущности —
+                # резолвер обязан их пропускать наравне с контейнерами детей.
+                "folders": [str(f.get("name", "")).strip("/") for f in (body.get("folders") or []) if f.get("name")],
             }
         self._types = types
         return types
@@ -110,6 +118,38 @@ class Taxonomy:
                 return c["type"]
         return ""
 
+    def _load_file_classes(self) -> dict[str, dict]:
+        if self._file_classes is not None:
+            return self._file_classes
+        p = self.dir / FILE_CLASSES_FILE
+        if not p.exists():
+            raise TaxonomyError(
+                "TEMPLATE_INVALID", f"Нет объявления классов файлов: {FILE_CLASSES_FILE}",
+                "Префиксы файлов объявляются декларативно, в коде их нет.")
+        data = (yaml.safe_load(p.read_text(encoding="utf-8")) or {}).get("file_classes")
+        if not isinstance(data, dict) or not data:
+            raise TaxonomyError(
+                "TEMPLATE_INVALID", f"{FILE_CLASSES_FILE}: пустой или неверный ключ file_classes.",
+                "Ожидается {класс: {prefix, extensions}}.")
+        self._file_classes = {
+            name: {"prefix": body["prefix"],
+                   "extensions": [str(e).lower() for e in (body.get("extensions") or [])]}
+            for name, body in data.items()}
+        return self._file_classes
+
+    def file_class(self, path: str) -> str:
+        """Класс файла по расширению (`.xlsx` → table). Незаявленное расширение → дефолтный класс."""
+        suffix = Path(path).suffix.lower()
+        classes = self._load_file_classes()
+        for name, body in classes.items():
+            if suffix and suffix in body["extensions"]:
+                return name
+        return next((n for n, b in classes.items() if not b["extensions"]), "file")
+
+    def file_prefix(self, path: str) -> str:
+        """Префикс ID для файла (из объявления класса)."""
+        return self._load_file_classes()[self.file_class(path)]["prefix"]
+
     def type_for_root_container(self, container: str) -> str:
         """Обратно: какой тип живёт в корневом контейнере (`niches` → niche)."""
         want = (container or "").strip("/")
@@ -135,4 +175,6 @@ class Taxonomy:
                     out.update(Path(c["container"]).parts)
             if t["root_container"]:
                 out.update(Path(t["root_container"]).parts)
+            for f in t["folders"]:
+                out.update(Path(f).parts)
         return out

@@ -526,10 +526,15 @@
    "idempotentHint": false,
    "readOnlyHint": false
   },
-  "description": "Создание файла. Владельца сервер определяет по каталогу (owner_id + chain в ответе): файл внутри сущности принадлежит ей, отдельного ID файлу не заводится.",
+  "description": "Создание файла. Владельца сервер определяет ПО КАТАЛОГУ и всегда возвращает (owner_id + chain). assign_id=true дополнительно выдаёт файлу СОБСТВЕННЫЙ ID: префикс берётся из класса файла (.md→MEM, .json→DATA, .xlsx→TBL, .py→SCRIPT, ассеты→AST), в ответе приходят id, file_class и qualified_id — можно сверить, что префикс соответствует файлу. Без флага файл создаётся без собственного ID (это нормальный режим). Уже зарегистрированный путь отдаёт свой ID (reused=true), второго не заводится.",
   "group": "filesystem",
   "input_schema": {
    "properties": {
+    "assign_id": {
+     "default": false,
+     "description": "Выдать файлу собственный ID (префикс по классу файла) и зарегистрировать его",
+     "type": "boolean"
+    },
     "content": {
      "description": "Содержимое файла",
      "type": "string"
@@ -593,10 +598,15 @@
    "idempotentHint": false,
    "readOnlyHint": false
   },
-  "description": "Создание Python-скрипта с каркасом. Владельца сервер определяет по каталогу (owner_id + chain в ответе): файл внутри сущности принадлежит ей, отдельного ID файлу не заводится.",
+  "description": "Создание Python-скрипта с каркасом. Владельца сервер определяет ПО КАТАЛОГУ и всегда возвращает (owner_id + chain). assign_id=true дополнительно выдаёт файлу СОБСТВЕННЫЙ ID: префикс берётся из класса файла (.md→MEM, .json→DATA, .xlsx→TBL, .py→SCRIPT, ассеты→AST), в ответе приходят id, file_class и qualified_id — можно сверить, что префикс соответствует файлу. Без флага файл создаётся без собственного ID (это нормальный режим). Уже зарегистрированный путь отдаёт свой ID (reused=true), второго не заводится.",
   "group": "filesystem",
   "input_schema": {
    "properties": {
+    "assign_id": {
+     "default": false,
+     "description": "Выдать файлу собственный ID (префикс по классу файла) и зарегистрировать его",
+     "type": "boolean"
+    },
     "description": {
      "description": "Описание модуля",
      "type": "string"
@@ -867,10 +877,15 @@
    "idempotentHint": false,
    "readOnlyHint": false
   },
-  "description": "Полная перезапись файла. Владельца сервер определяет по каталогу (owner_id + chain в ответе): файл внутри сущности принадлежит ей, отдельного ID файлу не заводится.",
+  "description": "Полная перезапись файла. Владельца сервер определяет ПО КАТАЛОГУ и всегда возвращает (owner_id + chain). assign_id=true дополнительно выдаёт файлу СОБСТВЕННЫЙ ID: префикс берётся из класса файла (.md→MEM, .json→DATA, .xlsx→TBL, .py→SCRIPT, ассеты→AST), в ответе приходят id, file_class и qualified_id — можно сверить, что префикс соответствует файлу. Без флага файл создаётся без собственного ID (это нормальный режим). Уже зарегистрированный путь отдаёт свой ID (reused=true), второго не заводится.",
   "group": "filesystem",
   "input_schema": {
    "properties": {
+    "assign_id": {
+     "default": false,
+     "description": "Выдать файлу собственный ID (префикс по классу файла) и зарегистрировать его",
+     "type": "boolean"
+    },
     "content": {
      "description": "Новое содержимое файла",
      "type": "string"

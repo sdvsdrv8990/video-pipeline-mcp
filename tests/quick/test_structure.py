@@ -329,6 +329,41 @@ ok([d["id"] for d in dl.data["entities_dropped"]] == [vid_id], "удаление
 ok(_ctx.link_registry.get(vid_id) is None and call("structure_check_integrity").data["issues_count"] == 0,
    "реестр не переживает диск")
 
+print("== 22. Собственный ID файла — по запросу (директива владельца S19) ==")
+ok(tx.file_class("a.md") == "memory" and tx.file_prefix("a.md") == "MEM", "класс файла из объявления (.md → MEM)")
+ok(tx.file_prefix("s.svg") == "AST" and tx.file_prefix("b.xlsx") == "TBL", "ассет → AST, книга → TBL")
+ok(tx.file_class("x.unknown") == "file" and tx.file_prefix("x.unknown") == "FILE",
+   "незаявленное расширение → дефолтный класс, а не отказ")
+ok({"assets", "renders", "scene_layouts"} <= tx.containers,
+   "папки из шаблонов пропускаются резолвером (структура, не сущности)")
+
+vid2 = call("structure_create", type="video", name="clip2",
+            parent_path="niches/gaming/networks/net1/channels/chA/videos/").data["entities"][0]["id"]
+V2 = "niches/gaming/networks/net1/channels/chA/videos/clip2"
+plain = call("fs_create_file", path=f"{V2}/assets/notes.md", content="x")
+ok("id" not in plain.data and plain.data["owner_id"] == vid2,
+   "без флага: собственного ID нет, владелец есть (создание без ID возможно)")
+withid = call("fs_create_file", path=f"{V2}/assets/svg/scene.svg", content="<svg/>", assign_id=True)
+ok(withid.data["id"].startswith("AST_") and withid.data["file_class"] == "asset",
+   "assign_id=true: ID выдан, префикс соответствует классу (ИИ может сверить)")
+ok(withid.data["qualified_id"].endswith(withid.data["id"]) and withid.data["owner_id"] == vid2,
+   "квалифицированный адрес файла = цепочка владельцев + собственный сегмент")
+again = call("fs_write_file", path=f"{V2}/assets/svg/scene.svg", content="<svg2/>", assign_id=True)
+ok(again.data["id"] == withid.data["id"] and again.data["reused"] is True,
+   "повторный запрос отдаёт ТОТ ЖЕ ID (второго на путь не заводится)")
+ok(_ctx.link_registry.find_by_path(f"{V2}/assets/svg/scene.svg")["type"] == "asset",
+   "файл с ID попал в реестр со своим классом")
+ok(call("structure_check_integrity").data["issues_count"] == 0, "реестр и диск согласованы")
+mvf = call("fs_move", source=f"{V2}/assets/svg/scene.svg", destination=f"{V2}/assets/scenes/scene.svg")
+ok([m["id"] for m in mvf.data["entities_moved"]] == [withid.data["id"]],
+   "файл с собственным ID переезжает вместе с записью, ID не меняется")
+(ws18 / "niches/gaming/networks/ghostnet2").mkdir(parents=True)
+blocked_file = call("fs_create_file", path="niches/gaming/networks/ghostnet2/x.md", content="", assign_id=True)
+ok(blocked_file.status == "error" and blocked_file.error.code == "CHAIN_UNRESOLVED",
+   "ID в незарегистрированном поддереве → отказ, а не выдуманная цепочка")
+ok(call("fs_create_file", path="niches/gaming/networks/ghostnet2/x.md", content="").status == "success",
+   "тот же файл без assign_id создаётся спокойно")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

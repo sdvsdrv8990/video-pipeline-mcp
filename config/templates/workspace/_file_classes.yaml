@@ -1,0 +1,27 @@
+# Классы ФАЙЛОВ (не узлов структуры): префикс ID + по каким расширениям опознаются.
+# Отдельно от *.tpl.yaml: у файла нет своего шаблона папок — только личность.
+# Единственный источник префиксов файлов: сервер выдаёт ID отсюда, ИИ может сверить префикс
+# с ожидаемым классом (директива владельца S19: генерация по запросу = контроль на стороне ИИ).
+file_classes:
+  table:
+    prefix: TBL
+    extensions: [".xlsx", ".xlsm"]
+  data:
+    prefix: DATA
+    extensions: [".json"]
+  memory:
+    prefix: MEM
+    extensions: [".md"]
+  config:
+    prefix: CFG
+    extensions: [".yaml", ".yml"]
+  script:
+    prefix: SCRIPT
+    extensions: [".py"]
+  asset:
+    prefix: AST
+    extensions: [".svg", ".png", ".jpg", ".jpeg", ".webp", ".mp3", ".wav", ".mp4", ".mov"]
+  # Дефолт: расширение не объявлено выше. Пустой extensions — признак дефолтного класса.
+  file:
+    prefix: FILE
+    extensions: []
