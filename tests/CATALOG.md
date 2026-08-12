@@ -147,6 +147,9 @@
 | M27 | личность файла не из реестра (откат F60) | `core/search/fs_searcher.py` | `test_search` | 🔴 ловит ✅ |
 | M28 | `chain_prefix` игнорируется | `core/search/fs_searcher.py` | `test_search` | 🔴 ловит ✅ (32/35) |
 
+| M29 | `structure_find` не фильтрует по тексту | `core/ids/link_registry.py` | `test_structure` | 🔴 ловит ✅ (117/122) |
+| M30 | гигиена ярлыка снята (длина/переводы строк) | `core/ids/link_registry.py` | `test_structure` | 🔴 ловит ✅ |
+
 **Итог: 11/14 мутаций пойманы.** Три пробоя (M4-search, M7-structure, M9-конфиг) + мёртвый выключатель (M13)
 заведены как **F55** и **F54**. Зоны в §A/§B выше описывают ЖЕЛАЕМОЕ покрытие — расширять хозяев по F55:
 `test_search` (+фильтры/сортировка), `test_structure` (+containment через `safe_resolve`, не только имя),

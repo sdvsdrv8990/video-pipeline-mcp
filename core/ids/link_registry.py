@@ -260,6 +260,69 @@ class LinkRegistry:
             return {"child": rec, "parent_id": parent["id"],
                     "parent_type": parent["type"], "parent_name": parent["name"]}
 
+    # Пометки приходят из чата и из файлов памяти — то есть из НЕдоверенного текста,
+    # который потом возвращается ИИ. Режем длину и управляющие символы (outbound-гигиена).
+    LABEL_MAX = 200
+    TAG_MAX = 40
+    TAGS_MAX = 10
+
+    @classmethod
+    def _clean(cls, text: str, limit: int) -> str:
+        flat = " ".join(str(text or "").split())
+        return flat[:limit]
+
+    def annotate(self, entity_id: str, label: str = "", tags: list | None = None,
+                 source: str = "") -> dict:
+        """Пометить сущность человеческим ярлыком и метками (индекс для поиска ID).
+
+        Смысл: чтобы узнать нужный ID, ИИ спрашивает реестр, а не перечитывает переписку
+        и файлы памяти. Данные попадают сюда ЯВНО — из чата или разбором памяти.
+        """
+        with self._lock:
+            data = self._load()
+            rec = data["entities"].get(entity_id)
+            if not rec:
+                raise LinkError("ENTITY_NOT_FOUND", f"Сущности {entity_id} нет в реестре.",
+                                "Проверь ID через structure_find или создай сущность.",
+                                "structure_find")
+            if label:
+                rec["label"] = self._clean(label, self.LABEL_MAX)
+            if tags:
+                merged = list(dict.fromkeys(
+                    (rec.get("tags") or []) + [self._clean(t, self.TAG_MAX) for t in tags if str(t).strip()]))
+                rec["tags"] = merged[: self.TAGS_MAX]
+            if source:
+                rec["source"] = self._clean(source, self.TAG_MAX * 2)
+            _atomic_write_json(self.path, data)
+            return rec
+
+    def search(self, name: str = "", etype: str = "", tag: str = "", text: str = "",
+               limit: int = 50) -> list[dict]:
+        """Поиск сущности по человеческим признакам → её ID (дешёвый вход в адресацию).
+
+        `text` ищет подстроку в имени, ярлыке, метках и пути — то, чем ИИ реально помнит
+        сущность («интро про сетапы»), а не по ID, которого он ещё не знает.
+        """
+        needle = text.lower().strip()
+        out = []
+        for e in self._load()["entities"].values():
+            if etype and e.get("type") != etype:
+                continue
+            if name and e.get("name") != name:
+                continue
+            if tag and tag not in (e.get("tags") or []):
+                continue
+            if needle:
+                haystack = " ".join([
+                    e.get("name", ""), e.get("label", ""), e.get("path", ""),
+                    " ".join(e.get("tags") or [])]).lower()
+                if needle not in haystack:
+                    continue
+            out.append(e)
+            if len(out) >= limit:
+                break
+        return out
+
     def all(self) -> list[dict]:
         """Все записи реестра (снимок). Для индексов на стороне читателей (поиск)."""
         return list(self._load()["entities"].values())

@@ -86,7 +86,10 @@ class ChainResolver:
         inferred = node_type or self._infer_type(chain, rel)
         skipped: list[str] = []
         missing_required: list[str] = []
-        if inferred:
+        # Классы файлов (table_file/asset/memory…) — не узлы структуры: предков им не объявляют,
+        # цепочка у них есть, а разговор про пропущенные уровни бессмысленен.
+        is_node = inferred in self.taxonomy.node_types
+        if inferred and is_node:
             present = {e["type"] for e in chain}
             for a in self.taxonomy.ancestors(inferred):
                 if a["type"] in present:
@@ -103,7 +106,7 @@ class ChainResolver:
             "skipped": skipped,
             "missing_required": missing_required,
             "unresolved": unresolved,
-            "prefix": self.taxonomy.prefix(inferred) if inferred else "",
+            "prefix": self.taxonomy.prefix(inferred) if is_node else "",
         }
 
     def qualified_id(self, chain_id: str, own_id: str) -> str:

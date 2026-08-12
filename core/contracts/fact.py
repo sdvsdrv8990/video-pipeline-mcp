@@ -37,6 +37,8 @@ KNOWN_FACT_TYPES = {
     "EntityLinked", "EntityOrphaned", "StructureVerified", "HealthChecked",
     # Иерархия ID: цепочка по каталогу назначения (S18-g/S18-h)
     "EntityRegistered", "EntityAdopted", "ChainResolved",
+    # Индекс реестра: как ИИ узнаёт, какой ID искать (S19)
+    "EntitiesFound", "EntityAnnotated", "MemoryIndexed",
     # Проверка целостности реестра
     "IntegrityIssue",
     # Миграция структуры
