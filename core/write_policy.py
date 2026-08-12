@@ -58,6 +58,42 @@ class WritePolicy:
     def extensions(self) -> set[str]:
         return {str(e).lower() for e in (self._config().get("extensions") or [])}
 
+    @property
+    def forbidden_content(self) -> list[dict]:
+        return list(self._config().get("forbidden_content") or [])
+
+    def check_content(self, path: str, content) -> None:
+        """Отказать, если СОДЕРЖИМОЕ исполняемое/веб — независимо от расширения.
+
+        Смена расширения не делает файл безопасным: `.sh`, переименованный в `.txt`,
+        прекрасно исполняется `sh file.txt`. Поэтому имя проверяется отдельно (`check`),
+        а содержимое — здесь, по объявленным сигнатурам.
+        """
+        if not self.enabled or content is None:
+            return
+        raw = content.encode("utf-8", errors="ignore") if isinstance(content, str) else bytes(content)
+        head = raw[:512]
+        lowered = head.decode("utf-8", errors="ignore").lower().lstrip()
+        for sig in self.forbidden_content:
+            name = sig.get("name", "исполняемое содержимое")
+            hexpat = sig.get("starts_with_hex")
+            if hexpat and head.startswith(bytes.fromhex(hexpat)):
+                self._deny(path, name)
+            prefix = sig.get("starts_with")
+            if prefix and lowered.startswith(str(prefix).lower()):
+                self._deny(path, name)
+            needle = sig.get("contains")
+            if needle and str(needle).lower() in lowered:
+                self._deny(path, name)
+
+    def _deny(self, path: str, what: str) -> None:
+        raise WritePolicyError(
+            "FILE_TYPE_FORBIDDEN",
+            f"Содержимое распознано как {what} — запись запрещена: {path}",
+            "Расширение здесь ни при чём: файл остаётся исполняемым и под другим именем. "
+            "Если это данные проекта — сохрани их без исполняемой сигнатуры; "
+            "сигнатуры объявлены в config/firewall.yaml → write_allowlist.forbidden_content.")
+
     def check(self, path: str) -> None:
         """Бросить WritePolicyError, если тип файла не разрешён к записи."""
         if not self.enabled:

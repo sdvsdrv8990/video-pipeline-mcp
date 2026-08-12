@@ -70,6 +70,11 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                           facts=[Fact(type="FileRead", data={"path": path, "size": len(content),
                                                              "flags": envelope.flags})])
 
+    def _check_write(path: str, content=None) -> None:
+        """S2: одна дверь для решения «можно ли писать» — тип файла И его содержимое."""
+        ctx.write_policy.check(path)
+        ctx.write_policy.check_content(path, content)
+
     def _owner_of(path: str) -> dict:
         """Владелец файла по ВМЕСТИМОСТИ: ближайший зарегистрированный предок пути (S18-g).
 
@@ -128,7 +133,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             target = ctx.resolve(path)
         except ValueError:
             return ctx.err("PATH_ESCAPE", f"Path escapes workspace: {path}")
-        ok_type, denied = ctx.safe(lambda: ctx.write_policy.check(path))
+        ok_type, denied = ctx.safe(lambda: _check_write(path, content))
         if not ok_type:
             return denied
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -141,7 +146,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             target = ctx.resolve(path)
         except ValueError:
             return ctx.err("PATH_ESCAPE", f"Path escapes workspace: {path}")
-        ok_type, denied = ctx.safe(lambda: ctx.write_policy.check(path))
+        ok_type, denied = ctx.safe(lambda: _check_write(path, content))
         if not ok_type:
             return denied
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -162,6 +167,12 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             return ctx.err("FILE_NOT_FOUND", f"Source not found: {source}")
         if dst.exists():
             return ctx.err("FILE_EXISTS", f"Destination exists: {destination}")
+        # S2: перенос не должен становиться лазейкой — создать data.txt и переехать в run.sh
+        # значит обойти allowlist. Тип цели проверяется так же, как при создании.
+        if src.is_file():
+            ok_type, denied = ctx.safe(lambda: _check_write(destination))
+            if not ok_type:
+                return denied
         # S18-h: адрес цели считается ДО переноса — ИИ видит, куда сущность попадёт.
         ok, plan = ctx.safe(lambda: ctx.chain_resolver.resolve(str(Path(destination).parent)))
         if not ok:
@@ -191,6 +202,11 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             return ctx.err("PATH_ESCAPE", f"New name escapes workspace: {new_name}")
         if dst.exists():
             return ctx.err("FILE_EXISTS", f"Name exists: {new_name}")
+        # S2: та же лазейка через переименование (notes.md → notes.sh).
+        if src.is_file():
+            ok_type, denied = ctx.safe(lambda: _check_write(new_name))
+            if not ok_type:
+                return denied
         src.rename(dst)
         new_path = str(dst.relative_to(ctx.workspace_path))
         moved = ctx.link_registry.migrate_subtree(path, new_path)
@@ -345,6 +361,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 else:
                     try:
                         ctx.write_policy.check(name)
+                        ctx.write_policy.check_content(name, frag.get("content", ""))
                     except Exception as e:
                         skipped.append({"reason": getattr(e, "code", "FILE_TYPE_FORBIDDEN"), "name": name})
                         continue

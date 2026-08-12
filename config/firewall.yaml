@@ -89,6 +89,21 @@ write_allowlist:
     - ".mov"
     - ".srt"
 
+  # Содержимое важнее имени: расширение можно сменить, а файл от этого работать не перестанет.
+  # Здесь — сигнатуры исполняемого/веб-содержимого. Совпадение = отказ записи независимо
+  # от расширения (в т.ч. при переименовании .txt → .sh задним числом).
+  forbidden_content:
+    - { name: "shebang (скрипт)",        starts_with: "#!" }
+    - { name: "ELF (Linux-бинарь)",      starts_with_hex: "7f454c46" }
+    - { name: "PE/DOS (Windows-бинарь)", starts_with_hex: "4d5a" }
+    - { name: "Mach-O (macOS-бинарь)",   starts_with_hex: "cffaedfe" }
+    - { name: "Java class",              starts_with_hex: "cafebabe" }
+    - { name: "HTML-документ",           contains: "<!doctype html" }
+    - { name: "HTML-разметка",           contains: "<html" }
+    - { name: "PHP",                     contains: "<?php" }
+    - { name: "Windows batch",           contains: "@echo off" }
+    - { name: "PowerShell-загрузчик",    contains: "invoke-webrequest" }
+
 # ═══ ЛОГИРОВАНИЕ ═══
 logging:
   log_all_requests: false
