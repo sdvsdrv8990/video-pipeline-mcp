@@ -76,8 +76,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             if not ok:
                 return chain
 
+        # Имена предков из цепочки — для подстановки {parent:<тип>} в контейнерах (§4).
+        known_ancestors = {e["type"]: e["name"] for e in chain["chain"]}
         ok, res = ctx.safe(lambda: ctx.template_engine.create_node(
-            type, name, parent_path, chain["parent_ids"], children))
+            type, name, parent_path, chain["parent_ids"], children, known_ancestors))
         if not ok:
             return res
 
@@ -160,19 +162,24 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "unresolved": [u["path"] for u in res["unresolved"] if u["exists"]]})]
         return ToolResult(status="success", data=res, facts=facts)
 
-    async def structure_link(child_type: str, child_name: str,
-                             parent_type: str, parent_name: str) -> "ToolResult":
+    async def structure_link(child_type: str = "", child_name: str = "",
+                             parent_type: str = "", parent_name: str = "",
+                             child_id: str = "", parent_id: str = "",
+                             child_path: str = "", parent_path: str = "") -> "ToolResult":
         """Связать сущность с родителем В ОДНОМ месте (реестр — источник истины).
 
-        Один вызов добавляет parent_id ребёнку; не требует правки обоих деревьев
-        (экономит токены, исключает рассинхрон). Пример: привязать конкурента к нашему каналу.
+        Адрес — ID (однозначен), путь или пара (тип, имя). Один вызов добавляет parent_id
+        ребёнку; не требует правки обоих деревьев. Пример: привязать конкурента к нашему каналу.
         """
-        ok, res = ctx.safe(lambda: ctx.link_registry.link(child_type, child_name, parent_type, parent_name))
+        ok, res = ctx.safe(lambda: ctx.link_registry.link(
+            child_type, child_name, parent_type, parent_name,
+            child_id, parent_id, child_path, parent_path))
         if not ok:
             return res
         return ToolResult(status="success", data=res, facts=[Fact(type="EntityLinked", data={
-            "child_id": res["child"]["id"], "child_type": child_type, "child_name": child_name,
-            "parent_id": res["parent_id"], "parent_type": parent_type, "parent_name": parent_name})])
+            "child_id": res["child"]["id"], "child_type": res["child"]["type"],
+            "child_name": res["child"]["name"], "parent_id": res["parent_id"],
+            "parent_type": res["parent_type"], "parent_name": res["parent_name"]})])
 
     async def structure_migrate(entity_id: str, new_path: str) -> "ToolResult":
         """Миграция сущности: физический перенос папки + обновление реестра.
@@ -284,13 +291,20 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         description=(
             "Связывает сущность с родителем В ОДНОМ месте (реестр связей — источник истины): "
             "например конкурента с нашим каналом. Один вызов, не нужно править оба дерева — "
-            "экономит токены и исключает рассинхрон. Снимает уведомление UNLINKED_ENTITY."),
+            "экономит токены и исключает рассинхрон. Снимает уведомление UNLINKED_ENTITY. "
+            "АДРЕС: надёжнее всего child_id/parent_id (ID однозначен всегда), можно child_path/parent_path; "
+            "пара (тип, имя) работает, только пока имя уникально — в иерархии имена повторяются "
+            "(два видео 'intro' в разных каналах), и тогда сервер вернёт список кандидатов с их ID."),
         input_schema={"type": "object", "properties": {
-            "child_type": {"type": "string", "description": "Тип привязываемой сущности (напр. competitor_channel)"},
-            "child_name": {"type": "string", "description": "Имя привязываемой сущности"},
-            "parent_type": {"type": "string", "description": "Тип родителя (напр. channel)"},
-            "parent_name": {"type": "string", "description": "Имя родителя"},
-        }, "required": ["child_type", "child_name", "parent_type", "parent_name"]},
+            "child_id": {"type": "string", "description": "ID привязываемой сущности (предпочтительно)"},
+            "parent_id": {"type": "string", "description": "ID родителя (предпочтительно)"},
+            "child_path": {"type": "string", "description": "Путь привязываемой сущности (альтернатива ID)"},
+            "parent_path": {"type": "string", "description": "Путь родителя (альтернатива ID)"},
+            "child_type": {"type": "string", "description": "Тип привязываемой сущности (напр. competitor_channel) — только с child_name"},
+            "child_name": {"type": "string", "description": "Имя привязываемой сущности (неоднозначно при повторе имён)"},
+            "parent_type": {"type": "string", "description": "Тип родителя (напр. channel) — только с parent_name"},
+            "parent_name": {"type": "string", "description": "Имя родителя (неоднозначно при повторе имён)"},
+        }},
         handler=structure_link, group="structure", annotations=ANNOTATIONS_MODIFY)
     engine.register(
         name="structure_migrate",

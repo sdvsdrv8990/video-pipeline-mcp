@@ -164,14 +164,42 @@ class LinkRegistry:
                 for e in entities.values()
                 if e["type"] == parent_type and e["id"] not in referenced]
 
+    def resolve_ref(self, entity_id: str = "", path: str = "",
+                    etype: str = "", name: str = "") -> dict:
+        """Адресация сущности: по ID → по пути → по (тип, имя). ID и путь однозначны всегда (F64).
+
+        Пара (тип, имя) в иерархии неоднозначна по природе (два видео `intro` в разных каналах),
+        поэтому при совпадении нескольких отдаём КАНДИДАТОВ с их ID и путями — чтобы перезвать
+        по ID, а не гадать.
+        """
+        if entity_id:
+            rec = self.get(entity_id)
+            if not rec:
+                raise LinkError("ENTITY_NOT_FOUND", f"Сущности {entity_id} нет в реестре.",
+                                "Проверь ID через structure_status или найди сущность поиском.",
+                                "structure_status")
+            return rec
+        if path:
+            rec = self.find_by_path(path)
+            if not rec:
+                raise LinkError("ENTITY_NOT_FOUND", f"По пути '{path}' сущность не зарегистрирована.",
+                                "Посмотри, что известно о каталоге, через structure_resolve.",
+                                "structure_resolve")
+            return rec
+        return self._resolve_one(etype, name)
+
     def _resolve_one(self, etype: str, name: str) -> dict:
         hits = self.find(type=etype, name=name)
         if not hits:
             raise LinkError("ENTITY_NOT_FOUND", f"Нет сущности {etype}:{name} в реестре.",
                             "Сначала создай её через structure_create.", "structure_status")
         if len(hits) > 1:
-            raise LinkError("VALIDATION_ERROR", f"Неоднозначно: {etype}:{name} встречается {len(hits)} раз.",
-                            "Уточни через id (реестр содержит несколько).", "structure_status")
+            listing = "; ".join(f"{h['id']} → {h['path']}" for h in hits)
+            raise LinkError(
+                "VALIDATION_ERROR",
+                f"Неоднозначно: {etype}:{name} встречается {len(hits)} раз. Кандидаты: {listing}",
+                "Имя в иерархии не адрес — перезови с child_id/parent_id (или путём) из списка выше.",
+                "structure_status")
         return hits[0]
 
     def check_integrity(self) -> dict:
@@ -214,17 +242,23 @@ class LinkRegistry:
             "issues": issues,
         }
 
-    def link(self, child_type: str, child_name: str, parent_type: str, parent_name: str) -> dict:
-        """Связать ребёнка с родителем В ОДНОМ месте: добавить parent_id ребёнку."""
+    def link(self, child_type: str = "", child_name: str = "", parent_type: str = "",
+             parent_name: str = "", child_id: str = "", parent_id: str = "",
+             child_path: str = "", parent_path: str = "") -> dict:
+        """Связать ребёнка с родителем В ОДНОМ месте: добавить parent_id ребёнку.
+
+        Адресовать можно ID (однозначно), путём или парой (тип, имя) — см. resolve_ref.
+        """
         with self._lock:
-            child = self._resolve_one(child_type, child_name)
-            parent = self._resolve_one(parent_type, parent_name)
+            child = self.resolve_ref(child_id, child_path, child_type, child_name)
+            parent = self.resolve_ref(parent_id, parent_path, parent_type, parent_name)
             data = self._load()
             rec = data["entities"][child["id"]]
             if parent["id"] not in rec["parent_ids"]:
                 rec["parent_ids"].append(parent["id"])
             _atomic_write_json(self.path, data)
-            return {"child": rec, "parent_id": parent["id"], "parent_type": parent_type, "parent_name": parent_name}
+            return {"child": rec, "parent_id": parent["id"],
+                    "parent_type": parent["type"], "parent_name": parent["name"]}
 
     def find_under(self, path: str) -> list[dict]:
         """Сущности, лежащие по этому пути или под ним (поддерево)."""

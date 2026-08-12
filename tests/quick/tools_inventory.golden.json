@@ -1446,33 +1446,43 @@
    "idempotentHint": false,
    "readOnlyHint": false
   },
-  "description": "Связывает сущность с родителем В ОДНОМ месте (реестр связей — источник истины): например конкурента с нашим каналом. Один вызов, не нужно править оба дерева — экономит токены и исключает рассинхрон. Снимает уведомление UNLINKED_ENTITY.",
+  "description": "Связывает сущность с родителем В ОДНОМ месте (реестр связей — источник истины): например конкурента с нашим каналом. Один вызов, не нужно править оба дерева — экономит токены и исключает рассинхрон. Снимает уведомление UNLINKED_ENTITY. АДРЕС: надёжнее всего child_id/parent_id (ID однозначен всегда), можно child_path/parent_path; пара (тип, имя) работает, только пока имя уникально — в иерархии имена повторяются (два видео 'intro' в разных каналах), и тогда сервер вернёт список кандидатов с их ID.",
   "group": "structure",
   "input_schema": {
    "properties": {
+    "child_id": {
+     "description": "ID привязываемой сущности (предпочтительно)",
+     "type": "string"
+    },
     "child_name": {
-     "description": "Имя привязываемой сущности",
+     "description": "Имя привязываемой сущности (неоднозначно при повторе имён)",
+     "type": "string"
+    },
+    "child_path": {
+     "description": "Путь привязываемой сущности (альтернатива ID)",
      "type": "string"
     },
     "child_type": {
-     "description": "Тип привязываемой сущности (напр. competitor_channel)",
+     "description": "Тип привязываемой сущности (напр. competitor_channel) — только с child_name",
+     "type": "string"
+    },
+    "parent_id": {
+     "description": "ID родителя (предпочтительно)",
      "type": "string"
     },
     "parent_name": {
-     "description": "Имя родителя",
+     "description": "Имя родителя (неоднозначно при повторе имён)",
+     "type": "string"
+    },
+    "parent_path": {
+     "description": "Путь родителя (альтернатива ID)",
      "type": "string"
     },
     "parent_type": {
-     "description": "Тип родителя (напр. channel)",
+     "description": "Тип родителя (напр. channel) — только с parent_name",
      "type": "string"
     }
    },
-   "required": [
-    "child_type",
-    "child_name",
-    "parent_type",
-    "parent_name"
-   ],
    "type": "object"
   },
   "title": "Структура: связать сущности"

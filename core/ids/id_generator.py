@@ -11,51 +11,17 @@ import uuid
 class IDGenerator:
     """Генератор уникальных ID.
 
-    Attributes:
-        prefixes: Префиксы по типам сущностей
+    Префиксов НЕ знает: таблица типов жила здесь и дублировала объявления шаблонов
+    (F41/F46). Единственный источник — `core.ids.Taxonomy` (блок `id:` в `*.tpl.yaml`
+    для узлов и `_file_classes.yaml` для файлов); сюда префикс приходит готовым.
     """
 
-    # Стандартные префиксы
-    PREFIXES = {
-        "video": "VID",
-        "channel": "CH",
-        "network": "NET",
-        "niche": "NICHE",
-        "asset": "AST",
-        "variation": "VAR",
-        "scene": "S",
-        "render": "RENDER",
-        "task": "TASK",
-        "fact": "FACT",
-        "technique": "TECH",
-        "pattern": "PAT",
-        "prediction": "PRED",
-        "insight": "INS",
-    }
-
-    def __init__(self, prefixes: dict[str, str] | None = None):
-        """Инициализация.
-
-        Args:
-            prefixes: Кастомные префиксы (опционально)
-        """
-        self.prefixes = prefixes or self.PREFIXES
-
     def generate(self, entity_type: str) -> str:
-        """Генерация ID для сущности.
+        """Генерация ID по типу без объявления (fallback: тип как префикс).
 
-        Args:
-            entity_type: Тип сущности (video, channel, etc.)
-
-        Returns:
-            Уникальный ID (PREFIX_abc123)
+        Для сущностей workspace префикс берут из `Taxonomy` и зовут `generate_simple`.
         """
-        prefix = self.prefixes.get(entity_type, entity_type.upper())
-
-        # Генерируем короткий уникальный код
-        unique_part = self._generate_unique()
-
-        return f"{prefix}_{unique_part}"
+        return self.generate_simple(entity_type.upper())
 
     def generate_simple(self, prefix: str) -> str:
         """Генерация ID с произвольным префиксом.
@@ -79,17 +45,6 @@ class IDGenerator:
         # коллизия ~50% уже на ~77k ID. Берём полный uuid4 (122 бита энтропии):
         # коллизии практически исключены даже без реестра-проверки.
         return uuid.uuid4().hex
-
-    def get_prefix(self, entity_type: str) -> str:
-        """Получение префикса для типа сущности.
-
-        Args:
-            entity_type: Тип сущности
-
-        Returns:
-            Префикс
-        """
-        return self.prefixes.get(entity_type, entity_type.upper())
 
     def is_valid_format(self, entity_id: str) -> bool:
         """Проверка формата ID.

@@ -19,4 +19,6 @@ network:
     - { name: "competitors/niche_network_data.xlsx", kind: table, table_template: niche_network_data, required: false }
   children:
     - { type: channel, container: "channels/" }
-    - { type: competitor_channel, container: "competitors/" }   # + группировка по нашему каналу (§4)
+    # {parent:channel} — имя НАШЕГО канала, чьим конкурентом считается сущность (§4).
+    # Подставляет движок из цепочки предков; канал неизвестен → сегмент опускается, узел висит ORPHAN.
+    - { type: competitor_channel, container: "competitors/{parent:channel}/" }

@@ -83,8 +83,31 @@ class TemplateEngine:
         """Имя узла — один сегмент: без '/', без пустоты и краевых пробелов."""
         return bool(name) and ("/" not in name) and name.strip() == name
 
+    @staticmethod
+    def _fill_container(container: str, ancestors: dict) -> tuple[str, list]:
+        """Подставить `{parent:<тип>}` из имён предков (§4: конкурент лежит под НАШИМ каналом).
+
+        Неизвестный предок → сегмент опускается (не заглушка), его тип возвращается вторым
+        значением, чтобы вызывающий знал: группировка не состоялась.
+        """
+        missing = []
+        out = []
+        for seg in container.split("/"):
+            if seg.startswith("{parent:") and seg.endswith("}"):
+                want = seg[len("{parent:"):-1]
+                value = ancestors.get(want, "")
+                if value:
+                    out.append(value)
+                else:
+                    missing.append(want)
+                continue
+            if seg:
+                out.append(seg)
+        return ("/".join(out) + "/" if out else ""), missing
+
     def create_node(self, node_type: str, name: str, parent_path: str = "",
-                    parent_ids: list | None = None, children: dict | None = None) -> dict:
+                    parent_ids: list | None = None, children: dict | None = None,
+                    ancestors: dict | None = None) -> dict:
         """Материализовать узел (+ явно названных детей) с контролем глубины.
 
         Args:
@@ -177,18 +200,33 @@ class TemplateEngine:
 
         # --- children: контроль глубины (только названные) ---
         named = children or {}
+        # Имена предков для подстановки {parent:<тип>}: то, что пришло сверху, + сам узел.
+        known = dict(ancestors or {})
+        known[node_type] = name
+        # Дети текущего вызова тоже могут быть якорем группировки (наш канал для конкурента),
+        # но только пока имя однозначно: два канала в одном вызове — группировать не по чему.
         for cref in (body.get("children") or []):
             ctype = cref.get("type")
-            container = cref.get("container", "")
+            sibling_names = named.get(ctype) or []
+            if len(sibling_names) == 1 and ctype not in known:
+                known[ctype] = sibling_names[0]
+        for cref in (body.get("children") or []):
+            ctype = cref.get("type")
+            container, missing = self._fill_container(cref.get("container", ""), known)
             child_parent = f"{node_rel}/{container}"
             names = named.get(ctype) or []
             if not names:
-                result["deferred_children"].append({"type": ctype, "container": child_parent})
+                entry = {"type": ctype, "container": child_parent}
+                if missing:
+                    entry["ungrouped_by"] = missing
+                result["deferred_children"].append(entry)
                 continue
             for cname in names:
                 sub = self.create_node(
                     ctype, cname, parent_path=child_parent,
-                    parent_ids=(parent_ids or []) + [node_id], children=named)
+                    parent_ids=(parent_ids or []) + [node_id], children=named, ancestors=known)
+                if missing:
+                    sub["ungrouped_by"] = missing
                 result["children"].append(sub)
 
         return result

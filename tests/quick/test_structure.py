@@ -364,6 +364,51 @@ ok(blocked_file.status == "error" and blocked_file.error.code == "CHAIN_UNRESOLV
 ok(call("fs_create_file", path="niches/gaming/networks/ghostnet2/x.md", content="").status == "success",
    "тот же файл без assign_id создаётся спокойно")
 
+print("== 23. Адресация по ID/пути, имя — не адрес (F64) ==")
+c1 = call("structure_create", type="video", name="dup", parent_path="niches/gaming/networks/net1/channels/chA/videos/")
+call("structure_create", type="channel", name="chB", parent_path="niches/gaming/networks/net1/channels/")
+c2 = call("structure_create", type="video", name="dup", parent_path="niches/gaming/networks/net1/channels/chB/videos/")
+amb = call("structure_link", child_type="video", child_name="dup", parent_type="channel", parent_name="chA")
+ok(amb.status == "error" and amb.error.code == "VALIDATION_ERROR", "повтор имени в иерархии → ошибка, а не случайный выбор")
+ok(c1.data["entities"][0]["id"] in amb.error.message and c2.data["entities"][0]["id"] in amb.error.message,
+   "ошибка перечисляет КАНДИДАТОВ с их ID (есть чем перезвать)")
+by_id = call("structure_link", child_id=c2.data["entities"][0]["id"],
+             parent_id=s1.data["entities"][2]["id"])
+ok(by_id.status == "success" and by_id.data["parent_id"] == s1.data["entities"][2]["id"],
+   "адресация по ID проходит там, где имя неоднозначно")
+by_path = call("structure_link", child_path="niches/gaming/networks/net1/channels/chB",
+               parent_id=s1.data["entities"][1]["id"])
+ok(by_path.status == "success", "адресация по пути тоже работает (find_by_path)")
+ok(call("structure_link", child_id="VID_нет", parent_id="CH_нет").error.code == "ENTITY_NOT_FOUND",
+   "несуществующий ID → ENTITY_NOT_FOUND, а не молчание")
+
+print("== 24. Конкурент группируется под НАШИМ каналом (F62, §4) ==")
+eng24, ws24 = new_engine()
+grouped = eng24.create_node("network", "net1", parent_path="niches/g/networks/",
+                            children={"channel": ["chA"], "competitor_channel": ["compX"],
+                                      "competitor_video": ["cv1"]})
+comp = [c for c in grouped["children"] if c["type"] == "competitor_channel"][0]
+ok(comp["path"].endswith("competitors/chA/compX"), "конкурент лёг под сегментом нашего канала")
+ok(comp["children"][0]["path"].endswith("competitors/chA/compX/videos/cv1"), "видео конкурента унаследовало сегмент")
+ok("ungrouped_by" not in comp, "группировка состоялась — пометки нет")
+eng24b, _ = new_engine()
+lone = eng24b.create_node("network", "net1", parent_path="niches/g/networks/",
+                          children={"competitor_channel": ["compX"]})
+comp_lone = lone["children"][0]
+ok(comp_lone["path"].endswith("competitors/compX") and comp_lone.get("ungrouped_by") == ["channel"],
+   "нашего канала нет → сегмент опущен (без заглушки) и это ПОМЕЧЕНО")
+eng24c, _ = new_engine()
+two = eng24c.create_node("network", "net1", parent_path="niches/g/networks/",
+                         children={"channel": ["chA", "chB"], "competitor_channel": ["compX"]})
+comp_two = [c for c in two["children"] if c["type"] == "competitor_channel"][0]
+ok(comp_two.get("ungrouped_by") == ["channel"], "два канала — группировать не по чему, сервер не гадает")
+
+print("== 25. Префиксы: единственный источник — таксономия (F41/F46) ==")
+ok(not hasattr(IDGenerator, "PREFIXES") and not hasattr(IDGenerator(), "prefixes"),
+   "таблица префиксов в генераторе удалена (дубль объявлений шаблонов)")
+ok(IDGenerator().generate_simple(tx.prefix("video")).startswith("VID_"),
+   "префикс приходит из таксономии, генератор его только подставляет")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:
