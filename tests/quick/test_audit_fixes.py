@@ -287,31 +287,50 @@ async def main():
     print("== F14/S1: ключ доступа ==")
     import tempfile as _tf
 
-    from core.auth import check_auth, ensure_token, rotate_token, token_file_mode
+    from core.auth import (DIGEST_VAR, TOKEN_VAR, check_auth, ensure_digest, rotate_token,
+                           token_digest, token_file_mode)
 
     _d = Path(_tf.mkdtemp(prefix="s1_"))
     _env = _d / ".env"
-    _tok, _created = ensure_token(_env, env={})
-    check("F14 первый старт выпускает ключ", _created and len(_tok) >= 32, f"len={len(_tok)}")
+    _dig, _issued = ensure_digest(_env, env={})
+    check("F14 первый старт выпускает ключ", bool(_issued) and len(_issued) >= 32, f"len={len(_issued)}")
     check("F14 файл секрета с правами 0600", token_file_mode(_env) == 0o600, oct(token_file_mode(_env)))
-    _tok2, _created2 = ensure_token(_env, env={})
-    check("F14 повторный старт НЕ перевыпускает ключ", _tok2 == _tok and not _created2)
+    _dig2, _issued2 = ensure_digest(_env, env={})
+    check("F14 повторный старт НЕ перевыпускает ключ", _dig2 == _dig and not _issued2)
     _env.write_text(_env.read_text(encoding="utf-8") + "OTHER=1\n", encoding="utf-8")
     _new = rotate_token(_env)
-    check("F14 ротация меняет ключ", _new != _tok)
+    check("F14 ротация меняет ключ", token_digest(_new) != _dig)
     check("F14 ротация не трогает соседние переменные", "OTHER=1" in _env.read_text(encoding="utf-8"))
     check("F14 после ротации права сохранены", token_file_mode(_env) == 0o600)
     check("F14 переменная окружения имеет приоритет над файлом",
-          ensure_token(_env, env={"MCP_AUTH_TOKEN": "from-env"}) == ("from-env", False))
+          ensure_digest(_env, env={TOKEN_VAR: "from-env"}) == (token_digest("from-env"), ""))
 
-    check("F14 свой ключ через Bearer → доступ", check_auth({"Authorization": f"Bearer {_new}"}, _new) == "")
+    # S21: на диске лежит ХЭШ, значения ключа там нет вовсе
+    _body = _env.read_text(encoding="utf-8")
+    check("S21 в .env хранится отпечаток, а не ключ", f"{DIGEST_VAR}=" in _body and _new not in _body)
+    check("S21 строки с открытым значением в файле нет",
+          not any(l.startswith(f"{TOKEN_VAR}=") for l in _body.splitlines()))
+    _legacy = Path(_tf.mkdtemp(prefix="s1old_")) / ".env"
+    _legacy.write_text(f"KEEP=1\n{TOKEN_VAR}=старый-открытый-ключ\n", encoding="utf-8")
+    _mig, _ = ensure_digest(_legacy, env={})
+    _mbody = _legacy.read_text(encoding="utf-8")
+    check("S21 миграция: прежний ключ продолжает работать",
+          check_auth({"x-api-key": "старый-открытый-ключ"}, _mig) == "")
+    check("S21 миграция СТИРАЕТ открытое значение", "старый-открытый-ключ" not in _mbody)
+    check("S21 миграция не трогает соседние переменные", "KEEP=1" in _mbody)
+
+    check("F14 свой ключ через Bearer → доступ",
+          check_auth({"Authorization": f"Bearer {_new}"}, token_digest(_new)) == "")
     check("F14 свой ключ через X-Api-Key → доступ (allowlist коннектора)",
-          check_auth({"x-api-key": _new}, _new) == "")
-    check("F14 чужой ключ → AUTH_FAILED", check_auth({"Authorization": "Bearer wrong"}, _new) == "AUTH_FAILED")
-    check("F14 не-ASCII токен не роняет обработчик (500 → 401)",
-          check_auth({"Authorization": "Bearer чужой"}, _new) == "AUTH_FAILED")
-    check("F14 без заголовка → AUTH_REQUIRED", check_auth({}, _new) == "AUTH_REQUIRED")
-    check("F14 пустой ожидаемый токен НЕ открывает сервер (fail-closed)",
+          check_auth({"x-api-key": _new}, token_digest(_new)) == "")
+    check("F14 чужой ключ → AUTH_FAILED",
+          check_auth({"Authorization": "Bearer wrong"}, token_digest(_new)) == "AUTH_FAILED")
+    check("F14 не-ASCII ключ не роняет обработчик (500 → 401)",
+          check_auth({"Authorization": "Bearer чужой"}, token_digest(_new)) == "AUTH_FAILED")
+    check("S21 сам отпечаток ключом не является (хэш не подходит как пароль)",
+          check_auth({"x-api-key": token_digest(_new)}, token_digest(_new)) == "AUTH_FAILED")
+    check("F14 без заголовка → AUTH_REQUIRED", check_auth({}, token_digest(_new)) == "AUTH_REQUIRED")
+    check("F14 пустой ожидаемый отпечаток НЕ открывает сервер (fail-closed)",
           check_auth({"x-api-key": "anything"}, "") == "AUTH_REQUIRED")
 
     # S1/§3-тер: секрет недостижим для файловых инструментов ПО ПОСТРОЕНИЮ (.env вне workspace/)
@@ -329,14 +348,16 @@ async def main():
     from core.auth import token_fingerprint
     _fp = token_fingerprint(_new)
     check("S21 отпечаток не раскрывает ключ", _fp and _fp not in _new and _new not in _fp, _fp)
-    check("S21 отпечаток различает ключи", token_fingerprint(_tok) != _fp)
+    check("S21 отпечаток различает ключи", token_fingerprint(rotate_token(_env)) != _fp)
     check("S21 отпечаток стабилен", token_fingerprint(_new) == _fp)
     _srv = (ROOT / "server.py").read_text(encoding="utf-8")
-    _rot = _srv[_srv.index("if args.rotate_key or args.show_key:"):]
+    _rot = _srv[_srv.index("if args.rotate_key:"):]
     _rot = _rot[:_rot.index("\n        return")]
-    check("S21 значение ключа печатается ТОЛЬКО под --show-key (static)",
-          _rot.count("{token}") == 1 and "if args.show_key:" in _rot
-          and _rot.index("if args.show_key:") < _rot.index("{token}"))
+    check("S21 значение печатается только в терминал (не в лог/пайп) (static)",
+          _rot.count("{token}") == 1 and "sys.stdout.isatty()" in _rot
+          and _rot.index("sys.stdout.isatty()") < _rot.index("{token}"))
+    check("S21 --show-key удалён: показывать нечего (static)",
+          "--show-key" not in _srv and "show_key" not in _srv)
 
     # F70-класс: секреты на диске обязаны быть закрыты правилом .gitignore
     import subprocess as _sp

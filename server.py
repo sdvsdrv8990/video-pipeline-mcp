@@ -43,8 +43,8 @@ from core.engine import Engine
 from core.firewall import Firewall, FirewallRequest, FirewallDecision
 from core.transport import Transport
 from core.reactions import Reactions
-from core.auth import (ENV_FILE, check_auth, ensure_token, rotate_token, token_file_mode,
-                       token_fingerprint)
+from core.auth import (ENV_FILE, check_auth, digest_fingerprint, ensure_digest, rotate_token,
+                       token_file_mode, token_fingerprint)
 from core.ids import IDGenerator
 from core.state import StateManager
 # A2: движки, маппинг исключений ядра и аннотации MCP живут в контексте групп.
@@ -68,7 +68,8 @@ ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("MCP_ALLOWED_ORIGINS", "").
 # S1/F14: ключ сервер выдаёт себе сам (см. core/auth). Пустой токен больше НЕ означает
 # «auth отключена» — это fail-closed: без ключа сервер не стартует, если явно не разрешено.
 ENV_PATH = BASE_PATH / ENV_FILE
-MCP_AUTH_TOKEN = ""
+# S21: сервер держит ОТПЕЧАТОК ключа, не значение — сравнение идёт по хэшу.
+MCP_AUTH_DIGEST = ""
 # Явная и громкая калитка для локальной разработки и тестов (по умолчанию закрыта).
 ALLOW_NO_AUTH = os.environ.get("MCP_ALLOW_NO_AUTH", "") == "1"
 
@@ -148,22 +149,27 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
         port: Порт
         use_tunnel: Поднять Cloudflare-туннель вместе с сервером (D11)
     """
-    global MCP_AUTH_TOKEN
+    global MCP_AUTH_DIGEST
     if not ALLOW_NO_AUTH:
-        MCP_AUTH_TOKEN, created = ensure_token(ENV_PATH)
-        if not MCP_AUTH_TOKEN:
+        MCP_AUTH_DIGEST, issued = ensure_digest(ENV_PATH)
+        if not MCP_AUTH_DIGEST:
             print(f"ОТКАЗ СТАРТА: не удалось получить ключ доступа ({ENV_PATH}).", file=sys.stderr)
             print("Задай MCP_AUTH_TOKEN или дай серверу право создать .env; "
                   "работа без ключа — только с MCP_ALLOW_NO_AUTH=1.", file=sys.stderr)
             raise SystemExit(2)
-        if created:
+        if issued:
             print("─" * 60)
-            print(f"Выпущен ключ доступа (сохранён в {ENV_FILE}, права 0600), "
-                  f"отпечаток {token_fingerprint(MCP_AUTH_TOKEN)}")
-            print("Значение в лог старта не печатаем — покажет server.py --show-key.")
-            print("Вставляется в коннекторе Claude AI Web: Request headers →")
-            print("  authorization: Bearer <ключ>    (или x-api-key: <ключ>)")
-            print("Перевыпуск — server.py --rotate-key")
+            print(f"Выпущен ключ доступа (в {ENV_FILE} — только хэш, права 0600), "
+                  f"отпечаток {token_fingerprint(issued)}")
+            if sys.stdout.isatty():
+                # Единственный момент, когда значение вообще существует: дальше его негде взять.
+                print(f"  {issued}")
+                print("Вставь в коннекторе Claude AI Web: Request headers →")
+                print("  authorization: Bearer <ключ>    (или x-api-key: <ключ>)")
+                print("СОХРАНИ СЕЙЧАС: восстановить нельзя, только перевыпустить.")
+            else:
+                print("Запуск не из терминала — значение не печатаем, чтобы не осело в логе.")
+                print("Выпусти ключ заново в терминале: server.py --rotate-key")
             print("─" * 60)
 
     engine, transport, firewall = create_server()
@@ -177,7 +183,8 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
     if ALLOW_NO_AUTH:
         print("Аутентификация: ⚠ ОТКЛЮЧЕНА (MCP_ALLOW_NO_AUTH=1) — только локальная разработка")
     else:
-        print(f"Аутентификация: активна (Authorization: Bearer / X-Api-Key), ключ в {ENV_FILE} (0600)")
+        print(f"Аутентификация: активна (Authorization: Bearer / X-Api-Key), "
+              f"отпечаток {digest_fingerprint(MCP_AUTH_DIGEST)} в {ENV_FILE} (0600, значения нет)")
     print()
 
     from aiohttp import web
@@ -205,7 +212,7 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
         # S1: аутентификация ДО файрвола. Принимаем оба заголовка из allowlist коннектора
         # Claude AI Web (Authorization: Bearer / X-Api-Key) — иначе клиент не сможет прислать ключ.
         if not ALLOW_NO_AUTH:
-            deny = check_auth(request.headers, MCP_AUTH_TOKEN)
+            deny = check_auth(request.headers, MCP_AUTH_DIGEST)
             if deny:
                 hint = ("Требуется заголовок Authorization: Bearer <token> или X-Api-Key: <token>"
                         if deny == "AUTH_REQUIRED" else "Неверный токен аутентификации")
@@ -420,7 +427,6 @@ def main():
     parser.add_argument("--port", type=int, default=PORT, help="Порт (по умолчанию: %(default)s)")
     parser.add_argument("--tunnel", action="store_true", help="Поднять Cloudflare-туннель вместе с сервером (D11)")
     parser.add_argument("--rotate-key", action="store_true", help="Перевыпустить ключ доступа и выйти (S1)")
-    parser.add_argument("--show-key", action="store_true", help="Показать значение ключа (по умолчанию печатается только отпечаток)")
     parser.add_argument("--re-adopt", action="store_true", help="Присвоить рабочую область этому серверу после переноса (S9)")
     args = parser.parse_args()
 
@@ -438,18 +444,16 @@ def main():
         print("Прежние подписи считаются недействительными; запись снова разрешена.")
         return
 
-    if args.rotate_key or args.show_key:
-        token = rotate_token(ENV_PATH) if args.rotate_key else ensure_token(ENV_PATH)[0]
-        what = "Новый ключ доступа" if args.rotate_key else "Действующий ключ доступа"
-        print(f"{what} (файл {ENV_FILE}, права {oct(token_file_mode(ENV_PATH))}), "
+    if args.rotate_key:
+        token = rotate_token(ENV_PATH)
+        print(f"Новый ключ доступа (в {ENV_FILE} — только хэш, права {oct(token_file_mode(ENV_PATH))}), "
               f"отпечаток {token_fingerprint(token)}")
-        if args.show_key:
-            # Значение — только по явному требованию: иначе секрет оседает в логах и историях сессий.
+        if sys.stdout.isatty():
             print(f"  {token}")
             print("Обнови значение в коннекторе Claude AI Web — прежний ключ больше не действует.")
+            print("СОХРАНИ СЕЙЧАС: сервер хранит только хэш, показать повторно неоткуда.")
         else:
-            print("Значение не печатаем. Показать: server.py --show-key "
-                  "(вставляется в коннекторе Claude AI Web → Request headers).")
+            print("Запуск не из терминала — значение не печатаем. Повтори ротацию в терминале.")
         return
 
     asyncio.run(run_server(args.host, args.port, use_tunnel=args.tunnel))

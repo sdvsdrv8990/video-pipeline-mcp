@@ -3,22 +3,29 @@ core/auth.py — Ключ доступа: сервер выдаёт его се�
 
 ## Назначение
 Токен не придумывает человек и не хранит в голове: сервер генерирует его при первом старте
-(`secrets.token_urlsafe(32)`), кладёт в `.env` с правами `0600` и требует на каждом запросе.
-Нет токена и нет явного разрешения работать без него — сервер **не стартует** (fail-closed).
+(`secrets.token_urlsafe(32)`) и требует на каждом запросе. Нет ключа и нет явного разрешения
+работать без него — сервер **не стартует** (fail-closed).
+
+## Ключ хранится ХЭШЕМ, а не значением (директива владельца S21)
+В `.env` лежит `MCP_AUTH_TOKEN_SHA256` — отпечаток; проверка сравнивает `sha256` присланного
+с записанным. Сервер значения не знает и для работы оно ему не нужно. Отсюда: читать файл
+бессмысленно (в нём нет ключа), шифровать нечего (нет и ключа расшифровки, который пришлось бы
+прятать рядом), а перебрать `sha256` от 32 байт энтропии нечем. Плата: значение существует
+ровно один раз — в момент выпуска; потерял → `--rotate-key`, восстановить неоткуда.
 
 ## Границы
 - `.env` лежит в корне репозитория, **вне `workspace/`**: файловые инструменты ограничены
-  `workspace/` (`core/paths.safe_resolve`), поэтому до секрета они не дотягиваются по построению,
+  `workspace/` (`core/paths.safe_resolve`), поэтому до файла они не дотягиваются по построению,
   а не по договорённости с моделью (`15 §3-тер`).
 - Имена заголовков — из allowlist коннектора Claude AI Web (`authorization`, `x-api-key`),
   иначе клиент физически не сможет прислать ключ.
-- Шифрования секрета «своими руками» здесь нет: ключ расшифровки пришлось бы хранить рядом.
-  Защита — права файла (`0600`) и расположение вне рабочей области.
-- Значение печатается только по явному требованию (`server.py --show-key`): ротация называет
-  отпечаток, иначе секрет оседает в логах запуска и историях сессий.
+- `MCP_AUTH_TOKEN` в ОКРУЖЕНИИ по-прежнему принимается (CI, внешний секрет-стор) — хэшируется
+  на лету, на диск не попадает. Старое открытое значение в `.env` мигрирует в хэш при старте.
+- Пост-квантовость тут не при чём: симметричный секрет ломает Гровер, а не Шор, и `sha256`/
+  `AES-256` остаются стойкими. Шор-уязвим Ed25519 из `core/integrity` (S9) — там и решать.
 
-⚠️ **Временное решение цикла разработки (директива владельца S21, F74).** Плоский секрет в файле,
-который сервер сам себе перевыпускает, — удобство разработки, а не целевая защита. **Первый кандидат
+⚠️ **Временное решение цикла разработки (директива владельца S21, F74).** Секрет-файл, который
+сервер сам себе перевыпускает, — удобство разработки, а не целевая защита. **Первый кандидат
 на снос после завершения цикла разработки**; замена — OS-keyring / OAuth 2.1 (`15 §S1`, DIM-2).
 """
 
@@ -30,7 +37,8 @@ import stat
 from pathlib import Path
 from typing import Mapping
 
-TOKEN_VAR = "MCP_AUTH_TOKEN"
+TOKEN_VAR = "MCP_AUTH_TOKEN"          # значение: принимается из окружения, на диск НЕ пишется
+DIGEST_VAR = "MCP_AUTH_TOKEN_SHA256"  # то, что реально лежит в .env
 ENV_FILE = ".env"
 # 32 байта энтропии в url-safe виде: длиннее любых практических таблиц перебора.
 TOKEN_BYTES = 32
@@ -62,52 +70,70 @@ def _read_env(env_path: Path) -> dict[str, str]:
     return out
 
 
-def _write_token(env_path: Path, token: str) -> None:
-    """Записать/обновить токен в `.env`, не тронув остальные переменные, и закрыть права."""
+def _write_digest(env_path: Path, digest: str) -> None:
+    """Записать отпечаток ключа, СНЯВ прежнее открытое значение, и закрыть права.
+
+    Плейнтекст-строка удаляется, а не остаётся соседкой: иначе миграция на хэш
+    оставила бы ровно тот секрет, ради которого всё и затевалось.
+    """
     existing = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
-    line = f"{TOKEN_VAR}={token}"
-    if re.search(rf"^{TOKEN_VAR}=.*$", existing, flags=re.MULTILINE):
-        new = re.sub(rf"^{TOKEN_VAR}=.*$", line, existing, flags=re.MULTILINE)
+    existing = re.sub(rf"^{TOKEN_VAR}=.*$\n?", "", existing, flags=re.MULTILINE)
+    line = f"{DIGEST_VAR}={digest}"
+    if re.search(rf"^{DIGEST_VAR}=.*$", existing, flags=re.MULTILINE):
+        new = re.sub(rf"^{DIGEST_VAR}=.*$", line, existing, flags=re.MULTILINE)
     else:
         new = (existing.rstrip("\n") + "\n" if existing.strip() else "") + line + "\n"
     env_path.write_text(new, encoding="utf-8")
     os.chmod(env_path, SECRET_MODE)
 
 
-def ensure_token(env_path: Path, env: Mapping[str, str] | None = None) -> tuple[str, bool]:
-    """Вернуть действующий токен, сгенерировав его при первом старте.
+def token_digest(token: str) -> str:
+    """Хэш ключа — то единственное, что сервер хранит и чем сравнивает."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest() if token else ""
 
-    Порядок: переменная окружения → `.env` → генерация. Повторный старт токен НЕ меняет.
+
+def ensure_digest(env_path: Path, env: Mapping[str, str] | None = None) -> tuple[str, str]:
+    """Вернуть действующий отпечаток ключа, выпустив ключ при первом старте.
+
+    Порядок: переменная окружения (значение, хэшируем на лету) → отпечаток в `.env` →
+    открытый ключ в `.env` (миграция: хэшируем и стираем плейнтекст) → генерация.
 
     Returns:
-        (token, created) — created=True, если ключ выпущен прямо сейчас.
+        (digest, issued) — issued непусто ТОЛЬКО когда ключ выпущен прямо сейчас;
+        это единственный момент, когда значение вообще существует в открытом виде.
     """
     env = os.environ if env is None else env
     from_env = (env.get(TOKEN_VAR) or "").strip()
     if from_env:
-        return from_env, False
-    from_file = _read_env(env_path).get(TOKEN_VAR, "").strip()
-    if from_file:
-        return from_file, False
+        return token_digest(from_env), ""
+    file_vars = _read_env(env_path)
+    stored = file_vars.get(DIGEST_VAR, "").strip()
+    if stored:
+        return stored, ""
+    legacy = file_vars.get(TOKEN_VAR, "").strip()
+    if legacy:
+        _write_digest(env_path, token_digest(legacy))   # ключ прежний, открытая копия убрана
+        return token_digest(legacy), ""
     token = secrets.token_urlsafe(TOKEN_BYTES)
-    _write_token(env_path, token)
-    return token, True
+    _write_digest(env_path, token_digest(token))
+    return token_digest(token), token
 
 
 def rotate_token(env_path: Path) -> str:
-    """Перевыпустить токен (старый перестаёт действовать сразу после перезапуска)."""
+    """Перевыпустить ключ. Возвращённое значение существует только здесь — на диск идёт хэш."""
     token = secrets.token_urlsafe(TOKEN_BYTES)
-    _write_token(env_path, token)
+    _write_digest(env_path, token_digest(token))
     return token
 
 
 def token_fingerprint(token: str) -> str:
-    """Короткий отпечаток ключа: показать, что ключ СМЕНИЛСЯ, не называя его значения.
+    """Короткий отпечаток ключа по его значению (совпадает с началом хранимого хэша)."""
+    return token_digest(token)[:12]
 
-    Значение секрета печатается только по явному требованию владельца (`--show-key`):
-    всё остальное попадает в логи и историю сессий, а отпечаток там безвреден.
-    """
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12] if token else ""
+
+def digest_fingerprint(digest: str) -> str:
+    """Отпечаток по хранимому хэшу — сервер знает только его, значения у него нет."""
+    return (digest or "")[:12]
 
 
 def token_file_mode(env_path: Path) -> int:
@@ -115,13 +141,14 @@ def token_file_mode(env_path: Path) -> int:
     return stat.S_IMODE(env_path.stat().st_mode)
 
 
-def check_auth(headers: Mapping[str, str], token: str) -> str:
-    """Проверка входящего запроса. Возвращает код отказа или "" если доступ разрешён.
+def check_auth(headers: Mapping[str, str], digest: str) -> str:
+    """Проверка входящего запроса по ХЭШУ ключа. Возвращает код отказа или "" при доступе.
 
-    Принимаются оба заголовка из allowlist коннектора Claude AI Web:
-    `Authorization: Bearer <token>` и `X-Api-Key: <token>`. Сравнение — постоянного времени.
+    Сервер не хранит значение ключа: сравнивается `sha256` присланного с записанным
+    отпечатком, постоянным временем. Принимаются оба заголовка из allowlist коннектора
+    Claude AI Web: `Authorization: Bearer <ключ>` и `X-Api-Key: <ключ>`.
     """
-    if not token:
+    if not digest:
         # Пустой ожидаемый токен не делает сервер открытым: это ошибка конфигурации.
         return "AUTH_REQUIRED"
     lower = {k.lower(): v for k, v in headers.items()}
@@ -133,7 +160,7 @@ def check_auth(headers: Mapping[str, str], token: str) -> str:
         presented = lower["x-api-key"]
     if not presented:
         return "AUTH_REQUIRED"
-    # compare_digest на str падает TypeError, если есть не-ASCII: чужой токен с кириллицей
-    # уронил бы обработчик в 500 вместо честного 401. Сравниваем байты.
-    ok = secrets.compare_digest(presented.encode("utf-8"), token.encode("utf-8"))
+    # Сравниваем хэши: значения ключа у сервера нет вовсе. Байты, а не str — compare_digest
+    # на str падает TypeError при не-ASCII (чужой ключ с кириллицей ронял бы обработчик в 500).
+    ok = secrets.compare_digest(token_digest(presented).encode("ascii"), digest.encode("ascii"))
     return "" if ok else "AUTH_FAILED"
