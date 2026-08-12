@@ -42,6 +42,8 @@ dependencies = [
     # Утилиты
     "pyyaml>=6.0",
     "jsonschema>=4.0",
+    # Подпись артефактов и ключ инстанса (core/integrity, S9): без неё подпись молча отключается.
+    "cryptography>=42.0",
     # NB: cloudflared — бинарь, НЕ pip-пакет (ставится install.sh, D11).
 ]
 

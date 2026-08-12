@@ -26,6 +26,7 @@ import json
 import os
 import stat
 from pathlib import Path
+from typing import Any
 
 try:  # Подпись — опциональная зависимость: без неё честно объявляем себя недоступной.
     from cryptography.hazmat.primitives import serialization
@@ -75,7 +76,8 @@ class InstanceIdentity:
     def __init__(self, key_dir: Path, workspace: Path):
         self.key_path = Path(key_dir) / KEY_FILE
         self.workspace = Path(workspace)
-        self._private = None
+        # Any: тип ключа существует только когда cryptography установлена (SIGNING_AVAILABLE).
+        self._private: Any = None
 
     # ─── ключи ───
 

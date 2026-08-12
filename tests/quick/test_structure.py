@@ -597,6 +597,55 @@ ok("A" * 500 not in _written and "…(+" in _written, "длинное содер
 ok(_written.count("\n- **note:**") == 1 and "с переводом" in _written,
    "переводы строк внутри значения не ломают формат журнала")
 
+print("== 32. F68: содержимое важнее имени, обход переименованием закрыт ==")
+# M44: сигнатура исполняемого бьёт независимо от расширения
+for _name, _body, _what in (
+    (f"{V2}/note.md", "#!/bin/sh\nrm -rf /", "shebang под .md"),
+    (f"{V2}/dump.json", "\x7fELF\x02\x01\x01", "ELF под .json"),
+    (f"{V2}/page.txt", "<!DOCTYPE html>\n<html></html>", "HTML под .txt"),
+    (f"{V2}/rows.csv", "@echo off\ndel /f /q C:\\", "batch под .csv"),
+    (f"{V2}/hook.md", "<?php system($_GET[0]); ?>", "PHP под .md"),
+):
+    _r = call("fs_create_file", path=_name, content=_body)
+    ok(_r.status == "error" and _r.error.code == "FILE_TYPE_FORBIDDEN", f"{_what} отклонён")
+    ok(not (ws18 / _name).exists(), f"{_what}: на диске ничего не появилось")
+ok(call("fs_write_file", path=f"{V2}/notes.md",
+        content="#!/usr/bin/env python").error.code == "FILE_TYPE_FORBIDDEN",
+   "перезапись проверяет содержимое так же, как создание")
+ok(call("fs_create_file", path=f"{V2}/honest.md",
+        content="# Заметка\nСценарий: приветствие, разбор, финал").status == "success",
+   "честная заметка проходит (проверка не бьёт по легиту)")
+# description от ИИ попадает В файл, значит каркас скрипта — тоже пишущий путь
+_ps = call("fs_create_python_script", path=f"{V2}/gen.py", description="<?php system($_GET[0]); ?>")
+ok(_ps.status == "error" and _ps.error.code == "FILE_TYPE_FORBIDDEN",
+   "каркас скрипта идёт через ту же дверь (описание — от ИИ)")
+ok(not (ws18 / V2 / "gen.py").exists(), "отклонённый скрипт на диске не появился")
+ok(call("fs_create_python_script", path=f"{V2}/build.py",
+        description="сборка сцен").status == "success", "обычный скрипт создаётся")
+_frag = call("fs_create_project_structure",
+             fragments=[{"name": f"{V2}/frag.md", "type": "file", "content": "#!/bin/sh\necho x"}])
+ok(_frag.data["created"] == [] and
+   _frag.data["skipped"][0]["reason"] == "FILE_TYPE_FORBIDDEN", "фрагмент структуры тоже проверяется")
+_sigs = _fw_cfg.get("forbidden_content") or []
+ok(any(s.get("starts_with") == "#!" for s in _sigs) and any(s.get("starts_with_hex") for s in _sigs),
+   "сигнатуры объявлены в firewall.yaml, а не в коде")
+
+# M45: имя меняется задним числом — allowlist обязан проверять цель
+call("fs_create_file", path=f"{V2}/data.txt", content="просто данные канала")
+_rn = call("fs_rename", path=f"{V2}/data.txt", new_name="data.sh")
+ok(_rn.status == "error" and _rn.error.code == "FILE_TYPE_FORBIDDEN",
+   "переименование .txt → .sh отклонено (обход allowlist)")
+ok((ws18 / V2 / "data.txt").exists() and not (ws18 / V2 / "data.sh").exists(),
+   "на диске переименования не случилось")
+_mv = call("fs_move", source=f"{V2}/data.txt", destination=f"{V2}/data.exe")
+ok(_mv.status == "error" and _mv.error.code == "FILE_TYPE_FORBIDDEN", "перенос в .exe отклонён")
+ok(not (ws18 / V2 / "data.exe").exists(), "на диске переноса не случилось")
+ok(call("fs_rename", path=f"{V2}/data.txt", new_name="data.md").status == "success",
+   "легитимное переименование .txt → .md проходит")
+(ws18 / V2 / "folder").mkdir(parents=True, exist_ok=True)
+ok(call("fs_rename", path=f"{V2}/folder", new_name="folder2").status == "success",
+   "каталог переименовывается: правило про тип файла, а не про папки")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

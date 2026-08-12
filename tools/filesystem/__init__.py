@@ -333,6 +333,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         desc = description or target.stem
         # F45: каркас захардкожен здесь — должен переехать в config/templates/ (отдельный воркстрим).
         skeleton = f'"""\n{desc}\n"""\n\nimport sys\nfrom pathlib import Path\n\n\ndef main():\n    """Main entry point."""\n    print(f"Running {{__file__}}")\n    # TODO: implement\n    pass\n\n\nif __name__ == "__main__":\n    main()\n'
+        # description приходит от ИИ и попадает В файл — путь пишущий, значит через ту же дверь.
+        ok_type, denied = ctx.safe(lambda: _check_write(path, skeleton))
+        if not ok_type:
+            return denied
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(skeleton, encoding="utf-8")
         return _created_result(path, len(skeleton), assign_id, "FileCreated")
@@ -360,8 +364,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                     created.append({"name": name, "type": "directory"})
                 else:
                     try:
-                        ctx.write_policy.check(name)
-                        ctx.write_policy.check_content(name, frag.get("content", ""))
+                        _check_write(name, frag.get("content", ""))
                     except Exception as e:
                         skipped.append({"reason": getattr(e, "code", "FILE_TYPE_FORBIDDEN"), "name": name})
                         continue
