@@ -1,6 +1,13 @@
 # Шаблон уровня ВИДЕО (наше). ИНСТРУКЦИЯ_шаблоны.md §1/§3. Лист дерева — детей-сущностей нет.
 # Когда ИИ называет видео в родителе, ВСЕ эти фрагменты («дети видео») создаются автоматически.
 video:
+  id:
+    prefix: VID
+    strategy: hex
+    ancestors:
+      - { type: niche, required: true }
+      - { type: network, required: false }
+      - { type: channel, required: true }
   folders:
     - { name: "assets/svg", required: true }
     - { name: "assets/scenes", required: true }

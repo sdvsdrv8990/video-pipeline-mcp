@@ -29,21 +29,8 @@ from pathlib import Path
 
 import yaml
 
+from core.ids.taxonomy import Taxonomy
 from core.paths import safe_resolve
-
-
-# Префикс ID по типу узла (сервер присваивает, D9/D28).
-TYPE_PREFIX = {
-    "niche": "NICHE",
-    "network": "NET",
-    "channel": "CH",
-    "video": "VID",
-    "competitor_channel": "COMP",
-    "competitor_video": "CVID",
-}
-
-# Корневой контейнер для типов без родителя-шаблона (ниша живёт в niches/).
-ROOT_CONTAINER = {"niche": "niches/"}
 
 
 class TemplateError(Exception):
@@ -70,6 +57,7 @@ class TemplateEngine:
         self.ws = Path(workspace_path)
         self.ids = id_generator
         self.tpl_dir = Path(templates_dir)
+        self.taxonomy = Taxonomy(templates_dir)   # префиксы и контейнеры — из шаблонов, не из кода
         self._cache: dict[str, dict] = {}
 
     def _load(self, node_type: str) -> dict:
@@ -120,13 +108,14 @@ class TemplateEngine:
                 "VALIDATION_ERROR", f"Некорректное имя узла: {name!r}",
                 "Имя — один сегмент: без '/', без краевых пробелов.")
 
-        base = parent_path if parent_path else ROOT_CONTAINER.get(node_type, "")
+        root = self.taxonomy.root_container(node_type)
+        base = parent_path if parent_path else (f"{root}/" if root else "")
         node_rel = f"{base}{name}".strip("/")
         # Жёсткая проверка пути узла (нарушение → ValueError → PATH_ESCAPE у обёртки).
         node_dir = safe_resolve(node_rel, self.ws)
         node_dir.mkdir(parents=True, exist_ok=True)
 
-        node_id = self.ids.generate_simple(TYPE_PREFIX.get(node_type, node_type.upper()))
+        node_id = self.ids.generate_simple(self.taxonomy.prefix(node_type))
 
         created: list[dict] = []
         skipped: list[dict] = []

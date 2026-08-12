@@ -1,6 +1,14 @@
 # Шаблон ВИДЕО КОНКУРЕНТА. ИНСТРУКЦИЯ_шаблоны.md §4. Лист дерева.
 # Создаётся автоматически целиком, когда ИИ называет видео конкурента в родителе.
 competitor_video:
+  id:
+    prefix: CVID
+    strategy: hex
+    ancestors:
+      - { type: niche, required: true }
+      - { type: network, required: false }
+      - { type: channel, required: true, role: owner_channel }
+      - { type: competitor_channel, required: true }
   folders: []
   files:
     - { name: "competitor_video_data.xlsx", kind: table, table_template: competitor_video_data, required: true }

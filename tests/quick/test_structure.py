@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from core.engine import TemplateEngine, TemplateError
-from core.ids import IDGenerator, LinkRegistry, LinkError
+from core.ids import ChainResolver, IDGenerator, LinkRegistry, LinkError, Taxonomy
 
 TPL_DIR = ROOT / "config" / "templates" / "workspace"
 
@@ -154,6 +154,83 @@ print("== 12. Ф2 персист: новый инстанс видит данн�
 reg3 = LinkRegistry(ws)  # тот же workspace, что в §8/§9
 ok(reg3.get("COMP_1") is not None and "CH_1" in reg3.get("COMP_1")["parent_ids"],
    "перезагруженный реестр сохранил связь")
+
+print("== 13. Таксономия: префиксы и иерархия объявлены в шаблонах (F62) ==")
+tx = Taxonomy(TPL_DIR)
+ok(set(tx.node_types) == {"niche", "network", "channel", "video",
+                          "competitor_channel", "competitor_video"}, "6 типов узлов из шаблонов")
+ok(tx.prefix("video") == "VID" and tx.prefix("competitor_video") == "CVID", "префиксы из блока id:")
+ok([a["type"] for a in tx.ancestors("video")] == ["niche", "network", "channel"],
+   "предки video объявлены сверху вниз")
+ok(tx.ancestors("video")[1]["type"] == "network" and not tx.ancestors("video")[1]["required"],
+   "сетка объявлена НЕобязательной (уровень пропускаем)")
+ok([a["role"] for a in tx.ancestors("competitor_video") if a["role"]] == ["owner_channel"],
+   "наш канал помечен ролью owner_channel у видео конкурента")
+ok(tx.child_type_for("channel", "videos") == "video", "тип ребёнка выводится из children[].container")
+ok(tx.containers >= {"niches", "networks", "channels", "videos", "competitors"},
+   "контейнеры собраны из объявлений, не из кода")
+ok(tx.root_container("niche") == "niches" and tx.root_container("video") == "",
+   "корневой контейнер объявлен в шаблоне ниши")
+
+print("== 14. Резолвер: цепочка из каталога назначения (F63, сценарий владельца) ==")
+eng13, ws13 = new_engine()
+reg13 = LinkRegistry(ws13)
+res13 = eng13.create_node("niche", "gaming", children={"network": ["net1"], "channel": ["chA"]})
+
+
+def _reg_tree(node):
+    reg13.register({"id": node["node_id"], "type": node["type"], "name": node["name"],
+                    "path": node["path"], "parent_ids": node["parent_ids"]})
+    for sub in node["children"]:
+        _reg_tree(sub)
+
+
+_reg_tree(res13)
+rv = ChainResolver(ws13, reg13, tx)
+ch_id = res13["children"][0]["children"][0]["node_id"]
+out13 = rv.resolve("niches/gaming/networks/net1/channels/chA/videos/")
+ok(out13["node_type"] == "video", "тип нового узла выведен из каталога (videos/ → video)")
+ok(len(out13["chain"]) == 3 and out13["owner_id"] == ch_id,
+   "цепочка = 3 готовых предка, владелец = существующий канал")
+ok(out13["chain_id"].split("/") == [e["id"] for e in out13["chain"]],
+   "chain_id — цепочка ID сверху вниз")
+ok(out13["prefix"] == "VID" and out13["missing_required"] == [], "префикс из таксономии, обязательных пропусков нет")
+ok(all(e["id"] in [n["node_id"] for n in [res13, res13["children"][0], res13["children"][0]["children"][0]]]
+       for e in out13["chain"]), "предки взяты ГОТОВЫМИ (новых ID не появилось)")
+
+print("== 15. Резолвер: пропуск уровня и незарегистрированные предки (S18-h) ==")
+(ws13 / "niches/gaming/channels/chSolo/videos").mkdir(parents=True)
+reg13.register({"id": "CH_solo", "type": "channel", "name": "chSolo",
+                "path": "niches/gaming/channels/chSolo", "parent_ids": []})
+out15 = rv.resolve("niches/gaming/channels/chSolo/videos/")
+ok(out15["skipped"] == ["network"], "нет сетки → уровень в skipped, а не заглушка")
+ok("NET_" not in out15["chain_id"] and out15["owner_id"] == "CH_solo", "сегмента сетки в цепочке нет")
+(ws13 / "niches/gaming/networks/ghost/channels/chX/videos").mkdir(parents=True)
+out15b = rv.resolve("niches/gaming/networks/ghost/channels/chX/videos/")
+ok([u["path"] for u in out15b["unresolved"]] ==
+   ["niches/gaming/networks/ghost", "niches/gaming/networks/ghost/channels/chX"],
+   "каталоги на диске без записи → unresolved (сервер не выдумывает ID)")
+ok(all(u["exists"] for u in out15b["unresolved"]), "unresolved помечает, что каталог реально на диске")
+
+print("== 16. Инвариант пути: второй ID на занятый каталог → DUPLICATE_PATH (S18-h) ==")
+try:
+    reg13.register({"id": "CH_dup", "type": "channel", "name": "chSolo",
+                    "path": "niches/gaming/channels/chSolo", "parent_ids": []})
+    ok(False, "второй ID на занятый путь должен был упасть")
+except LinkError as e:
+    ok(e.code == "DUPLICATE_PATH", "раздвоение личности каталога → DUPLICATE_PATH")
+ok(reg13.find_by_path("niches/gaming/channels/chSolo")["id"] == "CH_solo",
+   "find_by_path: обратное отображение путь → сущность (F64)")
+ok(rv.chain_for_entity(ch_id)["qualified_id"].endswith(ch_id) and
+   len(rv.chain_for_entity(ch_id)["chain"]) == 2,
+   "цепочка существующей сущности вычисляема (2 предка), собственный сегмент на месте")
+
+print("== 17. check_integrity видит рассинхрон реестра с диском (F65) ==")
+import shutil as _shutil
+_shutil.move(str(ws13 / "niches/gaming/channels/chSolo"), str(ws13 / "niches/gaming/channels/chMoved"))
+integ = reg13.check_integrity()
+ok(any(i["type"] == "missing_path" and i["id"] == "CH_solo" for i in integ["issues"]),
+   "перенос мимо реестра → missing_path (раньше 0 issues)")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

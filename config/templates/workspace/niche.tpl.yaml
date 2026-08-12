@@ -2,6 +2,12 @@
 # Композиция по ссылке: ниша знает только ИМЯ типа ребёнка (network), не его устройство.
 # `required` — источник истины внутри самого фрагмента. ID присваивает сервер (в facts).
 niche:
+  # Корневой контейнер: ниша живёт прямо в workspace/niches/ (у неё нет родителя-шаблона).
+  root_container: "niches/"
+  id:
+    prefix: NICHE
+    strategy: hex
+    ancestors: []
   folders:
     - { name: "networks", required: true }
   files:

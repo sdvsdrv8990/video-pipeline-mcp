@@ -2,6 +2,12 @@
 # Ребёнок — video (ссылка). При создании канала видео НЕ разворачиваются (контроль глубины):
 # создаётся только контейнер videos/. Видео материализуется, когда ИИ назвал его имя.
 channel:
+  id:
+    prefix: CH
+    strategy: hex
+    ancestors:
+      - { type: niche, required: true }
+      - { type: network, required: false }
   folders:
     - { name: "scene_layouts", required: true }
     - { name: "videos", required: true }

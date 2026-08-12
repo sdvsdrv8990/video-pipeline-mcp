@@ -3,6 +3,11 @@
 # Конкуренты группируются по нашему каналу: реальный путь competitors/{наш_канал}/{конкурент}/ —
 # сегмент {наш_канал} движок подставляет из parent_ids при создании/связывании (§4).
 network:
+  id:
+    prefix: NET
+    strategy: hex
+    ancestors:
+      - { type: niche, required: true }
   folders:
     - { name: "channels", required: true }
     - { name: "competitors", required: true }

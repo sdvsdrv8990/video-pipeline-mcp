@@ -262,6 +262,28 @@ DUPLICATE_ID:
     suggested_tool: "structure_check_integrity"
     reason: "Проверь реестр на дубликаты или сгенерируй новый ID."
 
+DUPLICATE_PATH:
+  class: ai_recoverable
+  message_template: "Путь '{path}' уже принадлежит сущности {id}"
+  recovery:
+    suggested_tool: "structure_resolve"
+    suggested_params: { path: "{path}" }
+    reason: "Структура здесь уже создана — переиспользуй существующий ID, а не заводи второй. structure_resolve покажет, кто владеет каталогом."
+
+CHAIN_UNRESOLVED:
+  class: ai_recoverable
+  message_template: "Каталоги-предки не зарегистрированы: {paths}"
+  recovery:
+    suggested_tool: "structure_resolve"
+    suggested_params: { path: "{path}" }
+    reason: "Структура на диске опережает реестр. Посмотри цепочку через structure_resolve и усынови предков (adopt=true) либо выбери другой каталог — сервер не выдумывает ID за существующие каталоги."
+
+TEMPLATE_INVALID:
+  class: human_required
+  message_template: "Шаблон объявлен неверно: {reason}"
+  recovery:
+    reason: "Правится в config/templates/workspace/*.tpl.yaml (блок id: с prefix и ancestors) — это объявление, а не данные клиента."
+
 # ═══ Fallback ═══
 
 DEFAULT:

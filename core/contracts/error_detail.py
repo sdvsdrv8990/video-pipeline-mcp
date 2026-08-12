@@ -51,6 +51,8 @@ KNOWN_ERROR_CODES = {
     "DUPLICATE_ID",
     # Таблицы: материализация книг по декларации (A1′, фаза ТАБЛИЦЫ)
     "SCHEMA_INVALID",
+    # Иерархия ID: цепочка по каталогу назначения (S18-g/S18-h)
+    "DUPLICATE_PATH", "CHAIN_UNRESOLVED", "TEMPLATE_INVALID",
 }
 
 

@@ -3,6 +3,13 @@
 # Файлы с префиксом competitor_, парные competitor_channel_read/write.json.
 # Видео конкурента НЕ разворачиваются при создании канала (контроль глубины) — только контейнер videos/.
 competitor_channel:
+  id:
+    prefix: COMP
+    strategy: hex
+    ancestors:
+      - { type: niche, required: true }
+      - { type: network, required: false }
+      - { type: channel, required: true, role: owner_channel }
   folders:
     - { name: "videos", required: true }
   files:

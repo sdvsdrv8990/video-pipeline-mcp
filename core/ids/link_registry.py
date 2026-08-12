@@ -65,10 +65,31 @@ class LinkRegistry:
                 pass
         return {"entities": {}}
 
+    @staticmethod
+    def _norm(path: str) -> str:
+        """Нормализация пути записи: без ведущего './', без краевых '/'."""
+        p = (path or "").replace("\\", "/").strip()
+        while p.startswith("./"):
+            p = p[2:]
+        return p.strip("/")
+
+    def find_by_path(self, path: str) -> dict | None:
+        """Кто зарегистрирован по этому пути (обратное отображение путь → сущность, F64)."""
+        want = self._norm(path)
+        if not want:
+            return None
+        for e in self._load()["entities"].values():
+            if self._norm(e.get("path", "")) == want:
+                return e
+        return None
+
     def register(self, entity: dict, check_unique: bool = False) -> dict:
         """Upsert сущности по id. entity: {id,type,name,path,parent_ids}.
         parent_ids сливаются (не теряем ранее известных родителей).
-        check_unique=True → проверяет что ID не занят другой сущностью (для файлов)."""
+        check_unique=True → проверяет что ID не занят другой сущностью (для файлов).
+
+        Инвариант пути: один путь = одна сущность. Попытка завести ВТОРОЙ ID на уже
+        занятый путь — раздвоение личности каталога (S18-h) → DUPLICATE_PATH."""
         with self._lock:
             data = self._load()
             eid = entity["id"]
@@ -78,13 +99,23 @@ class LinkRegistry:
                 raise LinkError(
                     "DUPLICATE_ID", f"ID '{eid}' уже занят сущностью типа '{prev.get('type')}'",
                     "Сгенерируй новый ID или проверь реестр.", "structure_status")
+            path_norm = self._norm(entity.get("path", ""))
+            if path_norm:
+                for other_id, other in data["entities"].items():
+                    if other_id != eid and self._norm(other.get("path", "")) == path_norm:
+                        raise LinkError(
+                            "DUPLICATE_PATH",
+                            f"Путь '{path_norm}' уже принадлежит сущности {other_id} ({other.get('type')}).",
+                            "Переиспользуй существующий ID вместо генерации нового "
+                            "(структура уже создана) или укажи другой каталог.",
+                            "structure_resolve")
             merged = list(dict.fromkeys(
                 (prev.get("parent_ids") or []) + list(entity.get("parent_ids") or [])))
             rec = {
                 "id": eid,
                 "type": entity["type"],
                 "name": entity["name"],
-                "path": entity.get("path", ""),
+                "path": path_norm,
                 "parent_ids": merged,
                 "kind": entity.get("kind", "node"),
             }
@@ -156,13 +187,18 @@ class LinkRegistry:
                 if pid not in entities:
                     issues.append({"type": "broken_reference", "id": eid, "missing_parent": pid})
             # Проверка дубликатов путей
-            path = e.get("path", "")
+            path = self._norm(e.get("path", ""))
             if path:
                 if path in paths_seen:
                     issues.append({"type": "duplicate_path", "id": eid, "path": path,
                                    "also": paths_seen[path]})
                 else:
                     paths_seen[path] = eid
+                # Рассинхрон реестра с диском: запись есть, каталога/файла нет (F65).
+                # Перенос мимо реестра больше не проходит молча.
+                if not (self.ws / path).exists():
+                    issues.append({"type": "missing_path", "id": eid, "path": path,
+                                   "entity_type": e.get("type", "")})
             # Подсчёт по типам
             t = e.get("type", "unknown")
             ids_by_type[t] = ids_by_type.get(t, 0) + 1
