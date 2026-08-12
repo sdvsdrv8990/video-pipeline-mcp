@@ -68,9 +68,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
 
         adopted: list[dict] = []
         if blocking:
-            ok, adopted = ctx.safe(lambda: _adopt(blocking))
+            ok, adopt_res = ctx.safe(lambda: _adopt(blocking))
             if not ok:
-                return adopted
+                return adopt_res
+            adopted = adopt_res
             ok, chain = ctx.safe(lambda: ctx.chain_resolver.resolve(parent_path, node_type=type))
             if not ok:
                 return chain
