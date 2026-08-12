@@ -150,6 +150,10 @@
 | M29 | `structure_find` не фильтрует по тексту | `core/ids/link_registry.py` | `test_structure` | 🔴 ловит ✅ (117/122) |
 | M30 | гигиена ярлыка снята (длина/переводы строк) | `core/ids/link_registry.py` | `test_structure` | 🔴 ловит ✅ |
 
+| M31 | конверт провенанса снят (ярлык голой строкой) | `tools/structure/__init__.py` | `test_structure` | 🔴 ловит ✅ |
+| M32 | пометка `instruction_like` отключена | `core/contracts/untrusted.py` | `test_structure` | 🔴 ловит ✅ (128/129) |
+| M33 | детектор берёт свою копию паттернов вместо `firewall.yaml` | `tools/_context.py` | `test_structure` | 🔴 ловит ✅ (127/129) |
+
 **Итог: 11/14 мутаций пойманы.** Три пробоя (M4-search, M7-structure, M9-конфиг) + мёртвый выключатель (M13)
 заведены как **F55** и **F54**. Зоны в §A/§B выше описывают ЖЕЛАЕМОЕ покрытие — расширять хозяев по F55:
 `test_search` (+фильтры/сортировка), `test_structure` (+containment через `safe_resolve`, не только имя),

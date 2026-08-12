@@ -10,6 +10,7 @@ from .fact import Fact
 from .error_detail import ErrorDetail, Recovery
 from .tool_result import ToolResult
 from .task_status import TaskStatus
+from .untrusted import UntrustedText, as_untrusted
 
 __all__ = [
     # Базовые (используются другими)
@@ -20,4 +21,7 @@ __all__ = [
     # Основные (используют базовые)
     "ToolResult",
     "TaskStatus",
+    # Провенанс чужого текста в выводе (S3)
+    "UntrustedText",
+    "as_untrusted",
 ]

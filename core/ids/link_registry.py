@@ -260,14 +260,16 @@ class LinkRegistry:
             return {"child": rec, "parent_id": parent["id"],
                     "parent_type": parent["type"], "parent_name": parent["name"]}
 
-    # Пометки приходят из чата и из файлов памяти — то есть из НЕдоверенного текста,
-    # который потом возвращается ИИ. Режем длину и управляющие символы (outbound-гигиена).
-    LABEL_MAX = 200
+    # РЕСУРСНЫЕ границы (не защита): реестр — единый JSON, и чужой текст не должен его раздувать.
+    # Защита от инъекций делается конвертом провенанса на выводе (core/contracts/untrusted.py, S3):
+    # обрезать «ignore previous instructions» до 200 символов бессмысленно — оно короче.
+    LABEL_MAX = 500
     TAG_MAX = 40
     TAGS_MAX = 10
 
     @classmethod
     def _clean(cls, text: str, limit: int) -> str:
+        """Ресурсная нормализация: схлопнуть пробелы и ограничить длину. Смысл текста не трогаем."""
         flat = " ".join(str(text or "").split())
         return flat[:limit]
 

@@ -19,7 +19,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+import yaml
+
 from core.contracts import ErrorDetail, Recovery, ToolResult
+from core.firewall.rules.injection_detector import InjectionDetector
 from core.engine import Engine, TableMaterializerError, TemplateEngine, TemplateError
 from core.excel import ExcelEngine, ExcelError
 from core.ids import ChainResolver, IDGenerator, LinkError, LinkRegistry, Taxonomy, TaxonomyError
@@ -51,6 +54,17 @@ class ToolContext:
     def resolve(self, path: str) -> Path:
         """D1+D29: путь с containment внутри workspace/ (единая точка — core/paths, G17)."""
         return safe_resolve(path, self.workspace_path)
+
+    @property
+    def injection_flagger(self) -> InjectionDetector:
+        """Детектор для ПОМЕТКИ чужого текста в выводе (S3). Паттерны — боевые, из firewall.yaml:
+        второй копии в коде быть не должно. Это подсказка клиенту, а не барьер — барьер — конверт."""
+        patterns = None
+        cfg = self.config_path / "firewall.yaml"
+        if cfg.exists():
+            data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+            patterns = (data.get("injection_detection") or {}).get("patterns")
+        return InjectionDetector(patterns)
 
     @property
     def taxonomy(self) -> Taxonomy:
