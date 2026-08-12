@@ -24,6 +24,8 @@ core/engine/template_engine.py — Движок шаблонов структу�
 
 ## Границы
 - Containment: все пути через `core.paths.safe_resolve` (ValueError → PATH_ESCAPE у обёртки, D29/G17).
+- Запись — через тот же allowlist, что и `fs_*` (`core.write_policy`, S2/F72): шаблон объявляет,
+  что писать, но не решает, что МОЖНО. Запрещённый фрагмент пропущен с причиной, соседи создаются.
 - Движок generic: поведение задаётся шаблоном, без `if type == ...`.
 - Связывание/ORPHAN — не здесь (Ф2, core/ids реестр связей). Здесь только materialize + node_id.
 """
@@ -34,6 +36,7 @@ import yaml
 
 from core.ids.taxonomy import Taxonomy
 from core.paths import safe_resolve
+from core.write_policy import WritePolicy, WritePolicyError
 
 
 class TemplateError(Exception):
@@ -62,6 +65,8 @@ class TemplateEngine:
         self.tpl_dir = Path(templates_dir)
         # Корень серверных деклараций — источник копий для `kind: config`.
         self.config_dir = Path(config_dir) if config_dir else self.tpl_dir.parents[1]
+        # S2/F72: шаблон — тоже пишущий путь, значит через ту же дверь, что и fs_*.
+        self.policy = WritePolicy(self.config_dir)
         self.taxonomy = Taxonomy(templates_dir)   # префиксы и контейнеры — из шаблонов, не из кода
         self._cache: dict[str, dict] = {}
 
@@ -82,6 +87,15 @@ class TemplateEngine:
                 "Верхний ключ шаблона должен совпадать с именем типа.")
         self._cache[node_type] = body
         return body
+
+    def _forbidden(self, name: str, content) -> str:
+        """Причина отказа по allowlist записи (пусто = можно): тип файла И его содержимое."""
+        try:
+            self.policy.check(name)
+            self.policy.check_content(name, content)
+        except WritePolicyError as e:
+            return e.message
+        return ""
 
     @staticmethod
     def _valid_name(name: str) -> bool:
@@ -186,20 +200,38 @@ class TemplateEngine:
                 continue
             if fr.get("kind") == "config":
                 # Per-project override: копия серверного дефолта в данные проекта (doc 10 §5.0).
-                src = self.config_dir / str(fr.get("source", fname))
+                rel_src = str(fr.get("source", fname))
+                try:
+                    # F73: источник — только внутри config/, иначе шаблон вычерпает .env наружу.
+                    src = safe_resolve(rel_src, self.config_dir)
+                except ValueError:
+                    skipped.append({"kind": "config", "name": fname, "reason": "source escape",
+                                    "source": rel_src})
+                    continue
                 if not src.is_file():
                     skipped.append({"kind": "config", "name": fname, "reason": "no default",
-                                    "source": str(fr.get("source", fname))})
+                                    "source": rel_src})
+                    continue
+                text = src.read_text(encoding="utf-8")
+                denied = self._forbidden(fname, text)
+                if denied:
+                    skipped.append({"kind": "config", "name": fname, "reason": "forbidden",
+                                    "detail": denied})
                     continue
                 f.parent.mkdir(parents=True, exist_ok=True)
                 if not f.exists():   # уже правленную копию не затираем
-                    f.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+                    f.write_text(text, encoding="utf-8")
                 created.append({"kind": "config", "path": f"{node_rel}/{fname}",
-                                "source": str(fr.get("source", fname))})
+                                "source": rel_src})
+                continue
+            content = fr.get("content", "")
+            denied = self._forbidden(fname, content)
+            if denied:
+                skipped.append({"kind": "file", "name": fname, "reason": "forbidden", "detail": denied})
                 continue
             f.parent.mkdir(parents=True, exist_ok=True)
             if not f.exists():
-                f.write_text(fr.get("content", ""), encoding="utf-8")
+                f.write_text(content, encoding="utf-8")
             created.append({"kind": "file", "path": f"{node_rel}/{fname}"})
 
         result = {

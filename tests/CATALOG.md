@@ -98,6 +98,7 @@
 | **F30** | `table_materializer` не построен (loader формул) | static | — (постройка A-tables/Ф3) | ✅ подтверждён (ls ∅) |
 | **F3** | провайдеры = честные стабы (G16) | behavioral | `render_draft_final` (стаб → NotImplementedError-код, не фейк-success) | ✅ покрыт (стаб-контракт) |
 | **F68** | обход allowlist переименованием + исполняемое содержимое под «безопасным» расширением | behavioral | `test_structure` §32 (сигнатуры под чужим расширением, `.txt`→`.sh`/`.exe`, каркас скрипта, фрагменты) | 🟢 **регрессия ЗЕЛЁНАЯ** (мутации M44/M45/M46 краснеют) |
+| **F72/F73** | шаблон проекта пишет мимо allowlist; `kind: config` тянет файл из-за пределов `config/` | behavioral | `test_structure` §34 (враждебный `evil.tpl.yaml`: `.sh`, shebang под `.md`, `source: ../.env`) | 🟢 **регрессия ЗЕЛЁНАЯ** (мутации M50/M51/M52 краснеют) |
 | **F69** | `cryptography` не объявлена → подпись S9 молча выключена в чистом окружении | static | — (объявлена в `pyproject.toml`; `test_structure` §28 краснел в `.venv` без неё) | ✅ подтверждён (`ModuleNotFoundError` + grep по манифестам) |
 
 **Статус C1 (S15) → фиксы (S16) — ВСЕ behavioral-находки ЗАКРЫТЫ:** A6 (F43·F5·F40) + A5-TypeError (F42) + A-tables (F29) переведены strict-xfail→регрессия. **`test_audit_fixes` 49/49, 0 OPEN** (S18: +5 проверок F54 «выключатель выключает»). F11 🟢 (D23). **static-находки** F38/F44 закрыты (I4); остаток F28/F37/F39/F41/F45/F10/F30 — эвидентны из чтения, закрываются A2/A-tables(F30)/anti-hardcode. Дальше — C2 симуляции+консоль (накоплены фиксы).
@@ -177,7 +178,11 @@
 | M48 | копия затирается серверным дефолтом при каждом проходе (правка проекта теряется) | `core/engine/template_engine.py` | `test_structure` | 🔴 ловит ✅ |
 | M49 | нет дефолта на диске → выдуманный файл вместо честного пропуска | `core/engine/template_engine.py` | `test_structure` | 🔴 ловит ✅ (падением) |
 
-**Итог: 11/14 мутаций пойманы.** Три пробоя (M4-search, M7-structure, M9-конфиг) + мёртвый выключатель (M13)
+| M50 | шаблон пишет `.sh` мимо allowlist (проверка типа снята) | `core/engine/template_engine.py` | `test_structure` §34 | 🔴 ловит ✅ (5 провалов) |
+| M51 | shebang под `.md` из шаблона проходит (проверка содержимого снята) | `core/engine/template_engine.py` | `test_structure` §34 | 🔴 ловит ✅ (в тех же 5) |
+| M52 | `kind: config` без containment — `source: ../.env` вычерпывает секрет сервера | `core/engine/template_engine.py` | `test_structure` §34 | 🔴 ловит ✅ (3 провала) |
+
+**Итог (обновлено S21): 53 мутации, поймано 39+.** первый прогон S18 дал 11/14. Три пробоя (M4-search, M7-structure, M9-конфиг) + мёртвый выключатель (M13)
 заведены как **F55** и **F54**. Зоны в §A/§B выше описывают ЖЕЛАЕМОЕ покрытие — расширять хозяев по F55:
 `test_search` (+фильтры/сортировка), `test_structure` (+containment через `safe_resolve`, не только имя),
 `bot_army` (+проверка боевых лимитов из `config/firewall.yaml`), любой (+auth `MCP_AUTH_TOKEN`).

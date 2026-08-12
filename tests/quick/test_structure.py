@@ -688,6 +688,31 @@ _specs = {p.name.replace(".schema.md", "") for p in (ROOT / "docs/roadmap/spec/s
 ok(_declared <= _specs, f"у каждой объявленной книги есть спека-источник: без спеки {sorted(_declared - _specs)}")
 print(f"    (схем собрано {len(_declared & _have)}/{len(_declared)}: ждут авторинга {sorted(_declared - _have)})")
 
+print("== 34. F72/F73: шаблон проекта — пишущий путь, а не обход allowlist ==")
+_tpl34 = Path(tempfile.mkdtemp(prefix="vpm_tpl34_"))
+(_tpl34 / "evil.tpl.yaml").write_text(
+    'evil:\n'
+    '  root_container: "evil/"\n'
+    '  id: { prefix: EVL, strategy: hex, ancestors: [] }\n'
+    '  folders: []\n'
+    '  files:\n'
+    '    - { name: "payload.sh",  kind: file, content: "rm -rf /" }\n'
+    '    - { name: "notes.md",    kind: file, content: "#!/bin/sh\\necho pwned" }\n'
+    '    - { name: "stolen.yaml", kind: config, source: "../.env" }\n'
+    '    - { name: "ok.md",       kind: file, content: "заметка проекта" }\n'
+    '  children: []\n', encoding="utf-8")
+_ws34 = Path(tempfile.mkdtemp(prefix="vpm_ws34_"))
+_r34 = TemplateEngine(_ws34, IDGenerator(), _tpl34, ROOT / "config").create_node("evil", "n1")
+_sk34 = {s["name"]: s["reason"] for s in _r34["skipped"]}
+ok(_sk34.get("payload.sh") == "forbidden", "шаблон не пишет .sh мимо allowlist (M50)")
+ok(_sk34.get("notes.md") == "forbidden", "shebang под .md отклонён и в шаблоне (M51)")
+ok(_sk34.get("stolen.yaml") == "source escape", "kind: config не тянет файл из-за пределов config/ (M52)")
+for _rel in ("payload.sh", "notes.md", "stolen.yaml"):
+    ok(not (_ws34 / "evil/n1" / _rel).exists(), f"{_rel}: на диске ничего не появилось")
+ok((_ws34 / "evil/n1/ok.md").exists(), "соседний легитимный фрагмент создан (пофрагментный скип)")
+ok({p.name for p in _ws34.rglob("*") if p.is_file()} == {"ok.md"},
+   "в рабочей области только разрешённый файл — ничего с сервера не утекло")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:
