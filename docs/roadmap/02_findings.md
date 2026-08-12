@@ -254,12 +254,14 @@ tables 33 · materializer 30 · 6 симуляций 62) + **24 вне гейт�
 
 ### 6.3 Открытые находки — ПОДТВЕРЖДЕНЫ на диске 2026-08-11 (пруф пересобран)
 
+> ⚠️ **Список датирован 11.08 — актуализация 2026-08-12 (S20):** `F33` (outbound) и `F34` (write-allowlist) с тех пор **ЗАКРЫТЫ** в S19/S20 — см. их строки в главном реестре выше; `F35` держится, но регрессии по-прежнему нет. Остальные строки перепроверены и верны.
+
 | F# | Пруф верификации |
 |---|---|
 | F3 провайдеры-стабы | `grep NotImplementedError core/providers/` = 12 |
 | F10 cuda-хардкод | `stable_ts_adapter.py:20 device: str = "cuda"`; busy-loop `ffmpeg_adapter.py:148/180` |
 | F20/F21 табличный слой | `table_materializer` есть (30/30 тестов), схем **1 из 7** (`network_config.schema.yaml`); `scripts/` пуст |
-| F25 integrity-слепое пятно | `link_registry.check_integrity` работает только по `entities` реестра, ФС не сканирует |
+| F25 integrity-слепое пятно | `link_registry.check_integrity` работает только по `entities` реестра, ФС не сканирует. **Перепроверено 2026-08-12:** цикл идёт по `entities` (`link_registry.py:255`); прогон — 7 незарегистрированных каталогов на диске → `issues_count = 0`. Обратное направление (реестр→диск, `missing_path`) закрыто в S19, прямое (диск→реестр) — нет |
 | F26 cold-start advisory | `grep -rni "cold.start\|advisory" core/ tools/ config/` → ∅ |
 | F27 ручной reconcile | `structure_migrate(entity_id, new_path)` — одна сущность, путь от ИИ |
 | F28 формулы при delete/move | `excel_core.py:249 ws.delete_cols(...)` — без анализа ссылок |
