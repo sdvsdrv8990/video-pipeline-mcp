@@ -318,8 +318,12 @@ mv = call("fs_move", source="niches/gaming/networks/net1/channels/chA/videos/cli
           destination="niches/gaming/networks/net1/channels/chA/videos/clip_v2")
 ok(mv.data["new_chain"] and mv.data["new_owner_id"],
    "адрес цели посчитан ДО переноса (ИИ может сверить корректность)")
-ok([m["id"] for m in mv.data["entities_moved"]] == [vid_id],
+# С появлением схем книг у видео едет и его материализованный video_data.xlsx — переезжает
+# всё поддерево, а не только сам узел.
+ok(vid_id in [m["id"] for m in mv.data["entities_moved"]],
    "запись реестра переехала вместе с диском (было: путь протухал молча)")
+ok(all("/clip_v2" in m["new_path"] for m in mv.data["entities_moved"]),
+   "все переехавшие записи указывают на новый путь")
 ok(_ctx.link_registry.get(vid_id)["path"].endswith("clip_v2") and
    _ctx.link_registry.get(vid_id)["id"] == vid_id,
    "адрес изменился, СОБСТВЕННЫЙ сегмент — нет (ссылки не рвутся, S18-g)")
@@ -327,7 +331,8 @@ ok(call("structure_check_integrity").data["issues_count"] == 0,
    "после переноса рассинхрона нет (раньше check_integrity давал 0 issues при битом реестре)")
 
 dl = call("fs_delete", path="niches/gaming/networks/net1/channels/chA/videos/clip_v2", force=True)
-ok([d["id"] for d in dl.data["entities_dropped"]] == [vid_id], "удаление снимает записи поддерева с реестра")
+ok(vid_id in [d["id"] for d in dl.data["entities_dropped"]],
+   "удаление снимает записи поддерева с реестра (включая книги внутри)")
 ok(_ctx.link_registry.get(vid_id) is None and call("structure_check_integrity").data["issues_count"] == 0,
    "реестр не переживает диск")
 

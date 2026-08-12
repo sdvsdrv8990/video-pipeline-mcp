@@ -1,0 +1,17 @@
+# competitor_video_data.xlsx — черновик из спеки (scripts/spec_to_schema.py). ТРЕБУЕТ ВЫЧИТКИ.
+# Источник: docs/roadmap/spec/schemas/competitor_video_data.schema.md. Формат: spec/TABLE_SCHEMA_FORMAT.md.
+book: competitor_video_data
+level: competitor_video
+source: competitor_video_data.schema.md
+sheets:
+  - name: PERFORMANCE   # | Столбец | Тип | Флаг | Прим. |
+    columns:
+      - { name: views, type: integer, flag: W }
+      - { name: likes, type: integer, flag: W }
+      - { name: comments, type: integer, flag: W }
+      - { name: like_rate, type: float, flag: F, formula: '=likes/views*100' }   # `=likes/views*100`
+      - { name: comment_rate, type: float, flag: F, formula: '=comments/views*100' }   # `=comments/views*100`
+      - { name: engagement_rate, type: float, flag: F, formula: '=(likes+comments)/views*100' }   # `=(likes+comments)/views*100`
+      - { name: estimated_retention, type: float, flag: F, formula: '=MIN(85,20+engagement_rate*8)' }   # `=MIN(85,20+engagement_rate*8)` (оценка, нет реальных данных)
+      - { name: retention_tier, type: enum, flag: F, enum: ['HIGH', 'MED', 'LOW'] }   # HIGH/MED/LOW
+      - { name: performance_score, type: float, flag: F, formula: '=like_rate*0.4+comment_rate*0.3+(est_retention/100)*0.3' }   # `=like_rate*0.4+comment_rate*0.3+(est_retention/100)*0.3`

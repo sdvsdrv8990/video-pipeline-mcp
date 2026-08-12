@@ -1,0 +1,205 @@
+# channel_data.xlsx — черновик из спеки (scripts/spec_to_schema.py). ТРЕБУЕТ ВЫЧИТКИ.
+# Источник: docs/roadmap/spec/schemas/channel_data.schema.md. Формат: spec/TABLE_SCHEMA_FORMAT.md.
+book: channel_data
+level: channel
+source: channel_data.schema.md
+sheets:
+  - name: VIDEOS_INDEX   # сводка всех видео канала
+    columns:
+      - { name: video_id, type: string, flag: id }   # ключ
+      - { name: title, type: string, flag: W }
+      - { name: publish_date, type: date, flag: W }
+      - { name: status, type: enum, flag: W }   # статус видео (см. палитру ниже)
+      - { name: duration_sec, type: integer, flag: W }
+      - { name: views, type: integer, flag: W }   # импорт аналитики
+      - { name: likes, type: integer, flag: W }   # импорт аналитики
+      - { name: retention_pct, type: float, flag: W }   # импорт аналитики
+      - { name: overall_uniqueness, type: float, flag: F }   # свод из `video_data`
+      - { name: tier, type: enum, flag: F, enum: ['HIGH', 'MED', 'LOW'] }   # HIGH/MED/LOW (из uniqueness)
+      - { name: script_score, type: float, flag: F }   # свод из `video_data`
+      - { name: svg_score, type: float, flag: F }   # свод из `video_data`
+      - { name: music_score, type: float, flag: F }   # свод из `video_data`
+      - { name: sound_score, type: float, flag: F }   # свод из `video_data`
+      - { name: transition_score, type: float, flag: F }   # свод из `video_data`
+      - { name: target_audience_category, type: string, flag: W }   # C1/C2/C3
+      - { name: performance_score, type: float, flag: F }   # свод/расчёт
+
+  - name: CHANNEL_STATS   # агрегаты канала
+    columns:
+      - { name: total_videos, type: integer, flag: F }
+      - { name: avg_retention, type: float, flag: F }
+      - { name: avg_uniqueness, type: float, flag: F }
+      - { name: avg_script_score, type: float, flag: F }
+      - { name: avg_svg_score, type: float, flag: F }
+      - { name: videos_high, type: integer, flag: F }   # счётчик по tier
+      - { name: videos_med, type: integer, flag: F }
+      - { name: videos_low, type: integer, flag: F }
+      - { name: last_3_avg_uniqueness, type: float, flag: F }
+      - { name: trend, type: enum, flag: F, enum: ['UP', 'FLAT', 'DOWN'] }   # UP/FLAT/DOWN
+
+  - name: ASSET_USAGE_HISTORY   # реестр МАСТЕР-ассетов канала (+ HP 🆕)
+    columns:
+      - { name: global_asset_id, type: string, flag: id }   # ключ мастера (канонический термин системы)
+      - { name: asset_type, type: string, flag: W }   # svg/audio/transition/…
+      - { name: description, type: string, flag: W }   # краткое описание — Claude понимает ассет не открывая файл
+      - { name: system_status, type: enum, flag: W }   # HP мастера (см. палитру)
+      - { name: used_in_videos, type: string, flag: W }   # список video_id
+      - { name: total_uses, type: integer, flag: F }
+      - { name: last_used_video, type: string, flag: W }
+      - { name: videos_since_last_use, type: integer, flag: F }
+      - { name: variation_count, type: integer, flag: W }   # сколько вариаций мастера всего по каналу (агрегат снизу; 0 = валидно)
+      - { name: effective_freshness, type: float, flag: W }   # свежесть с поправкой на разнообразие: f(total_uses, variation_count), мягкий вес вариаций (коэф. в конфиге); определена 
+      - { name: rotation_status, type: enum, flag: F, formula: '=IF(videos_since_last_use>=4,"OK","ROTATE")' }   # `=IF(videos_since_last_use>=4,"OK","ROTATE")`
+
+  - name: UNIQUENESS_ALERTS   # алерты (только MED/LOW)
+    columns:
+      - { name: video_id, type: string, flag: fk }
+      - { name: tier, type: enum, flag: F, enum: ['MED', 'LOW'] }   # MED/LOW (только проблемные)
+      - { name: weak_dimension, type: string, flag: F }   # какое измерение просело
+      - { name: score, type: float, flag: F }
+      - { name: recommendation, type: string, flag: W }   # действие для исправления (в т.ч. «мало вариаций/ассетов — добери»)
+      - { name: signal_status, type: enum, flag: W }   # жизненный цикл сигнала (см. палитру)
+      - { name: flag_source, type: enum, flag: W }   # `human_decision` / `ai_check` — чья воля за флагом (защита от тихого гашения ИИ)
+      - { name: comment, type: string, flag: W }   # почему помечен (вытекает из решения человека)
+      - { name: outcome_ref, type: string, flag: W }   # ссылка на результат решения (по ID; развёрнуто — в project_memory)
+
+  - name: STYLE_DNA   # правила подачи (сценарий)
+    columns:
+      - { name: rule_id, type: string, flag: id }
+      - { name: category, type: enum, flag: W }   # forbidden_words/pacing/rhetoric/tone
+      - { name: rule_description, type: string, flag: W }
+      - { name: example_from_human, type: string, flag: W }
+      - { name: strictness, type: integer, flag: W }   # 1–5
+      - { name: applied_in_videos_count, type: integer, flag: F }
+      - { name: last_applied_video_id, type: string, flag: W }
+
+  - name: VISUAL_DNA   # визуальные правила
+    columns:
+      - { name: rule_id, type: string, flag: id }
+      - { name: category, type: enum, flag: W }   # color/emotion/lighting/camera/sound
+      - { name: rule_description, type: string, flag: W }
+      - { name: example_from_human, type: string, flag: W }
+      - { name: strictness, type: integer, flag: W }   # 1–5
+      - { name: applied_in_videos_count, type: integer, flag: F }
+      - { name: last_applied_video_id, type: string, flag: W }
+
+  - name: GOLDEN_SCRIPTS   # эталонные сценарии
+    columns:
+      - { name: script_id, type: string, flag: id }
+      - { name: title, type: string, flag: W }
+      - { name: status, type: enum, flag: W }   # APPROVED_HUMAN
+      - { name: key_style_markers, type: string, flag: W }
+      - { name: file_path, type: string, flag: W }   # путь с ID
+      - { name: ai_instruction, type: string, flag: W }
+      - { name: avg_sentence_length, type: float, flag: W }
+      - { name: short_sentence_pct, type: float, flag: W }
+      - { name: rhetorical_questions_freq, type: float, flag: W }
+      - { name: transition_style, type: string, flag: W }
+      - { name: tone_description, type: string, flag: W }
+
+  - name: KNOWLEDGE_BASE   # источники
+    columns:
+      - { name: source_id, type: string, flag: id }
+      - { name: title, type: string, flag: W }
+      - { name: type, type: enum, flag: W }   # book/article/video
+      - { name: key_concepts, type: string, flag: W }
+      - { name: how_to_use_in_script, type: string, flag: W }
+      - { name: file_path, type: string, flag: W }
+      - { name: used_in_videos_count, type: integer, flag: F }
+
+  - name: CRITIQUE_LOG   # критика и обучение
+    columns:
+      - { name: critique_id, type: string, flag: id }
+      - { name: video_id, type: string, flag: fk }
+      - { name: draft_version, type: string, flag: W }
+      - { name: category, type: enum, flag: W }   # robotic_tone/factual_error/pacing_issue/visual_mismatch
+      - { name: specific_feedback, type: string, flag: W }
+      - { name: ai_action_for_next_time, type: string, flag: W }
+      - { name: resolved, type: enum, flag: W, enum: ['YES', 'NO'] }   # YES/NO
+      - { name: resolved_in_video_id, type: string, flag: fk }
+
+  - name: VISUAL_PATTERN_LIBRARY   # | Столбец | Тип | Флаг | Прим. |
+    columns:
+      - { name: pattern_id, type: string, flag: id }
+      - { name: context_tag, type: string, flag: W }   # loss/gain/shock/reveal/…
+      - { name: visual_solution, type: string, flag: W }
+      - { name: character, type: string, flag: W }
+      - { name: emotion, type: string, flag: W }
+      - { name: color_primary, type: string, flag: W }
+      - { name: times_used, type: integer, flag: F }
+      - { name: last_used_video_n, type: integer, flag: W }
+      - { name: freshness_score, type: enum, flag: F, formula: '=IF(times_used>=7,"RETIRE",IF(>=5,"ROTATE",IF(>=3,"HEALTHY","FRESH")))' }   # `=IF(times_used>=7,"RETIRE",IF(>=5,"ROTATE",IF(>=3,"HEALTHY","FRESH")))`
+      - { name: best_competitor_example, type: string, flag: W }
+      - { name: alternative_count, type: integer, flag: W }
+      - { name: status, type: enum, flag: W, enum: ['ACTIVE', 'RETIRED'] }   # ACTIVE/RETIRED
+      - { name: avg_retention_impact, type: enum, flag: F, enum: ['HIGH', 'MED', 'LOW'] }   # HIGH/MED/LOW
+      - { name: audience_category_best_fit, type: enum, flag: W, enum: ['C1', 'C2', 'C3'] }   # C1/C2/C3
+      - { name: psychological_pattern_id, type: string, flag: fk }   # P01–P12
+      - { name: notes, type: string, flag: W }
+
+  - name: SCRIPT_PATTERN_LIBRARY   # | Столбец | Тип | Флаг | Прим. |
+    columns:
+      - { name: pattern_id, type: string, flag: id }
+      - { name: context_tag, type: string, flag: W }
+      - { name: pattern_description, type: string, flag: W }
+      - { name: sentence_avg_length, type: float, flag: W }
+      - { name: short_sentence_pct, type: float, flag: W }
+      - { name: rhetorical_questions_freq, type: float, flag: W }
+      - { name: transition_type, type: string, flag: W }
+      - { name: times_used, type: integer, flag: F }
+      - { name: last_used_video_n, type: integer, flag: W }
+      - { name: freshness_score, type: enum, flag: F }   # формула как в листе 10
+      - { name: best_competitor_example, type: string, flag: W }
+      - { name: alternative_count, type: integer, flag: W }
+      - { name: avg_retention_impact, type: enum, flag: F, enum: ['HIGH', 'MED', 'LOW'] }   # HIGH/MED/LOW
+      - { name: audience_category_best_fit, type: enum, flag: W, enum: ['C1', 'C2', 'C3'] }   # C1/C2/C3
+      - { name: psychological_pattern_id, type: string, flag: fk }   # P01–P12
+      - { name: notes, type: string, flag: W }
+
+  - name: AUDIO_PATTERN_LIBRARY   # | Столбец | Тип | Флаг | Прим. |
+    columns:
+      - { name: pattern_id, type: string, flag: id }
+      - { name: context_tag, type: string, flag: W }
+      - { name: pattern_description, type: string, flag: W }
+      - { name: sound_cue_type, type: string, flag: W }
+      - { name: music_mood, type: string, flag: W }
+      - { name: voice_tone, type: string, flag: W }
+      - { name: pause_duration_sec, type: float, flag: W }
+      - { name: tempo_bpm, type: integer, flag: W }
+      - { name: times_used, type: integer, flag: F }
+      - { name: last_used_video_n, type: integer, flag: W }
+      - { name: freshness_score, type: enum, flag: F }   # формула как в листе 10
+      - { name: best_competitor_example, type: string, flag: W }
+      - { name: alternative_count, type: integer, flag: W }
+      - { name: avg_retention_impact, type: enum, flag: F, enum: ['HIGH', 'MED', 'LOW'] }   # HIGH/MED/LOW
+      - { name: audience_category_best_fit, type: enum, flag: W, enum: ['C1', 'C2', 'C3'] }   # C1/C2/C3
+      - { name: psychological_pattern_id, type: string, flag: fk }   # P01–P12
+      - { name: notes, type: string, flag: W }
+
+  - name: RETENTION_PATTERN_LIBRARY   # комбинации
+    columns:
+      - { name: pattern_id, type: string, flag: id }
+      - { name: context_tag, type: string, flag: W }
+      - { name: combination_description, type: string, flag: W }
+      - { name: visual_pattern_id, type: string, flag: fk }   # → лист 10
+      - { name: script_pattern_id, type: string, flag: fk }   # → лист 11
+      - { name: audio_pattern_id, type: string, flag: fk }   # → лист 12
+      - { name: times_used, type: integer, flag: F }
+      - { name: last_used_video_n, type: integer, flag: W }
+      - { name: freshness_score, type: enum, flag: F }   # формула как в листе 10
+      - { name: avg_retention_impact, type: string, flag: F }   # HIGH/MED/LOW + %
+      - { name: audience_category_best_fit, type: enum, flag: W, enum: ['C1', 'C2', 'C3'] }   # C1/C2/C3
+      - { name: psychological_patterns_triggered, type: string, flag: W }   # список P01–P12
+      - { name: confidence, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW'] }   # HIGH/MED/LOW
+      - { name: notes, type: string, flag: W }
+
+  - name: PATTERN_EFFECTIVENESS_MATRIX   # по ЦА
+    columns:
+      - { name: psychological_pattern_id, type: string, flag: id }   # P01–P12
+      - { name: pattern_name, type: string, flag: W }
+      - { name: C1_effectiveness, type: string, flag: F }   # HIGH/MED/LOW + %
+      - { name: C2_effectiveness, type: string, flag: F }   # HIGH/MED/LOW + %
+      - { name: C3_effectiveness, type: string, flag: F }   # HIGH/MED/LOW + %
+      - { name: overall_effectiveness, type: enum, flag: F, enum: ['HIGH', 'MED', 'LOW'] }   # HIGH/MED/LOW
+      - { name: best_context_tag, type: string, flag: F }
+      - { name: notes, type: string, flag: W }

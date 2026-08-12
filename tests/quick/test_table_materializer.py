@@ -125,10 +125,13 @@ node = tpl.create_node("network", "net_A")
 pending_real = node["tables_pending"]
 ok(len(pending_real) >= 2, f"structure_create отложил книги сетки: {len(pending_real)}")
 ok(any(p["table_template"] == "network_config" for p in pending_real),
-   "среди отложенного есть network_config (единственная заведённая схема)")
+   "среди отложенного есть network_config")
 
 phase_real = TableMaterializer(ExcelEngine(ws3), SCHEMAS).materialize_pending(pending_real)
-ok(phase_real["created"] == 1, f"материализована ровно 1 книга — та, чья схема заведена ({phase_real['created']})")
+# Ожидание выводим из диска: заведённых схем становится больше по мере авторинга.
+_with_schema = sum(1 for p in pending_real if (SCHEMAS / f"{p['table_template']}.schema.yaml").exists())
+ok(phase_real["created"] == _with_schema,
+   f"материализованы ровно книги с заведённой схемой ({phase_real['created']} из {len(pending_real)})")
 ok(phase_real["materialized"] and (Path(ws3) / phase_real["materialized"][0]["path"]).exists(),
    "книга легла ровно по пути из tables_pending")
 ok(all(f["code"] == "TEMPLATE_NOT_FOUND" for f in phase_real["failed"]),

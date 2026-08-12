@@ -1,0 +1,204 @@
+# video_data.xlsx — черновик из спеки (scripts/spec_to_schema.py). ТРЕБУЕТ ВЫЧИТКИ.
+# Источник: docs/roadmap/spec/schemas/video_data.schema.md. Формат: spec/TABLE_SCHEMA_FORMAT.md.
+book: video_data
+level: video
+source: video_data.schema.md
+sheets:
+  - name: META   # метаданные видео
+    columns:
+      - { name: video_id, type: string, flag: id }   # генерится сервером
+      - { name: title, type: string, flag: W }   # макс 100
+      - { name: url, type: string, flag: W }   # пусто до публикации
+      - { name: channel_id, type: string, flag: fk }   # Read-Only
+      - { name: publish_date, type: date, flag: W }
+      - { name: duration_sec, type: integer, flag: W }
+      - { name: niche, type: string, flag: fk }   # наследуется из channel_data, Read-Only
+      - { name: type, type: string, flag: F }   # фикс. `"own"`
+      - { name: status, type: enum, flag: W }   # статус видео (палитра ниже)
+      - { name: target_audience_category, type: enum, flag: W, enum: ['C1', 'C2', 'C3'] }   # C1/C2/C3
+      - { name: prediction_id, type: string, flag: fk }   # → CONTENT_PREDICTION (нишевый уровень)
+
+  - name: PERFORMANCE   # метрики (снимок + формулы)
+    columns:
+      - { name: views, type: integer, flag: W }   # импорт YouTube API
+      - { name: likes, type: integer, flag: W }   # импорт YouTube API
+      - { name: comments, type: integer, flag: W }   # импорт YouTube API
+      - { name: shares, type: integer, flag: W }   # импорт YouTube API
+      - { name: ctr_percent, type: float, flag: W }
+      - { name: avg_watch_sec, type: float, flag: W }
+      - { name: retention_percent, type: float, flag: F, formula: '=avg_watch_sec/duration_sec*100' }   # `=avg_watch_sec/duration_sec*100`
+      - { name: like_rate, type: float, flag: F, formula: '=likes/views*100' }   # `=likes/views*100`
+      - { name: comment_rate, type: float, flag: F, formula: '=comments/views*100' }   # `=comments/views*100`
+      - { name: engagement_rate, type: float, flag: F, formula: '=(likes+comments+shares)/views*100' }   # `=(likes+comments+shares)/views*100` — снимок вовлечённости
+      - { name: performance_score, type: float, flag: F, formula: '=like_rate*0.4+comment_rate*0.3+(retention/100)*0.3' }   # `=like_rate*0.4+comment_rate*0.3+(retention/100)*0.3`
+      - { name: prediction_accuracy, type: enum, flag: F, enum: ['ACCURATE', 'CLOSE', 'MISS', 'PENDING'] }   # ACCURATE/CLOSE/MISS/PENDING (формула по status)
+
+  - name: TRANSCRIPT   # пословная транскрипция по сценам
+    columns:
+      - { name: scene_id, type: string, flag: id }   # генерится сервером (S01…)
+      - { name: timestamp_start, type: string, flag: F }   # MM:SS, из транскрибации после озвучки
+      - { name: timestamp_end, type: string, flag: F }   # MM:SS, из транскрибации после озвучки
+      - { name: duration_sec, type: integer, flag: F, formula: '=end-start' }   # `=end-start`
+      - { name: act_number, type: integer, flag: W }   # 1–7
+      - { name: text, type: string, flag: F }   # дословно
+      - { name: word_count, type: integer, flag: F, formula: '=COUNTWORDS(text)' }   # `=COUNTWORDS(text)`
+      - { name: pace_wpm, type: float, flag: F, formula: '=word_count/(duration_sec/60)' }   # `=word_count/(duration_sec/60)`
+      - { name: energy_level, type: integer, flag: W }   # 1–5
+      - { name: notes, type: string, flag: W }
+
+  - name: ACT_1_HOOK   # … `ACT_7_TRUTH` (7 идентичных)
+    columns:
+      - { name: act_name, type: string, flag: F }   # фикс. название акта
+      - { name: timestamp_start, type: string, flag: F }   # MM:SS
+      - { name: timestamp_end, type: string, flag: F }   # MM:SS
+      - { name: duration_sec, type: integer, flag: F }
+      - { name: duration_pct, type: float, flag: F, formula: '=duration_sec/META!duration_sec*100' }   # `=duration_sec/META!duration_sec*100`
+      - { name: recommended_duration_sec, type: integer, flag: fk }   # из channel_data → STYLE_DNA, Read-Only
+      - { name: status, type: enum, flag: F, formula: '=IF(>rec*1.3,"LONG",IF(<rec*0.7,"SHORT","OK"))' }   # `=IF(>rec*1.3,"LONG",IF(<rec*0.7,"SHORT","OK"))`
+      - { name: text, type: string, flag: W }   # резюме акта 1–2 предл.
+      - { name: technique_1/2/3, type: string, flag: W }   # техники акта
+      - { name: visual_technique, type: string, flag: W }
+      - { name: audio_technique, type: string, flag: W }
+      - { name: effectiveness_score, type: integer, flag: W }   # 1–5
+      - { name: retention_impact, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW'] }   # HIGH/MED/LOW
+      - { name: notes, type: string, flag: W }
+
+  - name: TECHNIQUES   # реестр приёмов
+    columns:
+      - { name: technique_id, type: string, flag: id }   # генерится сервером
+      - { name: timestamp, type: string, flag: W }   # MM:SS
+      - { name: act_number, type: integer, flag: W }   # 1–7
+      - { name: technique_type, type: string, flag: W }   # stat_shock/storytelling/…
+      - { name: description, type: string, flag: W }
+      - { name: effectiveness, type: integer, flag: W }   # 1–5 (после публикации)
+      - { name: psychological_pattern_id, type: string, flag: fk }   # P01–P12
+      - { name: audience_category, type: string, flag: W }   # C1/C2/C3
+
+  - name: ASSETS_USED   # ассеты видео (🆕 ключи + статусы)
+    columns:
+      - { name: global_asset_id, type: string, flag: W }   # мастер, от которого ассет (канонический ключ)
+      - { name: variation_id, type: string, flag: W }   # какая вариация; пусто = сам мастер
+      - { name: asset_type, type: enum, flag: W }   # svg/music/sound/transition/effect
+      - { name: is_master, type: boolean, flag: W }   # TRUE = мастер, не вариация
+      - { name: description, type: string, flag: W }   # краткое — Claude понимает ассет не открывая файл
+      - { name: system_status, type: enum, flag: W }   # HP вариации (см. палитру)
+      - { name: production_status, type: enum, flag: W }   # применение в видео (см. палитру)
+      - { name: scene_id(s), type: string, flag: W }   # список сцен (S01,S03…)
+      - { name: usage_count_in_video, type: integer, flag: W }   # сколько раз в этом видео
+      - { name: last_used_video_n, type: integer, flag: W }
+      - { name: videos_since_last_use, type: integer, flag: F, formula: '=current_video_n - last_used_video_n' }   # `=current_video_n - last_used_video_n`
+      - { name: uniqueness_score, type: float, flag: F }   # строгая для svg, мягкая для music/sound/transition; 0 ассетов = валидно
+
+  - name: UNIQUENESS   # итог уникальности видео (🆕 секция сцен убрана)
+    columns:
+      - { name: script_score, type: float, flag: F, formula: '=1.0' }   # `=1.0` (скрипт уникален)
+      - { name: svg_scene_score, type: float, flag: F, formula: '=AVERAGE(uniqueness всех svg)' }   # `=AVERAGE(uniqueness всех svg)`
+      - { name: music_score, type: float, flag: F }   # мягкие формулы (пул ниши)
+      - { name: sound_score, type: float, flag: F }   # мягкие формулы (пул ниши)
+      - { name: transition_score, type: float, flag: F }   # мягкие формулы (пул ниши)
+      - { name: overall_uniqueness, type: float, flag: F, formula: '=script*0.35+svg*0.40+music*0.10+sound*0.08+transition*0.07' }   # `=script*0.35+svg*0.40+music*0.10+sound*0.08+transition*0.07`
+      - { name: tier, type: enum, flag: F, formula: '=IF(>=0.80,"HIGH",IF(>=0.60,"MED","LOW"))' }   # `=IF(>=0.80,"HIGH",IF(>=0.60,"MED","LOW"))`
+      - { name: scenes_uniqueness_ref, type: string, flag: W }   # ССЫЛКА на лист `SCENES.scene_uniqueness` (дубль убран)
+
+  - name: SCRIPT_DNA_APPLIED   # применённые правила стиля
+    columns:
+      - { name: rule_id, type: string, flag: fk }   # из STYLE_DNA, Read-Only
+      - { name: category, type: enum, flag: F }   # forbidden_words/pacing/rhetoric/tone
+      - { name: applied_in_act, type: integer, flag: W }   # 1–7
+      - { name: how_it_was_applied, type: string, flag: W }   # пример из текста
+      - { name: human_feedback, type: string, flag: W }   # комментарий человека
+      - { name: resolved, type: enum, flag: W, enum: ['YES', 'NO'] }   # YES/NO
+
+  - name: SCENES   # 🆕 (бывш. `SCENE_BREAKDOWN`, достроен)
+    columns:
+      - { name: scene_id, type: string, flag: id }   # join-ключ к TRANSCRIPT/SEMANTICS/ASSETS_USED
+      - { name: act, type: integer, flag: fk }   # 1–7
+      - { name: timestamp_start, type: string, flag: F }   # из TRANSCRIPT (тайминг → ограничение сцены)
+      - { name: timestamp_end, type: string, flag: F }   # из TRANSCRIPT (тайминг → ограничение сцены)
+      - { name: text_snippet, type: string, flag: F }   # фрагмент текста сцены
+      - { name: bg_assets, type: string, flag: W }   # SVG-роль: фон
+      - { name: character_assets, type: string, flag: W }   # SVG-роль: персонажи
+      - { name: component_assets, type: string, flag: W }   # SVG-роль: прочие компоненты
+      - { name: music_assets, type: string, flag: W }   # подложка
+      - { name: sound_assets, type: string, flag: W }   # звуковые эффекты
+      - { name: filter_assets, type: string, flag: W }   # фильтры/обработка
+      - { name: transition_assets, type: string, flag: W }   # переходы
+      - { name: scene_uniqueness, type: float, flag: W }   # взвешенная композиция по типам; веса/активность из `channel_config.SCENE_PROFILE`; выключенный тип не входит; определена
+      - { name: animation_order, type: string, flag: W }   # порядок появления элементов
+      - { name: animation_speed, type: enum, flag: W }   # Fast/Medium/Slow
+      - { name: retention_at_this_sec, type: float, flag: F }   # из YouTube Analytics
+      - { name: retention_impact, type: enum, flag: F, enum: ['HIGH', 'MED', 'LOW'] }   # HIGH/MED/LOW по дельте retention
+
+  - name: SCENE_SEMANTICS   # сенсорный слой сцены
+    columns:
+      - { name: scene_id, type: string, flag: id }
+      - { name: timestamp, type: string, flag: F }   # MM:SS
+      - { name: script_phrase, type: string, flag: F }   # ключевая фраза, которую визуализирует сцена
+      - { name: character, type: string, flag: W }
+      - { name: emotion, type: enum, flag: W }   # anger/joy/shock/fear/neutral
+      - { name: color_primary, type: string, flag: W }   # HEX
+      - { name: color_secondary, type: string, flag: W }   # HEX
+      - { name: lighting, type: enum, flag: W }   # high_key/low_key/neutral
+      - { name: contrast_level, type: enum, flag: W }   # high/med/low
+      - { name: camera_move, type: enum, flag: W }   # fast_zoom_in/slow_pan/static/zoom_out
+      - { name: sound_cue, type: string, flag: W }
+      - { name: music_mood, type: string, flag: W }
+      - { name: voice_tone, type: enum, flag: W }   # whisper/shout/calm/urgent
+      - { name: gesture, type: string, flag: W }
+      - { name: eye_direction, type: string, flag: W }
+      - { name: visual_metaphor, type: string, flag: W }
+      - { name: text_on_screen_style, type: string, flag: W }
+      - { name: retention_impact, type: enum, flag: F, enum: ['HIGH', 'MED', 'LOW'] }   # HIGH/MED/LOW + %
+      - { name: technique_linked, type: string, flag: fk }   # → TECHNIQUES
+      - { name: psychological_pattern_id, type: string, flag: fk }   # P01–P12
+      - { name: audience_category, type: string, flag: W }   # C1/C2/C3
+
+  - name: RETENTION_PATTERNS   # синергии (комбинации)
+    columns:
+      - { name: pattern_id, type: string, flag: id }   # RP_COMB_…
+      - { name: context_tag, type: string, flag: W }
+      - { name: combination_description, type: string, flag: W }
+      - { name: visual_pattern_id, type: string, flag: fk }   # → лист 17
+      - { name: script_pattern_id, type: string, flag: fk }   # → лист 18
+      - { name: audio_pattern_id, type: string, flag: fk }   # → лист 19
+      - { name: retention_impact, type: string, flag: F }   # HIGH +15%
+      - { name: timestamp_example, type: string, flag: W }
+      - { name: scene_id, type: string, flag: fk }
+      - { name: audience_category, type: string, flag: W }
+      - { name: psychological_patterns_triggered, type: string, flag: W }   # список P01–P12
+      - { name: confidence, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW'] }   # HIGH/MED/LOW
+      - { name: notes, type: string, flag: W }
+
+  - name: RENDERS   # 🆕 — смонтированные видео по стадиям
+    columns:
+      - { name: render_id, type: string, flag: id }   # ключ рендера
+      - { name: render_stage, type: enum, flag: W }   # `draft` / `final`
+      - { name: render_profile, type: string, flag: fk }   # профиль из `channel_config.RENDER_CONFIG` (codec/res/aspect)
+      - { name: format_label, type: string, flag: W }   # напр. `long_16x9` / `short_9x16` (если форматов несколько)
+      - { name: file_path, type: string, flag: W }   # путь в `videos/<video>/renders/` (с `video_id` в имени)
+      - { name: file_name, type: string, flag: F }   # `{video_slug}_{render_stage}[_{format_label}].mp4`
+      - { name: render_status, type: enum, flag: W }   # `queued` / `rendering` / `ready` / `failed` (см. палитру)
+      - { name: derived_from_render_id, type: string, flag: W }   # привязка финала к черновику (история стадий)
+      - { name: duration_sec, type: integer, flag: F }   # из готового файла (verify)
+      - { name: file_verified, type: boolean, flag: F }   # файл ≠ 0 байт И играбелен (реальность-чек)
+      - { name: notes, type: string, flag: W }
+
+  - name: POST_MORTEM   # журнал ошибок и уроков
+    columns:
+      - { name: issue_type, type: enum, flag: W }   # retention_drop/pacing_issue/style_violation/visual_mismatch/factual_error
+      - { name: timestamp, type: string, flag: W }
+      - { name: scene_id, type: string, flag: fk }
+      - { name: act, type: integer, flag: fk }   # 1–7
+      - { name: observation, type: string, flag: W }   # что пошло не так
+      - { name: instruction_for_next_video, type: string, flag: W }   # инструкция на будущее
+      - { name: applied_in_future_video_id, type: string, flag: fk }   # где применено
+      - { name: resolved, type: enum, flag: W, enum: ['YES', 'NO'] }   # YES/NO
+
+  - name: ANALYTICS   # дашборд видео (Read-Only)
+    columns:
+      - { name: metric_group, type: string, flag: F }   # Performance/Act Structure/Uniqueness/…
+      - { name: metric_name, type: string, flag: F }
+      - { name: value_this_video, type: string, flag: F }
+      - { name: value_channel_avg, type: string, flag: F }   # подтягивается из channel_data
+      - { name: delta_or_status, type: string, flag: F, formula: '=this-avg' }   # `=this-avg` или OK/SHORT/LONG/HIGH/MED/LOW
+      - { name: ai_action_flag, type: string, flag: F }   # ⚠️ Rotation needed / Review ACT_3

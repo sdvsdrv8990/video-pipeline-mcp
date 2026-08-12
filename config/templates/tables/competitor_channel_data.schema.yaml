@@ -1,0 +1,68 @@
+# competitor_channel_data.xlsx — черновик из спеки (scripts/spec_to_schema.py). ТРЕБУЕТ ВЫЧИТКИ.
+# Источник: docs/roadmap/spec/schemas/competitor_channel_data.schema.md. Формат: spec/TABLE_SCHEMA_FORMAT.md.
+book: competitor_channel_data
+level: competitor_channel
+source: competitor_channel_data.schema.md
+sheets:
+  - name: CHANNEL_META   # | Столбец | Тип | Флаг | Прим. |
+    columns:
+      - { name: channel_id, type: string, flag: id }
+      - { name: channel_name, type: string, flag: W }
+      - { name: url, type: string, flag: W }
+      - { name: niche, type: string, flag: W }
+      - { name: subs_approx, type: integer, flag: W }
+      - { name: avg_views_per_video, type: integer, flag: W }
+      - { name: upload_frequency_per_month, type: float, flag: W }
+      - { name: content_style, type: string, flag: W }
+      - { name: primary_hook_type, type: string, flag: W }
+      - { name: primary_visual_style, type: string, flag: W }
+      - { name: primary_audio_style, type: string, flag: W }
+      - { name: videos_analyzed, type: integer, flag: W }
+      - { name: overall_threat_level, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW'] }   # HIGH/MED/LOW
+      - { name: last_analyzed_date, type: date, flag: W }
+      - { name: notes, type: string, flag: W }
+
+  - name: VIDEOS_INDEX   # | Столбец | Тип | Флаг | Прим. |
+    columns:
+      - { name: video_n, type: integer, flag: W }
+      - { name: video_id, type: string, flag: W }
+      - { name: title, type: string, flag: W }
+      - { name: publish_date, type: date, flag: W }
+      - { name: duration_sec, type: integer, flag: W }
+      - { name: views, type: integer, flag: W }
+      - { name: likes, type: integer, flag: W }
+      - { name: comments, type: integer, flag: W }
+      - { name: estimated_retention, type: float, flag: W }
+      - { name: performance_score, type: float, flag: W }
+      - { name: tier, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW'] }   # HIGH/MED/LOW
+      - { name: top_technique, type: string, flag: W }
+      - { name: hook_type, type: string, flag: W }
+      - { name: steal_count, type: integer, flag: F }   # кол-во YES в steal_this по видео
+      - { name: notes, type: string, flag: W }
+
+  - name: CHANNEL_PATTERNS   # | Столбец | Тип | Флаг | Прим. |
+    columns:
+      - { name: pattern_type, type: enum, flag: W }   # visual/script/audio/retention
+      - { name: pattern_id, type: string, flag: id }
+      - { name: description, type: string, flag: W }
+      - { name: frequency_count, type: integer, flag: W }
+      - { name: frequency_pct, type: float, flag: F, formula: '=frequency_count/videos_analyzed*100' }   # `=frequency_count/videos_analyzed*100`
+      - { name: best_example_video_id, type: string, flag: W }
+      - { name: avg_effectiveness, type: float, flag: W }
+      - { name: our_adoption_status, type: enum, flag: W, enum: ['NOT_ADOPTED', 'IN_DNA', 'TESTING', 'TESTED', 'REJECTED'] }   # NOT_ADOPTED/IN_DNA/TESTING/TESTED/REJECTED
+      - { name: our_pattern_id, type: string, flag: W }
+      - { name: psychological_pattern_id, type: string, flag: W }   # P01–P12
+      - { name: audience_category, type: enum, flag: W, enum: ['C1', 'C2', 'C3'] }   # C1/C2/C3
+      - { name: notes, type: string, flag: W }
+
+  - name: INSIGHTS   # | Столбец | Тип | Флаг | Прим. |
+    columns:
+      - { name: insight_id, type: string, flag: id }
+      - { name: category, type: enum, flag: W }   # hook/structure/pacing/visual/audio/engagement/other
+      - { name: observation, type: string, flag: W }
+      - { name: action_for_us, type: string, flag: W }
+      - { name: priority, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW'] }   # HIGH/MED/LOW
+      - { name: source_video_id, type: string, flag: W }
+      - { name: applied, type: enum, flag: W, enum: ['YES', 'NO'] }   # YES/NO
+      - { name: applied_in_our_video_id, type: string, flag: W }
+      - { name: result, type: string, flag: W }   # факт результата применения
