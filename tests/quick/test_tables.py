@@ -35,7 +35,7 @@ async def main():
                 "excel_create_workbook","excel_add_sheet","excel_rename_sheet","excel_delete_sheet",
                 "excel_reorder_sheets","excel_add_column","excel_delete_column","excel_move_column",
                 "excel_insert_formula","excel_apply_formatting","excel_set_validation",
-                "excel_read_range","excel_validate_formulas"}
+                "excel_read_range","excel_validate_formulas","excel_find_dependents"}
     check(f"all {len(expected)} tools registered", expected <= names)
     check("all tools have title", all(t.get("title") for t in eng.list_tools()))
     check("groups tables+excel present", {g["group"] for g in eng.list_tools_grouped()} >= {"tables","excel","filesystem"})
@@ -198,6 +198,49 @@ async def main():
     check("validate_formulas ok", r.status=="success" and r.data["ok"] is True)
     r = await call("excel_add_sheet", path="videos/v1/nope.xlsx", sheet="X")
     check("WORKBOOK_NOT_FOUND", r.status=="error" and r.error.code=="WORKBOOK_NOT_FOUND")
+
+    # ── F28: деструктив над столбцом не ломает формулы молча ──
+    P = "videos/v1/deps.xlsx"
+    await call("excel_create_workbook", path=P, sheet="META")
+    for c in ("views", "likes", "comments"):
+        await call("excel_add_column", path=P, sheet="META", column=c)
+    await call("excel_add_sheet", path=P, sheet="CALC")
+    await call("excel_add_column", path=P, sheet="CALC", column="score")
+    await call("excel_insert_formula", path=P, sheet="META", cell="D2", formula="=B2/A2")
+    await call("excel_insert_formula", path=P, sheet="CALC", cell="B2", formula="=SUM(META!A2:C9)")
+    # Именованный диапазон `Q1_total`: без границ регулярки «Q1» прочиталось бы как адрес
+    # ячейки и дало ложную зависимость столбца Q (17-й) — а его в книге даже нет.
+    await call("excel_insert_formula", path=P, sheet="CALC", cell="B3", formula="=Q1_total*2+LOG10(5)")
+    for _i in range(17):
+        await call("excel_add_column", path=P, sheet="CALC", column=f"pad_{_i}")
+
+    r = await call("excel_find_dependents", path=P, sheet="META", column="views")
+    check("find_dependents видит и свой лист, и межлистовой диапазон",
+          r.status=="success" and r.data["count"]==2)
+    r = await call("excel_find_dependents", path=P, sheet="META", column="comments")
+    check("диапазон A2:C9 считается ссылкой на КАЖДЫЙ столбец внутри", r.data["count"]==1)
+    r = await call("excel_find_dependents", path=P, sheet="CALC", column="pad_15")
+    check("имя `Q1_total` не принято за адрес ячейки (нет ложной зависимости столбца Q)",
+          r.status=="success" and r.data["count"]==0)
+
+    r = await call("excel_delete_column", path=P, sheet="META", column="views")
+    check("удаление столбца под формулой → COLUMN_HAS_DEPENDENTS, а не тихий коррапт",
+          r.status=="error" and r.error.code=="COLUMN_HAS_DEPENDENTS")
+    check("в отказе названы конкретные формулы", "CALC!B2" in r.error.message)
+    # Движок этого набора создан БЕЗ реестра реакций, поэтому recovery здесь не наблюдаем —
+    # проверяем саму запись реестра: именно из неё ctx.err берёт class/recovery (B2/F43).
+    from core.reactions import Reactions
+    _reg28 = Reactions(ROOT / "config" / "server_reactions.yaml").get_error("COLUMN_HAS_DEPENDENTS")
+    check("реестр даёт actionable recovery с инструментом",
+          _reg28.recovery is not None and _reg28.recovery.suggested_tool=="excel_validate_formulas")
+    r = await call("excel_move_column", path=P, sheet="META", column="views", to_index=3)
+    check("перенос столбца под формулой тоже отказывает",
+          r.status=="error" and r.error.code=="COLUMN_HAS_DEPENDENTS")
+    r = await call("excel_delete_column", path=P, sheet="META", column="comments", force=True)
+    check("force=true удаляет и ОТЧИТЫВАЕТСЯ, что сломал",
+          r.status=="success" and len(r.data["broken_formulas"])==1)
+    r = await call("excel_delete_column", path=P, sheet="CALC", column="score")
+    check("столбец без зависимостей удаляется без force", r.status=="success")
 
     print(f"\n=== ИТОГО: {len(PASS)}/{len(PASS)+len(FAIL)} ===")
     if FAIL:

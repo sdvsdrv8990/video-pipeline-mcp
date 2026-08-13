@@ -20,6 +20,7 @@ KNOWN_FACT_TYPES = {
     "RenderCompleted", "SnapshotRead", "TableRead",
     # Таблицы: данные (Категория 3)
     "ColumnRead", "RowRead", "RowSet", "RowUpdated", "RowsFound", "RowAppended", "RowDeleted",
+    "DependentsFound",
     "QueuePushed", "QueueExecuted", "QueueCleared",
     # Таблицы: структура (Категория 2, excel_*)
     "WorkbookCreated", "SheetAdded", "SheetRenamed", "SheetDeleted",

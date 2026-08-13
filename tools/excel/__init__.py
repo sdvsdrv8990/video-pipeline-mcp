@@ -53,17 +53,23 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             return res
         return ToolResult(status="success", data=res, facts=[Fact(type="ColumnAdded", data={"path": path, "sheet": sheet, "column": column})])
 
-    async def excel_delete_column(path: str, sheet: str, column: str) -> "ToolResult":
-        ok, res = ctx.safe(lambda: ctx.excel_engine.delete_column(path, sheet, column))
+    async def excel_delete_column(path: str, sheet: str, column: str, force: bool = False) -> "ToolResult":
+        ok, res = ctx.safe(lambda: ctx.excel_engine.delete_column(path, sheet, column, force))
         if not ok:
             return res
-        return ToolResult(status="success", data=res, facts=[Fact(type="ColumnDeleted", data={"path": path, "sheet": sheet, "column": column})])
+        return ToolResult(status="success", data=res, facts=[Fact(type="ColumnDeleted", data={"path": path, "sheet": sheet, "column": column, "broke_formulas": len(res["broken_formulas"])})])
 
-    async def excel_move_column(path: str, sheet: str, column: str, to_index: int) -> "ToolResult":
-        ok, res = ctx.safe(lambda: ctx.excel_engine.move_column(path, sheet, column, to_index))
+    async def excel_move_column(path: str, sheet: str, column: str, to_index: int, force: bool = False) -> "ToolResult":
+        ok, res = ctx.safe(lambda: ctx.excel_engine.move_column(path, sheet, column, to_index, force))
         if not ok:
             return res
-        return ToolResult(status="success", data=res, facts=[Fact(type="ColumnMoved", data={"path": path, "sheet": sheet, "column": column, "to": to_index})])
+        return ToolResult(status="success", data=res, facts=[Fact(type="ColumnMoved", data={"path": path, "sheet": sheet, "column": column, "to": to_index, "broke_formulas": len(res["broken_formulas"])})])
+
+    async def excel_find_dependents(path: str, sheet: str, column: str) -> "ToolResult":
+        ok, res = ctx.safe(lambda: ctx.excel_engine.find_dependents(path, sheet, column))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res, facts=[Fact(type="DependentsFound", data={"path": path, "sheet": sheet, "column": column, "count": res["count"]})])
 
     async def excel_insert_formula(path: str, sheet: str, cell: str, formula: str, overwrite: bool = False) -> "ToolResult":
         ok, res = ctx.safe(lambda: ctx.excel_engine.insert_formula(path, sheet, cell, formula, overwrite))
@@ -143,12 +149,15 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         ("excel_add_column", "Excel: добавить столбец", "Добавить столбец (заголовок в строку 1). formula — опционально.",
          {"type": "object", "properties": {"path": PATH, "sheet": SHEET, "column": {"type": "string", "description": "Имя столбца (заголовок)"}, "formula": {"type": "string", "description": "Формула-образец (опц.)"}}, "required": ["path", "sheet", "column"]},
          excel_add_column, ANNOTATIONS_MODIFY),
-        ("excel_delete_column", "Excel: удалить столбец", "Удалить столбец по имени заголовка.",
-         {"type": "object", "properties": {"path": PATH, "sheet": SHEET, "column": {"type": "string", "description": "Имя столбца"}}, "required": ["path", "sheet", "column"]},
+        ("excel_delete_column", "Excel: удалить столбец", "Удалить столбец по имени заголовка. Отказывает, если на столбец ссылаются формулы (force=true — осознанно сломать).",
+         {"type": "object", "properties": {"path": PATH, "sheet": SHEET, "column": {"type": "string", "description": "Имя столбца"}, "force": {"type": "boolean", "description": "Удалить, даже если формулы ссылаются (сломает их)", "default": False}}, "required": ["path", "sheet", "column"]},
          excel_delete_column, ANNOTATIONS_MODIFY),
-        ("excel_move_column", "Excel: переместить столбец", "Переместить столбец на позицию to_index (1-based).",
-         {"type": "object", "properties": {"path": PATH, "sheet": SHEET, "column": {"type": "string", "description": "Имя столбца"}, "to_index": {"type": "integer", "description": "Новая позиция (1-based)"}}, "required": ["path", "sheet", "column", "to_index"]},
+        ("excel_move_column", "Excel: переместить столбец", "Переместить столбец на позицию to_index (1-based). Отказывает, если на столбец ссылаются формулы (force=true).",
+         {"type": "object", "properties": {"path": PATH, "sheet": SHEET, "column": {"type": "string", "description": "Имя столбца"}, "to_index": {"type": "integer", "description": "Новая позиция (1-based)"}, "force": {"type": "boolean", "description": "Перенести, даже если формулы ссылаются (сломает их)", "default": False}}, "required": ["path", "sheet", "column", "to_index"]},
          excel_move_column, ANNOTATIONS_MODIFY),
+        ("excel_find_dependents", "Excel: кто ссылается на столбец", "Формулы, ссылающиеся на столбец (по всей книге, включая межлистовые диапазоны). Спрашивают ПЕРЕД удалением/переносом.",
+         {"type": "object", "properties": {"path": PATH, "sheet": SHEET, "column": {"type": "string", "description": "Имя столбца"}}, "required": ["path", "sheet", "column"]},
+         excel_find_dependents, ANNOTATIONS_READONLY),
         ("excel_insert_formula", "Excel: вставить формулу", "Формула в ячейку. Не перезаписывает существующую молча (overwrite).",
          {"type": "object", "properties": {"path": PATH, "sheet": SHEET, "cell": {"type": "string", "description": "Ячейка (напр. C2)"}, "formula": {"type": "string", "description": "Формула (с '=' или без)"}, "overwrite": {"type": "boolean", "description": "Перезаписать существующую формулу", "default": False}}, "required": ["path", "sheet", "cell", "formula"]},
          excel_insert_formula, ANNOTATIONS_MODIFY),

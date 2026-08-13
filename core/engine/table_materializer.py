@@ -40,6 +40,39 @@ class TableMaterializer:
     def __init__(self, excel: ExcelEngine, schemas_dir: str | Path):
         self.excel = excel
         self.schemas_dir = Path(schemas_dir)
+        self._defaults: dict | None = None
+
+    # ═══ Деградация формул (F30) — правила ЧИТАЮТСЯ, не зашиты ═══
+
+    def _degrade_rules(self, schema: dict) -> dict:
+        """Запасные значения по типу столбца: книга перекрывает общий `_defaults.yaml`."""
+        if self._defaults is None:
+            path = self.schemas_dir / "_defaults.yaml"
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
+            self._defaults = (data or {}).get("degrade") or {}
+        return {**self._defaults, **(schema.get("degrade") or {})}
+
+    @staticmethod
+    def _excel_literal(value) -> str:
+        """Запасное значение в синтаксис Excel: число — как есть, строка — в кавычках."""
+        if isinstance(value, bool):
+            return "TRUE()" if value else "FALSE()"
+        if isinstance(value, (int, float)):
+            return str(value)
+        return '"' + str(value).replace('"', '""') + '"'
+
+    def _guarded(self, formula: str, col: dict, rules: dict) -> str:
+        """Формула, которая не ломается на неполных данных (F30).
+
+        Оборачиваем в IFERROR: любая ошибка вычисления (#DIV/0!, #REF!, #VALUE!, #NAME?)
+        превращается в объявленное запасное значение. Что подставить — решает декларация,
+        а не код: `on_empty` столбца, иначе правило по типу.
+        """
+        fallback = col["on_empty"] if "on_empty" in col else rules.get(col.get("type", "string"))
+        if fallback is None:
+            return formula
+        body = formula[1:] if formula.startswith("=") else formula
+        return f"=IFERROR({body},{self._excel_literal(fallback)})"
 
     def load_schema(self, book: str) -> dict:
         """Прочитать декларацию книги. Схема-источник истины, не код."""
@@ -69,6 +102,8 @@ class TableMaterializer:
         """
         schema = self.load_schema(book)
         sheets = schema["sheets"]
+        rules = self._degrade_rules(schema)
+        guarded = 0
         try:
             self.excel.create_workbook(path, sheet=sheets[0]["name"])
             for sheet in sheets[1:]:
@@ -86,6 +121,9 @@ class TableMaterializer:
                             reason="У каждой колонки обязательно поле name.")
                     # F = вычисляемая: формула из спеки, иначе только заголовок-плейсхолдер.
                     formula = col.get("formula") if col.get("flag") == "F" else None
+                    if formula:
+                        formula = self._guarded(formula, col, rules)
+                        guarded += 1
                     self.excel.add_column(path, name, col_name, formula=formula)
                     if col.get("type") == "enum" and col.get("enum"):
                         self.excel.set_validation(path, name, col_name, allowed=col["enum"])
@@ -108,6 +146,7 @@ class TableMaterializer:
             "sheets": created,
             "columns_total": sum(len(s["columns"]) for s in created),
             "rows_total": sum(s["rows"] for s in created),
+            "formulas_guarded": guarded,
         }
 
     def materialize_pending(self, pending: list[dict]) -> dict:

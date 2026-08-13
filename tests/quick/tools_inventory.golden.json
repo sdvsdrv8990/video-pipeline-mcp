@@ -171,13 +171,18 @@
    "idempotentHint": false,
    "readOnlyHint": false
   },
-  "description": "Удалить столбец по имени заголовка.",
+  "description": "Удалить столбец по имени заголовка. Отказывает, если на столбец ссылаются формулы (force=true — осознанно сломать).",
   "group": "excel",
   "input_schema": {
    "properties": {
     "column": {
      "description": "Имя столбца",
      "type": "string"
+    },
+    "force": {
+     "default": false,
+     "description": "Удалить, даже если формулы ссылаются (сломает их)",
+     "type": "boolean"
     },
     "path": {
      "description": "Путь к .xlsx относительно workspace",
@@ -223,6 +228,38 @@
    "type": "object"
   },
   "title": "Excel: удалить лист"
+ },
+ "excel_find_dependents": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Формулы, ссылающиеся на столбец (по всей книге, включая межлистовые диапазоны). Спрашивают ПЕРЕД удалением/переносом.",
+  "group": "excel",
+  "input_schema": {
+   "properties": {
+    "column": {
+     "description": "Имя столбца",
+     "type": "string"
+    },
+    "path": {
+     "description": "Путь к .xlsx относительно workspace",
+     "type": "string"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    }
+   },
+   "required": [
+    "path",
+    "sheet",
+    "column"
+   ],
+   "type": "object"
+  },
+  "title": "Excel: кто ссылается на столбец"
  },
  "excel_insert_formula": {
   "annotations": {
@@ -272,13 +309,18 @@
    "idempotentHint": false,
    "readOnlyHint": false
   },
-  "description": "Переместить столбец на позицию to_index (1-based).",
+  "description": "Переместить столбец на позицию to_index (1-based). Отказывает, если на столбец ссылаются формулы (force=true).",
   "group": "excel",
   "input_schema": {
    "properties": {
     "column": {
      "description": "Имя столбца",
      "type": "string"
+    },
+    "force": {
+     "default": false,
+     "description": "Перенести, даже если формулы ссылаются (сломает их)",
+     "type": "boolean"
     },
     "path": {
      "description": "Путь к .xlsx относительно workspace",

@@ -23,9 +23,21 @@ core/excel/excel_core.py — Движок СТРУКТУРЫ таблиц (Ка�
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from core.paths import safe_resolve
+
+# Ссылка в формуле: необязательный лист (`META!` / `'Мой лист'!`), затем ячейка или
+# диапазон (`B2`, `$B$2`, `A2:D9`). Границы обязательны: без них `LOG10(` в `=LOG10(x)`
+# прочиталось бы как ячейка LOG10 и дало ложную зависимость (F28).
+CELL_REF_RE = re.compile(
+    r"(?<![A-Za-z0-9_$!])"
+    r"(?:(?:'(?P<quoted>[^']+)'|(?P<plain>[A-Za-z_][A-Za-z0-9_.]*))!)?"
+    r"\$?(?P<c1>[A-Z]{1,3})\$?(?P<r1>\d+)"
+    r"(?::\$?(?P<c2>[A-Z]{1,3})\$?(?P<r2>\d+))?"
+    r"(?![A-Za-z0-9_(])"
+)
 
 # openpyxl импортируем лениво внутри методов — чтобы импорт модуля не падал,
 # если библиотека не установлена (движок данных Категории 3 от неё не зависит).
@@ -260,18 +272,76 @@ class ExcelEngine:
         self._save(wb, path)
         return {"path": path, "sheet": sheet, "row": last + 1, "written": len(values)}
 
-    def delete_column(self, path: str, sheet: str, column: str) -> dict:
+    def find_dependents(self, path: str, sheet: str, column: str) -> dict:
+        """Формулы, ссылающиеся на столбец (F28). Читающая операция — ничего не меняет.
+
+        Ищем по ВСЕЙ книге: ссылка бывает межлистовой (`META!B2`). Диапазон `A2:D9` считается
+        ссылкой на каждый столбец внутри него — удаление любого из них ломает диапазон.
+        """
+        wb = self._load(path)
+        ws = self._sheet(wb, sheet)
+        headers = self._headers(ws)
+        if column not in headers:
+            raise ExcelError("COLUMN_NOT_FOUND", f"Столбец '{column}' не найден в листе '{sheet}'.",
+                             reason="Сверь имя заголовка (excel_get_column_names).")
+        deps = self._dependents(wb, sheet, headers[column])
+        return {"path": path, "sheet": sheet, "column": column,
+                "dependents": deps, "count": len(deps)}
+
+    @staticmethod
+    def _dependents(wb, sheet: str, col_idx: int) -> list[dict]:
+        """Ячейки-формулы, чьи ссылки накрывают столбец col_idx листа sheet."""
+        from openpyxl.utils import column_index_from_string
+        found = []
+        for ws in wb.worksheets:
+            for row in ws.iter_rows():
+                for cell in row:
+                    value = cell.value
+                    if not isinstance(value, str) or not value.startswith("="):
+                        continue
+                    for m in CELL_REF_RE.finditer(value):
+                        # Лист ссылки: явный префикс либо лист самой формулы.
+                        ref_sheet = m.group("quoted") or m.group("plain") or ws.title
+                        if ref_sheet != sheet:
+                            continue
+                        try:
+                            first = column_index_from_string(m.group("c1"))
+                            last = column_index_from_string(m.group("c2") or m.group("c1"))
+                        except ValueError:
+                            continue                       # не ссылка (напр. имя функции)
+                        if min(first, last) <= col_idx <= max(first, last):
+                            found.append({"sheet": ws.title, "cell": cell.coordinate,
+                                          "formula": value, "ref": m.group(0)})
+                            break                          # одна ячейка — одна запись
+        return found
+
+    def _guard_column(self, wb, path: str, sheet: str, column: str, col_idx: int,
+                      action: str, force: bool) -> list[dict]:
+        """Пред-проверка деструктива над столбцом: молчаливый коррапт формул запрещён (F28)."""
+        deps = self._dependents(wb, sheet, col_idx)
+        if deps and not force:
+            where = ", ".join(f"{d['sheet']}!{d['cell']}" for d in deps[:5])
+            raise ExcelError(
+                "COLUMN_HAS_DEPENDENTS",
+                f"На столбец '{column}' ссылаются формулы ({len(deps)}): {where}"
+                + (" …" if len(deps) > 5 else ""),
+                reason=f"{action} сломает эти формулы (#REF!). Перепиши их или передай force=true осознанно.")
+        return deps
+
+    def delete_column(self, path: str, sheet: str, column: str, force: bool = False) -> dict:
         wb = self._load(path)
         ws = self._sheet(wb, sheet)
         headers = self._headers(ws)
         if column not in headers:
             raise ExcelError("COLUMN_NOT_FOUND", f"Столбец '{column}' не найден в листе '{sheet}'.",
                              reason="Сверь имя заголовка (excel_read_range) или уже удалён.")
+        broken = self._guard_column(wb, path, sheet, column, headers[column], "Удаление", force)
         ws.delete_cols(headers[column], 1)
         self._save(wb, path)
-        return {"path": path, "sheet": sheet, "deleted": column}
+        return {"path": path, "sheet": sheet, "deleted": column,
+                "broken_formulas": broken}          # непусто только при force=true
 
-    def move_column(self, path: str, sheet: str, column: str, to_index: int) -> dict:
+    def move_column(self, path: str, sheet: str, column: str, to_index: int, force: bool = False) -> dict:
         """Переместить столбец на позицию to_index (1-based) сдвигом ячеек."""
         wb = self._load(path)
         ws = self._sheet(wb, sheet)
@@ -285,7 +355,10 @@ class ExcelEngine:
             raise ExcelError("VALIDATION_ERROR", f"to_index вне диапазона 1..{ncols}.",
                              reason="Укажи позицию внутри существующих столбцов.")
         if to_index == from_index:
-            return {"path": path, "sheet": sheet, "column": column, "index": to_index}
+            return {"path": path, "sheet": sheet, "column": column, "index": to_index,
+                    "broken_formulas": []}
+        # Перенос меняет БУКВУ столбца: формулы продолжат указывать на старую позицию.
+        broken = self._guard_column(wb, path, sheet, column, from_index, "Перенос", force)
         # снять значения столбца, удалить, вставить на новое место
         col_values = [ws.cell(row=r, column=from_index).value for r in range(1, ws.max_row + 1)]
         ws.delete_cols(from_index, 1)
@@ -293,7 +366,8 @@ class ExcelEngine:
         for r, val in enumerate(col_values, start=1):
             ws.cell(row=r, column=to_index, value=val)
         self._save(wb, path)
-        return {"path": path, "sheet": sheet, "column": column, "index": to_index}
+        return {"path": path, "sheet": sheet, "column": column, "index": to_index,
+                "broken_formulas": broken}
 
     # ═══ ФОРМУЛЫ / ФОРМАТ / ВАЛИДАЦИЯ ═══
 

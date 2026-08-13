@@ -203,6 +203,13 @@ FORMULA_PROTECTED:
   recovery:
     reason: "Перезапись критической формулы недопустима молча. Передай overwrite=true осознанно."
 
+COLUMN_HAS_DEPENDENTS:
+  class: ai_recoverable
+  message_template: "На столбец ссылаются формулы — удаление/перенос сломает их молча."
+  recovery:
+    suggested_tool: excel_validate_formulas
+    reason: "Перечисленные формулы съедут в #REF!. Сначала перепиши их (excel_insert_formula) или убери; если ссылки уже не нужны — передай force=true осознанно."
+
 RECALC_UNAVAILABLE:
   class: human_required
   message_template: "Движок пересчёта формул (LibreOffice) недоступен."

@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from core.engine import TableMaterializer, TableMaterializerError
+from core.excel import ExcelError
 from core.excel import ExcelEngine
 
 SCHEMAS = ROOT / "config" / "templates" / "tables"
@@ -191,6 +192,52 @@ ok(_row2.get("allowed_next_tools") == "prepare_tts_input,trigger_tts_generation,
    "список в ячейке — через запятую, значения не потеряны")
 ok(isinstance(_row2.get("requires_human_approval"), bool),
    "булево осталось булевым, а не строкой 'False'")
+
+print("== 7c. F30: формулы деградируют на неполных данных, а не ломаются ==")
+import shutil as _shutil2
+import yaml as _y2
+
+_sch30 = Path(tempfile.mkdtemp(prefix="deg_"))
+_shutil2.copy(SCHEMAS / "_defaults.yaml", _sch30 / "_defaults.yaml")
+(_sch30 / "probe.schema.yaml").write_text(_y2.safe_dump({
+    "book": "probe",
+    "sheets": [{"name": "CALC", "columns": [
+        {"name": "views", "type": "integer", "flag": "W"},
+        {"name": "likes", "type": "integer", "flag": "W"},
+        {"name": "like_rate", "type": "float", "flag": "F", "formula": "=B2/A2*100"},
+        {"name": "verdict", "type": "string", "flag": "F", "formula": "=B2/A2"},
+        {"name": "note", "type": "string", "flag": "F", "formula": "=B2/A2", "on_empty": "НЕТ ДАННЫХ"},
+    ]}]}, allow_unicode=True), encoding="utf-8")
+_ws30 = tempfile.mkdtemp(prefix="deg_ws_")
+_e30 = ExcelEngine(_ws30)
+_r30 = TableMaterializer(_e30, _sch30).materialize("probe", "p.xlsx")
+ok(_r30["formulas_guarded"] == 3, f"объявленные формулы обёрнуты (получено {_r30['formulas_guarded']})")
+_f30 = [c.value for c in openpyxl.load_workbook(Path(_ws30) / "p.xlsx")["CALC"][2]]
+ok(all(str(v).startswith("=IFERROR(") for v in _f30[2:]), f"в книгу легла защищённая формула: {_f30[2]}")
+
+# Пересчёт РЕАЛЬНЫМ движком: без него это была бы проверка строки, а не поведения (урок F29).
+try:
+    _calc30 = _e30._recalc_via_lo(Path(_ws30) / "p.xlsx")
+    _vals30 = [c.value for c in openpyxl.load_workbook(_calc30, data_only=True)["CALC"][2]]
+    ok(_vals30[2] == 0, f"деление на пустое → 0 для float, а не #DIV/0! (получено {_vals30[2]!r})")
+    ok(_vals30[3] == "PENDING", f"строковый столбец → PENDING (получено {_vals30[3]!r})")
+    ok(_vals30[4] == "НЕТ ДАННЫХ", f"on_empty столбца перекрывает правило типа (получено {_vals30[4]!r})")
+    # Контроль: та же формула БЕЗ деградации обязана дать ошибку — иначе проверка холостая.
+    _wsc = tempfile.mkdtemp(prefix="deg_ctl_")
+    _ec = ExcelEngine(_wsc)
+    _ec.create_workbook("c.xlsx", sheet="CALC")
+    for _c in ("views", "likes"):
+        _ec.add_column("c.xlsx", "CALC", _c)
+    _ec.add_column("c.xlsx", "CALC", "like_rate", formula="=B2/A2*100")
+    _ctl = [c.value for c in openpyxl.load_workbook(_ec._recalc_via_lo(Path(_wsc) / "c.xlsx"),
+                                                    data_only=True)["CALC"][2]]
+    ok(_ctl[2] == "#DIV/0!", f"контроль: без деградации та же формула даёт #DIV/0! (получено {_ctl[2]!r})")
+except ExcelError as _e:
+    print(f"    (пересчёт недоступен: {_e.code} — проверки значений пропущены)")
+
+# Правила деградации — декларация, а не код: в движке нет ни одного зашитого запасного значения.
+_src30 = (ROOT / "core/engine/table_materializer.py").read_text(encoding="utf-8")
+ok("PENDING" not in _src30, "запасные значения не зашиты в код — только читаются из _defaults.yaml")
 
 print("== 8. Конвертер спека→схема: что разобрано, а что честно отдано человеку ==")
 import importlib.util

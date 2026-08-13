@@ -42,7 +42,7 @@ KNOWN_ERROR_CODES = {
     "COMPUTED_READONLY", "ENUM_VIOLATION", "INVALID_ACTION",
     # Таблицы: структура (Категория 2, excel_*)
     "WORKBOOK_NOT_FOUND", "SHEET_EXISTS", "LAST_SHEET",
-    "COLUMN_EXISTS", "FORMULA_PROTECTED",
+    "COLUMN_EXISTS", "FORMULA_PROTECTED", "COLUMN_HAS_DEPENDENTS",
     # Структура: реестр связей / ORPHAN (Ф2)
     "UNLINKED_ENTITY", "ENTITY_NOT_FOUND",
     # Анализ данных
