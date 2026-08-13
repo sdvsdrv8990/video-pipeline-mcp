@@ -112,13 +112,17 @@ _dup = uniq.compute(text="герой просыпается и идёт на р�
                     corpus=["герой просыпается и идёт на работу под дождём каждый день"],
                     fragments={"svg_bg": ["A"], "svg_character": ["C"]}, profile_rows=PROFILE)
 ok(_dup["scores"]["script_score"] == 0.0, "текст повторён целиком → уникальность текста 0.0")
-ok(_dup["alert"] == "alert", f"итог ниже alert_below → сигнал alert (получено {_dup['alert']})")
-# Наблюдение для владельца: полностью дублированный ТЕКСТ (0.0) при уникальной сцене (1.0) даёт
-# итог 0.5 — это «alert», не «critical». Пороги стоят на КОМПОЗИЦИИ, поэтому одна провальная
-# оценка может быть закрыта соседней. Нужны ли пороги на каждую оценку — вопрос владельца.
-ok(_dup["scores"]["script_score"] < float(yaml.safe_load(CFG.read_text(encoding="utf-8"))
-                                          ["thresholds"]["critical_below"]),
-   "сама оценка текста ниже critical, даже когда композиция это смягчила")
+# Решение владельца S22: ХУДШАЯ ОЦЕНКА РЕШАЕТ. Композиция здесь = 0.5 (мягкий alert), но текст
+# скопирован слово в слово (0.0) — сигнал обязан быть critical, иначе плагиат прячется за сценой.
+ok(_dup["composed"] == 0.5, f"композиция усредняет провал до 0.5 (получено {_dup['composed']})")
+ok(_dup["alert"] == "critical",
+   f"худшая оценка решает: провал по тексту → critical, а не alert (получено {_dup['alert']})")
+ok(_dup["alert_sources"] == ["script_score"],
+   f"сервер называет, ЧТО пробило порог (получено {_dup['alert_sources']})")
+_clean = uniq.compute(text="совсем новое про другое дело целиком", corpus=["старое про рыбалку"],
+                      fragments={"svg_bg": ["A"], "svg_character": ["C"]}, profile_rows=PROFILE)
+ok(_clean["alert"] is None and _clean["alert_sources"] == [],
+   "всё уникально → сигнала нет и источников нет")
 _src = (ROOT / "core/uniqueness/uniqueness_core.py").read_text(encoding="utf-8")
 ok(not any(t in _src for t in ("svg_bg", "svg_character", "music", "transition")),
    "в коде расчёта нет ни одного типа фрагмента — они приходят данными")
@@ -162,8 +166,9 @@ _r2 = _call("uniqueness_check", table="v1", row_id="P1")
 ok(_r2.data["profile_source"] == "project", "профиль из данных канала перекрывает дефолт декларации")
 ok(_r2.data["readiness"] == "full", f"все входы на месте → full (получено {_r2.data['readiness']})")
 ok(_r2.data["scores"]["script_score"] == 0.0, "дубль соседней строки виден как нулевая уникальность текста")
-ok(_r2.data["alert"] == "alert" and any(f.type == "UniquenessAlert" for f in _r2.facts),
+ok(_r2.data["alert"] == "critical" and any(f.type == "UniquenessAlert" for f in _r2.facts),
    "сигнал доехал и в данные, и в факты контракта")
+ok(_r2.data["alert_sources"] == ["script_score"], "источник сигнала доехал до клиента")
 ok(all(f.type != "UniquenessIncomplete" for f in _r2.facts),
    "при полных данных факта неполноты нет")
 

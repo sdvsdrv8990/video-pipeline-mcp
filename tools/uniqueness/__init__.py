@@ -103,6 +103,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         if res["alert"]:
             facts.append(Fact(type="UniquenessAlert", data={
                 "table": table, "row_id": row_id, "level": res["alert"],
+                "sources": res["alert_sources"],
                 "composed": res["composed"], "thresholds": res["thresholds"]}))
         return ToolResult(status="success", data=res, facts=facts)
 
@@ -113,7 +114,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "Считает уникальность применения патерна ЛОКАЛЬНО (n-gram по словам, без внешних API) "
             "и честно сообщает, хватило ли данных: readiness = full (все входы на месте) / partial "
             "(часть входов нет — перечислены поимённо в missing_inputs) / empty (мерить нечего, "
-            "число = объявленный ноль, а НЕ «100% уникально»). Выключенный в профиле тип фрагмента "
+            "число = объявленный ноль, а НЕ «100% уникально»). Сигнал поднимается по ХУДШЕЙ оценке, "
+            "а не по среднему: alert_sources называет, что именно пробило порог. Выключенный в профиле тип фрагмента "
             "в расчёт не входит вовсе («тихий столбец»). Параметры, веса и пороги — config/uniqueness.yaml, "
             "профиль типов — данные канала; серверного планировщика нет, проверку дёргаешь ты сам."),
         input_schema={"type": "object", "properties": {

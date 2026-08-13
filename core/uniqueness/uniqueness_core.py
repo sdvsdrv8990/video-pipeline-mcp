@@ -161,12 +161,7 @@ class UniquenessEngine:
             readiness = "full"
         composed, weights_used = self._compose(scores, cfg, empty_value)
         thresholds = cfg.get("thresholds") or {}
-        alert = None
-        if readiness != "empty":
-            if composed < float(thresholds.get("critical_below", 0)):
-                alert = "critical"
-            elif composed < float(thresholds.get("alert_below", 0)):
-                alert = "alert"
+        alert, alert_sources = self._alert(composed, scores, thresholds, readiness)
         return {
             "readiness": readiness,
             "scores": scores,
@@ -175,8 +170,45 @@ class UniquenessEngine:
             "composed": composed,
             "composition_weights": weights_used,
             "alert": alert,
+            "alert_sources": alert_sources,
             "thresholds": {k: thresholds.get(k) for k in ("alert_below", "critical_below")},
         }
+
+    # Тяжесть уровней: сравниваем сигналы, чтобы выбрать худший.
+    _SEVERITY = {None: 0, "alert": 1, "critical": 2}
+
+    @staticmethod
+    def _level(value: float, th: dict) -> str | None:
+        """Уровень сигнала для одного числа по его порогам."""
+        if "critical_below" in th and value < float(th["critical_below"]):
+            return "critical"
+        if "alert_below" in th and value < float(th["alert_below"]):
+            return "alert"
+        return None
+
+    def _alert(self, composed: float, scores: dict, thresholds: dict,
+               readiness: str) -> tuple[str | None, list[str]]:
+        """Худшая оценка решает (владелец S22).
+
+        Порог проверяется на композиции И на каждой объявленной оценке; берём самый тяжёлый
+        уровень и называем, ЧТО его дало — иначе «critical» не подсказывает, где чинить.
+        """
+        if readiness == "empty":
+            return None, []
+        top = {k: thresholds[k] for k in ("alert_below", "critical_below") if k in thresholds}
+        per_score = thresholds.get("per_score") or {}
+        checks = [("composed", composed, top)]
+        for name, value in scores.items():
+            if name in per_score:
+                checks.append((name, value, {**top, **(per_score[name] or {})}))
+        worst, sources = None, []
+        for name, value, th in checks:
+            level = self._level(value, th)
+            if self._SEVERITY[level] > self._SEVERITY[worst]:
+                worst, sources = level, [name]
+            elif level is not None and level == worst:
+                sources.append(name)
+        return worst, sources
 
     def _fragment_score(self, fragments: dict, active: list[dict],
                         empty_value: float) -> tuple[float, list[str]]:
