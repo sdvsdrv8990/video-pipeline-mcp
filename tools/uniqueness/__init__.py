@@ -12,7 +12,7 @@ from core.contracts import Fact, ToolResult
 from core.engine import Engine
 from core.tables import TableError
 from core.uniqueness import UniquenessEngine
-from tools._context import ANNOTATIONS_READONLY, ToolContext
+from tools._context import ANNOTATIONS_MODIFY, ToolContext
 
 
 def register(engine: Engine, ctx: ToolContext) -> None:
@@ -51,12 +51,21 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         return [], "none"
 
     def _compensation_history(table: str, spec: dict, scene_ref: str) -> int:
-        """Сколько раз эта сцена уже проходила за счёт соседей (записи в данных проекта)."""
+        """Сколько раз сцена проходила за счёт соседей — БЕЗ снятых решением записей.
+
+        Требование сервера оспоримо: расчёт может ошибиться. Запись, помеченную снимающим
+        статусом, в долг не считаем — иначе одна ошибка навсегда держала бы сцену в эскалации.
+        Снимает запись сам ИИ или человек ОБЫЧНЫМ `table_update` по журнальному листу: своего
+        инструмента для этого не заводим, дверь уже есть.
+        """
         sheet = spec.get("record_sheet")
         if not sheet:
             return 0
         col = spec.get("scene_column", "scene_ref")
-        return sum(1 for r in _rows(table, sheet).values() if r.get(col) == scene_ref)
+        status_col = spec.get("status_column", "signal_status")
+        neutral = set(spec.get("neutralizing_statuses") or [])
+        return sum(1 for r in _rows(table, sheet).values()
+                   if r.get(col) == scene_ref and r.get(status_col) not in neutral)
 
     def _record_compensation(table: str, spec: dict, scene_ref: str, comp: dict, res: dict) -> dict:
         """Записать факт компенсации в данные проекта и СКАЗАТЬ, получилось ли.
@@ -71,7 +80,12 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         row = {spec.get("scene_column", "scene_ref"): scene_ref,
                "compensated_items": ",".join(comp["items"]),
                "composed": res["composed"], "alert": res["alert"] or "",
-               "escalated": comp["escalated"]}
+               "escalated": comp["escalated"],
+               # Свежая запись активна; снять её может только явное решение — статусом в этом же
+               # листе (`table_update`), с указанием источника и причины.
+               spec.get("status_column", "signal_status"): "active",
+               spec.get("source_column", "flag_source"): "server",
+               spec.get("reason_column", "reason"): ""}
         try:
             # Журнал заводит сервер: до первой компенсации листа в данных проекта нет,
             # а append проверяет существование листа (и правильно делает для клиентских правок).
@@ -134,15 +148,24 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         res["profile_source"] = profile_source
         res["scene_ref"] = scene_ref
 
+        # A7.3: чего не хватает для сравнения — и что важнее. Отсутствие эталона конкурентов
+        # приоритетнее отсутствия своих наработок: без внешнего эталона работа слепая.
+        gaps_advice: list = []
+        for src in cfg.get("corpus_sources") or []:
+            if not _rows(table, src.get("sheet", "")):
+                gaps_advice += ctx.advice.get(src.get("advice_key", ""), table=table)
+        res["corpus_gaps"] = [src["id"] for src in (cfg.get("corpus_sources") or [])
+                              if not _rows(table, src.get("sheet", ""))]
+
         comp = res["compensation"]
         if comp.get("active"):
             # Событие пишется В ДАННЫЕ проекта той же дверью, что и любая правка строки:
             # без записи «несколько раз» неоткуда узнать, а флаг сцены был бы разговором.
             comp.update(_record_compensation(table, comp_spec, scene_ref, comp, res))
             key = "uniqueness.escalated" if comp.get("escalated") else "uniqueness.compensated"
-            res["recommendations"] = ctx.advice.get(key, table=table, scene_ref=scene_ref)
+            res["recommendations"] = ctx.advice.get(key, table=table, scene_ref=scene_ref) + gaps_advice
         else:
-            res["recommendations"] = []
+            res["recommendations"] = gaps_advice
 
         facts = [Fact(type="UniquenessComputed", data={
             "table": table, "row_id": row_id, "readiness": res["readiness"],
@@ -179,4 +202,6 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "table": {"type": "string", "description": "Путь сущности с данными (где лежит read.json), напр. niches/n/networks/net1/channels/chA/videos/intro"},
             "row_id": {"type": "string", "description": "ID измеряемого применения патерна; пусто → текста нет, расчёт будет неполным"},
         }, "required": ["table"]},
-        handler=uniqueness_check, group="uniqueness", annotations=ANNOTATIONS_READONLY)
+        # ПИШУЩИЙ: при компенсации инструмент заводит запись в журнале сцены. Оставить READONLY
+        # значило бы объявить клиенту не тот контракт, чем инструмент является.
+        handler=uniqueness_check, group="uniqueness", annotations=ANNOTATIONS_MODIFY)

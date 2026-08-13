@@ -52,6 +52,33 @@ uniqueness.escalated:
     text: "Приём «пройти уникальность за счёт соседей» применён к этой сцене слишком много раз. Дальше компенсация не считается решением: нужна уникальная сцена — новые SVG-компоненты или полностью новая сборка. Перестановка и смена анимации здесь уже не помогут."
     tool: structure_find
     params: { text: "{scene_ref}" }
+  # Требование сервера ОСПОРИМО: расчёт может ошибиться. Отдельных инструментов для спора нет
+  # и не нужно — журнал сигнала это обычный лист, читается и правится теми же дверями.
+  - id: compensation_dispute_facts
+    text: "Не согласен с требованием — сперва посмотри ФАКТЫ, на которых оно построено: записи журнала по этой сцене (какие фрагменты, когда, каким числом). Это обычный лист, читается запросом по столбцам."
+    tool: search_tables
+    params:
+      yaml_query: "sheet: UNIQUENESS_ALERTS\nwhere:\n  scene_ref: {scene_ref}"
+  - id: compensation_dismiss
+    text: "Считаешь сигнал ошибочным — сними КОНКРЕТНУЮ запись журнала: signal_status=dismissed, flag_source=human_decision (решение за человеком, сервер рекомендует, но не решает), reason=почему. Снятая запись перестаёт копиться в долг, и требование новой сцены уходит. Обоснование продублируй в память проекта — таблица помнит ЧТО, память помнит ПОЧЕМУ."
+    tool: table_update
+    params:
+      sheet: UNIQUENESS_ALERTS
+      data: { signal_status: dismissed, flag_source: human_decision, reason: "<почему сигнал ошибочен>" }
+
+uniqueness.no_competitor_patterns:
+  - id: no_competitor_patterns
+    text: "ПРИОРИТЕТ: патернов конкурентов нет — сравнивать не с чем, и уникальность меряется вслепую. Разбери конкурентов ПЕРВЫМИ: без внешнего эталона любая оценка «уникально» ничем не подтверждена."
+    tool: search_tables
+    params:
+      yaml_query: "sheet: COMPETITOR_PATTERNS"
+
+uniqueness.no_own_patterns:
+  - id: no_own_patterns
+    text: "Своих патернов ещё нет — на старте канала это нормально, наработки копятся. Минус меньше, чем отсутствие конкурентов: сравнивать с собой пока просто не с чем."
+    tool: search_tables
+    params:
+      yaml_query: "sheet: SCRIPT_PATTERNS_USED"
 
 structure_customize:
   - id: customize_edit

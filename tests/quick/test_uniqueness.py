@@ -226,12 +226,51 @@ ok([r["escalated"] for r in _runs] == [False, False, True],
    "после объявленного числа раз включается требование новой сцены")
 _last = _call("uniqueness_check", table="v2", row_id="P1")
 _recs = _last.data.get("recommendations") or []
-ok([a["id"] for a in _recs] == ["compensation_escalated"],
+ok(_recs and _recs[0]["id"] == "compensation_escalated",
    "совет меняется с «перестановки/анимации» на «нужна уникальная сцена»")
 ok(any(f.type == "UniquenessCompensated" for f in _last.facts),
    "компенсация приходит фактом контракта, а не только числом")
 ok(bool(_recs) and "SVG" in _recs[0]["text"],
    "в требовании названо, ЧТО именно нужно — новые SVG-компоненты или новая сцена")
+
+print("== 6c. Требование сервера ОСПОРИМО — существующими дверями, без новых инструментов ==")
+_j = _call("table_get_column", table="v2", sheet="UNIQUENESS_ALERTS", column="signal_status")
+ok(_j.status == "success" and set(_j.data["values"].values()) == {"active"},
+   "журнал сигнала — обычный лист, читается обычным инструментом")
+_esc_recs = [a["id"] for a in _last.data["recommendations"]]
+ok("compensation_dispute_facts" in _esc_recs and "compensation_dismiss" in _esc_recs,
+   f"сервер сам говорит, КАК оспорить его требование ({_esc_recs})")
+_dispute = [a for a in _last.data["recommendations"] if a["id"] == "compensation_dismiss"][0]
+ok(_dispute["tool"] == "table_update",
+   f"спор идёт СУЩЕСТВУЮЩИМ инструментом, своего не заводили (получено {_dispute['tool']})")
+ok(_dispute["params"]["data"]["flag_source"] == "human_decision",
+   "решение остаётся за человеком: сервер рекомендует, но не решает")
+
+# Снятие ошибочного сигнала обычным table_update убирает запись из долга.
+_ids = list(_j.data["values"])
+for _rid in _ids:
+    _call("table_update", table="v2", sheet="UNIQUENESS_ALERTS", row_id=_rid,
+          data={"signal_status": "dismissed", "flag_source": "human_decision",
+                "reason": "фирменный трек канала — повтор намеренный"})
+_call("json_execute_queue", table="v2")
+_after = _call("uniqueness_check", table="v2", row_id="P1").data["compensation"]
+ok(_after["history"] == 0,
+   f"снятые решением записи в долг не идут (получено {_after['history']})")
+ok(_after["escalated"] is False, "ошибочная эскалация снимается решением, а не живёт вечно")
+
+print("== 6d. A7.3: отсутствие эталона конкурентов — сигнал ОСОБОГО приоритета ==")
+(_ws / "v3").mkdir()
+_g = _call("uniqueness_check", table="v3")
+ok(_g.data["corpus_gaps"] == ["competitors", "ours"],
+   f"сервер называет, чего не хватает для сравнения ({_g.data['corpus_gaps']})")
+_gids = [a["id"] for a in _g.data["recommendations"]]
+ok(_gids == ["no_competitor_patterns", "no_own_patterns"],
+   f"конкуренты идут ПЕРВЫМИ — без эталона работа слепая ({_gids})")
+_grecs = _g.data.get("recommendations") or []
+ok(bool(_grecs) and "ПРИОРИТЕТ" in _grecs[0]["text"] and _grecs[0]["tool"],
+   "приоритетный сигнал назван приоритетом и исполним инструментом")
+ok(len(_grecs) > 1 and "нормально" in _grecs[1]["text"],
+   "отсутствие СВОИХ наработок помечено как норма на старте, а не как равная беда")
 
 print("== 7. Битая декларация не глушится (иначе расчёт тихо потеряет параметры, D2) ==")
 _bad = Path(tempfile.mkdtemp()) / "uniqueness.yaml"
