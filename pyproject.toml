@@ -61,6 +61,17 @@ dev = [
     "bandit>=1.7",
     "pip-audit>=2.7",
 ]
+# Локальные модели (озвучка/картинки) — среда инференса. Отдельной группой, потому что это
+# гигабайты рантайма ради провайдеров, которые нужны не всякой установке; сервер без неё
+# работает и честно отвечает LOCAL_INFERENCE_FAILED. Сами веса — не сюда, они вне git:
+# каталог объявлен в config/providers.yaml → local.models_dir, тянет scripts/fetch_local_models.py.
+local = [
+    "piper-tts>=1.6",
+    "diffusers>=0.35",
+    "transformers>=4.44",
+    "accelerate>=1.0",
+    "safetensors>=0.5",
+]
 
 [project.scripts]
 video-pipeline-mcp = "server:main"

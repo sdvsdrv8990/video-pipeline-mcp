@@ -20,7 +20,7 @@ core/providers/resolver.py — кто и какой моделью исполн�
 
 from pathlib import Path
 
-import yaml
+from .declaration import Declaration
 
 
 class ProviderError(Exception):
@@ -39,24 +39,13 @@ class ProviderResolver:
 
     def __init__(self, config_file: str | Path):
         self.config_file = Path(config_file)
-        self._cfg: dict | None = None
-        self._mtime: float = 0.0
+        self._decl = Declaration(
+            config_file, ProviderError, "провайдеров",
+            "Заведи config/providers.yaml — откуда брать провайдера, объявлено там.")
 
     @property
     def config(self) -> dict:
-        if not self.config_file.exists():
-            raise ProviderError(
-                "TEMPLATE_NOT_FOUND", f"Нет декларации провайдеров: {self.config_file.name}",
-                reason="Заведи config/providers.yaml — откуда брать провайдера, объявлено там.")
-        mtime = self.config_file.stat().st_mtime
-        if self._cfg is None or mtime != self._mtime:
-            try:
-                data = yaml.safe_load(self.config_file.read_text(encoding="utf-8")) or {}
-            except yaml.YAMLError as e:
-                raise ProviderError("SCHEMA_INVALID", f"Битый {self.config_file.name}: {e}",
-                                    reason="Почини YAML — без него сервер не знает, где искать провайдера.") from e
-            self._cfg, self._mtime = data, mtime
-        return self._cfg
+        return self._decl.data
 
     # ═══ Состояние строки ═══
 
@@ -116,6 +105,12 @@ class ProviderResolver:
                 return {
                     "resource_type": resource_type,
                     "provider": name,
+                    # ID строки нужен, чтобы прибавить расход именно ей (служебное поле «_»
+                    # не уходит в параметры вызова — фильтр в _params это уже делает).
+                    "row_id": current.get("_row_id", ""),
+                    # Строка целиком — для тех, чьё дело сама строка, а не вызов: учёт расхода
+                    # меряется столбцом `usage_unit`, который в параметры вызова не уходит.
+                    "row": {k: v for k, v in current.items() if not k.startswith("_")},
                     "params": self._params(current),
                     "warning": self._warning(current),
                     "exhausted_chain": skipped,

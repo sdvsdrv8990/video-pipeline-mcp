@@ -1,0 +1,107 @@
+"""
+core/providers/tts/piper_local.py — озвучка локальной моделью (piper), без сети и ключей.
+
+## Зачем локальный провайдер
+Облачную озвучку нельзя проверить, пока нет ключа и живого счёта, — и всё, что построено вокруг
+(выбор провайдера, лимиты, приёмка файла, учёт расхода), остаётся непроверенной теорией. Локальная
+модель закрывает цепочку целиком на этой машине: та же строка канала, тот же путь, настоящий файл.
+
+## Что берётся из данных, а что из кода
+Из строки провайдера: имя файла модели (`model`), голос-спикер (`voice`), скорость (`speed`),
+формат (`response_format`). Здесь — только перевод этих полей в API piper. Имён моделей в коде нет.
+
+## Веса — зависимость
+Файл модели ищется внутри каталога весов (`config/providers.yaml → local.models_dir`), и имя из
+данных проходит containment: строку канала правит ИИ, `../../.env` в поле `model` уехало бы читать
+чужое. Нет весов — честный `LOCAL_MODEL_MISSING`, а не тишина.
+"""
+
+import wave
+from pathlib import Path
+
+from core.paths import PathEscapeError, safe_resolve
+
+from ..adapters import MediaOutcome, MediaRequest
+from ..resolver import ProviderError
+
+SUBDIR = "tts"
+
+
+class PiperLocalTTS:
+    """Синхронный адаптер: текст → wav на диске."""
+
+    def __init__(self, models_dir: Path):
+        self.models_dir = Path(models_dir)
+        self._voices: dict[str, object] = {}
+
+    def _model_path(self, params: dict) -> Path:
+        name = str(params.get("model") or "").strip()
+        if not name:
+            raise ProviderError(
+                "LOCAL_MODEL_MISSING", "В строке провайдера не указана модель озвучки.",
+                reason="Впиши имя файла модели в столбец model листа провайдеров книги канала.",
+                suggested_tool="table_update")
+        root = self.models_dir / SUBDIR
+        try:
+            path = safe_resolve(name, root)
+        except PathEscapeError as e:
+            raise ProviderError(
+                "LOCAL_MODEL_MISSING", f"Имя модели ведёт за пределы каталога весов: {name}",
+                reason="Модель берётся только из каталога локальных весов — путь наружу не читается.",
+            ) from e
+        if not path.is_file():
+            raise ProviderError(
+                "LOCAL_MODEL_MISSING", f"Нет весов локальной модели: {name}",
+                reason=("Веса не лежат в git — вытяни их: python scripts/fetch_local_models.py. "
+                        f"Ожидались в {root}. Либо переключи строку канала на другого провайдера."),
+                suggested_tool="media_provider_status")
+        return path
+
+    def _voice(self, model_path: Path):
+        """Загруженная модель живёт до конца процесса: повторная загрузка — секунды на каждый вызов."""
+        key = str(model_path)
+        if key not in self._voices:
+            try:
+                from piper import PiperVoice
+            except ImportError as e:
+                raise ProviderError(
+                    "LOCAL_INFERENCE_FAILED", f"Среда локальной озвучки не установлена: {e}",
+                    reason="Поставь зависимости группы local (piper-tts) в окружение сервера.") from e
+            self._voices[key] = PiperVoice.load(model_path)
+        return self._voices[key]
+
+    def generate(self, request: MediaRequest) -> MediaOutcome:
+        """Озвучить текст в файл. Синхронно: ждать нечего, результат сразу на диске."""
+        if not (request.input or "").strip():
+            raise ProviderError(
+                "CONTENT_REJECTED", "Пустой текст озвучивать нечем.",
+                reason="Передай текст фрагмента — повтор пустого запроса даст тот же отказ.")
+        voice = self._voice(self._model_path(request.params))
+        syn = self._synthesis_config(request.params)
+        request.target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with wave.open(str(request.target), "wb") as wav:
+                voice.synthesize_wav(request.input, wav, syn_config=syn)
+        except Exception as e:                              # noqa: BLE001 — среда/веса/ресурсы
+            raise ProviderError(
+                "LOCAL_INFERENCE_FAILED", f"Локальная озвучка не выполнена: {e}",
+                reason="Проверь веса модели и ресурсы машины; при повторе того же входа "
+                       "результат будет тем же.") from e
+        return MediaOutcome(files=[request.target], meta={"engine": "piper", "sync": True})
+
+    @staticmethod
+    def _synthesis_config(params: dict):
+        """Столбцы строки → параметры синтеза. Пустой столбец = дефолт модели."""
+        from piper import SynthesisConfig
+
+        cfg = SynthesisConfig()
+        speed = params.get("speed")
+        if isinstance(speed, (int, float)) and speed > 0:
+            # У piper масштаб ДЛИТЕЛЬНОСТИ: быстрее речь = короче длительность.
+            cfg.length_scale = 1.0 / float(speed)
+        speaker = params.get("voice")
+        if isinstance(speaker, (int, float)):
+            cfg.speaker_id = int(speaker)
+        elif isinstance(speaker, str) and speaker.strip().isdigit():
+            cfg.speaker_id = int(speaker.strip())
+        return cfg

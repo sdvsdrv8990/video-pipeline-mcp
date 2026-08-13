@@ -344,6 +344,9 @@ sheets:
       - { name: model_size, type: string, flag: W }
       - { name: img_size, type: string, flag: W }
       - { name: img_n, type: integer, flag: W }
+      - { name: usage_unit, type: string, flag: W }
+      - { name: steps, type: integer, flag: W }
+      - { name: variant, type: string, flag: W }
     rows:
       - resource_type: tts_characters
         provider: ElevenLabs
@@ -359,9 +362,10 @@ sheets:
         retry_count: 2
         retry_delay: 5
         sync_mode: true
+        usage_unit: character
       - resource_type: tts_characters
         provider: OpenAI
-        fallback_provider: ''
+        fallback_provider: Local_piper
         daily_limit: 50000
         current_usage: 0
         warning_threshold: 40000
@@ -373,6 +377,22 @@ sheets:
         retry_count: 1
         retry_delay: 3
         sync_mode: true
+        usage_unit: character
+      - resource_type: tts_characters
+        provider: Local_piper
+        fallback_provider: ''
+        daily_limit: -1
+        current_usage: 0
+        warning_threshold: -1
+        model: ru_RU-dmitri-medium.onnx
+        voice: ''
+        response_format: wav
+        speed: 1.0
+        timeout: 120
+        retry_count: 0
+        retry_delay: 0
+        sync_mode: true
+        usage_unit: call
       - resource_type: stt_characters
         provider: Local
         fallback_provider: ''
@@ -398,9 +418,10 @@ sheets:
         retry_count: 2
         retry_delay: 10
         sync_mode: false
+        usage_unit: image
       - resource_type: image_generations
         provider: OpenAI
-        fallback_provider: ''
+        fallback_provider: Local_diffusers
         daily_limit: 200
         current_usage: 0
         warning_threshold: 150
@@ -411,6 +432,23 @@ sheets:
         retry_count: 1
         retry_delay: 5
         sync_mode: false
+        usage_unit: image
+      - resource_type: image_generations
+        provider: Local_diffusers
+        fallback_provider: ''
+        daily_limit: -1
+        current_usage: 0
+        warning_threshold: -1
+        model: sd-turbo
+        img_size: 512x512
+        img_n: 1
+        steps: 1
+        variant: fp16
+        timeout: 300
+        retry_count: 0
+        retry_delay: 0
+        sync_mode: true
+        usage_unit: image
       - resource_type: svg_tracing
         provider: Local_vtracer
         fallback_provider: ''

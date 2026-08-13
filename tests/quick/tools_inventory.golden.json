@@ -1202,6 +1202,47 @@
   },
   "title": "Таблицы: снапшот (read.json)"
  },
+ "media_generate": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Исполняет вид ресурса тем провайдером и той моделью, что стоят в строке канала: озвучивает текст, рисует промпт. Файл кладётся в рабочую область по объявленному имени ассета и принимается ПО ДИСКУ (существует, не пуст), а не по коду ответа. Асинхронный провайдер прозванивается циклом внутри этого же вызова — чтобы причина отказа (модерация, лимит, недоступность) вернулась текстом, а не молчанием. После вызова расход прибавляется строке провайдера, поэтому дневной лимит и переход на fallback работают, а не остаются теорией.",
+  "group": "media",
+  "input_schema": {
+   "properties": {
+    "input": {
+     "description": "Текст для озвучки или промпт картинки",
+     "type": "string"
+    },
+    "resource_type": {
+     "description": "Вид ресурса из листа провайдеров (tts_characters, image_generations, …)",
+     "type": "string"
+    },
+    "scene_id": {
+     "description": "Фрагмент/сцена — попадает в имя файла и связывает ассет с листом сцен",
+     "type": "string"
+    },
+    "table": {
+     "description": "Путь сущности с данными канала (где лежит read.json)",
+     "type": "string"
+    },
+    "video_slug": {
+     "description": "Имя видео в названии файла (пусто → имя каталога сущности)",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table",
+    "resource_type",
+    "input",
+    "scene_id"
+   ],
+   "type": "object"
+  },
+  "title": "Медиа: исполнить ресурс активным провайдером"
+ },
  "media_provider_status": {
   "annotations": {
    "destructiveHint": false,

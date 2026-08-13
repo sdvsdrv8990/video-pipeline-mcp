@@ -77,7 +77,7 @@ per-channel конфига достаточно; это отменяет «ми�
 | Таблично-схемный слой `config/templates/tables/*.schema.yaml` | ❌ **MISSING** | `config/templates/tables/` пуст |
 | `scripts/introspect_tables.py` | ❌ **MISSING** | не существует |
 | Лист `SCENES` + статус-столбцы в книгах | ❌ **MISSING** | по спеке §5.2/5.3 — руками |
-| Media-инструменты `tools/media/` + адаптеры | 🟠 **STUB** | провайдеры = NotImplementedError; план готов |
+| Media-инструменты `tools/media/` + адаптеры | 🟡 **ЧАСТИЧНО (S22)** | `media_provider_status` + `media_generate` живые; адаптеры **локальные** (piper/diffusers) исполняют на этой машине, **облачные** (`litellm_*`) остались честными стабами — нет ключей и живого LiteLLM. Учёт расхода, цикл прозвонки, загрузка по ссылке и приёмка по диску — есть (`test_providers` 74/74) |
 | Table-примитивы `core/tables`/`core/excel` + `table_*`/`excel_*` | ✅ **DONE** | tables 33/33 |
 
 ## 3. Спек-файлы — инвентарь и размещение

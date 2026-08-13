@@ -28,9 +28,9 @@ trigger → poll → download. Этот модуль реализует ожид
 import time
 from pathlib import Path
 
-import yaml
-
 from core.paths import safe_resolve
+
+from .declaration import Declaration
 
 
 class TaskCycleError(Exception):
@@ -51,24 +51,13 @@ class TaskCycle:
         self.config_file = Path(config_file)
         self._sleep = sleep          # инъекция: в тестах ожидание не должно занимать минуты
         self._now = now
-        self._cfg: dict | None = None
-        self._mtime: float = 0.0
+        self._decl = Declaration(
+            config_file, TaskCycleError, "ожидания",
+            "Заведи config/media_tasks.yaml — интервалы и статусы объявляются там.")
 
     @property
     def config(self) -> dict:
-        if not self.config_file.exists():
-            raise TaskCycleError(
-                "TEMPLATE_NOT_FOUND", f"Нет декларации ожидания: {self.config_file.name}",
-                reason="Заведи config/media_tasks.yaml — интервалы и статусы объявляются там.")
-        mtime = self.config_file.stat().st_mtime
-        if self._cfg is None or mtime != self._mtime:
-            try:
-                data = yaml.safe_load(self.config_file.read_text(encoding="utf-8")) or {}
-            except yaml.YAMLError as e:
-                raise TaskCycleError("SCHEMA_INVALID", f"Битый {self.config_file.name}: {e}",
-                                     reason="Почини YAML — без него сервер не знает, как ждать.") from e
-            self._cfg, self._mtime = data, mtime
-        return self._cfg
+        return self._decl.data
 
     # ═══ Ожидание ═══
 

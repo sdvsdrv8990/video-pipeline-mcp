@@ -250,6 +250,296 @@ _tsrc = (ROOT / "core/providers/task_cycle.py").read_text(encoding="utf-8")
 ok("succeeded" not in _tsrc and "processing" not in _tsrc,
    "в коде цикла нет ни одного слова-статуса провайдера — они в декларации")
 
+print("== 11. Учёт расхода: лимит перестал быть теорией (шаг 3, часть 2) ==")
+from core.providers import UsageLedger
+
+_led = UsageLedger(CFG, _sm)
+ok(_led.measure({"usage_unit": "character"}, text="12345") == 5.0,
+   "единица «символ» меряется длиной текста — так же, как считает провайдер")
+ok(_led.measure({"usage_unit": "image"}, files=3) == 3.0, "единица «файл» меряется числом файлов")
+ok(_led.measure({}) == 1.0, "единица не названа → объявленный дефолт (вызов)")
+try:
+    _led.measure({"usage_unit": "попугаи"})
+    ok(False, "неизвестная единица должна падать")
+except ProviderError as e:
+    ok(e.code == "USAGE_UNIT_UNKNOWN",
+       f"неизвестная единица — отказ, а не тихий ноль: тихий ноль = вечный лимит ({e.code})")
+
+# Расход пишется в строку канала, а чужая очередь при этом не применяется.
+(_ws / "u").mkdir()
+(_ws / "u" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+    "R1": {"resource_type": "tts_characters", "provider": "P1", "fallback_provider": "P2",
+           "daily_limit": 10, "current_usage": 0, "warning_threshold": 8, "usage_unit": "character"},
+    "R2": {"resource_type": "tts_characters", "provider": "P2", "fallback_provider": "",
+           "daily_limit": 100, "current_usage": 0, "warning_threshold": 90}}}}), encoding="utf-8")
+_sm.push_to_queue("u", {"action": "set", "sheet": "RESOURCE_LIMITS", "row_id": "R1",
+                        "column": "provider", "value": "ЧУЖАЯ_ПРАВКА"})
+_rep = _led.charge_call("u", "RESOURCE_LIMITS", {"row_id": "R1", "row": {"usage_unit": "character"}},
+                        text="семь бук")
+_after = _json.loads((_ws / "u" / "read.json").read_text())["RESOURCE_LIMITS"]["rows"]["R1"]
+ok(_rep["before"] == 0 and _after["current_usage"] == 8, f"счётчик двинулся: 0 → {_after['current_usage']}")
+ok(_after["provider"] == "P1" and len(_json.loads((_ws / "u" / "write.json").read_text())) == 1,
+   "учёт расхода НЕ применил чужую очередь — накопленные правки ИИ остались нетронутыми")
+
+# Замыкание петли: расход добивает лимит → резолвер сам уходит на запасного.
+_rows_u = [{**r, "_row_id": rid} for rid, r in
+           _json.loads((_ws / "u" / "read.json").read_text())["RESOURCE_LIMITS"]["rows"].items()]
+ok(res.resolve(_rows_u, "tts_characters")["provider"] == "P1", "до исчерпания работает основной")
+_led.charge_call("u", "RESOURCE_LIMITS", {"row_id": "R1", "row": {"usage_unit": "character"}},
+                 text="ещё пять")
+_rows_u = [{**r, "_row_id": rid} for rid, r in
+           _json.loads((_ws / "u" / "read.json").read_text())["RESOURCE_LIMITS"]["rows"].items()]
+_d_u = res.resolve(_rows_u, "tts_characters")
+ok(_d_u["provider"] == "P2" and _d_u["exhausted_chain"],
+   "расход добил лимит → переключение на запасного произошло само (петля замкнулась)")
+try:
+    _led.charge("u", "RESOURCE_LIMITS", "", 1)
+    ok(False, "расход без ID строки должен падать")
+except ProviderError as e:
+    ok(e.code == "ROW_NOT_FOUND", f"дефолт декларации нельзя «зарядить» молча ({e.code})")
+
+print("== 12. Исполнение локальной моделью: файл, приёмка, расход (шаг 3, часть 3) ==")
+from core.providers import AdapterRegistry, MediaRequest
+
+_reg = AdapterRegistry(CFG, ROOT)
+try:
+    _reg.load("Нет_такого_провайдера", "tts_characters")
+    ok(False, "неизвестный провайдер должен падать")
+except ProviderError as e:
+    ok(e.code == "PROVIDER_ADAPTER_MISSING",
+       f"имя провайдера из данных не поднимает произвольный модуль ({e.code})")
+
+_tts_model = _reg.models_dir / "tts" / "ru_RU-dmitri-medium.onnx"
+_have_tts = _tts_model.is_file()
+_row_local = {"resource_type": "tts_characters", "provider": "Local_piper", "fallback_provider": "",
+              "daily_limit": -1, "current_usage": 0, "warning_threshold": -1,
+              "model": "ru_RU-dmitri-medium.onnx", "response_format": "wav", "speed": 1.0,
+              "usage_unit": "character"}
+(_ws / "v").mkdir()
+(_ws / "v" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+    "L1": dict(_row_local)}}}), encoding="utf-8")
+
+if _have_tts:
+    _g = _call("media_generate", table="v", resource_type="tts_characters",
+               input="Проверка локальной озвучки.", scene_id="scene01", video_slug="demo")
+    ok(_g.status == "success", f"локальная озвучка исполнена ({_g.error.code if _g.error else 'ok'})")
+    _file = _ws / _g.data["files"][0]
+    ok(_file.is_file() and _file.stat().st_size > 0,
+       f"на диске лежит непустой файл ({_file.name}, {_file.stat().st_size if _file.is_file() else 0} байт)")
+    ok(_g.data["files"][0].endswith("demo_tts_scene01.wav"),
+       f"имя ассета собрано по объявленному шаблону ({Path(_g.data['files'][0]).name})")
+    _usage = _json.loads((_ws / "v" / "read.json").read_text())["RESOURCE_LIMITS"]["rows"]["L1"]
+    ok(_g.data["usage"]["charged"] and _usage["current_usage"] == len("Проверка локальной озвучки."),
+       f"расход состоявшегося вызова записан в строку канала ({_usage['current_usage']})")
+    ok(_g.facts[0].type == "MediaGenerated" and _g.facts[0].data["provider"] == "Local_piper",
+       "исполнение приходит фактом контракта: кто исполнил и чем")
+else:
+    print("  ⚠ веса локальной озвучки не вытянуты (scripts/fetch_local_models.py) — живой прогон пропущен")
+
+# Имя модели — данные, которые правит ИИ: путь наружу не читается.
+(_ws / "v" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+    "L1": {**_row_local, "model": "../../../../etc/passwd"}}}}), encoding="utf-8")
+_esc = _call("media_generate", table="v", resource_type="tts_characters",
+             input="текст", scene_id="s1", video_slug="demo")
+ok(_esc.status == "error" and _esc.error.code == "LOCAL_MODEL_MISSING",
+   f"путь наружу в имени модели отбит containment ({_esc.error.code if _esc.error else 'success'})")
+
+(_ws / "v" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+    "L1": {**_row_local, "model": "нет-такой-модели.onnx"}}}}), encoding="utf-8")
+_nom = _call("media_generate", table="v", resource_type="tts_characters",
+             input="текст", scene_id="s1", video_slug="demo")
+ok(_nom.status == "error" and _nom.error.code == "LOCAL_MODEL_MISSING"
+   and "fetch_local_models" in (_nom.error.recovery.reason if _nom.error.recovery else ""),
+   "нет весов → честный отказ и названа команда, которая их принесёт")
+
+(_ws / "v" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+    "L1": {**_row_local, "response_format": "sh"}}}}), encoding="utf-8")
+_sh = _call("media_generate", table="v", resource_type="tts_characters",
+            input="текст", scene_id="s1", video_slug="demo")
+ok(_sh.status == "error" and _sh.error.code == "FILE_TYPE_FORBIDDEN",
+   f"результат провайдера не привилегирован: тип файла проходит тот же allowlist ({_sh.error.code if _sh.error else 'success'})")
+
+_img_model = _reg.models_dir / "img" / "sd-turbo"
+if _img_model.is_dir() and any(_img_model.rglob("*.safetensors")):
+    (_ws / "i").mkdir()
+    (_ws / "i" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+        "I1": {"resource_type": "image_generations", "provider": "Local_diffusers",
+               "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+               "warning_threshold": -1, "model": "sd-turbo", "img_size": "512x512", "img_n": 1,
+               "steps": 1, "variant": "fp16", "usage_unit": "image"}}}}), encoding="utf-8")
+    _gi = _call("media_generate", table="i", resource_type="image_generations",
+                input="a lighthouse on a cliff at sunrise", scene_id="scene01", video_slug="demo")
+    ok(_gi.status == "success", f"локальная генерация картинки исполнена ({_gi.error.code if _gi.error else 'ok'})")
+    _pi = _ws / _gi.data["files"][0]
+    ok(_pi.is_file() and _pi.stat().st_size > 10000,
+       f"картинка на диске и не пустая ({_pi.stat().st_size if _pi.is_file() else 0} байт)")
+    ok(_json.loads((_ws / "i" / "read.json").read_text())["RESOURCE_LIMITS"]["rows"]["I1"]["current_usage"] == 1,
+       "расход картинки меряется файлами, а не символами — единица из строки канала")
+else:
+    print("  ⚠ веса локальной генерации картинок не вытянуты — живой прогон пропущен")
+
+print("== 12b. Асинхронный провайдер: цикл прозвонки живёт ВНУТРИ вызова ==")
+import types as _types
+
+# Двойник асинхронного провайдера: он отвечает задачей, а не файлом. Ставим его в реестр
+# адаптеров временной декларацией — так проверяется проводка, а не наличие ключей от облака.
+_fake = _types.ModuleType("core.providers.fake_async")
+
+
+class _FakeAsync:
+    calls = {"poll": 0}
+
+    def __init__(self, models_dir):
+        self.models_dir = models_dir
+
+    def generate(self, request):
+        from core.providers import MediaOutcome
+        self._input = request.input
+        return MediaOutcome(task_id="TASK-1")
+
+    def poll(self, task_id):
+        _FakeAsync.calls["poll"] += 1
+        return ({"status": "processing"} if _FakeAsync.calls["poll"] < 3
+                else {"status": "succeeded", "url": "https://example.invalid/a.wav"})
+
+    def fetch(self, answer, target):
+        Path(target).write_bytes(b"RIFFfake-audio")     # так провайдер положил бы скачанный файл
+        return {"bytes": 14}
+
+
+class _FakeLink:
+    """Провайдер, который файл сам не забирает: он отдаёт только ссылку."""
+
+    url = ""
+
+    def __init__(self, models_dir):
+        self.models_dir = models_dir
+
+    def generate(self, request):
+        from core.providers import MediaOutcome
+        return MediaOutcome(task_id="TASK-2")
+
+    def poll(self, task_id):
+        return {"status": "succeeded", "audio_url": _FakeLink.url}
+
+
+_fake._FakeAsync = _FakeAsync
+_fake._FakeLink = _FakeLink
+sys.modules["core.providers.fake_async"] = _fake
+
+# Живой HTTP-сервер: ссылку провайдера забирает САМ сервер, через свои проверки.
+import http.server as _http
+import threading as _thr
+
+
+class _Serve(_http.BaseHTTPRequestHandler):
+    body = b"RIFF" + b"z" * 200
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(self.body)))
+        self.end_headers()
+        self.wfile.write(self.body)
+
+    def log_message(self, *a):
+        pass
+
+
+_httpd = _http.HTTPServer(("127.0.0.1", 0), _Serve)
+_thr.Thread(target=_httpd.serve_forever, daemon=True).start()
+_FakeLink.url = f"http://127.0.0.1:{_httpd.server_port}/result.wav"
+
+# Конфиг сервера не трогаем: копия каталога config/ + свой движок на ней. Правка боевого
+# конфига «на время теста» — ровно тот немой побочный эффект, который мы ловим у других.
+import shutil as _sh
+_acfg_dir = Path(tempfile.mkdtemp(prefix="async_cfg_")) / "config"
+_sh.copytree(ROOT / "config", _acfg_dir)
+_adata = yaml.safe_load(CFG.read_text(encoding="utf-8"))
+_adata["adapters"]["by_provider"]["Обл_async"] = "fake_async:_FakeAsync"
+_adata["adapters"]["by_provider"]["Обл_link"] = "fake_async:_FakeLink"
+(_acfg_dir / "providers.yaml").write_text(yaml.safe_dump(_adata, allow_unicode=True), encoding="utf-8")
+# Тестовый провайдер живёт на петле — послабление объявлено в КОПИИ конфига, боевой запрет цел.
+_mdata = yaml.safe_load((_acfg_dir / "media_tasks.yaml").read_text(encoding="utf-8"))
+_mdata["download"]["fetch"].update({"allow_schemes": ["http", "https"], "block_private_hosts": False})
+(_acfg_dir / "media_tasks.yaml").write_text(yaml.safe_dump(_mdata, allow_unicode=True), encoding="utf-8")
+
+(_ws / "a").mkdir()
+_arow = {"resource_type": "tts_characters", "provider": "Обл_async", "fallback_provider": "",
+         "daily_limit": 100, "current_usage": 0, "warning_threshold": 90, "model": "облачная",
+         "response_format": "wav", "sync_mode": False, "usage_unit": "character"}
+(_ws / "a" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+    "A1": dict(_arow)}}}), encoding="utf-8")
+_cfg_was = _srv.CONFIG_PATH
+try:
+    _srv.CONFIG_PATH = _acfg_dir
+    _eng_a = _Eng(state_manager=_sm)
+    _srv.register_basic_tools(_eng_a, _IDG(), _sm)
+    _ga = _aio.run(_eng_a.call("media_generate", {
+        "table": "a", "resource_type": "tts_characters", "input": "пять!",
+        "scene_id": "s1", "video_slug": "demo"}))
+    (_ws / "a" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+        "A1": {**_arow, "provider": "Обл_link"}}}}), encoding="utf-8")
+    _gl = _aio.run(_eng_a.call("media_generate", {
+        "table": "a", "resource_type": "tts_characters", "input": "ссылка",
+        "scene_id": "s2", "video_slug": "demo"}))
+finally:
+    _srv.CONFIG_PATH = _cfg_was
+    _httpd.shutdown()
+
+ok(_gl.status == "success" and (_ws / _gl.data["files"][0]).read_bytes() == _Serve.body,
+   f"провайдер отдал только ссылку — файл забрал сервер, содержимое совпало ({_gl.error.code if _gl.error else 'ok'})")
+
+ok(_ga.status == "success", f"асинхронная задача доведена до файла ({_ga.error.code if _ga.error else 'ok'})")
+ok(_ga.data["task"]["attempts"] == 3 and _ga.data["task"]["outcome"] == "done",
+   f"прозвонка шла внутри ЭТОГО вызова, пока задача не была готова ({_ga.data['task'].get('attempts')} опроса)")
+ok((_ws / _ga.data["files"][0]).is_file() and _ga.data["usage"]["charged"],
+   "файл забран по ссылке и расход учтён — та же приёмка, что у локального провайдера")
+
+print("== 13. Загрузка по ссылке провайдера: адрес и размер проверяются ДО диска ==")
+import http.server as _http
+import threading as _thr
+from core.providers import ResultDownloader
+
+_dl = ResultDownloader(ROOT / "config" / "media_tasks.yaml")
+for _case, _url in (("http вместо https", "http://example.com/a.wav"),
+                    ("петля", "https://127.0.0.1/a.wav"),
+                    ("localhost по имени", "https://localhost/a.wav"),
+                    ("метаданные облака", "https://169.254.169.254/latest/meta-data")):
+    try:
+        _dl.check_url(_url)
+        ok(False, f"{_case} должен отбиваться")
+    except TaskCycleError as e:
+        ok(e.code == "DOWNLOAD_FORBIDDEN", f"{_case} → DOWNLOAD_FORBIDDEN ({e.code})")
+
+# Предел размера считается ПО ХОДУ записи: живой сервер отдаёт больше, чем разрешено.
+_lim_cfg = Path(tempfile.mkdtemp(prefix="dlcfg_")) / "media_tasks.yaml"
+_lim_cfg.write_text(yaml.safe_dump({"download": {"fetch": {
+    "allow_schemes": ["http"], "block_private_hosts": False, "max_bytes": 1000,
+    "timeout_sec": 10}}}), encoding="utf-8")
+
+
+class _Big(_http.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Length", "50000")
+        self.end_headers()
+        self.wfile.write(b"x" * 50000)
+
+    def log_message(self, *a):
+        pass
+
+
+_srv_http = _http.HTTPServer(("127.0.0.1", 0), _Big)
+_thr.Thread(target=_srv_http.serve_forever, daemon=True).start()
+_out = Path(tempfile.mkdtemp(prefix="dlout_")) / "big.wav"
+try:
+    ResultDownloader(_lim_cfg).fetch(f"http://127.0.0.1:{_srv_http.server_port}/big.wav", _out)
+    ok(False, "превышение предела должно падать")
+except TaskCycleError as e:
+    ok(e.code == "DOWNLOAD_FORBIDDEN", f"предел размера обрывает загрузку ({e.code})")
+ok(not _out.exists(), "недописанный файл удалён, а не выдан за результат")
+_srv_http.shutdown()
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

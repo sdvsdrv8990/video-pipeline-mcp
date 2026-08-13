@@ -178,7 +178,7 @@ print("== 7b. Строки-дефолты из схемы доезжают В К
 ws5 = tempfile.mkdtemp(prefix="tm5_")
 r5 = new_materializer(ws5).materialize("channel_data", "ch.xlsx")
 wb5 = openpyxl.load_workbook(Path(ws5) / "ch.xlsx")
-ok(r5["rows_total"] == 34, f"материализатор отчитался о 34 строках-дефолтах (получено {r5['rows_total']})")
+ok(r5["rows_total"] == 36, f"материализатор отчитался о 36 строках-дефолтах (получено {r5['rows_total']})")
 _sp = wb5["SCENE_PROFILE"]
 _vals = {row[0]: row[1] for row in _sp.iter_rows(min_row=2, values_only=True) if row[0]}
 ok(len(_vals) == 7, f"SCENE_PROFILE: 7 строк данных на листе (получено {len(_vals)})")
