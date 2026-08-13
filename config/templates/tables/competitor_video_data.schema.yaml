@@ -4,7 +4,24 @@ book: competitor_video_data
 level: competitor_video
 source: competitor_video_data.schema.md
 sheets:
-  - name: PERFORMANCE   # | Столбец | Тип | Флаг | Прим. |
+  - name: META
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: video_id, type: string, flag: id }
+      - { name: title, type: string, flag: W }
+      - { name: url, type: string, flag: W }
+      - { name: channel_id, type: string, flag: fk }
+      - { name: channel_name, type: string, flag: W }
+      - { name: publish_date, type: string, flag: W }
+      - { name: duration_sec, type: string, flag: W }
+      - { name: niche, type: string, flag: W }
+      - { name: views, type: string, flag: W }
+      - { name: likes, type: string, flag: W }
+      - { name: comments, type: string, flag: W }
+      - { name: estimated_subs_at_publish, type: string, flag: W }
+      - { name: type, type: string, flag: F }
+
+  - name: PERFORMANCE
     columns:
       - { name: views, type: integer, flag: W }
       - { name: likes, type: integer, flag: W }
@@ -15,3 +32,159 @@ sheets:
       - { name: estimated_retention, type: float, flag: F, formula: '=MIN(85,20+engagement_rate*8)' }   # `=MIN(85,20+engagement_rate*8)` (оценка, нет реальных данных)
       - { name: retention_tier, type: enum, flag: F, enum: ['HIGH', 'MED', 'LOW'] }   # HIGH/MED/LOW
       - { name: performance_score, type: float, flag: F, formula: '=like_rate*0.4+comment_rate*0.3+(est_retention/100)*0.3' }   # `=like_rate*0.4+comment_rate*0.3+(est_retention/100)*0.3`
+
+  - name: TRANSCRIPT
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: scene_id, type: string, flag: id }
+      - { name: timestamp_start, type: string, flag: W }
+      - { name: timestamp_end, type: string, flag: W }
+      - { name: duration_sec, type: string, flag: W }
+      - { name: act_number, type: string, flag: W }
+      - { name: text, type: string, flag: W }
+      - { name: word_count, type: string, flag: W }
+      - { name: pace_wpm, type: string, flag: F }   # word_count/(duration/60)
+      - { name: energy_level, type: string, flag: W }   # 1–5
+      - { name: notes, type: string, flag: W }
+
+  - name: TECHNIQUES
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: technique_id, type: string, flag: id }
+      - { name: timestamp, type: string, flag: W }
+      - { name: act_number, type: string, flag: W }
+      - { name: technique_type, type: string, flag: W }
+      - { name: description, type: string, flag: W }
+      - { name: effectiveness, type: string, flag: W }   # 1–5
+      - { name: steal_priority, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW', 'SKIP'] }
+      - { name: already_in_our_dna, type: enum, flag: W, enum: ['YES', 'NO'] }
+      - { name: psychological_pattern_id, type: string, flag: fk }   # P01–P12
+      - { name: audience_category, type: enum, flag: W, enum: ['C1', 'C2', 'C3'] }
+      - { name: notes, type: string, flag: W }
+
+  - name: PATTERNS
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: pattern_id, type: string, flag: id }
+      - { name: pattern_type, type: string, flag: W }   # hook_formula/pacing/visual_style/audio_style/ comment_bait/thumbnail_angle/title_formula/other
+      - { name: description, type: string, flag: W }
+      - { name: timestamp_example, type: string, flag: W }
+      - { name: frequency_in_channel, type: string, flag: W }
+      - { name: avg_effectiveness, type: string, flag: W }
+      - { name: steal_priority, type: string, flag: W }
+      - { name: psychological_pattern_id, type: string, flag: fk }
+      - { name: audience_category, type: string, flag: W }
+      - { name: notes, type: string, flag: W }
+
+  - name: SCENE_SEMANTICS   # (сенсорный слой конкурента)
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: scene_id, type: string, flag: id }
+      - { name: timestamp, type: string, flag: W }
+      - { name: script_phrase, type: string, flag: W }
+      - { name: character, type: string, flag: W }
+      - { name: emotion, type: string, flag: W }
+      - { name: lighting, type: string, flag: W }
+      - { name: contrast_level, type: string, flag: W }
+      - { name: camera_move, type: string, flag: W }
+      - { name: sound_cue, type: string, flag: W }
+      - { name: music_mood, type: string, flag: W }
+      - { name: voice_tone, type: string, flag: W }
+      - { name: gesture, type: string, flag: W }
+      - { name: eye_direction, type: string, flag: W }
+      - { name: visual_metaphor, type: string, flag: W }
+      - { name: text_on_screen_style, type: string, flag: W }
+      - { name: retention_impact, type: string, flag: W }
+      - { name: technique_linked, type: string, flag: fk }
+      - { name: psychological_pattern_id, type: string, flag: fk }
+      - { name: audience_category, type: string, flag: W }
+      - { name: estimated_effectiveness, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW'] }
+      - { name: steal_priority, type: string, flag: W }
+      - { name: notes, type: string, flag: W }
+
+  - name: VISUAL_PATTERNS
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: pattern_id, type: string, flag: id }
+      - { name: scene_id, type: string, flag: fk }
+      - { name: context_tag, type: string, flag: W }
+      - { name: estimated_effectiveness, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW'] }
+      - { name: steal_priority, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW', 'SKIP'] }
+      - { name: adapted_by_us, type: enum, flag: W, enum: ['YES', 'NO'] }
+      - { name: our_pattern_id, type: string, flag: fk }
+      - { name: psychological_pattern_id, type: string, flag: fk }
+      - { name: audience_category, type: string, flag: W }
+      - { name: notes, type: string, flag: W }
+      - { name: visual_solution, type: string, flag: W }
+      - { name: character, type: string, flag: W }
+      - { name: emotion, type: string, flag: W }
+      - { name: color_primary, type: string, flag: W }
+      - { name: action, type: string, flag: W }
+
+  - name: SCRIPT_PATTERNS
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: pattern_id, type: string, flag: id }
+      - { name: scene_id, type: string, flag: fk }
+      - { name: context_tag, type: string, flag: W }
+      - { name: estimated_effectiveness, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW'] }
+      - { name: steal_priority, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW', 'SKIP'] }
+      - { name: adapted_by_us, type: enum, flag: W, enum: ['YES', 'NO'] }
+      - { name: our_pattern_id, type: string, flag: fk }
+      - { name: psychological_pattern_id, type: string, flag: fk }
+      - { name: audience_category, type: string, flag: W }
+      - { name: notes, type: string, flag: W }
+      - { name: pattern_description, type: string, flag: W }
+      - { name: sentence_avg_length, type: string, flag: W }
+      - { name: short_sentence_pct, type: string, flag: W }
+      - { name: rhetorical_questions_count, type: string, flag: W }
+      - { name: transition_type, type: string, flag: W }
+
+  - name: AUDIO_PATTERNS
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: pattern_id, type: string, flag: id }
+      - { name: scene_id, type: string, flag: fk }
+      - { name: context_tag, type: string, flag: W }
+      - { name: estimated_effectiveness, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW'] }
+      - { name: steal_priority, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW', 'SKIP'] }
+      - { name: adapted_by_us, type: enum, flag: W, enum: ['YES', 'NO'] }
+      - { name: our_pattern_id, type: string, flag: fk }
+      - { name: psychological_pattern_id, type: string, flag: fk }
+      - { name: audience_category, type: string, flag: W }
+      - { name: notes, type: string, flag: W }
+      - { name: pattern_description, type: string, flag: W }
+      - { name: sound_cue_type, type: string, flag: W }
+      - { name: music_mood, type: string, flag: W }
+      - { name: voice_tone, type: string, flag: W }
+      - { name: pause_duration_sec, type: string, flag: W }
+      - { name: tempo_bpm, type: string, flag: W }
+
+  - name: RETENTION_PATTERNS   # (комбинации)
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: pattern_id, type: string, flag: id }
+      - { name: context_tag, type: string, flag: W }
+      - { name: combination_description, type: string, flag: W }
+      - { name: visual_pattern_id, type: string, flag: fk }
+      - { name: script_pattern_id, type: string, flag: fk }
+      - { name: audio_pattern_id, type: string, flag: fk }
+      - { name: estimated_retention_impact, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW'] }
+      - { name: timestamp_example, type: string, flag: W }
+      - { name: scene_id, type: string, flag: fk }
+      - { name: audience_category, type: string, flag: W }
+      - { name: psychological_patterns_triggered, type: string, flag: W }   # список
+      - { name: steal_priority, type: string, flag: W }
+      - { name: adapted_by_us, type: enum, flag: W, enum: ['YES', 'NO'] }
+      - { name: notes, type: string, flag: W }
+
+  - name: INSIGHTS
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: insight_id, type: string, flag: id }
+      - { name: category, type: string, flag: W }   # hook/structure/pacing/visual/audio/engagement/other
+      - { name: observation, type: string, flag: W }
+      - { name: action_for_us, type: string, flag: W }
+      - { name: priority, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW'] }
+      - { name: applied, type: enum, flag: W, enum: ['YES', 'NO'] }
+      - { name: applied_in_video_id, type: string, flag: fk }

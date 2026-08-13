@@ -118,7 +118,7 @@ sheets:
       - { name: resolved, type: enum, flag: W, enum: ['YES', 'NO'] }   # YES/NO
       - { name: resolved_in_video_id, type: string, flag: fk }
 
-  - name: VISUAL_PATTERN_LIBRARY   # | Столбец | Тип | Флаг | Прим. |
+  - name: VISUAL_PATTERN_LIBRARY
     columns:
       - { name: pattern_id, type: string, flag: id }
       - { name: context_tag, type: string, flag: W }   # loss/gain/shock/reveal/…
@@ -137,7 +137,7 @@ sheets:
       - { name: psychological_pattern_id, type: string, flag: fk }   # P01–P12
       - { name: notes, type: string, flag: W }
 
-  - name: SCRIPT_PATTERN_LIBRARY   # | Столбец | Тип | Флаг | Прим. |
+  - name: SCRIPT_PATTERN_LIBRARY
     columns:
       - { name: pattern_id, type: string, flag: id }
       - { name: context_tag, type: string, flag: W }
@@ -156,7 +156,7 @@ sheets:
       - { name: psychological_pattern_id, type: string, flag: fk }   # P01–P12
       - { name: notes, type: string, flag: W }
 
-  - name: AUDIO_PATTERN_LIBRARY   # | Столбец | Тип | Флаг | Прим. |
+  - name: AUDIO_PATTERN_LIBRARY
     columns:
       - { name: pattern_id, type: string, flag: id }
       - { name: context_tag, type: string, flag: W }
@@ -203,3 +203,34 @@ sheets:
       - { name: overall_effectiveness, type: enum, flag: F, enum: ['HIGH', 'MED', 'LOW'] }   # HIGH/MED/LOW
       - { name: best_context_tag, type: string, flag: F }
       - { name: notes, type: string, flag: W }
+
+  - name: ANALYTICS   # дашборд (весь Read-Only)
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: video_n, type: string, flag: F }
+      - { name: video_id, type: string, flag: F }
+      - { name: publish_date, type: string, flag: F }
+      - { name: retention_pct, type: string, flag: F }
+      - { name: uniqueness, type: string, flag: F }
+      - { name: tier, type: string, flag: F }
+      - { name: act, type: string, flag: F }
+      - { name: avg_duration_pct, type: string, flag: F }
+      - { name: min, type: string, flag: F }
+      - { name: max, type: string, flag: F }
+      - { name: recommended, type: string, flag: F }
+      - { name: technique_type, type: string, flag: F }
+      - { name: times_used, type: string, flag: F }
+      - { name: avg_effectiveness, type: string, flag: F }
+      - { name: top_video, type: string, flag: F }
+      - { name: asset_type, type: string, flag: F }
+      - { name: pool_size, type: string, flag: F }
+      - { name: assets_needing_rotation, type: string, flag: F }
+      - { name: rotation_health, type: string, flag: F }
+      - { name: pattern_type, type: string, flag: F }
+      - { name: total_patterns, type: string, flag: F }
+      - { name: fresh_count, type: string, flag: F }
+      - { name: rotate_count, type: string, flag: F }
+      - { name: retire_count, type: string, flag: F }
+      - { name: last_3_uniqueness_avg, type: string, flag: F }
+      - { name: trend, type: string, flag: F }
+      - { name: alert, type: string, flag: F }

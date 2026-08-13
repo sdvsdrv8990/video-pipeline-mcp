@@ -4,7 +4,7 @@ book: competitor_channel_data
 level: competitor_channel
 source: competitor_channel_data.schema.md
 sheets:
-  - name: CHANNEL_META   # | Столбец | Тип | Флаг | Прим. |
+  - name: CHANNEL_META
     columns:
       - { name: channel_id, type: string, flag: id }
       - { name: channel_name, type: string, flag: W }
@@ -22,7 +22,7 @@ sheets:
       - { name: last_analyzed_date, type: date, flag: W }
       - { name: notes, type: string, flag: W }
 
-  - name: VIDEOS_INDEX   # | Столбец | Тип | Флаг | Прим. |
+  - name: VIDEOS_INDEX
     columns:
       - { name: video_n, type: integer, flag: W }
       - { name: video_id, type: string, flag: W }
@@ -40,7 +40,7 @@ sheets:
       - { name: steal_count, type: integer, flag: F }   # кол-во YES в steal_this по видео
       - { name: notes, type: string, flag: W }
 
-  - name: CHANNEL_PATTERNS   # | Столбец | Тип | Флаг | Прим. |
+  - name: CHANNEL_PATTERNS
     columns:
       - { name: pattern_type, type: enum, flag: W }   # visual/script/audio/retention
       - { name: pattern_id, type: string, flag: id }
@@ -55,7 +55,96 @@ sheets:
       - { name: audience_category, type: enum, flag: W, enum: ['C1', 'C2', 'C3'] }   # C1/C2/C3
       - { name: notes, type: string, flag: W }
 
-  - name: INSIGHTS   # | Столбец | Тип | Флаг | Прим. |
+  - name: TOP_VIDEOS
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: rank, type: string, flag: W }
+      - { name: video_id, type: string, flag: fk }
+      - { name: title, type: string, flag: W }
+      - { name: views, type: string, flag: W }
+      - { name: performance_score, type: string, flag: W }
+      - { name: hook_type, type: string, flag: W }
+      - { name: why_it_worked, type: string, flag: W }
+      - { name: key_technique, type: string, flag: W }
+      - { name: steal_priority, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW'] }
+      - { name: applied_in_our_video_id, type: string, flag: fk }
+      - { name: notes, type: string, flag: W }
+
+  - name: VISUAL_SOLUTIONS_LIBRARY
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: solution_id, type: string, flag: id }
+      - { name: context_tag, type: string, flag: W }
+      - { name: estimated_effectiveness, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW'] }
+      - { name: steal_priority, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW', 'SKIP'] }
+      - { name: adapted_by_us, type: enum, flag: W, enum: ['YES', 'NO'] }
+      - { name: our_pattern_id, type: string, flag: fk }
+      - { name: psychological_pattern_id, type: string, flag: fk }   # P01–P12
+      - { name: audience_category, type: enum, flag: W }
+      - { name: notes, type: string, flag: W }
+      - { name: visual_solution, type: string, flag: W }
+      - { name: description, type: string, flag: W }
+      - { name: character, type: string, flag: W }
+      - { name: emotion, type: string, flag: W }
+      - { name: color_primary, type: string, flag: W }
+
+  - name: SCRIPT_SOLUTIONS_LIBRARY
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: solution_id, type: string, flag: id }
+      - { name: context_tag, type: string, flag: W }
+      - { name: estimated_effectiveness, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW'] }
+      - { name: steal_priority, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW', 'SKIP'] }
+      - { name: adapted_by_us, type: enum, flag: W, enum: ['YES', 'NO'] }
+      - { name: our_pattern_id, type: string, flag: fk }
+      - { name: psychological_pattern_id, type: string, flag: fk }   # P01–P12
+      - { name: audience_category, type: enum, flag: W }
+      - { name: notes, type: string, flag: W }
+      - { name: pattern_description, type: string, flag: W }
+      - { name: sentence_avg_length, type: string, flag: W }
+      - { name: short_sentence_pct, type: string, flag: W }
+      - { name: rhetorical_questions_freq, type: string, flag: W }
+      - { name: transition_type, type: string, flag: W }
+
+  - name: AUDIO_SOLUTIONS_LIBRARY
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: solution_id, type: string, flag: id }
+      - { name: context_tag, type: string, flag: W }
+      - { name: estimated_effectiveness, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW'] }
+      - { name: steal_priority, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW', 'SKIP'] }
+      - { name: adapted_by_us, type: enum, flag: W, enum: ['YES', 'NO'] }
+      - { name: our_pattern_id, type: string, flag: fk }
+      - { name: psychological_pattern_id, type: string, flag: fk }   # P01–P12
+      - { name: audience_category, type: enum, flag: W }
+      - { name: notes, type: string, flag: W }
+      - { name: pattern_description, type: string, flag: W }
+      - { name: sound_cue_type, type: string, flag: W }
+      - { name: music_mood, type: string, flag: W }
+      - { name: voice_tone, type: string, flag: W }
+      - { name: pause_duration_sec, type: string, flag: W }
+      - { name: tempo_bpm, type: string, flag: W }
+
+  - name: RETENTION_SOLUTIONS_LIBRARY
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: solution_id, type: string, flag: id }
+      - { name: context_tag, type: string, flag: W }
+      - { name: estimated_effectiveness, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW'] }
+      - { name: steal_priority, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW', 'SKIP'] }
+      - { name: adapted_by_us, type: enum, flag: W, enum: ['YES', 'NO'] }
+      - { name: our_pattern_id, type: string, flag: fk }
+      - { name: psychological_pattern_id, type: string, flag: fk }   # P01–P12
+      - { name: audience_category, type: enum, flag: W }
+      - { name: notes, type: string, flag: W }
+      - { name: combination_description, type: string, flag: W }
+      - { name: visual_solution_id, type: string, flag: W }
+      - { name: script_solution_id, type: string, flag: W }
+      - { name: audio_solution_id, type: string, flag: W }
+      - { name: estimated_retention_impact, type: string, flag: W }
+      - { name: psychological_patterns_triggered, type: string, flag: W }   # список
+
+  - name: INSIGHTS
     columns:
       - { name: insight_id, type: string, flag: id }
       - { name: category, type: enum, flag: W }   # hook/structure/pacing/visual/audio/engagement/other
@@ -66,3 +155,12 @@ sheets:
       - { name: applied, type: enum, flag: W, enum: ['YES', 'NO'] }   # YES/NO
       - { name: applied_in_our_video_id, type: string, flag: W }
       - { name: result, type: string, flag: W }   # факт результата применения
+
+  - name: ANALYTICS   # дашборд канала конкурента (Read-Only)
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: metric, type: string, flag: F }
+      - { name: this_competitor, type: string, flag: F }
+      - { name: us, type: string, flag: F }
+      - { name: delta, type: string, flag: F }
+      - { name: who_wins, type: string, flag: F }

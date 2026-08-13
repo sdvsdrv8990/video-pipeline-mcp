@@ -4,7 +4,7 @@ book: niche_network_data
 level: network
 source: niche_network_data.schema.md
 sheets:
-  - name: COMPETITORS_INDEX   # | Столбец | Тип | Флаг | Прим. |
+  - name: COMPETITORS_INDEX
     columns:
       - { name: channel_id, type: string, flag: id }
       - { name: channel_name, type: string, flag: W }
@@ -20,7 +20,7 @@ sheets:
       - { name: top_video_views, type: integer, flag: W }
       - { name: our_adoption_count, type: integer, flag: F }   # сколько их инсайтов мы применили
 
-  - name: NICHE_PATTERNS   # | Столбец | Тип | Флаг | Прим. |
+  - name: NICHE_PATTERNS
     columns:
       - { name: pattern_id, type: string, flag: id }
       - { name: pattern_type, type: enum, flag: W }   # visual/script/audio/retention
@@ -34,7 +34,7 @@ sheets:
       - { name: audience_category, type: enum, flag: W, enum: ['C1', 'C2', 'C3'] }   # C1/C2/C3
       - { name: notes, type: string, flag: W }
 
-  - name: TOP_TOPICS   # | Столбец | Тип | Флаг | Прим. |
+  - name: TOP_TOPICS
     columns:
       - { name: rank, type: integer, flag: W }
       - { name: topic, type: string, flag: W }
@@ -48,6 +48,25 @@ sheets:
       - { name: our_coverage_status, type: enum, flag: W, enum: ['NOT_COVERED', 'PLANNED', 'IN_PRODUCTION', 'DONE'] }   # NOT_COVERED/PLANNED/IN_PRODUCTION/DONE
       - { name: our_video_id, type: string, flag: W }
       - { name: notes, type: string, flag: W }
+
+  - name: AUDIENCE_PROFILE   # (2 секции)
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: category_id, type: string, flag: id }
+      - { name: category_name, type: string, flag: W }
+      - { name: description, type: string, flag: W }
+      - { name: evidence_source, type: string, flag: W }   # список video_id
+      - { name: size_estimate, type: enum, flag: W, enum: ['LARGE', 'MED', 'SMALL'] }
+      - { name: primary_pain_point, type: string, flag: W }
+      - { name: primary_desire, type: string, flag: W }
+      - { name: content_format_preference, type: string, flag: W }
+      - { name: pattern_id, type: string, flag: id }
+      - { name: pattern_name, type: string, flag: W }
+      - { name: pattern_type, type: string, flag: W }   # cognitive_bias/behavioral/psychographic
+      - { name: evidence_from_top_videos, type: string, flag: W }
+      - { name: strength_in_niche, type: string, flag: W }   # 1–5
+      - { name: content_application, type: string, flag: W }
+      - { name: already_in_our_dna, type: enum, flag: W, enum: ['YES', 'NO'] }
 
   - name: CONTENT_PREDICTION   # предсказания (gap → план)
     columns:
@@ -80,7 +99,7 @@ sheets:
       - { name: postmortem_notes, type: string, flag: W }
       - { name: next_iteration_action, type: string, flag: W }
 
-  - name: TOP_VIDEOS_NICHE   # | Столбец | Тип | Флаг | Прим. |
+  - name: TOP_VIDEOS_NICHE
     columns:
       - { name: rank, type: integer, flag: W }
       - { name: video_id, type: string, flag: W }
@@ -94,6 +113,79 @@ sheets:
       - { name: steal_priority, type: enum, flag: W, enum: ['HIGH', 'MED', 'LOW'] }   # HIGH/MED/LOW
       - { name: applied_by_us, type: enum, flag: W, enum: ['YES', 'NO'] }   # YES/NO
       - { name: our_video_id, type: string, flag: W }
+
+  - name: NICHE_VISUAL_PATTERNS
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: pattern_id, type: string, flag: id }
+      - { name: context_tag, type: string, flag: W }
+      - { name: found_in_channels, type: string, flag: W }   # список
+      - { name: channels_count, type: string, flag: F }
+      - { name: frequency_pct, type: string, flag: F }
+      - { name: avg_effectiveness, type: string, flag: W }
+      - { name: best_example_video_id, type: string, flag: fk }
+      - { name: our_adoption_status, type: enum, flag: W }
+      - { name: our_pattern_id, type: string, flag: fk }
+      - { name: psychological_pattern_id, type: string, flag: fk }   # P01–P12
+      - { name: audience_category, type: enum, flag: W }
+      - { name: notes, type: string, flag: W }
+      - { name: visual_solution, type: string, flag: W }
+
+  - name: NICHE_SCRIPT_PATTERNS
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: pattern_id, type: string, flag: id }
+      - { name: context_tag, type: string, flag: W }
+      - { name: found_in_channels, type: string, flag: W }   # список
+      - { name: channels_count, type: string, flag: F }
+      - { name: frequency_pct, type: string, flag: F }
+      - { name: avg_effectiveness, type: string, flag: W }
+      - { name: best_example_video_id, type: string, flag: fk }
+      - { name: our_adoption_status, type: enum, flag: W }
+      - { name: our_pattern_id, type: string, flag: fk }
+      - { name: psychological_pattern_id, type: string, flag: fk }   # P01–P12
+      - { name: audience_category, type: enum, flag: W }
+      - { name: notes, type: string, flag: W }
+      - { name: pattern_description, type: string, flag: W }
+
+  - name: NICHE_AUDIO_PATTERNS
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: pattern_id, type: string, flag: id }
+      - { name: context_tag, type: string, flag: W }
+      - { name: found_in_channels, type: string, flag: W }   # список
+      - { name: channels_count, type: string, flag: F }
+      - { name: frequency_pct, type: string, flag: F }
+      - { name: avg_effectiveness, type: string, flag: W }
+      - { name: best_example_video_id, type: string, flag: fk }
+      - { name: our_adoption_status, type: enum, flag: W }
+      - { name: our_pattern_id, type: string, flag: fk }
+      - { name: psychological_pattern_id, type: string, flag: fk }   # P01–P12
+      - { name: audience_category, type: enum, flag: W }
+      - { name: notes, type: string, flag: W }
+      - { name: pattern_description, type: string, flag: W }
+
+  - name: NICHE_RETENTION_PATTERNS
+    # столбцы из прозаической формы спеки: тип не объявлен, принят string
+    columns:
+      - { name: pattern_id, type: string, flag: id }
+      - { name: context_tag, type: string, flag: W }
+      - { name: found_in_channels, type: string, flag: W }   # список
+      - { name: channels_count, type: string, flag: F }
+      - { name: frequency_pct, type: string, flag: F }
+      - { name: avg_effectiveness, type: string, flag: W }
+      - { name: best_example_video_id, type: string, flag: fk }
+      - { name: our_adoption_status, type: enum, flag: W }
+      - { name: our_pattern_id, type: string, flag: fk }
+      - { name: psychological_pattern_id, type: string, flag: fk }   # P01–P12
+      - { name: audience_category, type: enum, flag: W }
+      - { name: notes, type: string, flag: W }
+      - { name: combination_description, type: string, flag: W }
+      - { name: visual_pattern_id, type: string, flag: W }
+      - { name: script_pattern_id, type: string, flag: W }
+      - { name: audio_pattern_id, type: string, flag: W }
+      - { name: avg_retention_impact, type: string, flag: W }
+      - { name: psychological_patterns_triggered, type: string, flag: W }   # список
 
   - name: PATTERN_EFFECTIVENESS_MATRIX   # матрица по ЦА (ниша)
     columns:

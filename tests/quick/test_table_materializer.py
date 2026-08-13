@@ -173,6 +173,79 @@ ok(any(f.type == "TableMaterialized" for f in res.facts),
    "факт TableMaterialized доехал в контракт (тип заведён в KNOWN_FACT_TYPES, D25)")
 
 
+print("== 8. Конвертер спека→схема: что разобрано, а что честно отдано человеку ==")
+import importlib.util
+
+_spec = importlib.util.spec_from_file_location("s2s", ROOT / "scripts" / "spec_to_schema.py")
+s2s = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(s2s)
+
+ok(s2s.verify() == 0, "разбор сходится с собранной РУКАМИ network_config (приёмка конвертера)")
+
+specs = Path(tempfile.mkdtemp(prefix="s2s_"))
+
+
+def parse(body: str) -> dict:
+    p = specs / "probe.schema.md"
+    p.write_text(body, encoding="utf-8")
+    return s2s.parse_spec(p)
+
+
+def cols_of(res: dict, i: int = 0) -> list[dict]:
+    """Столбцы листа, не роняя прогон: при мутации листа может не быть вовсе."""
+    return res["sheets"][i]["columns"] if len(res["sheets"]) > i else []
+
+
+# Диапазон в ДВУХ парах кавычек раньше проходил немо: имя бралось из первой пары,
+# многоточие оставалось в хвосте заголовка, и 7 листов схлопывались в один без слова.
+r = parse("## Листы 4–10: `ACT_1_HOOK` … `ACT_7_TRUTH` (7 идентичных)\n\n"
+          "`act_name, text` — `W`.\n")
+ok(not r["sheets"], "диапазон листов не превращается в один лист")
+ok(any("не называет их поимённо" in w for w in r["warnings"]),
+   "диапазон без поимённого перечисления — предупреждение, а не догадка об именах")
+
+# Составное имя разворачивается ТОЛЬКО потому, что спека сама называет листы в «Дельтах».
+r = parse("## Листы 5–6: `VISUAL_/SCRIPT_LIB` (шаблон)\n\n"
+          "**Общие:** `solution_id (id), notes` — всё `W`.\n\n"
+          "**Дельты:**\n"
+          "- `VISUAL_LIB` (5): + `visual_solution`.\n"
+          "- `SCRIPT_LIB` (6): + `pattern_description`.\n")
+ok([s["name"] for s in r["sheets"]] == ["VISUAL_LIB", "SCRIPT_LIB"],
+   "группа разворачивается в листы, ПОИМЕННО названные спекой")
+ok([c["name"] for c in cols_of(r)] == ["solution_id", "notes", "visual_solution"],
+   "у листа группы общие столбцы + собственная дельта")
+ok(bool(cols_of(r)) and cols_of(r)[0]["flag"] == "id", "флаг из аннотации `(id)` доехал")
+
+# Прозаическая форма: имена и флаги спека объявляет, тип — нет.
+r = parse("## Лист 1: `META`\n\n"
+          "`video_id (id), title, channel_id (fk), tier (HIGH/MED/LOW)` — `W`;\n"
+          "`type` = `F` (фикс.).\n")
+cols = {c["name"]: c for c in cols_of(r)}
+ok(list(cols) == ["video_id", "title", "channel_id", "tier", "type"],
+   "прозаический список даёт столбцы, включая одиночный `type` = `F` вне списка")
+ok(cols.get("channel_id", {}).get("flag") == "fk" and cols.get("type", {}).get("flag") == "F",
+   "флаги из прозы верны")
+ok(cols.get("tier", {}).get("type") == "enum" and cols.get("tier", {}).get("enum") == ["HIGH", "MED", "LOW"],
+   "enum-значения из скобок, а не выдуманные")
+ok(bool(r["sheets"]) and r["sheets"][0]["prose"], "лист помечен как собранный из прозы (тип не объявлен спекой)")
+
+# Не выдумываем: составной столбец `a_x/y` — это ДВА столбца, развести может только человек.
+r = parse("## Лист 1: `S`\n\n`scene_id (id), color_primary/secondary, notes` — `W`.\n")
+names = [c["name"] for c in cols_of(r)]
+ok("color_primary/secondary" not in names and "color_primary" not in names,
+   "составной столбец через `/` не разводится машиной и не попадает в схему как есть")
+ok(any("не приняты за имена столбцов" in w for w in r["warnings"]),
+   "отброшенный токен назван поимённо — это адрес для вычитки")
+
+# Дашборд из секций собирается, но полнота набора под вопросом → сервер обязан сказать.
+r = parse("## Лист 9: `ANALYTICS` — дашборд (Read-Only)\n\n"
+          "> Весь `F`. Секции: **Топ** (`metric, delta`) · **Прочее** (trend, our_status).\n")
+ok([c["flag"] for c in cols_of(r)] == ["F", "F"],
+   "лист, объявленный целиком Read-Only, даёт столбцы с флагом F")
+ok(any("проверить полноту" in w for w in r["warnings"]),
+   "секционный дашборд помечен как возможно неполный, а не выдан за полный")
+
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:
