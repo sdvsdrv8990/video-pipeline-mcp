@@ -199,6 +199,57 @@ ok(_bad.status == "success" and _bad.data["failed"]
    and _bad.data["failed"][0]["code"] == "PROVIDER_NOT_CONFIGURED",
    "неизвестный ресурс отчитывается кодом в failed, не роняет остальные")
 
+print("== 10. Цикл ожидания задачи + приёмка загрузки (шаг 3, часть 1) ==")
+from core.providers import TaskCycle, TaskCycleError
+from core.paths import PathEscapeError
+
+_tc = TaskCycle(ROOT / "config" / "media_tasks.yaml", sleep=lambda s: None)
+ok(_tc.classify("succeeded") == "done" and _tc.classify("failed") == "failed"
+   and _tc.classify("что_то_своё") == "running",
+   "слова статусов берутся из декларации, неизвестное считается «ещё выполняется»")
+_seq = iter([{"status": "queued"}, {"status": "processing"}, {"status": "succeeded"}])
+_w = _tc.wait(lambda tid: next(_seq), "T1")
+ok(_w["outcome"] == "done" and _w["attempts"] == 3, f"ждём до готовности ({_w['attempts']} опроса)")
+ok(_w["unknown_status"] == ["processing", "queued"],
+   "непонятые статусы копятся в отчёте, а не выдаются за успех и не обрывают ожидание")
+try:
+    _tc.wait(lambda tid: {"status": "failed", "error": "модерация"}, "T2")
+    ok(False, "отказ провайдера должен падать")
+except TaskCycleError as e:
+    ok(e.code == "PROVIDER_FAILED" and "модерация" in e.reason,
+       "отказ провайдера → код реестра, причина провайдера сохранена")
+_stuck = iter([{"status": "крутится"}] * 500)
+try:
+    _tc.wait(lambda tid: next(_stuck), "T3")
+    ok(False, "вечная задача должна обрываться пределом")
+except TaskCycleError as e:
+    ok(e.code == "PROVIDER_TIMEOUT" and "крутится" in e.reason,
+       "предел ожидания срабатывает и называет последний статус, а не молчит")
+
+_dws = Path(tempfile.mkdtemp(prefix="dl_"))
+(_dws / "a.wav").write_bytes(b"12345")
+_v = _tc.verify_download("a.wav", _dws, declared_bytes=5)
+ok(_v["bytes"] == 5 and all(_v["checks"].values()), "загрузка подтверждена ДИСКОМ, а не кодом ответа")
+(_dws / "empty.wav").write_bytes(b"")
+for _case, _p, _kw in (("нулевой размер", "empty.wav", {}),
+                       ("размер не сошёлся", "a.wav", {"declared_bytes": 99}),
+                       ("файла нет вовсе", "нет.wav", {})):
+    try:
+        _tc.verify_download(_p, _dws, **_kw)
+        ok(False, f"{_case} должен падать")
+    except TaskCycleError as e:
+        ok(e.code == "DOWNLOAD_INCOMPLETE", f"{_case} → DOWNLOAD_INCOMPLETE ({e.code})")
+try:
+    _tc.verify_download("../../etc/passwd", _dws)
+    ok(False, "путь наружу должен отбиваться")
+except PathEscapeError:
+    ok(True, "ссылка приходит извне — путь загрузки проходит containment (G17)")
+ok(_tc.expected_name("scene_01", {"response_format": "wav"}) == "scene_01.wav",
+   "расширение берётся из строки провайдера, а не угадывается из ссылки")
+_tsrc = (ROOT / "core/providers/task_cycle.py").read_text(encoding="utf-8")
+ok("succeeded" not in _tsrc and "processing" not in _tsrc,
+   "в коде цикла нет ни одного слова-статуса провайдера — они в декларации")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

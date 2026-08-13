@@ -224,6 +224,18 @@ PROVIDER_EXHAUSTED:
     suggested_tool: table_update
     reason: "Подними daily_limit, обнули current_usage или добавь ещё одного провайдера строкой — это данные канала, правятся без перезапуска сервера."
 
+PROVIDER_TIMEOUT:
+  class: server_recoverable
+  message_template: "Задача провайдера не завершилась за отведённое время."
+  recovery:
+    reason: "Подними timeout_sec/max_attempts в config/media_tasks.yaml, если задача штатно дольше, либо проверь задачу на стороне провайдера. Повтор без изменения предела даст тот же результат."
+
+DOWNLOAD_INCOMPLETE:
+  class: server_recoverable
+  message_template: "Файл не загружен полностью: успех провайдера не подтверждён диском."
+  recovery:
+    reason: "Ответ 200 не означает загрузку — файла нет, он пуст или размер не сошёлся с обещанным. Повтори загрузку; при повторе проверь ссылку и место на диске."
+
 RECALC_UNAVAILABLE:
   class: human_required
   message_template: "Движок пересчёта формул (LibreOffice) недоступен."
