@@ -10,6 +10,7 @@ tools/uniqueness — расчёт уникальности по требован
 
 from core.contracts import Fact, ToolResult
 from core.engine import Engine
+from core.tables import TableError
 from core.uniqueness import UniquenessEngine
 from tools._context import ANNOTATIONS_READONLY, ToolContext
 
@@ -49,6 +50,41 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 return list(sheet.get("rows") or []), "declaration"
         return [], "none"
 
+    def _compensation_history(table: str, spec: dict, scene_ref: str) -> int:
+        """Сколько раз эта сцена уже проходила за счёт соседей (записи в данных проекта)."""
+        sheet = spec.get("record_sheet")
+        if not sheet:
+            return 0
+        col = spec.get("scene_column", "scene_ref")
+        return sum(1 for r in _rows(table, sheet).values() if r.get(col) == scene_ref)
+
+    def _record_compensation(table: str, spec: dict, scene_ref: str, comp: dict, res: dict) -> dict:
+        """Записать факт компенсации в данные проекта и СКАЗАТЬ, получилось ли.
+
+        Без записи «применён несколько раз» неоткуда узнать, а флаг сцены остался бы разговором.
+        Поэтому провал записи не глушится: он возвращается в ответ. Молчаливый `except` здесь
+        означал бы, что счётчик тихо не растёт, а эскалация никогда не наступит.
+        """
+        sheet = spec.get("record_sheet")
+        if not sheet:
+            return {"recorded": False, "reason": "лист журнала не объявлен в конфиге"}
+        row = {spec.get("scene_column", "scene_ref"): scene_ref,
+               "compensated_items": ",".join(comp["items"]),
+               "composed": res["composed"], "alert": res["alert"] or "",
+               "escalated": comp["escalated"]}
+        try:
+            # Журнал заводит сервер: до первой компенсации листа в данных проекта нет,
+            # а append проверяет существование листа (и правильно делает для клиентских правок).
+            snapshot = ctx.state_manager.read_snapshot(table) or {}
+            if sheet not in snapshot:
+                snapshot[sheet] = {"schema": {}, "rows": {}}
+                ctx.state_manager.write_snapshot(table, snapshot)
+            ctx.table_engine.append(table, sheet, row, id_prefix="UALERT")
+            ctx.table_engine.execute_queue(table)
+            return {"recorded": True, "sheet": sheet}
+        except (TableError, OSError) as e:
+            return {"recorded": False, "reason": str(e)}
+
     async def uniqueness_check(table: str, row_id: str = "") -> "ToolResult":
         """Посчитать уникальность применения патерна и сказать, ХВАТИЛО ЛИ данных.
 
@@ -83,13 +119,30 @@ def register(engine: Engine, ctx: ToolContext) -> None:
 
         profile_rows, profile_source = _profile(table, sources.get("profile") or {})
 
+        # Сколько раз эта сцена УЖЕ проходила за счёт соседей: приём разрешён, но накапливается.
+        comp_spec = cfg.get("compensation") or {}
+        scene_ref = row_id or table
+        history = _compensation_history(table, comp_spec, scene_ref)
+
         ok, res = ctx.safe(lambda: uniq.compute(text=text, corpus=corpus,
-                                                fragments=fragments, profile_rows=profile_rows))
+                                                fragments=fragments, profile_rows=profile_rows,
+                                                compensation_history=history))
         if not ok:
             return res
         res["table"] = table
         res["row_id"] = row_id
         res["profile_source"] = profile_source
+        res["scene_ref"] = scene_ref
+
+        comp = res["compensation"]
+        if comp.get("active"):
+            # Событие пишется В ДАННЫЕ проекта той же дверью, что и любая правка строки:
+            # без записи «несколько раз» неоткуда узнать, а флаг сцены был бы разговором.
+            comp.update(_record_compensation(table, comp_spec, scene_ref, comp, res))
+            key = "uniqueness.escalated" if comp.get("escalated") else "uniqueness.compensated"
+            res["recommendations"] = ctx.advice.get(key, table=table, scene_ref=scene_ref)
+        else:
+            res["recommendations"] = []
 
         facts = [Fact(type="UniquenessComputed", data={
             "table": table, "row_id": row_id, "readiness": res["readiness"],
@@ -100,6 +153,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             # число значит выдать неготовность за результат.
             facts.append(Fact(type="UniquenessIncomplete", data={
                 "table": table, "row_id": row_id, "missing": res["missing_inputs"]}))
+        if comp.get("active"):
+            facts.append(Fact(type="UniquenessCompensated", data={
+                "table": table, "scene_ref": scene_ref, "items": comp["items"],
+                "history": comp["history"], "escalated": comp["escalated"]}))
         if res["alert"]:
             facts.append(Fact(type="UniquenessAlert", data={
                 "table": table, "row_id": row_id, "level": res["alert"],

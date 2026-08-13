@@ -121,7 +121,8 @@ class UniquenessEngine:
         return active
 
     def compute(self, text: str = "", corpus: list[str] | None = None,
-                fragments: dict | None = None, profile_rows: list[dict] | None = None) -> dict:
+                fragments: dict | None = None, profile_rows: list[dict] | None = None,
+                compensation_history: int = 0) -> dict:
         """Посчитать оценки и сказать, ХВАТИЛО ЛИ данных.
 
         `fragments` — {тип_фрагмента: [идентификаторы применений]}; уникальность типа = доля
@@ -136,6 +137,7 @@ class UniquenessEngine:
         scores: dict[str, float] = {}
         missing: dict[str, list[str]] = {}
         fragment_gaps: list[str] = []
+        fragment_scores: dict[str, float] = {}
         for name, spec in (cfg.get("scores") or {}).items():
             lack = [need for need in (spec.get("needs") or []) if not inputs.get(need)]
             if lack:
@@ -143,7 +145,8 @@ class UniquenessEngine:
                 continue
             if "profile" in (spec.get("needs") or []):
                 active = self._active_profile(profile_rows or [], spec.get("profile") or {})
-                scores[name], gaps = self._fragment_score(fragments or {}, active, empty_value)
+                scores[name], gaps, per_type = self._fragment_score(fragments or {}, active, empty_value)
+                fragment_scores.update(per_type)
                 if gaps:
                     # Включённый тип без применений — это ОТСУТСТВИЕ данных, а не нулевая
                     # уникальность. Молчаливый ноль сделал бы «нечего мерить» неотличимым
@@ -161,7 +164,9 @@ class UniquenessEngine:
             readiness = "full"
         composed, weights_used = self._compose(scores, cfg, empty_value)
         thresholds = cfg.get("thresholds") or {}
-        alert, alert_sources = self._alert(composed, scores, thresholds, readiness)
+        alert, alert_sources = self._alert(composed, scores, fragment_scores, thresholds, readiness)
+        compensation = self._compensation(composed, scores, fragment_scores, thresholds,
+                                          readiness, cfg, compensation_history)
         return {
             "readiness": readiness,
             "scores": scores,
@@ -169,8 +174,10 @@ class UniquenessEngine:
             "fragment_gaps": sorted(set(fragment_gaps)),
             "composed": composed,
             "composition_weights": weights_used,
+            "fragment_scores": fragment_scores,
             "alert": alert,
             "alert_sources": alert_sources,
+            "compensation": compensation,
             "thresholds": {k: thresholds.get(k) for k in ("alert_below", "critical_below")},
         }
 
@@ -186,7 +193,50 @@ class UniquenessEngine:
             return "alert"
         return None
 
-    def _alert(self, composed: float, scores: dict, thresholds: dict,
+    def _checks(self, composed: float, scores: dict, fragment_scores: dict,
+                thresholds: dict) -> list[tuple[str, float, dict]]:
+        """Все уровни, на которых считается сигнал: композиция, оценки, КАЖДЫЙ тип фрагмента.
+
+        Заспамленный фон обязан быть виден сам по себе, а не только в среднем по сцене.
+        """
+        top = {k: thresholds[k] for k in ("alert_below", "critical_below") if k in thresholds}
+        per_score = thresholds.get("per_score") or {}
+        per_type = thresholds.get("per_fragment_type") or {}
+        out = [("composed", composed, top)]
+        for name, value in scores.items():
+            if name in per_score:
+                out.append((name, value, {**top, **(per_score[name] or {})}))
+        for ftype, value in fragment_scores.items():
+            if per_type:
+                own = per_type.get(ftype) if isinstance(per_type.get(ftype), dict) else {}
+                base = {k: v for k, v in per_type.items() if not isinstance(v, dict)}
+                out.append((f"fragment:{ftype}", value, {**top, **base, **(own or {})}))
+        return out
+
+    def _compensation(self, composed: float, scores: dict, fragment_scores: dict,
+                      thresholds: dict, readiness: str, cfg: dict, history: int) -> dict:
+        """Что прошло за счёт соседей — и не пора ли требовать новую сцену.
+
+        Уникальный текст и уникальный фон могут закрыть собой заспамленные фрагменты: итог
+        проходит. Это разрешено, но записывается — приём, которым «проходят уникальность»,
+        опасен при повторении, и после объявленного числа раз требование ужесточается.
+        """
+        spec = cfg.get("compensation") or {}
+        if readiness == "empty" or not spec:
+            return {"active": False, "items": [], "history": history, "escalated": False}
+        top_level = self._level(composed, {k: thresholds[k] for k in
+                                           ("alert_below", "critical_below") if k in thresholds})
+        weak = [name for name, value, th in self._checks(composed, scores, fragment_scores, thresholds)
+                if name != "composed"
+                and self._SEVERITY[self._level(value, th)] > self._SEVERITY[top_level]]
+        if not weak:
+            return {"active": False, "items": [], "history": history, "escalated": False}
+        escalate_after = int(spec.get("escalate_after", 0) or 0)
+        return {"active": True, "items": sorted(weak), "history": history,
+                "escalated": bool(escalate_after) and history >= escalate_after,
+                "masked_level": top_level}
+
+    def _alert(self, composed: float, scores: dict, fragment_scores: dict, thresholds: dict,
                readiness: str) -> tuple[str | None, list[str]]:
         """Худшая оценка решает (владелец S22).
 
@@ -195,12 +245,7 @@ class UniquenessEngine:
         """
         if readiness == "empty":
             return None, []
-        top = {k: thresholds[k] for k in ("alert_below", "critical_below") if k in thresholds}
-        per_score = thresholds.get("per_score") or {}
-        checks = [("composed", composed, top)]
-        for name, value in scores.items():
-            if name in per_score:
-                checks.append((name, value, {**top, **(per_score[name] or {})}))
+        checks = self._checks(composed, scores, fragment_scores, thresholds)
         worst, sources = None, []
         for name, value, th in checks:
             level = self._level(value, th)
@@ -211,7 +256,7 @@ class UniquenessEngine:
         return worst, sources
 
     def _fragment_score(self, fragments: dict, active: list[dict],
-                        empty_value: float) -> tuple[float, list[str]]:
+                        empty_value: float) -> tuple[float, list[str], dict]:
         """Взвешенная уникальность по типам фрагментов + типы БЕЗ данных.
 
         Выключенный тип не входит вовсе («тихий столбец»). Включённый, но не применённый —
@@ -219,17 +264,16 @@ class UniquenessEngine:
         этом из знаменателя убирается, иначе отсутствие данных занижало бы оценку соседей.
         """
         if not active:
-            return empty_value, []
+            return empty_value, [], {}
         gaps = [item["type"] for item in active if not (fragments.get(item["type"]) or [])]
         measured = [item for item in active if fragments.get(item["type"])]
         total_weight = sum(item["weight"] for item in measured)
+        per_type = {item["type"]: round(len(set(fragments[item["type"]])) / len(fragments[item["type"]]), 4)
+                    for item in measured}
         if not measured or total_weight <= 0:
-            return empty_value, gaps
-        acc = 0.0
-        for item in measured:
-            used = fragments[item["type"]]
-            acc += (len(set(used)) / len(used)) * item["weight"]
-        return round(acc / total_weight, 4), gaps
+            return empty_value, gaps, per_type
+        acc = sum(per_type[item["type"]] * item["weight"] for item in measured)
+        return round(acc / total_weight, 4), gaps, per_type
 
     def _compose(self, scores: dict, cfg: dict, empty_value: float) -> tuple[float, dict]:
         """Итог по объявленным весам. Считаем только по посчитанным слагаемым, веса пере-нормируем:

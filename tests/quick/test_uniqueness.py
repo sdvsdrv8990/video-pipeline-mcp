@@ -172,6 +172,67 @@ ok(_r2.data["alert_sources"] == ["script_score"], "источник сигнал
 ok(all(f.type != "UniquenessIncomplete" for f in _r2.facts),
    "при полных данных факта неполноты нет")
 
+print("== 6b. Сигнал на КАЖДОМ уровне + компенсация записывается и накапливается ==")
+_P6 = [{"fragment_type": "svg_bg", "enabled": True, "niche_weight": 0.7},
+       {"fragment_type": "music", "enabled": True, "niche_weight": 0.3}]
+# Уникальный фон закрывает заспамленную музыку: итог отличный, но музыка провальная.
+_c = uniq.compute(text="абсолютно новый текст про совершенно иное дело сегодня",
+                  corpus=["старый текст про рыбалку и лодку на озере"],
+                  fragments={"svg_bg": ["BG1", "BG2"], "music": ["M1", "M1", "M1"]},
+                  profile_rows=_P6)
+ok(_c["fragment_scores"] == {"svg_bg": 1.0, "music": 0.3333},
+   f"оценка считается по КАЖДОМУ типу фрагмента, не только в среднем ({_c['fragment_scores']})")
+ok(_c["composed"] > 0.8, f"итоговое число выглядит отличным ({_c['composed']})")
+ok(_c["alert"] == "critical" and _c["alert_sources"] == ["fragment:music"],
+   f"но сигнал поднят по заспамленному фрагменту ({_c['alert']}, {_c['alert_sources']})")
+ok(_c["compensation"]["active"] and _c["compensation"]["items"] == ["fragment:music"],
+   "компенсация распознана: слабое место закрыто сильным соседом")
+ok(_c["compensation"]["escalated"] is False, "первое применение приёма — ещё не эскалация")
+_esc = uniq.compute(text="абсолютно новый текст про совершенно иное дело сегодня",
+                    corpus=["старый текст про рыбалку и лодку на озере"],
+                    fragments={"svg_bg": ["BG1", "BG2"], "music": ["M1", "M1", "M1"]},
+                    profile_rows=_P6, compensation_history=2)
+ok(_esc["compensation"]["escalated"] is True,
+   "приём применён к сцене объявленное число раз → требование ужесточается")
+_clean6 = uniq.compute(text="абсолютно новый текст про совершенно иное дело сегодня",
+                       corpus=["старый текст про рыбалку и лодку на озере"],
+                       fragments={"svg_bg": ["BG1", "BG2"], "music": ["M1", "M2", "M3"]},
+                       profile_rows=_P6, compensation_history=5)
+ok(not _clean6["compensation"]["active"],
+   "всё уникально само по себе → компенсации нет, сколько бы ни было истории")
+
+# Накопление живёт в ДАННЫХ проекта: без записи «несколько раз» неоткуда узнать.
+(_ws / "v2").mkdir()
+(_ws / "v2" / "read.json").write_text(json.dumps({
+    "SCRIPT_PATTERNS_USED": {"schema": {}, "rows": {
+        "P1": {"pattern_description": "абсолютно новый текст про совершенно иное дело сегодня"},
+        "P2": {"pattern_description": "старый текст про рыбалку и лодку на озере"}}},
+    "ASSETS_USED": {"schema": {}, "rows": {
+        "A1": {"asset_type": "svg_bg", "asset_id": "BG1"},
+        "A2": {"asset_type": "svg_bg", "asset_id": "BG2"},
+        "A3": {"asset_type": "music", "asset_id": "M1"},
+        "A4": {"asset_type": "music", "asset_id": "M1"},
+        "A5": {"asset_type": "music", "asset_id": "M1"}}},
+    "SCENE_PROFILE": {"schema": {}, "rows": {
+        "R1": {"fragment_type": "svg_bg", "enabled": True, "niche_weight": 0.7},
+        "R2": {"fragment_type": "music", "enabled": True, "niche_weight": 0.3}}},
+}), encoding="utf-8")
+_runs = [_call("uniqueness_check", table="v2", row_id="P1").data["compensation"] for _ in range(3)]
+ok([r["history"] for r in _runs] == [0, 1, 2],
+   f"каждое применение приёма записано в проект ({[r['history'] for r in _runs]})")
+ok(all(r.get("recorded") for r in _runs),
+   "запись журнала подтверждена в ответе, а не проглочена молча")
+ok([r["escalated"] for r in _runs] == [False, False, True],
+   "после объявленного числа раз включается требование новой сцены")
+_last = _call("uniqueness_check", table="v2", row_id="P1")
+_recs = _last.data.get("recommendations") or []
+ok([a["id"] for a in _recs] == ["compensation_escalated"],
+   "совет меняется с «перестановки/анимации» на «нужна уникальная сцена»")
+ok(any(f.type == "UniquenessCompensated" for f in _last.facts),
+   "компенсация приходит фактом контракта, а не только числом")
+ok(bool(_recs) and "SVG" in _recs[0]["text"],
+   "в требовании названо, ЧТО именно нужно — новые SVG-компоненты или новая сцена")
+
 print("== 7. Битая декларация не глушится (иначе расчёт тихо потеряет параметры, D2) ==")
 _bad = Path(tempfile.mkdtemp()) / "uniqueness.yaml"
 _bad.write_text("ngram: [не словарь\n", encoding="utf-8")

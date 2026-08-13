@@ -18,6 +18,7 @@ KNOWN_FACT_TYPES = {
     "CreationSkipped", "TemplatesCustomized",
     # Уникальность (A7.2): число, неполнота входов и сигнал в петлю решений
     "UniquenessComputed", "UniquenessIncomplete", "UniquenessAlert",
+    "UniquenessCompensated",
     "MemoryRead", "MemoryWritten",
     "SearchCompleted", "QuickSearch", "MultiSearch",
     "FsSearch", "FsSearchYaml", "FsSearchMulti",
