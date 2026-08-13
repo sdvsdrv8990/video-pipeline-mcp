@@ -8,7 +8,9 @@ core/providers/adapters.py — какой КОД исполняет провай
 объявленным корнем — одной опечатки в конфиге мало, чтобы поднять чужой модуль.
 
 ## Контракт адаптера
-`Adapter(models_dir)` + `generate(MediaRequest) -> MediaOutcome`.
+`Adapter(registry)` + `generate(MediaRequest) -> MediaOutcome`. Реестр отдан адаптеру целиком,
+чтобы веса он спрашивал (`registry.model_path`), а не искал: раскладка каталога моделей —
+знание декларации, и второй копии этого знания в адаптерах быть не должно.
 - синхронный провайдер возвращает `files` — файлы уже на диске;
 - асинхронный возвращает `task_id`, и тогда вызывающий прозванивает `poll(task_id)` циклом
   (`core/providers/task_cycle.py`) и забирает результат `fetch(answer, target)`.
@@ -18,6 +20,8 @@ core/providers/adapters.py — какой КОД исполняет провай
 import importlib
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from core.paths import PathEscapeError, safe_resolve
 
 from .declaration import Declaration
 from .resolver import ProviderError
@@ -62,6 +66,49 @@ class AdapterRegistry:
         local = self.config.get("local") or {}
         return self.project_root / str(local.get("models_dir", "vendor/models"))
 
+    @property
+    def catalog(self) -> list[dict]:
+        """Объявленные локальные модели: что откуда тянется и что открывает адаптер."""
+        return list((self.config.get("local") or {}).get("catalog") or [])
+
+    def model_path(self, name: str) -> Path:
+        """Где лежат веса модели, названной строкой канала.
+
+        Имя из данных — это `id` объявленной модели; тогда путь берётся из декларации. Если имени
+        в каталоге нет, оно трактуется как путь относительно корня весов (модель положили руками).
+        В обоих случаях путь проходит containment: строку канала правит ИИ, и `../../.env` в поле
+        `model` иначе читало бы чужое.
+        """
+        wanted = str(name or "").strip()
+        if not wanted:
+            raise ProviderError(
+                "LOCAL_MODEL_MISSING", "В строке провайдера не указана модель.",
+                reason="Впиши в столбец model имя объявленной модели "
+                       f"({', '.join(str(e.get('id')) for e in self.catalog) or 'каталог пуст'}) "
+                       "или путь внутри каталога весов.",
+                suggested_tool="table_update")
+        declared = {str(e.get("id")): str(e.get("path") or e.get("dest") or "") for e in self.catalog}
+        rel = declared.get(wanted) or wanted
+        try:
+            return safe_resolve(rel, self.models_dir)
+        except PathEscapeError as e:
+            raise ProviderError(
+                "LOCAL_MODEL_MISSING", f"Имя модели ведёт за пределы каталога весов: {wanted}",
+                reason="Модель берётся только из каталога локальных весов — путь наружу не читается.",
+            ) from e
+
+    def require_model(self, name: str, must_be_dir: bool = False) -> Path:
+        """То же, но с проверкой, что веса действительно лежат. Нет — отказ, а не тишина."""
+        path = self.model_path(name)
+        present = path.is_dir() if must_be_dir else path.is_file()
+        if not present:
+            raise ProviderError(
+                "LOCAL_MODEL_MISSING", f"Нет весов локальной модели: {name}",
+                reason=("Веса не лежат в git — вытяни их: python scripts/fetch_local_models.py. "
+                        f"Ожидались в {path}. Либо переключи строку канала на другого провайдера."),
+                suggested_tool="media_provider_status")
+        return path
+
     def spec(self, provider: str, resource_type: str = "") -> str:
         """Объявленный путь адаптера. Пара «провайдер:ресурс» точнее одного имени и ищется первой."""
         table = (self.config.get("adapters") or {}).get("by_provider") or {}
@@ -94,4 +141,4 @@ class AdapterRegistry:
                 reason=("Модуль объявлен, но его нет или в нём нет такого класса. Проверь "
                         "config/providers.yaml → adapters.by_provider и установку зависимостей."),
             ) from e
-        return adapter_cls(self.models_dir)
+        return adapter_cls(self)

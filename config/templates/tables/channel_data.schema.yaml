@@ -347,6 +347,7 @@ sheets:
       - { name: usage_unit, type: string, flag: W }
       - { name: steps, type: integer, flag: W }
       - { name: variant, type: string, flag: W }
+      - { name: guidance, type: float, flag: W }
     rows:
       - resource_type: tts_characters
         provider: ElevenLabs
@@ -384,7 +385,7 @@ sheets:
         daily_limit: -1
         current_usage: 0
         warning_threshold: -1
-        model: ru_RU-dmitri-medium.onnx
+        model: ru_RU-dmitri-medium
         voice: ''
         response_format: wav
         speed: 1.0
@@ -444,6 +445,7 @@ sheets:
         img_n: 1
         steps: 1
         variant: fp16
+        guidance: 0.0
         timeout: 300
         retry_count: 0
         retry_delay: 0

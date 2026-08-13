@@ -188,7 +188,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
 
     async def structure_customize(path: str, what: str = "both",
                                   overwrite: bool = False) -> "ToolResult":
-        """Скопировать серверные шаблоны в проект, чтобы править их ДО материализации.
+        """Скопировать серверные шаблоны в СУЩНОСТЬ, чтобы править их ДО материализации.
 
         Копия ложится в `<path>/.templates/`; дальше `structure_create(mode=custom)` найдёт её
         резолвером. Серверные шаблоны остаются декларацией и не меняются — правится копия.
@@ -196,6 +196,19 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         if what not in {"workspace", "tables", "both"}:
             return ctx.err("VALIDATION_ERROR", f"Неизвестное what: {what}.",
                            "Допустимо: workspace, tables, both.")
+        # Адрес обязан быть зарегистрированной сущностью. Резолвер ищет `.templates/` ВВЕРХ по
+        # дереву, поэтому копия, положенная выше канала (тем более в корень), молча становится
+        # законом для всех сущностей ниже — правка «под один канал» меняла бы чужие.
+        entity = ctx.link_registry.find_by_path(path) if str(path).strip() else None
+        if entity is None:
+            return ctx.err(
+                "ENTITY_NOT_FOUND",
+                f"Шаблоны копируются в сущность, а не по произвольному адресу: '{path}' не зарегистрирован.",
+                "Адаптированный шаблон обязан лежать в той сущности, под которую его правят "
+                "(например, в канале). Копия выше по дереву начнёт действовать на всё, что ниже, "
+                "и правка под один канал молча изменит соседние. Создай сущность "
+                "(structure_create) или назначь ID существующему каталогу (structure_assign_id).",
+                suggested_tool="structure_assign_id")
         ok, root = ctx.safe(lambda: ctx.resolve(path))
         if not ok:
             return root
@@ -229,6 +242,11 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 copied.append({"path": rel, "what": sub})
         return ToolResult(status="success", data={
             "path": path, "templates_dir": f"{path.rstrip('/')}/{PROJECT_TEMPLATES_DIR}",
+            "owner": {k: entity.get(k) for k in ("id", "type", "name") if k in entity},
+            "scope_note": (f"Копия принадлежит сущности '{entity.get('name') or path}' "
+                           f"({entity.get('type') or 'тип не назван'}) и действует на неё и всё, "
+                           "что будет создано НИЖЕ по дереву: резолвер ищет .templates/ вверх от "
+                           "адреса создания. Чтобы правка касалась одного канала — копируй в канал."),
             "copied": copied, "skipped": skipped,
             "recommendations": ctx.advice.get("structure_customize", path=path)},
             facts=[Fact(type="TemplatesCustomized", data={
@@ -454,12 +472,15 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         name="structure_customize",
         title="Структура: свои шаблоны под проект",
         description=(
-            "Копирует СЕРВЕРНЫЕ шаблоны структуры и книг в проект (`<path>/.templates/`), чтобы "
-            "править их ДО материализации. Дальше structure_create(mode=custom) находит копию сам — "
-            "по адресу создания, без состояния «проект открыт». Серверные шаблоны остаются "
-            "декларацией и не меняются. Уже существующую копию не затирает (overwrite=true — осознанно)."),
+            "Копирует СЕРВЕРНЫЕ шаблоны структуры и книг в СУЩНОСТЬ (`<path>/.templates/`), чтобы "
+            "править их ДО материализации. Адрес обязан быть зарегистрированной сущностью — тем "
+            "каналом (или иным узлом), под который шаблон адаптируется: копия действует на неё и "
+            "на всё, что будет создано ниже по дереву, поэтому положенная выше молча изменила бы "
+            "соседей. Дальше structure_create(mode=custom) находит копию сам — по адресу создания, "
+            "без состояния «проект открыт». Серверные шаблоны остаются декларацией и не меняются. "
+            "Уже существующую копию не затирает (overwrite=true — осознанно)."),
         input_schema={"type": "object", "properties": {
-            "path": {"type": "string", "description": "Каталог проекта относительно workspace, куда лечь копии"},
+            "path": {"type": "string", "description": "Сущность, под которую адаптируется шаблон (обычно канал): её каталог относительно workspace"},
             "what": {"type": "string", "enum": ["workspace", "tables", "both"], "default": "both",
                      "description": "Что копировать: шаблоны структуры, схемы книг или всё"},
             "overwrite": {"type": "boolean", "default": False,

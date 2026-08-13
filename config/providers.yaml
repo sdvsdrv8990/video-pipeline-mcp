@@ -61,11 +61,15 @@ adapters:
 # `scripts/fetch_local_models.py`. Нет весов → честный LOCAL_MODEL_MISSING, а не молчаливый успех.
 local:
   models_dir: vendor/models
+  # `dest` — куда скачивает скрипт, `path` — что открывает адаптер. Оба здесь, потому что это
+  # ОДНО знание: адаптер не должен догадываться о раскладке каталога, иначе правка `dest`
+  # молча разошлась бы с местом, куда он смотрит. Строка канала называет модель по `id`.
   catalog:
     - id: ru_RU-dmitri-medium
       kind: tts
       repo: rhasspy/piper-voices
       dest: tts
+      path: tts/ru_RU-dmitri-medium.onnx
       files:
         - ru/ru_RU/dmitri/medium/ru_RU-dmitri-medium.onnx
         - ru/ru_RU/dmitri/medium/ru_RU-dmitri-medium.onnx.json
@@ -73,6 +77,7 @@ local:
       kind: img
       repo: stabilityai/sd-turbo
       dest: img/sd-turbo
+      path: img/sd-turbo
       snapshot: true
       # Только половинная точность: fp32-копии тех же весов весят вдвое и на этой машине
       # не нужны — вариант выбирается столбцом `variant` в строке провайдера.

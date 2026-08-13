@@ -309,11 +309,34 @@ except ProviderError as e:
     ok(e.code == "PROVIDER_ADAPTER_MISSING",
        f"имя провайдера из данных не поднимает произвольный модуль ({e.code})")
 
+# Раскладка каталога весов — декларация, а не знание адаптера: правка `path` меняет, куда он смотрит.
+_lcfg = Path(tempfile.mkdtemp(prefix="local_")) / "providers.yaml"
+_ldata = yaml.safe_load(CFG.read_text(encoding="utf-8"))
+_ldata["local"]["models_dir"] = "иной_каталог"
+_ldata["local"]["catalog"][0]["path"] = "переложено/голос.onnx"
+_lcfg.write_text(yaml.safe_dump(_ldata, allow_unicode=True), encoding="utf-8")
+_lreg = AdapterRegistry(_lcfg, ROOT)
+ok(_lreg.model_path("ru_RU-dmitri-medium") == (ROOT / "иной_каталог" / "переложено/голос.onnx").resolve(),
+   "путь к весам взят из декларации целиком (каталог + path), в коде адаптера его нет")
+ok(_lreg.model_path("руками_положенная.onnx") == (ROOT / "иной_каталог" / "руками_положенная.onnx").resolve(),
+   "модель вне каталога трактуется как путь внутри корня весов — руками положенное тоже работает")
+try:
+    _lreg.model_path("../../../../etc/passwd")
+    ok(False, "путь наружу должен падать")
+except ProviderError as e:
+    ok(e.code == "LOCAL_MODEL_MISSING", f"имя модели из данных не выводит за корень весов ({e.code})")
+for _mod in ("core/providers/tts/piper_local.py", "core/providers/img/diffusers_local.py"):
+    _msrc = (ROOT / _mod).read_text(encoding="utf-8")
+    _code = "\n".join(l for l in _msrc.splitlines() if not l.lstrip().startswith("#"))
+    _code = _code.split('"""', 2)[-1]                     # шапку модуля не считаем кодом
+    ok("SUBDIR" not in _code and 'models_dir /' not in _code,
+       f"{Path(_mod).name}: подкаталог весов не зашит в код")
+
 _tts_model = _reg.models_dir / "tts" / "ru_RU-dmitri-medium.onnx"
 _have_tts = _tts_model.is_file()
 _row_local = {"resource_type": "tts_characters", "provider": "Local_piper", "fallback_provider": "",
               "daily_limit": -1, "current_usage": 0, "warning_threshold": -1,
-              "model": "ru_RU-dmitri-medium.onnx", "response_format": "wav", "speed": 1.0,
+              "model": "ru_RU-dmitri-medium", "response_format": "wav", "speed": 1.0,
               "usage_unit": "character"}
 (_ws / "v").mkdir()
 (_ws / "v" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
@@ -358,6 +381,18 @@ _sh = _call("media_generate", table="v", resource_type="tts_characters",
             input="текст", scene_id="s1", video_slug="demo")
 ok(_sh.status == "error" and _sh.error.code == "FILE_TYPE_FORBIDDEN",
    f"результат провайдера не привилегирован: тип файла проходит тот же allowlist ({_sh.error.code if _sh.error else 'success'})")
+
+# Параметры вызова картинки — только объявленные столбцы; чего в строке нет, того не передаём.
+from core.providers.img.diffusers_local import DiffusersLocalIMG as _IMG
+
+_kw = _IMG(_reg)._call_kwargs({"img_size": "768x512", "steps": 4, "img_n": 2, "guidance": 0.0})
+ok(_kw == {"width": 768, "height": 512, "num_inference_steps": 4,
+           "num_images_per_prompt": 2, "guidance_scale": 0.0},
+   f"все параметры генерации пришли из строки канала ({_kw})")
+ok(_IMG(_reg)._call_kwargs({}) == {},
+   "пустая строка → ничего не навязываем: размер, шаги и силу подсказки решает сама модель")
+ok("guidance_scale" in _IMG(_reg)._call_kwargs({"guidance": 0}),
+   "guidance=0 — осмысленное значение (пошаговые модели), а не «не задано»")
 
 _img_model = _reg.models_dir / "img" / "sd-turbo"
 if _img_model.is_dir() and any(_img_model.rglob("*.safetensors")):

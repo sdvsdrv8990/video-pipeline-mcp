@@ -11,51 +11,26 @@ core/providers/tts/piper_local.py — озвучка локальной моде
 формат (`response_format`). Здесь — только перевод этих полей в API piper. Имён моделей в коде нет.
 
 ## Веса — зависимость
-Файл модели ищется внутри каталога весов (`config/providers.yaml → local.models_dir`), и имя из
-данных проходит containment: строку канала правит ИИ, `../../.env` в поле `model` уехало бы читать
-чужое. Нет весов — честный `LOCAL_MODEL_MISSING`, а не тишина.
+Где лежат веса, знает декларация (`local.catalog`), а не этот файл: раскладка каталога моделей в
+двух местах разошлась бы молча. Имя модели из строки канала проходит containment — строку правит
+ИИ, и `../../.env` в поле `model` уехало бы читать чужое. Нет весов — честный
+`LOCAL_MODEL_MISSING`, а не тишина.
 """
 
 import wave
 from pathlib import Path
 
-from core.paths import PathEscapeError, safe_resolve
-
 from ..adapters import MediaOutcome, MediaRequest
 from ..resolver import ProviderError
-
-SUBDIR = "tts"
 
 
 class PiperLocalTTS:
     """Синхронный адаптер: текст → wav на диске."""
 
-    def __init__(self, models_dir: Path):
-        self.models_dir = Path(models_dir)
+    def __init__(self, registry):
+        self.registry = registry
+        self.models_dir = Path(registry.models_dir)
         self._voices: dict[str, object] = {}
-
-    def _model_path(self, params: dict) -> Path:
-        name = str(params.get("model") or "").strip()
-        if not name:
-            raise ProviderError(
-                "LOCAL_MODEL_MISSING", "В строке провайдера не указана модель озвучки.",
-                reason="Впиши имя файла модели в столбец model листа провайдеров книги канала.",
-                suggested_tool="table_update")
-        root = self.models_dir / SUBDIR
-        try:
-            path = safe_resolve(name, root)
-        except PathEscapeError as e:
-            raise ProviderError(
-                "LOCAL_MODEL_MISSING", f"Имя модели ведёт за пределы каталога весов: {name}",
-                reason="Модель берётся только из каталога локальных весов — путь наружу не читается.",
-            ) from e
-        if not path.is_file():
-            raise ProviderError(
-                "LOCAL_MODEL_MISSING", f"Нет весов локальной модели: {name}",
-                reason=("Веса не лежат в git — вытяни их: python scripts/fetch_local_models.py. "
-                        f"Ожидались в {root}. Либо переключи строку канала на другого провайдера."),
-                suggested_tool="media_provider_status")
-        return path
 
     def _voice(self, model_path: Path):
         """Загруженная модель живёт до конца процесса: повторная загрузка — секунды на каждый вызов."""
@@ -76,7 +51,7 @@ class PiperLocalTTS:
             raise ProviderError(
                 "CONTENT_REJECTED", "Пустой текст озвучивать нечем.",
                 reason="Передай текст фрагмента — повтор пустого запроса даст тот же отказ.")
-        voice = self._voice(self._model_path(request.params))
+        voice = self._voice(self.registry.require_model(request.params.get("model")))
         syn = self._synthesis_config(request.params)
         request.target.parent.mkdir(parents=True, exist_ok=True)
         try:

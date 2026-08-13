@@ -6,55 +6,30 @@ core/providers/img/diffusers_local.py — картинка локальной м
 канала → адаптер → файл → приёмка → расход» непроверяема. Локальная модель делает её настоящей.
 
 ## Что берётся из данных
-Из строки провайдера: каталог модели (`model`), размер (`img_size`), число вариантов (`img_n`),
-число шагов (`steps`). Имён моделей в коде нет — только перевод столбцов в API diffusers.
+ВСЕ параметры вызова — столбцы строки: модель (`model`), размер (`img_size`), число вариантов
+(`img_n`), шаги (`steps`), сила подсказки (`guidance`), вариант весов (`variant`). Чего в строке
+нет — не передаётся вовсе, и работает дефолт самой модели. Числа в коде тут были бы вредны:
+`guidance=0` верно для дистиллированных пошаговых моделей и портит картинку у обычных.
 
 ## Веса — зависимость
-Каталог модели ищется внутри каталога весов (`local.models_dir`) и проходит containment: поле
-`model` правит ИИ. Нет весов — `LOCAL_MODEL_MISSING`, а не молчаливая попытка скачать из сети:
-загрузка гигабайтов посреди вызова инструмента — не то, чего ждёт клиент.
+Где лежат веса, знает декларация (`local.catalog`), а не этот файл. Нет весов —
+`LOCAL_MODEL_MISSING`, а не молчаливая попытка скачать из сети: загрузка гигабайтов посреди
+вызова инструмента — не то, чего ждёт клиент.
 """
 
 from pathlib import Path
 
-from core.paths import PathEscapeError, safe_resolve
-
 from ..adapters import MediaOutcome, MediaRequest
 from ..resolver import ProviderError
-
-SUBDIR = "img"
-DEFAULT_SIZE = 512
 
 
 class DiffusersLocalIMG:
     """Синхронный адаптер: промпт → png на диске."""
 
-    def __init__(self, models_dir: Path):
-        self.models_dir = Path(models_dir)
+    def __init__(self, registry):
+        self.registry = registry
+        self.models_dir = Path(registry.models_dir)
         self._pipelines: dict[str, object] = {}
-
-    def _model_path(self, params: dict) -> Path:
-        name = str(params.get("model") or "").strip()
-        if not name:
-            raise ProviderError(
-                "LOCAL_MODEL_MISSING", "В строке провайдера не указана модель картинок.",
-                reason="Впиши каталог модели в столбец model листа провайдеров книги канала.",
-                suggested_tool="table_update")
-        root = self.models_dir / SUBDIR
-        try:
-            path = safe_resolve(name, root)
-        except PathEscapeError as e:
-            raise ProviderError(
-                "LOCAL_MODEL_MISSING", f"Имя модели ведёт за пределы каталога весов: {name}",
-                reason="Модель берётся только из каталога локальных весов — путь наружу не читается.",
-            ) from e
-        if not path.is_dir():
-            raise ProviderError(
-                "LOCAL_MODEL_MISSING", f"Нет весов локальной модели: {name}",
-                reason=("Веса не лежат в git — вытяни их: python scripts/fetch_local_models.py. "
-                        f"Ожидались в {root}. Либо переключи строку канала на другого провайдера."),
-                suggested_tool="media_provider_status")
-        return path
 
     def _pipeline(self, model_path: Path, variant: str = ""):
         """Пайплайн живёт до конца процесса: его подъём — десятки секунд и гигабайты."""
@@ -87,38 +62,52 @@ class DiffusersLocalIMG:
                 "CONTENT_REJECTED", "Пустой промпт рисовать нечем.",
                 reason="Передай описание кадра — повтор пустого запроса даст тот же отказ.")
         params = request.params
-        pipe = self._pipeline(self._model_path(params), str(params.get("variant") or "").strip())
-        width, height = self._size(params)
-        steps = self._int(params.get("steps"), 1)
-        count = max(1, self._int(params.get("img_n"), 1))
+        pipe = self._pipeline(self.registry.require_model(params.get("model"), must_be_dir=True),
+                              str(params.get("variant") or "").strip())
         request.target.parent.mkdir(parents=True, exist_ok=True)
         try:
-            # guidance_scale=0: дистиллированные пошаговые модели рисуют без classifier-free guidance.
-            images = pipe(prompt=request.input, num_inference_steps=steps, guidance_scale=0.0,
-                          width=width, height=height, num_images_per_prompt=count).images
+            images = pipe(prompt=request.input, **self._call_kwargs(params)).images
         except Exception as e:                              # noqa: BLE001 — среда/память/веса
             raise ProviderError(
                 "LOCAL_INFERENCE_FAILED", f"Локальная генерация не выполнена: {e}",
                 reason="Проверь ресурсы машины (память) и веса модели; при повторе того же "
                        "входа результат будет тем же.") from e
-        files = []
+        files: list[Path] = []
         for i, image in enumerate(images):
             # Второй и следующий варианты — соседними именами, чтобы не затирать первый.
             target = request.target if i == 0 else request.target.with_name(
                 f"{request.target.stem}_{i + 1}{request.target.suffix}")
             image.save(target)
             files.append(target)
-        return MediaOutcome(files=files, meta={"engine": "diffusers", "sync": True, "steps": steps})
+        return MediaOutcome(files=files, meta={"engine": "diffusers", "sync": True,
+                                               "call": self._call_kwargs(params)})
 
-    def _size(self, params: dict) -> tuple[int, int]:
-        """`img_size` вида «512x512» из данных; кривое значение не роняет вызов молча."""
-        raw = str(params.get("img_size") or "").lower().replace(" ", "")
-        if "x" in raw:
-            w, _, h = raw.partition("x")
-            if w.isdigit() and h.isdigit():
-                return int(w), int(h)
-        return DEFAULT_SIZE, DEFAULT_SIZE
+    def _call_kwargs(self, params: dict) -> dict:
+        """Столбцы строки → аргументы вызова. Чего в строке нет — не передаём: пусть решает модель."""
+        kwargs: dict = {}
+        width, height = self._size(params)
+        if width and height:
+            kwargs.update(width=width, height=height)
+        steps = self._positive(params.get("steps"))
+        if steps:
+            kwargs["num_inference_steps"] = int(steps)
+        count = self._positive(params.get("img_n"))
+        if count:
+            kwargs["num_images_per_prompt"] = int(count)
+        guidance = params.get("guidance")
+        if isinstance(guidance, (int, float)):
+            # Ноль — осмысленное значение (пошаговые модели рисуют без подсказки), поэтому
+            # проверяем ТИП, а не истинность: `if guidance:` выбросил бы ровно этот случай.
+            kwargs["guidance_scale"] = float(guidance)
+        return kwargs
 
     @staticmethod
-    def _int(value, default: int) -> int:
-        return int(value) if isinstance(value, (int, float)) and value > 0 else default
+    def _size(params: dict) -> tuple[int, int]:
+        """`img_size` вида «512x512» из данных. Не назван или кривой — размер решает модель."""
+        raw = str(params.get("img_size") or "").lower().replace(" ", "")
+        w, _, h = raw.partition("x")
+        return (int(w), int(h)) if w.isdigit() and h.isdigit() else (0, 0)
+
+    @staticmethod
+    def _positive(value) -> float:
+        return float(value) if isinstance(value, (int, float)) and value > 0 else 0.0

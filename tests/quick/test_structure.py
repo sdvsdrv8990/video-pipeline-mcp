@@ -795,9 +795,22 @@ _cz35 = _call35("structure_customize", path="niches/n1", what="both")
 ok(_cz35.status == "success" and len(_cz35.data["copied"]) > 0,
    f"шаблоны скопированы в проект ({len(_cz35.data['copied'])} файлов)")
 ok((_ws35 / "niches/n1/.templates/workspace").is_dir(), "копия легла в <проект>/.templates/")
+ok(_cz35.data["owner"].get("id") and _cz35.data["owner"].get("type") == "niche",
+   f"названа СУЩНОСТЬ, которой принадлежит копия ({_cz35.data['owner']})")
+ok("НИЖЕ по дереву" in _cz35.data["scope_note"],
+   "сказано, на что копия действует: резолвер ищет .templates/ вверх, значит она правит и потомков")
 _cz35b = _call35("structure_customize", path="niches/n1", what="both")
 ok(all(s["reason"] == "already customized" for s in _cz35b.data["skipped"]) and not _cz35b.data["copied"],
    "повторная кастомизация не затирает правку проекта молча")
+
+# Копия обязана лежать в сущности, под которую шаблон адаптируют. Положенная в корень или в
+# случайный каталог, она молча стала бы законом для ВСЕХ сущностей ниже (резолвер идёт вверх).
+for _addr, _case in (("", "корень рабочей области"), ("нет_такой_сущности", "незарегистрированный адрес")):
+    _bad35 = _call35("structure_customize", path=_addr, what="tables")
+    ok(_bad35.status == "error" and _bad35.error.code == "ENTITY_NOT_FOUND",
+       f"{_case} отклонён ({_bad35.error.code if _bad35.error else 'success'})")
+ok(not (_ws35 / ".templates").exists() and not (_ws35 / "нет_такой_сущности").exists(),
+   "после отказа на диске не появилось ни копии, ни каталога под неё")
 
 _srv35_dir = ROOT / "config" / "templates" / "workspace" / "channel.tpl.yaml"
 _before35 = _srv35_dir.read_text(encoding="utf-8")
