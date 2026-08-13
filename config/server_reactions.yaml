@@ -210,6 +210,20 @@ COLUMN_HAS_DEPENDENTS:
     suggested_tool: excel_validate_formulas
     reason: "Перечисленные формулы съедут в #REF!. Сначала перепиши их (excel_insert_formula) или убери; если ссылки уже не нужны — передай force=true осознанно."
 
+PROVIDER_NOT_CONFIGURED:
+  class: ai_recoverable
+  message_template: "Для этого вида ресурса не объявлен ни один провайдер."
+  recovery:
+    suggested_tool: table_append
+    reason: "Провайдер живёт в данных канала, а не в коде: добавь строку в лист RESOURCE_LIMITS — провайдер, модель, лимит, fallback."
+
+PROVIDER_EXHAUSTED:
+  class: human_required
+  message_template: "Все объявленные провайдеры исчерпали дневной лимит."
+  recovery:
+    suggested_tool: table_update
+    reason: "Подними daily_limit, обнули current_usage или добавь ещё одного провайдера строкой — это данные канала, правятся без перезапуска сервера."
+
 RECALC_UNAVAILABLE:
   class: human_required
   message_template: "Движок пересчёта формул (LibreOffice) недоступен."
