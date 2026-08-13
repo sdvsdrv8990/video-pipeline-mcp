@@ -278,7 +278,7 @@ LOCAL_MODEL_MISSING:
   class: human_required
   message_template: "Веса локальной модели не найдены."
   recovery:
-    reason: "Веса не лежат в git: вытяни их командой python scripts/fetch_local_models.py, либо переключи строку канала на другого провайдера (table_update)."
+    reason: "Веса не лежат в git: вытяни их командой python scripts/models.py pull, либо переключи строку канала на другого провайдера (table_update)."
 
 USAGE_UNIT_UNKNOWN:
   class: human_required

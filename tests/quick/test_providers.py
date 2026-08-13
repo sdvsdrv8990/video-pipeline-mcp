@@ -357,7 +357,7 @@ if _have_tts:
     ok(_g.facts[0].type == "MediaGenerated" and _g.facts[0].data["provider"] == "Local_piper",
        "исполнение приходит фактом контракта: кто исполнил и чем")
 else:
-    print("  ⚠ веса локальной озвучки не вытянуты (scripts/fetch_local_models.py) — живой прогон пропущен")
+    print("  ⚠ веса локальной озвучки не вытянуты (scripts/models.py pull) — живой прогон пропущен")
 
 # Имя модели — данные, которые правит ИИ: путь наружу не читается.
 (_ws / "v" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
@@ -372,7 +372,7 @@ ok(_esc.status == "error" and _esc.error.code == "LOCAL_MODEL_MISSING",
 _nom = _call("media_generate", table="v", resource_type="tts_characters",
              input="текст", scene_id="s1", video_slug="demo")
 ok(_nom.status == "error" and _nom.error.code == "LOCAL_MODEL_MISSING"
-   and "fetch_local_models" in (_nom.error.recovery.reason if _nom.error.recovery else ""),
+   and "models.py pull" in (_nom.error.recovery.reason if _nom.error.recovery else ""),
    "нет весов → честный отказ и названа команда, которая их принесёт")
 
 (_ws / "v" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
@@ -712,6 +712,65 @@ finally:
 
 ok(redact(f"ключ {_KEY} отклонён", [_KEY]) == f"ключ <ключ скрыт {fingerprint(_KEY)}> отклонён",
    "redact подменяет значение отпечатком, а не многоточием — видно, КАКОЙ ключ отвергли")
+
+print("== 15. Каталог моделей: список живой, установка проверяет ЧТО кладёт на диск ==")
+from core.providers.catalog import ModelCatalog, OnlineCatalog
+
+_online = OnlineCatalog().available("tts", limit=0)
+ok(_online and all(r["mode"] == "audio_speech" for r in _online),
+   f"онлайн-список отфильтрован по виду ресурса ({len(_online)} моделей озвучки)")
+ok(any(r["endpoints"] for r in _online) and any(r["cost_per_character"] for r in _online),
+   "у моделей видны эндпоинт и цена — за этим в документацию ходить не нужно")
+ok(len(OnlineCatalog().providers("image")) > 3,
+   f"видно, кто вообще умеет картинки, ДО того как заводить ключ ({OnlineCatalog().providers('image')[:4]}…)")
+ok(_KEY not in _json.dumps(_online, ensure_ascii=False),
+   "список онлайн-моделей виден без ключа — ключ нужен для вызова, а не для списка")
+
+_mcat = ModelCatalog(CFG, ROOT / "vendor" / "models")
+# Правила установки — чистая проверка, сети не требует.
+_keep, _refused = _mcat.allowed_files(["model.safetensors", "voice.onnx", "weights.bin",
+                                       "old.ckpt", "config.json"])
+ok(_keep == ["model.safetensors", "voice.onnx", "config.json"],
+   f"ставим только форматы, кодом не являющиеся ({_keep})")
+ok({r["file"] for r in _refused} == {"weights.bin", "old.ckpt"}
+   and all("pickle" in r["reason"] for r in _refused),
+   "pickle-веса отбиты с названной причиной: их загрузка выполняет код из файла")
+try:
+    _mcat.check_size(999999)
+    ok(False, "превышение предела размера должно падать")
+except ProviderError as e:
+    ok(e.code == "LOCAL_MODEL_MISSING" and "max_total_mb" in e.reason,
+       "размер сверх объявленного предела — отказ с указанием, где предел правится")
+try:
+    _mcat.check_repo("https://civitai.example/api/download/123")
+    ok(False, "чужой источник должен отбиваться")
+except ProviderError as e:
+    ok("allow_sources" in e.reason, "чужой САЙТ как источник весов не берётся: модель — исполняемое содержимое")
+
+# Опись поставленного лежит рядом с весами, а конфиг машина не переписывает.
+_cfg_before = CFG.read_text(encoding="utf-8")
+ok(_mcat.inventory_file == ROOT / "vendor" / "models" / "installed.yaml",
+   "опись лежит рядом с весами, а не в рукописном конфиге (иначе первая запись стёрла бы объяснения)")
+ok(all(e.get("id") for e in _mcat.entries()),
+   "объявленные в конфиге и поставленные скриптом видны одним списком")
+ok(CFG.read_text(encoding="utf-8") == _cfg_before, "чтение каталога конфиг не трогает")
+
+_installed_ids = {r["id"] for r in _mcat.installed()}
+if "ru_RU-irina-medium" in _installed_ids:
+    ok(_mcat.path_of("ru_RU-irina-medium").endswith(".onnx"),
+       "поставленная скриптом модель находится по имени — канал может исполнять ею сразу")
+else:
+    print("  ⚠ вторая локальная модель не ставилась — проверка описи пропущена")
+
+_inst = _call("media_model_install", model_id="ru_RU-denis-medium", kind="tts")
+ok(_inst.status == "error" and _inst.error.code == "CONFIRM_REQUIRED",
+   f"установка весов подтверждается явно: гигабайты с внешнего источника ({_inst.error.code if _inst.error else 'success'})")
+_lst = _call("media_models", scope="installed")
+ok(_lst.status == "success" and _lst.data["models"],
+   f"инструмент показывает, что стоит на машине ({len(_lst.data['models'])} моделей)")
+_lst_on = _call("media_models", scope="online", kind="image", limit=5)
+ok(all(m["mode"] == "image_generation" for m in _lst_on.data["models"]),
+   "и что умеет шлюз онлайн — с провайдером и эндпоинтом")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

@@ -64,9 +64,40 @@ adapters:
 
 # ═══ Локальные модели ═══
 # Веса — зависимость, а не исходник: каталог в .gitignore, наполняется
-# `scripts/fetch_local_models.py`. Нет весов → честный LOCAL_MODEL_MISSING, а не молчаливый успех.
+# `scripts/models.py pull`. Нет весов → честный LOCAL_MODEL_MISSING, а не молчаливый успех.
 local:
   models_dir: vendor/models
+
+  # ОТКУДА БЕРЁТСЯ СПИСОК доступных моделей. Каталоги живые (сеть), а не снимок документации:
+  # список моделей меняется чаще, чем что-либо в этом файле. Здесь объявлено, где смотреть и
+  # что считать лишним, — отсев данными, а не правкой скрипта.
+  sources:
+    tts:
+      kind: piper_index                # индекс голосов piper: язык, качество, размеры, хэши
+      repo: rhasspy/piper-voices
+      index: voices.json
+      filters:
+        language: ru_RU               # пусто → все языки
+        max_mb: 300
+    image:
+      kind: hf_hub                     # каталог Hugging Face по задаче и библиотеке
+      pipeline_tag: text-to-image
+      library: diffusers
+      filters:
+        max_mb: 8000                  # веса больше этого на CPU бессмысленны
+        min_downloads: 50000          # отсев заброшенного и экспериментального
+        gated: false                  # закрытые требуют токена — ставить нечем
+
+  # ЧТО РАЗРЕШЕНО КЛАСТЬ НА ДИСК. Веса — исполняемое содержимое: формат `.bin/.ckpt/.pt` это
+  # pickle, а его загрузка выполняет произвольный код. Поэтому ставим только форматы, которые
+  # кодом не являются; остальное — отказ, даже если модель популярная.
+  install:
+    # Источники — ХОСТЫ, а не отдельные репозитории: имя модели на HF имеет вид org/name,
+    # и перечислять их поимённо значит не ограничивать ничего. Ссылка на чужой сайт — отказ.
+    allow_sources: [huggingface.co]
+    allow_suffixes: [".safetensors", ".onnx", ".json", ".txt", ".model"]
+    deny_suffixes: [".bin", ".ckpt", ".pt", ".pth", ".pkl", ".h5"]
+    max_total_mb: 8000
   # `dest` — куда скачивает скрипт, `path` — что открывает адаптер. Оба здесь, потому что это
   # ОДНО знание: адаптер не должен догадываться о раскладке каталога, иначе правка `dest`
   # молча разошлась бы с местом, куда он смотрит. Строка канала называет модель по `id`.
@@ -80,7 +111,7 @@ local:
         - ru/ru_RU/dmitri/medium/ru_RU-dmitri-medium.onnx
         - ru/ru_RU/dmitri/medium/ru_RU-dmitri-medium.onnx.json
     - id: sd-turbo
-      kind: img
+      kind: image
       repo: stabilityai/sd-turbo
       dest: img/sd-turbo
       path: img/sd-turbo

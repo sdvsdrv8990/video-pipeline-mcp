@@ -19,6 +19,7 @@ from core.contracts import Fact, ToolResult
 from core.engine import Engine
 from core.providers import (AdapterRegistry, MediaRequest, ProviderError, ProviderResolver,
                             ResultDownloader, TaskCycle, UsageLedger)
+from core.providers.catalog import ModelCatalog, OnlineCatalog
 from core.secrets import redact
 from tools._context import ANNOTATIONS_MODIFY, ANNOTATIONS_READONLY, ToolContext
 
@@ -279,6 +280,86 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             return {"charged": False, "code": e.code, "reason": e.message}
         report["charged"] = True
         return report
+
+    async def media_models(kind: str = "", scope: str = "installed", limit: int = 20) -> "ToolResult":
+        """Какие модели стоят на машине, какие можно поставить и какие доступны онлайн.
+
+        `scope=installed` — что уже лежит; `local` — что можно поставить сюда;
+        `online` — что умеет вызвать шлюз (ключ нужен для вызова, не для списка).
+        """
+        registry = AdapterRegistry(ctx.config_path / "providers.yaml", ctx.config_path.parent)
+        catalog = ModelCatalog(ctx.config_path / "providers.yaml", registry.models_dir)
+        if scope == "installed":
+            rows = [r for r in catalog.installed() if not kind or r["kind"] == kind]
+        elif scope == "online":
+            rows = OnlineCatalog().available(kind or "image", limit=limit)
+        else:
+            ok, rows = ctx.safe(lambda: catalog.available(kind or "tts", limit=limit))
+            if not ok:
+                return rows
+        return ToolResult(status="success", data={
+            "scope": scope, "kind": kind, "models": rows,
+            "hint": ("Поставить локальную модель — media_model_install; исполнять ею — поставить "
+                     "её имя в столбец model листа провайдеров книги канала (table_update). "
+                     "Онлайн-модели требуют ключа: его вносит владелец вручную."),
+        }, facts=[Fact(type="ModelsListed", data={"scope": scope, "kind": kind, "count": len(rows)})])
+
+    async def media_model_install(model_id: str, kind: str, confirm: bool = False) -> "ToolResult":
+        """Поставить локальную модель по имени из каталога (веса качаются на диск сервера).
+
+        Ставится только объявленный формат и только из объявленного источника: `.bin/.ckpt/.pt`
+        это pickle, его загрузка выполняет код из файла. Размер ограничен декларацией.
+        """
+        if not confirm:
+            return ctx.err(
+                "CONFIRM_REQUIRED", f"Установка '{model_id}' скачает веса на диск сервера.",
+                "Это гигабайты и внешний источник — операция подтверждается явно: повтори с "
+                "confirm=true. Сначала посмотри, что ставишь: media_models(scope='local').")
+        registry = AdapterRegistry(ctx.config_path / "providers.yaml", ctx.config_path.parent)
+        catalog = ModelCatalog(ctx.config_path / "providers.yaml", registry.models_dir)
+        ok, entry = ctx.safe(lambda: catalog.install(model_id, kind))
+        if not ok:
+            return entry
+        return ToolResult(status="success", data={
+            "installed": entry["id"], "kind": entry["kind"], "path": entry["path"],
+            "mb": entry["mb"], "refused": entry.get("refused") or [],
+            "next": (f"Чтобы канал исполнял этой моделью — table_update по строке листа "
+                     f"провайдеров: model={entry['id']}."),
+        }, facts=[Fact(type="ModelInstalled", data={
+            "id": entry["id"], "kind": entry["kind"], "mb": entry["mb"],
+            "refused": len(entry.get("refused") or [])})])
+
+    engine.register(
+        name="media_models",
+        title="Медиа: какие модели есть, что можно поставить",
+        description=(
+            "Показывает модели: что уже стоит на машине (scope=installed), что можно поставить "
+            "локально из живого каталога с отсевом по объявленным фильтрам (scope=local), и что "
+            "умеет вызвать шлюз онлайн — с провайдером, эндпоинтом и ценой (scope=online). "
+            "Список онлайн-моделей виден БЕЗ ключа: ключ нужен для вызова, а не для списка."),
+        input_schema={"type": "object", "properties": {
+            "kind": {"type": "string", "description": "Вид: tts, image, stt (пусто → по умолчанию для scope)"},
+            "scope": {"type": "string", "enum": ["installed", "local", "online"], "default": "installed",
+                      "description": "installed — стоит сейчас; local — можно поставить; online — умеет шлюз"},
+            "limit": {"type": "integer", "default": 20, "description": "Сколько строк показать"},
+        }}, handler=media_models, group="media", annotations=ANNOTATIONS_READONLY)
+
+    engine.register(
+        name="media_model_install",
+        title="Медиа: поставить локальную модель",
+        description=(
+            "Скачивает веса локальной модели на диск сервера и записывает её в опись — после "
+            "этого канал может исполнять ею, поставив имя в столбец model (table_update). "
+            "Ставится только объявленный формат из объявленного источника и не больше объявленного "
+            "размера: веса .bin/.ckpt/.pt — это pickle, чья загрузка выполняет код из файла. "
+            "Требует confirm=true: это гигабайты с внешнего источника."),
+        input_schema={"type": "object", "properties": {
+            "model_id": {"type": "string", "description": "Имя модели из media_models(scope='local')"},
+            "kind": {"type": "string", "description": "Вид модели: tts или image"},
+            "confirm": {"type": "boolean", "default": False,
+                        "description": "Осознанное подтверждение загрузки весов на диск сервера"},
+        }, "required": ["model_id", "kind"]},
+        handler=media_model_install, group="media", annotations=ANNOTATIONS_MODIFY)
 
     engine.register(
         name="media_provider_status",

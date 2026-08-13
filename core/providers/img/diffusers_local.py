@@ -52,7 +52,7 @@ class DiffusersLocalIMG:
                 raise ProviderError(
                     "LOCAL_MODEL_MISSING", f"Веса модели не поднимаются: {e}",
                     reason="Каталог есть, но модель из него не читается — перекачай: "
-                           "python scripts/fetch_local_models.py.") from e
+                           "python scripts/models.py pull.") from e
         return self._pipelines[key]
 
     def generate(self, request: MediaRequest) -> MediaOutcome:

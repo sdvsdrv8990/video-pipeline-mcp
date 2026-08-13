@@ -65,14 +65,15 @@ class AdapterRegistry:
 
     @property
     def models_dir(self) -> Path:
-        """Каталог весов локальных моделей (вне git, наполняется scripts/fetch_local_models.py)."""
+        """Каталог весов локальных моделей (вне git, наполняется scripts/models.py)."""
         local = self.config.get("local") or {}
         return self.project_root / str(local.get("models_dir", "vendor/models"))
 
     @property
     def catalog(self) -> list[dict]:
-        """Объявленные локальные модели: что откуда тянется и что открывает адаптер."""
-        return list((self.config.get("local") or {}).get("catalog") or [])
+        """Известные локальные модели: объявленные в конфиге + поставленные скриптом (опись)."""
+        from .catalog import ModelCatalog
+        return ModelCatalog(self.config_file, self.models_dir).entries()
 
     def model_path(self, name: str) -> Path:
         """Где лежат веса модели, названной строкой канала.
@@ -107,7 +108,7 @@ class AdapterRegistry:
         if not present:
             raise ProviderError(
                 "LOCAL_MODEL_MISSING", f"Нет весов локальной модели: {name}",
-                reason=("Веса не лежат в git — вытяни их: python scripts/fetch_local_models.py. "
+                reason=("Веса не лежат в git — вытяни их: python scripts/models.py pull. "
                         f"Ожидались в {path}. Либо переключи строку канала на другого провайдера."),
                 suggested_tool="media_provider_status")
         return path

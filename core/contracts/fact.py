@@ -21,6 +21,8 @@ KNOWN_FACT_TYPES = {
     "UniquenessCompensated",
     # Медиа: какой провайдер и модель выбраны по данным канала и чем кончилось исполнение
     "ProviderResolved", "MediaGenerated",
+    # Каталог моделей: что доступно и что поставлено на машину
+    "ModelsListed", "ModelInstalled",
     "MemoryRead", "MemoryWritten",
     "SearchCompleted", "QuickSearch", "MultiSearch",
     "FsSearch", "FsSearchYaml", "FsSearchMulti",

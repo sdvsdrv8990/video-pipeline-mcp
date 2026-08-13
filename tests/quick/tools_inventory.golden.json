@@ -1243,6 +1243,72 @@
   },
   "title": "Медиа: исполнить ресурс активным провайдером"
  },
+ "media_model_install": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Скачивает веса локальной модели на диск сервера и записывает её в опись — после этого канал может исполнять ею, поставив имя в столбец model (table_update). Ставится только объявленный формат из объявленного источника и не больше объявленного размера: веса .bin/.ckpt/.pt — это pickle, чья загрузка выполняет код из файла. Требует confirm=true: это гигабайты с внешнего источника.",
+  "group": "media",
+  "input_schema": {
+   "properties": {
+    "confirm": {
+     "default": false,
+     "description": "Осознанное подтверждение загрузки весов на диск сервера",
+     "type": "boolean"
+    },
+    "kind": {
+     "description": "Вид модели: tts или image",
+     "type": "string"
+    },
+    "model_id": {
+     "description": "Имя модели из media_models(scope='local')",
+     "type": "string"
+    }
+   },
+   "required": [
+    "model_id",
+    "kind"
+   ],
+   "type": "object"
+  },
+  "title": "Медиа: поставить локальную модель"
+ },
+ "media_models": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Показывает модели: что уже стоит на машине (scope=installed), что можно поставить локально из живого каталога с отсевом по объявленным фильтрам (scope=local), и что умеет вызвать шлюз онлайн — с провайдером, эндпоинтом и ценой (scope=online). Список онлайн-моделей виден БЕЗ ключа: ключ нужен для вызова, а не для списка.",
+  "group": "media",
+  "input_schema": {
+   "properties": {
+    "kind": {
+     "description": "Вид: tts, image, stt (пусто → по умолчанию для scope)",
+     "type": "string"
+    },
+    "limit": {
+     "default": 20,
+     "description": "Сколько строк показать",
+     "type": "integer"
+    },
+    "scope": {
+     "default": "installed",
+     "description": "installed — стоит сейчас; local — можно поставить; online — умеет шлюз",
+     "enum": [
+      "installed",
+      "local",
+      "online"
+     ],
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "title": "Медиа: какие модели есть, что можно поставить"
+ },
  "media_provider_status": {
   "annotations": {
    "destructiveHint": false,
