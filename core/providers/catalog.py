@@ -77,8 +77,13 @@ class ModelCatalog:
         return list(data.get("models") or [])
 
     def entries(self) -> list[dict]:
-        """Объявленные в конфиге + поставленные скриптом. Имя из строки канала ищется здесь."""
-        return list(self.local.get("catalog") or []) + self.inventory()
+        """Что сервер знает о локальных моделях. Источник ОДИН — опись поставленного.
+
+        Прежде рядом жил рукописный `local.catalog`, и одна и та же модель могла быть описана
+        дважды по-разному. Теперь ставится всё одним путём (живой каталог → установка → опись),
+        и вопрос «откуда эта модель взялась» имеет один ответ.
+        """
+        return self.inventory()
 
     def path_of(self, model_id: str) -> str:
         """Путь весов по имени модели (относительно каталога весов). Не нашли — пусто."""
@@ -97,7 +102,10 @@ class ModelCatalog:
             out.append({"id": entry.get("id"), "kind": entry.get("kind"), "repo": entry.get("repo"),
                         "path": str(entry.get("path") or entry.get("dest") or ""),
                         "present": bool(files),
-                        "mb": round(sum(f.stat().st_size for f in files) / 1e6, 1)})
+                        "mb": round(sum(f.stat().st_size for f in files) / 1e6, 1),
+                        "params_total": int(entry.get("params_total") or 0),
+                        "params_by_dtype": dict(entry.get("params_by_dtype") or {}),
+                        "params_active": int(entry.get("params_active") or 0)})
         return out
 
     # ═══ Что доступно (живые каталоги) ═══
@@ -144,8 +152,11 @@ class ModelCatalog:
         from huggingface_hub import HfApi
 
         api = HfApi()
+        # expand отдаёт число параметров ВМЕСТЕ со списком: иначе пришлось бы делать
+        # по запросу на модель, а без параметров вопрос «влезет ли» не решается.
         kwargs = {"pipeline_tag": src.get("pipeline_tag"), "sort": "downloads",
-                  "limit": max(limit * 4, 40)}
+                  "limit": max(limit * 4, 40),
+                  "expand": ["safetensors", "downloads", "gated", "tags"]}
         if src.get("library"):
             kwargs["filter"] = src["library"]
         min_downloads = int(filters.get("min_downloads") or 0)
@@ -156,14 +167,40 @@ class ModelCatalog:
                 continue
             if filters.get("gated") is False and model.gated:
                 continue
+            st = getattr(model, "safetensors", None)
+            by_dtype = dict(getattr(st, "parameters", None) or {})
             rows.append({"id": model.id, "kind": "image", "repo": model.id,
                          "downloads": downloads, "likes": int(model.likes or 0),
                          "gated": bool(model.gated), "mb": None,
+                         "params_total": int(getattr(st, "total", 0) or 0),
+                         "params_by_dtype": by_dtype,
+                         # Активные параметры объявляет не всякая модель (это про MoE). Нет —
+                         # значит нет: выдуманное число здесь хуже честного пропуска.
+                         "params_active": self._active_params(model),
                          "license": (model.tags or []) and next(
                              (t.split(":", 1)[1] for t in model.tags if t.startswith("license:")), "")})
             if len(rows) >= limit:
                 break
         return rows
+
+    ACTIVE_FIELDS = ("num_activated_params", "activated_params", "active_params",
+                     "num_active_params")
+
+    def _active_params(self, model) -> int:
+        """Сколько параметров работает на один проход — если модель сама это объявляет.
+
+        У плотной модели активны все, у MoE — часть, и разница определяет требования к памяти
+        по-разному для загрузки и для счёта. Гадать по архитектуре нельзя: вычисленное «на глаз»
+        число выглядит как факт. Поэтому берём только объявленное.
+        """
+        card = getattr(model, "cardData", None) or {}
+        config = getattr(model, "config", None) or {}
+        for source in (card, config):
+            for field in self.ACTIVE_FIELDS:
+                value = source.get(field) if isinstance(source, dict) else None
+                if isinstance(value, (int, float)) and value > 0:
+                    return int(value)
+        return 0
 
     # ═══ Правила установки ═══
 
@@ -219,6 +256,22 @@ class ModelCatalog:
                 reason="Подними local.install.max_total_mb в config/providers.yaml, если такой "
                        "размер осмыслен на этой машине, или возьми модель полегче.")
 
+
+    def with_fit(self, rows: list[dict], hardware: dict | None = None) -> list[dict]:
+        """Дописать к строкам вердикт «влезет ли на эту машину»."""
+        from .hardware import FitEstimator, probe
+
+        hw = hardware or probe(self.models_dir)
+        est = FitEstimator(self.local.get("fit") or {})
+        out = []
+        for row in rows:
+            need = est.bytes_for(row.get("params_by_dtype") or {}, row.get("params_total") or 0)
+            if not need and row.get("mb"):
+                # Число параметров источник не сообщил — тогда мерим тем, что известно: размером
+                # весов на диске. Это грубее, но лучше, чем промолчать про пригодность вовсе.
+                need = int(float(row["mb"]) * 1e6 * est.overhead)
+            out.append({**row, "fit": est.verdict(need, hw.get("ram_available_mb", 0))})
+        return out
 
     # ═══ Установка ═══
 
@@ -276,9 +329,15 @@ class ModelCatalog:
         progress(f"тяну {len(chosen)} файлов, ~{round(total_mb)} МБ")
         snapshot_download(repo_id=model_id, local_dir=str(self.models_dir / dest),
                           allow_patterns=chosen or None)
+        st = getattr(info, "safetensors", None)
         return {"id": model_id.split("/")[-1], "kind": "image", "repo": model_id,
                 "path": str(dest), "mb": total_mb, "refused": refused,
-                "variant": "fp16" if variant else ""}
+                "variant": "fp16" if variant else "",
+                # Число параметров кладём в опись сразу: потом оно понадобится, чтобы судить
+                # о пригодности железа, а спрашивать сеть ради уже стоящей модели незачем.
+                "params_total": int(getattr(st, "total", 0) or 0),
+                "params_by_dtype": dict(getattr(st, "parameters", None) or {}),
+                "params_active": self._active_params(info)}
 
     def install_declared(self, entry: dict, progress=lambda _m: None) -> dict:
         """Поставить модель, объявленную в конфиге: тянем ровно то, что там перечислено.

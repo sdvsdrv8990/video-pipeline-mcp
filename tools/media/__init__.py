@@ -20,6 +20,7 @@ from core.engine import Engine
 from core.providers import (AdapterRegistry, MediaRequest, ProviderError, ProviderResolver,
                             ResultDownloader, TaskCycle, UsageLedger)
 from core.providers.catalog import ModelCatalog, OnlineCatalog
+from core.providers.hardware import probe
 from core.providers.installer import ModelInstaller
 from core.secrets import SecretError, redact
 from tools._context import ANNOTATIONS_MODIFY, ANNOTATIONS_READONLY, ToolContext
@@ -301,8 +302,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         catalog = ModelCatalog(ctx.config_path / "providers.yaml", registry.models_dir)
         online = OnlineCatalog(ctx.config_path / "providers.yaml")
         source, live_error = "gateway_registry", None
+        hardware = probe(registry.models_dir)
         if scope == "installed":
-            rows = [r for r in catalog.installed() if not kind or r["kind"] == kind]
+            rows = catalog.with_fit([r for r in catalog.installed() if not kind or r["kind"] == kind],
+                                    hardware)
             source = "disk"
         elif scope == "online":
             rows = online.available(kind or "image", limit=limit)
@@ -333,9 +336,14 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             ok, rows = ctx.safe(lambda: catalog.available(kind or "tts", limit=limit))
             if not ok:
                 return rows
+            # Число параметров без объёма памяти не значит ничего: вердикт идёт вместе со списком.
+            rows = catalog.with_fit(rows, hardware)
             source = "catalog"
         data = {
             "scope": scope, "kind": kind, "source": source, "models": rows,
+            # Железо читается БЕЗ root (/proc/meminfo, cgroup, ядра, свободное место); чего
+            # прочесть нельзя — перечислено в hardware.unknown, а не выдано за отсутствие.
+            "hardware": hardware if scope != "online" else None,
             "hint": ("Поставить локальную модель — media_model_install; исполнять ею — поставить "
                      "её имя в столбец model листа провайдеров книги канала (table_update). "
                      "Онлайн-список свежее у самого провайдера: media_models(scope='online', "

@@ -63,11 +63,33 @@ def cmd_local(args) -> int:
     if not rows:
         print("Каталог пуст после отсева — ослабь фильтры в config/providers.yaml → local.sources.")
         return 1
-    for r in rows:
+    cat = _catalog()
+    for r in cat.with_fit(rows):
         size = f"{r['mb']} МБ" if r.get("mb") else f"↓{r.get('downloads', 0)}"
-        extra = r.get("quality") or r.get("license") or ""
-        print(f"  {r['id']:<48}{size:<14}{extra}")
+        params = f"{r['params_total'] / 1e9:.1f}B" if r.get("params_total") else "—"
+        active = f"/{r['params_active'] / 1e9:.1f}B акт." if r.get("params_active") else ""
+        fit = r.get("fit") or {}
+        print(f"  {r['id']:<44}{size:<12}{params + active:<12}"
+              f"{fit.get('verdict', '?'):<7}{fit.get('need_mb', 0)} МБ")
     print(f"\nВсего {len(rows)}. Поставить: python scripts/models.py install <id> --kind {args.kind}")
+    return 0
+
+
+def cmd_hardware(args) -> int:
+    """Что за железо под сервером — без прав root."""
+    from core.providers.hardware import probe
+
+    hw = probe(_catalog().models_dir)
+    print(f"  память:        {hw['ram_available_mb']} МБ доступно из {hw['ram_total_mb']} МБ")
+    if hw["container_limit_mb"]:
+        print(f"  лимит контейнера: {hw['container_limit_mb']} МБ")
+    print(f"  ядра:          {hw['cpu_count']}")
+    print(f"  диск:          {hw['disk_free_mb']} МБ свободно под веса")
+    for card in hw["gpu"]:
+        print(f"  видеокарта:    {card['name']} — {card['free_mb']} МБ свободно из {card['total_mb']}")
+    for gap in hw["unknown"]:
+        print(f"  НЕ ЗНАЕМ:      {gap}")
+    print(f"  {hw['note']}")
     return 0
 
 
@@ -84,11 +106,12 @@ def cmd_installed(args) -> int:
 
 
 def cmd_pull(args) -> int:
-    """Поставить всё, что объявлено в конфиге: клон репозитория приходит без весов."""
+    """Восстановить веса по описи: сама опись переезжает с машиной, гигабайты — нет."""
     cat = _catalog()
-    declared = [e for e in (cat.local.get("catalog") or []) if not args.id or e.get("id") in args.id]
+    declared = [e for e in cat.inventory() if not args.id or e.get("id") in args.id]
     if not declared:
-        print("В декларации нет таких моделей (config/providers.yaml → local.catalog).")
+        print("Опись пуста — ставить нечего. Посмотри доступное: "
+              "python scripts/models.py local --kind tts")
         return 1
     for entry in declared:
         state = next((r for r in cat.installed() if r["id"] == entry["id"]), {})
@@ -128,10 +151,13 @@ def main(argv: list[str]) -> int:
     p.add_argument("--limit", type=int, default=20)
     p.set_defaults(func=cmd_local)
 
+    p = sub.add_parser("hardware", help="что за железо под сервером (без root)")
+    p.set_defaults(func=cmd_hardware)
+
     p = sub.add_parser("installed", help="что уже стоит на этой машине")
     p.set_defaults(func=cmd_installed)
 
-    p = sub.add_parser("pull", help="поставить объявленные в конфиге модели (после клона репозитория)")
+    p = sub.add_parser("pull", help="восстановить веса по описи (после переезда на другую машину)")
     p.add_argument("id", nargs="*", help="только эти (пусто → все объявленные)")
     p.add_argument("--force", action="store_true", help="перекачать, даже если веса уже на диске")
     p.set_defaults(func=cmd_pull)

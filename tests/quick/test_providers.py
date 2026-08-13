@@ -309,17 +309,22 @@ except ProviderError as e:
     ok(e.code == "PROVIDER_ADAPTER_MISSING",
        f"имя провайдера из данных не поднимает произвольный модуль ({e.code})")
 
-# Раскладка каталога весов — декларация, а не знание адаптера: правка `path` меняет, куда он смотрит.
-_lcfg = Path(tempfile.mkdtemp(prefix="local_")) / "providers.yaml"
+# Раскладка каталога весов — ОПИСЬ, а не знание адаптера: правка `path` меняет, куда он смотрит.
+_lroot = Path(tempfile.mkdtemp(prefix="local_"))
+_lmodels = _lroot / "иной_каталог"
+_lmodels.mkdir()
+(_lmodels / "installed.yaml").write_text(yaml.safe_dump(
+    {"models": [{"id": "переложенный_голос", "kind": "tts", "path": "переложено/голос.onnx"}]},
+    allow_unicode=True), encoding="utf-8")
+_lcfg = _lroot / "providers.yaml"
 _ldata = yaml.safe_load(CFG.read_text(encoding="utf-8"))
 _ldata["local"]["models_dir"] = "иной_каталог"
-_ldata["local"]["catalog"][0]["path"] = "переложено/голос.onnx"
 _lcfg.write_text(yaml.safe_dump(_ldata, allow_unicode=True), encoding="utf-8")
-_lreg = AdapterRegistry(_lcfg, ROOT)
-ok(_lreg.model_path("ru_RU-dmitri-medium") == (ROOT / "иной_каталог" / "переложено/голос.onnx").resolve(),
-   "путь к весам взят из декларации целиком (каталог + path), в коде адаптера его нет")
-ok(_lreg.model_path("руками_положенная.onnx") == (ROOT / "иной_каталог" / "руками_положенная.onnx").resolve(),
-   "модель вне каталога трактуется как путь внутри корня весов — руками положенное тоже работает")
+_lreg = AdapterRegistry(_lcfg, _lroot)
+ok(_lreg.model_path("переложенный_голос") == (_lmodels / "переложено/голос.onnx").resolve(),
+   "путь к весам взят из описи целиком (каталог + path), в коде адаптера его нет")
+ok(_lreg.model_path("руками_положенная.onnx") == (_lmodels / "руками_положенная.onnx").resolve(),
+   "модель вне описи трактуется как путь внутри корня весов — руками положенное тоже работает")
 try:
     _lreg.model_path("../../../../etc/passwd")
     ok(False, "путь наружу должен падать")
@@ -372,8 +377,8 @@ ok(_esc.status == "error" and _esc.error.code == "LOCAL_MODEL_MISSING",
 _nom = _call("media_generate", table="v", resource_type="tts_characters",
              input="текст", scene_id="s1", video_slug="demo")
 ok(_nom.status == "error" and _nom.error.code == "LOCAL_MODEL_MISSING"
-   and "models.py pull" in (_nom.error.recovery.reason if _nom.error.recovery else ""),
-   "нет весов → честный отказ и названа команда, которая их принесёт")
+   and "media_model_install" in (_nom.error.recovery.reason if _nom.error.recovery else ""),
+   "нет весов → честный отказ и назван инструмент, которым модель ставят")
 
 (_ws / "v" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
     "L1": {**_row_local, "response_format": "sh"}}}}), encoding="utf-8")
@@ -967,6 +972,56 @@ ok(_no_key.status == "success" and _no_key.data["live_error"]["code"] == "PROVID
    and _no_key.data["source"] == "gateway_registry",
    "без ключа список приходит из реестра шлюза, и НАЗВАНО, почему он может быть старее")
 ok("реестр" in _no_key.data["note"], "частичность помечена текстом, а не молчанием")
+
+print("== 18. Влезет ли модель: параметры + железо, и всё это БЕЗ root ==")
+from core.providers.hardware import FitEstimator, probe
+
+_hw = probe(ROOT)
+ok(_hw["ram_total_mb"] > 0 and _hw["ram_available_mb"] > 0 and _hw["cpu_count"] > 0,
+   f"память и ядра прочитаны без root ({_hw['ram_available_mb']} из {_hw['ram_total_mb']} МБ, "
+   f"{_hw['cpu_count']} ядер)")
+ok(_hw["ram_available_mb"] <= _hw["ram_total_mb"],
+   "доступно не больше общего — читается MemAvailable, а не выдуманное число")
+ok(_hw["disk_free_mb"] > 0, "свободное место под веса известно")
+ok(_hw["gpu"] or any("nvidia-smi" in g for g in _hw["unknown"]),
+   "видеокарты нет в ответе — значит сказано, что она НЕ проверена, а не «её нет»")
+
+_est = FitEstimator({"dtype_bytes": {"F32": 4, "F16": 2}, "overhead": 1.0, "tight_ratio": 0.8})
+ok(_est.bytes_for({"F32": 1_000_000_000}) == 4_000_000_000
+   and _est.bytes_for({"F16": 1_000_000_000}) == 2_000_000_000,
+   "разрядность решает: одна и та же модель в fp16 требует вдвое меньше")
+ok(_est.bytes_for({}, params_total=1_000_000_000) == 4_000_000_000,
+   "разрядность не названа → считаем по худшему, а не по удобному")
+ok(_est.verdict(1_000_000_000, 8000)["verdict"] == "fits"
+   and _est.verdict(7_000_000_000, 8000)["verdict"] == "tight"
+   and _est.verdict(9_000_000_000, 8000)["verdict"] == "no",
+   "три исхода: влезает / впритык / не влезает — пороги из декларации")
+ok(_est.verdict(0, 8000)["verdict"] == "unknown"
+   and "нечем" in _est.verdict(0, 8000)["why"],
+   "нет числа параметров → «не знаю», а не «влезет»")
+ok("ОЦЕНКА" in _est.verdict(1_000_000_000, 8000)["why"],
+   "вердикт назван оценкой, а не замером — иначе ему поверят как факту")
+
+_mc = ModelCatalog(CFG, ROOT / "vendor" / "models")
+_fit_rows = _mc.with_fit([{"id": "тяжёлая", "params_by_dtype": {"F32": 20_000_000_000},
+                           "params_total": 20_000_000_000},
+                          {"id": "лёгкая", "params_by_dtype": {"F16": 100_000_000},
+                           "params_total": 100_000_000}], _hw)
+ok(_fit_rows[0]["fit"]["verdict"] == "no" and _fit_rows[1]["fit"]["verdict"] == "fits",
+   f"вердикт приходит строкой каталога ({[r['fit']['verdict'] for r in _fit_rows]})")
+
+# Единственный источник: опись. Рукописного каталога в конфиге больше нет.
+_cfg_local = yaml.safe_load(CFG.read_text(encoding="utf-8"))["local"]
+ok("catalog" not in _cfg_local,
+   "каталога-декларации в конфиге нет: локальные модели приходят одним путём")
+ok(_mc.entries() == _mc.inventory(),
+   "что знает сервер о локальных моделях = опись поставленного, второго списка нет")
+
+_inst_tool = _call("media_models", scope="installed")
+ok(_inst_tool.data["hardware"]["ram_available_mb"] > 0,
+   "инструмент отдаёт снимок железа рядом со списком — иначе числа параметров не с чем сравнить")
+ok(all("fit" in m for m in _inst_tool.data["models"]),
+   "у каждой поставленной модели есть вердикт пригодности")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

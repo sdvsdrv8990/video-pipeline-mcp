@@ -108,7 +108,9 @@ class AdapterRegistry:
         if not present:
             raise ProviderError(
                 "LOCAL_MODEL_MISSING", f"Нет весов локальной модели: {name}",
-                reason=("Веса не лежат в git — вытяни их: python scripts/models.py pull. "
+                reason=("Веса не лежат в git. Посмотри, что можно поставить — media_models "
+                        "(scope='local'), поставь — media_model_install; из терминала то же самое "
+                        "делает python scripts/models.py install <id> --kind <вид>. "
                         f"Ожидались в {path}. Либо переключи строку канала на другого провайдера."),
                 suggested_tool="media_provider_status")
         return path
