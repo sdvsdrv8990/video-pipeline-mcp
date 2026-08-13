@@ -30,6 +30,8 @@ from core.ids import ChainResolver, IDGenerator, LinkError, LinkRegistry, Taxono
 from core.integrity import InstanceIdentity
 from core.write_policy import WritePolicy, WritePolicyError
 from core.paths import PathEscapeError, safe_resolve
+from core.providers import ProviderError
+from core.uniqueness import UniquenessError
 from core.state import StateManager
 from core.tables import TableEngine, TableError
 
@@ -119,7 +121,7 @@ class ToolContext:
             return False, self.err("PATH_ESCAPE", "Путь выходит за пределы workspace/.",
                                    "Используй путь ВНУТРИ workspace, без '..' и абсолютных путей.")
         except (TableError, ExcelError, TemplateError, TableMaterializerError, LinkError,
-                TaxonomyError, WritePolicyError) as e:
+                TaxonomyError, WritePolicyError, ProviderError, UniquenessError) as e:
             return False, self.err(e.code, e.message, e.reason, e.suggested_tool)
         except ValueError as e:
             # F37: не-путёвый ValueError из глубины core — честно INTERNAL_ERROR, не мислейбл PATH_ESCAPE.

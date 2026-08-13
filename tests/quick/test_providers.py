@@ -150,6 +150,55 @@ _cfg2.write_text(yaml.safe_dump(_data, allow_unicode=True), encoding="utf-8")
 ok("model" not in ProviderResolver(_cfg2).resolve(rows(), "image_generations")["params"],
    "смена meta_columns меняет состав параметров — конфиг не декоративный")
 
+print("== 9. Инструмент: кто исполняет и какой моделью (шаг 2) ==")
+import asyncio as _aio
+import json as _json
+from core.engine import Engine as _Eng
+from core.ids import IDGenerator as _IDG
+from core.state import StateManager as _SM
+import server as _srv
+
+_ws = Path(tempfile.mkdtemp(prefix="prov_")) / "workspace"
+_ws.mkdir(parents=True)
+_sm = _SM(_ws)
+_eng = _Eng(state_manager=_sm)
+_srv.register_basic_tools(_eng, _IDG(), _sm)
+(_ws / "ch").mkdir()
+
+
+def _call(tool, **params):
+    return _aio.run(_eng.call(tool, params))
+
+
+_r = _call("media_provider_status", table="ch")
+ok(_r.status == "success" and _r.data["source"] == "declaration",
+   f"книга канала пуста → дефолт декларации, и это НАЗВАНО ({_r.data['source']})")
+_active = {x["resource_type"]: x["provider"] for x in _r.data["resolved"]}
+ok(len(_active) >= 3 and all(_active.values()),
+   f"провайдер найден для каждого объявленного вида ресурса ({_active})")
+
+(_ws / "ch" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+    "R1": {"resource_type": "image_generations", "provider": "Fal", "fallback_provider": "OpenAI",
+           "daily_limit": 500, "current_usage": 500, "warning_threshold": 400, "model": "flux-pro-1.1"},
+    "R2": {"resource_type": "image_generations", "provider": "OpenAI", "fallback_provider": "",
+           "daily_limit": 200, "current_usage": 0, "warning_threshold": 150, "model": "dall-e-3"}}}}),
+    encoding="utf-8")
+_r2 = _call("media_provider_status", table="ch", resource_type="image_generations")
+_x = _r2.data["resolved"][0]
+ok(_r2.data["source"] == "project", "данные канала перекрывают дефолт декларации")
+ok(_x["provider"] == "OpenAI" and _x["params"]["model"] == "dall-e-3",
+   f"основной исчерпан → показан фактически работающий ({_x['provider']}/{_x['params']['model']})")
+ok(_x["exhausted_chain"], "видно, что работа идёт УЖЕ на запасном, а не на основном")
+_fact = _r2.facts[0].data
+ok(_fact["on_fallback"] == ["image_generations"],
+   "переход на fallback приходит фактом контракта, а не только в тексте")
+ok("table_update" in _r2.data["switch_hint"],
+   "сервер называет, ЧЕМ переключить — существующим инструментом, без нового")
+_bad = _call("media_provider_status", table="ch", resource_type="нет_такого")
+ok(_bad.status == "success" and _bad.data["failed"]
+   and _bad.data["failed"][0]["code"] == "PROVIDER_NOT_CONFIGURED",
+   "неизвестный ресурс отчитывается кодом в failed, не роняет остальные")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

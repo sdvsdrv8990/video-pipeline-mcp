@@ -1202,6 +1202,32 @@
   },
   "title": "Таблицы: снапшот (read.json)"
  },
+ "media_provider_status": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Показывает, каким провайдером и какой моделью исполняется каждый вид ресурса (озвучка, картинки, транскрипция) прямо сейчас, откуда это взято (данные канала или дефолт декларации), не идёт ли работа уже на fallback после исчерпания лимита и не близок ли порог предупреждения. Переключение провайдера или модели — обычный table_update по строке листа провайдеров: правка данных, без перезапуска сервера.",
+  "group": "media",
+  "input_schema": {
+   "properties": {
+    "resource_type": {
+     "description": "Один вид ресурса (пусто → все объявленные)",
+     "type": "string"
+    },
+    "table": {
+     "description": "Путь сущности с данными канала (где лежит read.json)",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table"
+   ],
+   "type": "object"
+  },
+  "title": "Медиа: кто исполняет и какой моделью"
+ },
  "memory_read": {
   "annotations": {
    "destructiveHint": false,

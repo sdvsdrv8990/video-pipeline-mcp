@@ -19,6 +19,8 @@ KNOWN_FACT_TYPES = {
     # Уникальность (A7.2): число, неполнота входов и сигнал в петлю решений
     "UniquenessComputed", "UniquenessIncomplete", "UniquenessAlert",
     "UniquenessCompensated",
+    # Медиа: какой провайдер и модель выбраны по данным канала
+    "ProviderResolved",
     "MemoryRead", "MemoryWritten",
     "SearchCompleted", "QuickSearch", "MultiSearch",
     "FsSearch", "FsSearchYaml", "FsSearchMulti",
