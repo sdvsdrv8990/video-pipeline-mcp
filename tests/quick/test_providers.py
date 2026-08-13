@@ -575,6 +575,144 @@ except TaskCycleError as e:
 ok(not _out.exists(), "недописанный файл удалён, а не выдан за результат")
 _srv_http.shutdown()
 
+print("== 14. Ключи провайдеров: лежат в канале, зашифрованы, ИИ недоступны (S23) ==")
+from core.paths import BUILTIN_SECRET_DIRS, SecretAccessError, configure_secret_dirs, is_secret_path
+from core.secrets import ChannelSecrets, fingerprint, redact
+
+_KEY = "sk-СЕКРЕТНЫЙ-КЛЮЧ-1234567890"
+_home = Path(tempfile.mkdtemp(prefix="home_"))
+_box = ChannelSecrets(_ws, _home)
+_set = _box.set("ch", "ElevenLabs", _KEY)
+_encfile = _ws / "ch/.secrets/provider_keys.enc"
+ok(_encfile.is_file() and _KEY.encode("utf-8") not in _encfile.read_bytes(),
+   "на диске лежит шифротекст, а не ключ")
+ok(oct(_encfile.stat().st_mode)[-3:] == "600" and oct(_encfile.parent.stat().st_mode)[-3:] == "700",
+   f"права файла и каталога закрыты ({oct(_encfile.stat().st_mode)[-3:]}/{oct(_encfile.parent.stat().st_mode)[-3:]})")
+ok(_set["fingerprint"] == fingerprint(_KEY) and _KEY not in str(_set),
+   "наружу отдан отпечаток, а не значение")
+ok(_box.get("ch", "ElevenLabs") == _KEY, "сервер свой ключ читает — иначе провайдера не вызвать")
+
+# Все двери инструментов, ведущие к файлу: чтение, запись, удаление, перенос, листинг, поиск.
+_doors = [("fs_read_file", {"path": "ch/.secrets/provider_keys.enc"}),
+          ("fs_write_file", {"path": "ch/.secrets/provider_keys.enc", "content": "подмена"}),
+          ("fs_delete", {"path": "ch/.secrets", "force": True}),
+          ("fs_move", {"source": "ch/.secrets/provider_keys.enc", "destination": "ch/утёк.txt"}),
+          ("fs_rename", {"path": "ch/.secrets", "new_name": "открыто"}),
+          ("memory_read", {"path": "ch/.secrets/provider_keys.enc"})]
+for _tool, _params in _doors:
+    _dr = _call(_tool, **_params)
+    ok(_dr.status == "error" and _dr.error.code == "SECRET_ACCESS_DENIED",
+       f"{_tool}: закрыто кодом (получено {_dr.error.code if _dr.error else _dr.status})")
+ok(_encfile.is_file() and _box.get("ch", "ElevenLabs") == _KEY,
+   "после всех попыток файл цел и ключ на месте — отказ не повредил хранилище")
+
+_tree = _call("fs_get_directory_tree", path="ch")
+ok(".secrets/" not in _json.dumps(_tree.data, ensure_ascii=False),
+   "каталог секретов не виден даже в списке: «невидим для чтения, но виден в дереве» — половина защиты")
+for _q in ({"directory": ".", "keyword": "sk-"}, {"directory": ".", "extension": ".enc"}):
+    _sr = _call("fs_smart_search", **_q)
+    ok("secrets" not in _json.dumps(_sr.data, ensure_ascii=False),
+       f"поиск не выдаёт закрытый файл ({_q})")
+
+# Отказ должен объяснять, что двери НЕТ, иначе модель начнёт искать обход.
+_dr = _call("fs_read_file", path="ch/.secrets/provider_keys.enc")
+ok("вручную" in _dr.error.recovery.reason and "set_provider_key" in _dr.error.recovery.reason,
+   "в отказе названа единственная законная дверь: владелец, вручную, скриптом")
+
+# Ротация: новый ключ занимает место старого, прежний отпечаток остаётся следом замены.
+_set2 = _box.set("ch", "ElevenLabs", "sk-НОВЫЙ-КЛЮЧ-0987654321")
+ok(_box.get("ch", "ElevenLabs") == "sk-НОВЫЙ-КЛЮЧ-0987654321" and _set2["replaced"] == fingerprint(_KEY),
+   "новый ключ заменил старый, и видно, что замена состоялась")
+_st = _box.status("ch")
+ok(_st[0]["present"] and _st[0]["fingerprint"] and "sk-" not in _json.dumps(_st, ensure_ascii=False),
+   f"статус показывает отпечаток и дату, но не значение ({_st[0]['fingerprint']})")
+
+# Fail-closed: конфиг может РАСШИРИТЬ запрет, но не отменить встроенный минимум.
+configure_secret_dirs([])
+ok(is_secret_path("ch/.secrets/provider_keys.enc"),
+   "пустой список в конфиге не открывает каталог — запрет живёт в коде")
+configure_secret_dirs(["мои_ключи"])
+ok(is_secret_path("ch/мои_ключи/x") and is_secret_path("ch/.secrets/x"),
+   "конфиг добавляет закрытые имена к встроенному минимуму")
+configure_secret_dirs(sorted(BUILTIN_SECRET_DIRS))
+
+print("== 14b. Провайдеру нужен ключ: сервер говорит «прав нет», а не молчит ==")
+_kcfg_dir = Path(tempfile.mkdtemp(prefix="key_cfg_")) / "config"
+_sh.copytree(ROOT / "config", _kcfg_dir)
+_kdata = yaml.safe_load(CFG.read_text(encoding="utf-8"))
+_kdata["adapters"]["by_provider"]["Обл_ключ"] = {"adapter": "fake_async:_FakeKeyed", "requires_key": True}
+(_kcfg_dir / "providers.yaml").write_text(yaml.safe_dump(_kdata, allow_unicode=True), encoding="utf-8")
+
+
+class _FakeKeyed:
+    """Провайдер, которому ключ нужен: проверяем, что он его получает, а ответ — нет."""
+
+    seen = ""
+
+    def __init__(self, registry):
+        pass
+
+    def generate(self, request):
+        from core.providers import MediaOutcome
+        _FakeKeyed.seen = request.api_key
+        if request.input == "отказ":
+            raise ProviderError("PROVIDER_FAILED",
+                                f"провайдер ответил: invalid api key '{request.api_key}'",
+                                reason=f"ключ {request.api_key} отклонён")
+        request.target.write_bytes(b"RIFF" + b"audio")
+        return MediaOutcome(files=[request.target])
+
+
+_fake._FakeKeyed = _FakeKeyed
+(_ws / "k").mkdir()
+_krow = {"resource_type": "tts_characters", "provider": "Обл_ключ", "fallback_provider": "",
+         "daily_limit": 1000, "current_usage": 0, "warning_threshold": 900,
+         "model": "облачная", "response_format": "wav", "usage_unit": "character"}
+(_ws / "k" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+    "K1": dict(_krow)}}}), encoding="utf-8")
+_cfg_was = _srv.CONFIG_PATH
+try:
+    _srv.CONFIG_PATH = _kcfg_dir
+    _eng_k = _Eng(state_manager=_sm)
+    _srv.register_basic_tools(_eng_k, _IDG(), _sm)
+    _kcall = lambda tool, **p: _aio.run(_eng_k.call(tool, p))       # noqa: E731 — локальный хелпер
+
+    _nokey = _kcall("media_generate", table="k", resource_type="tts_characters",
+                    input="текст", scene_id="s1", video_slug="demo")
+    ok(_nokey.status == "error" and _nokey.error.code == "PROVIDER_KEY_MISSING",
+       f"нет ключа → PROVIDER_KEY_MISSING, а не «внутренняя ошибка» ({_nokey.error.code if _nokey.error else 'success'})")
+    ok("вручную" in _nokey.error.recovery.reason and "set_provider_key" in _nokey.error.recovery.reason
+       and "table_update" in _nokey.error.recovery.reason,
+       "сервер говорит: прав нет, вставляет владелец вручную — и называет обходной путь без ключа")
+
+    _status_k = _kcall("media_provider_status", table="k", resource_type="tts_characters")
+    _kstate = _status_k.data["resolved"][0]["key"]
+    ok(_kstate["required"] and not _kstate["present"] and "set_provider_key" in _kstate["how_to_set"],
+       f"в статусе видно: ключ нужен, его нет, и чем его вносят ({_kstate['required']}/{_kstate['present']})")
+
+    ChannelSecrets(_ws, _kcfg_dir.parent).set("k", "Обл_ключ", _KEY)
+    _withkey = _kcall("media_generate", table="k", resource_type="tts_characters",
+                      input="текст", scene_id="s1", video_slug="demo")
+    ok(_withkey.status == "success" and _FakeKeyed.seen == _KEY,
+       "ключ дошёл до провайдера в исходящем вызове")
+    _dump = _json.dumps({"data": _withkey.data, "facts": [f.model_dump() for f in _withkey.facts]},
+                        ensure_ascii=False)
+    ok(_KEY not in _dump and "sk-" not in _dump,
+       "и не появился ни в данных ответа, ни в фактах контракта")
+    _log = (ROOT / "_SESSION_LOG.md")
+    ok(not _log.exists() or _KEY not in _log.read_text(encoding="utf-8"),
+       "и не попал в журнал фактов")
+
+    _reject = _kcall("media_generate", table="k", resource_type="tts_characters",
+                     input="отказ", scene_id="s2", video_slug="demo")
+    ok(_KEY not in _json.dumps(_reject.error.model_dump(), ensure_ascii=False),
+       "провайдер процитировал ключ в тексте отказа — наружу он не ушёл (последний рубеж redact)")
+finally:
+    _srv.CONFIG_PATH = _cfg_was
+
+ok(redact(f"ключ {_KEY} отклонён", [_KEY]) == f"ключ <ключ скрыт {fingerprint(_KEY)}> отклонён",
+   "redact подменяет значение отпечатком, а не многоточием — видно, КАКОЙ ключ отвергли")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

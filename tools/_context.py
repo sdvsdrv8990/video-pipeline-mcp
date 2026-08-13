@@ -29,7 +29,8 @@ from core.excel import ExcelEngine, ExcelError
 from core.ids import ChainResolver, IDGenerator, LinkError, LinkRegistry, Taxonomy, TaxonomyError
 from core.integrity import InstanceIdentity
 from core.write_policy import WritePolicy, WritePolicyError
-from core.paths import PathEscapeError, safe_resolve
+from core.paths import PathEscapeError, SecretAccessError, configure_secret_dirs, safe_resolve
+from core.secrets import ChannelSecrets, SecretError
 from core.providers import ProviderError, TaskCycleError
 from core.uniqueness import UniquenessError
 from core.state import StateManager
@@ -71,6 +72,12 @@ class ToolContext:
         return Advice(self.config_path / "recommendations.yaml")
 
     @property
+    def secrets(self) -> ChannelSecrets:
+        """S23: ключи провайдеров канала. Единственная дверь в закрытый каталог — и она серверная:
+        значение уходит только в исходящий вызов провайдера, клиенту — отпечаток."""
+        return ChannelSecrets(self.workspace_path, self.config_path.parent)
+
+    @property
     def write_policy(self) -> WritePolicy:
         """S2: какие типы файлов сервер вправе материализовать (список в firewall.yaml)."""
         return WritePolicy(self.config_path)
@@ -109,6 +116,16 @@ class ToolContext:
             code=code, message=message,
             recovery=Recovery(reason=reason, suggested_tool=suggested_tool)))
 
+    def err_path(self, exc: Exception, message: str) -> ToolResult:
+        """Отказ по пути. Закрытый каталог и выход за рабочую область — РАЗНЫЕ причины, и
+        клиент должен видеть, какая именно: иначе модель ищет обход там, где двери просто нет."""
+        if isinstance(exc, SecretAccessError):
+            return self.err(
+                "SECRET_ACCESS_DENIED", "Каталог секретов закрыт для инструментов.",
+                "Ключи канала не читаются и не пишутся инструментами по построению. "
+                "Вносит их владелец вручную: python scripts/set_provider_key.py.")
+        return self.err("PATH_ESCAPE", message)
+
     def safe(self, call: Callable[[], Any]) -> tuple[bool, Any]:
         """Выполнить sync-вызов ядра, смаппив исключения в ToolResult.
 
@@ -117,6 +134,14 @@ class ToolContext:
         """
         try:
             return True, call()
+        except SecretAccessError:
+            # Не «нет прав на этот вызов», а «этой двери нет» — иначе модель будет искать обход.
+            return False, self.err(
+                "SECRET_ACCESS_DENIED", "Каталог секретов закрыт для инструментов.",
+                "Ключи канала не читаются и не пишутся инструментами по построению. "
+                "Вносит их владелец вручную: python scripts/set_provider_key.py.")
+        except SecretError as e:
+            return False, self.err(e.code, e.message, e.reason, e.suggested_tool)
         except PathEscapeError:
             return False, self.err("PATH_ESCAPE", "Путь выходит за пределы workspace/.",
                                    "Используй путь ВНУТРИ workspace, без '..' и абсолютных путей.")
@@ -133,6 +158,17 @@ def build_context(engine: Engine, id_generator: IDGenerator, state_manager: Stat
                   config_path: Path) -> ToolContext:
     """Собрать контекст: движки поднимаются здесь, группы их только используют."""
     workspace_path = state_manager.workspace_path
+    # S23: какие каталоги внутри рабочей области закрыты — объявлено в firewall.yaml. Конфиг
+    # только РАСШИРЯЕТ встроенный минимум: не загрузился — запрет остаётся (fail-closed).
+    _fw = config_path / "firewall.yaml"
+    _declared = []
+    if _fw.exists():
+        try:
+            _declared = ((yaml.safe_load(_fw.read_text(encoding="utf-8")) or {})
+                         .get("secret_paths") or {}).get("dirs") or []
+        except yaml.YAMLError:
+            _declared = []
+    configure_secret_dirs(_declared)
     # S9: личность инстанса — ключ подписи выпускается рядом с .env (вне workspace/).
     identity = InstanceIdentity(config_path.parent, workspace_path)
     identity.ensure_key()

@@ -236,6 +236,31 @@ DOWNLOAD_INCOMPLETE:
   recovery:
     reason: "Ответ 200 не означает загрузку — файла нет, он пуст или размер не сошёлся с обещанным. Повтори загрузку; при повторе проверь ссылку и место на диске."
 
+SECRET_ACCESS_DENIED:
+  class: integrity
+  message_template: "Каталог секретов закрыт: ключи провайдеров не читаются инструментами."
+  recovery:
+    reason: "Это не сбой и не вопрос прав конкретного вызова: ключи канала недоступны серверным инструментам по построению. Вносит и меняет их владелец вручную — python scripts/set_provider_key.py --channel <канал> --provider <имя>. Проверить, ЧТО стоит, можно через media_provider_status: он показывает отпечаток и дату, но никогда значение."
+
+PROVIDER_KEY_MISSING:
+  class: human_required
+  message_template: "У провайдера нет ключа доступа для этого канала."
+  recovery:
+    suggested_tool: media_provider_status
+    reason: "Ключ вносит только владелец и только вручную — у сервера и модели нет прав его читать или записывать через инструменты: python scripts/set_provider_key.py --channel <канал> --provider <имя> (ввод скрыт, значение шифруется до записи). Пока ключа нет, поставь в строке канала провайдера, который работает без ключа (например, локального), — это обычный table_update."
+
+SECRET_UNREADABLE:
+  class: human_required
+  message_template: "Файл ключей канала не расшифровывается."
+  recovery:
+    reason: "Файл зашифрован ключом другого инстанса — восстановлен из чужого бэкапа или утерян instance_secret.key. Прочитать нечем: внеси ключи заново через scripts/set_provider_key.py."
+
+SECRET_ENCRYPTION_UNAVAILABLE:
+  class: human_required
+  message_template: "Шифрование недоступно: нет библиотеки cryptography."
+  recovery:
+    reason: "Поставь зависимости сервера (pip install -e .). Хранить ключи провайдеров в открытом виде сервер не станет — это было бы защитой на словах."
+
 DOWNLOAD_FORBIDDEN:
   class: integrity
   message_template: "Ссылка провайдера не пропущена: адрес или размер вне объявленных границ."

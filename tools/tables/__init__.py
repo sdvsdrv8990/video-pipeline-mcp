@@ -19,8 +19,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """Чтение снапшота таблицы."""
         try:
             snapshot = ctx.state_manager.read_snapshot(table)
-        except ValueError:
-            return ctx.err("PATH_ESCAPE", f"Path escapes workspace: {table}")
+        except ValueError as _pe:
+            return ctx.err_path(_pe, f"Path escapes workspace: {table}")
         if snapshot is None:
             return ctx.err("TABLE_NOT_FOUND", f"Table not found: {table}")
         return ToolResult(status="success", data=snapshot, facts=[Fact(type="SnapshotRead", data={"table": table})])

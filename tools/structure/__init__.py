@@ -325,8 +325,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """
         try:
             target = ctx.resolve(path)
-        except ValueError:
-            return ctx.err("PATH_ESCAPE", f"Path escapes workspace: {path}")
+        except ValueError as _pe:
+            return ctx.err_path(_pe, f"Path escapes workspace: {path}")
         if not target.exists():
             return ctx.err("FILE_NOT_FOUND", f"Файл памяти не найден: {path}")
 
@@ -392,15 +392,15 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         # Проверяем что старый путь существует
         try:
             old_full = ctx.resolve(old_path)
-        except ValueError:
-            return ctx.err("PATH_ESCAPE", f"Старый путь выходит за workspace: {old_path}")
+        except ValueError as _pe:
+            return ctx.err_path(_pe, f"Старый путь выходит за workspace: {old_path}")
         if not old_full.exists():
             return ctx.err("FILE_NOT_FOUND", f"Папка не найдена: {old_path}")
         # Проверяем что новый путь не занят
         try:
             new_full = ctx.resolve(new_path)
-        except ValueError:
-            return ctx.err("PATH_ESCAPE", f"Новый путь выходит за workspace: {new_path}")
+        except ValueError as _pe:
+            return ctx.err_path(_pe, f"Новый путь выходит за workspace: {new_path}")
         if new_full.exists():
             return ctx.err("FILE_EXISTS", f"Путь уже существует: {new_path}")
         # Физический перенос

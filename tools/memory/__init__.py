@@ -23,8 +23,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """
         try:
             target = ctx.resolve(path)
-        except ValueError:
-            return ctx.err("PATH_ESCAPE", f"Path escapes workspace: {path}")
+        except ValueError as _pe:
+            return ctx.err_path(_pe, f"Path escapes workspace: {path}")
         if not target.exists():
             return ToolResult(status="success", data={"path": path, "exists": False, "entries": [], "ids": []})
         content = target.read_text(encoding="utf-8")
@@ -64,8 +64,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """
         try:
             target = ctx.resolve(path)
-        except ValueError:
-            return ctx.err("PATH_ESCAPE", f"Path escapes workspace: {path}")
+        except ValueError as _pe:
+            return ctx.err_path(_pe, f"Path escapes workspace: {path}")
         target.parent.mkdir(parents=True, exist_ok=True)
         # Формируем запись
         entry = f"\n## [{entry_date}] Решение: {title}\n"

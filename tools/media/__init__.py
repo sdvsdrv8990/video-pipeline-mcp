@@ -19,6 +19,7 @@ from core.contracts import Fact, ToolResult
 from core.engine import Engine
 from core.providers import (AdapterRegistry, MediaRequest, ProviderError, ProviderResolver,
                             ResultDownloader, TaskCycle, UsageLedger)
+from core.secrets import redact
 from tools._context import ANNOTATIONS_MODIFY, ANNOTATIONS_READONLY, ToolContext
 
 
@@ -57,6 +58,25 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         rows = _declared(src.get("fallback_book", ""), sheet)
         return rows, ("declaration" if rows else "none"), sheet
 
+    def _key_state(table: str, provider: str, resource_type: str, registry) -> dict:
+        """Есть ли ключ у провайдера — БЕЗ значения: имя, отпечаток, дата.
+
+        Отпечаток отвечает на вопрос «тот ли ключ стоит» и не даёт восстановить сам ключ, поэтому
+        показывать его можно. Значение не выдаётся ни здесь, ни где-либо ещё.
+        """
+        required = registry.requires_key(provider, resource_type)
+        owner = ctx.secrets.owner_of(table)
+        state = {"required": required, "present": False, "fingerprint": "", "updated": "",
+                 "stored_at": owner}
+        if owner:
+            for row in ctx.secrets.status(owner, provider):
+                state.update({k: row[k] for k in ("present", "fingerprint", "updated")})
+        if required and not state["present"]:
+            state["how_to_set"] = (f"python scripts/set_provider_key.py --channel {table} "
+                                   f"--provider {provider} — только владелец, только вручную: "
+                                   "прав читать или записывать ключ у сервера нет.")
+        return state
+
     async def media_provider_status(table: str, resource_type: str = "") -> "ToolResult":
         """Кем и какой моделью исполняется ресурс прямо сейчас — и почему именно так.
 
@@ -73,10 +93,12 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         types = [resource_type] if resource_type else sorted(
             {str(r.get(type_col)) for r in rows if r.get(type_col)})
 
+        registry = AdapterRegistry(ctx.config_path / "providers.yaml", ctx.config_path.parent)
         resolved, failed = [], []
         for rt in types:
             ok_r, res = ctx.safe(lambda t=rt: resolver.resolve(rows, t, source=source))
             if ok_r:
+                res["key"] = _key_state(table, res["provider"], rt, registry)
                 resolved.append(res)
             else:
                 # Отказ по одному ресурсу не прячет остальные: тот же закон, что у фазы ТАБЛИЦЫ.
@@ -93,6 +115,19 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "active": {r["resource_type"]: r["provider"] for r in resolved},
             "on_fallback": [r["resource_type"] for r in resolved if r["exhausted_chain"]],
             "warning": [r["resource_type"] for r in resolved if r["warning"]]})])
+
+    def _key_for(table: str, provider: str) -> str:
+        """Ключ провайдера для адреса: ближайший канал вверх по дереву, у которого он есть."""
+        owner = ctx.secrets.owner_of(table)
+        return ctx.secrets.get(owner, provider) if owner else ""
+
+    def _hide_key(result: "ToolResult", api_key: str) -> "ToolResult":
+        """Последний рубеж: провайдер способен процитировать присланный ключ в тексте отказа."""
+        if api_key and result.error:
+            result.error.message = redact(result.error.message, [api_key])
+            if result.error.recovery:
+                result.error.recovery.reason = redact(result.error.recovery.reason, [api_key])
+        return result
 
     def _answer_url(cycle: TaskCycle, answer: dict) -> str:
         """Ссылка на результат в ответе задачи. Как называется поле — знает декларация."""
@@ -148,16 +183,35 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         # иначе каждый новый адаптер обязан помнить про mkdir, и первый забывший роняет вызов.
         target.parent.mkdir(parents=True, exist_ok=True)
 
+        # S23: ключ проверяется ДО подъёма адаптера — он свойство провайдера, а не кода, и без
+        # него вызов не состоится в любом случае. Берётся из закрытого файла канала и живёт
+        # только до конца вызова.
         registry = AdapterRegistry(ctx.config_path / "providers.yaml", ctx.config_path.parent)
+        api_key = ""
+        if registry.requires_key(decision["provider"], resource_type):
+            ok, api_key = ctx.safe(lambda: _key_for(table, decision["provider"]))
+            if not ok:
+                return api_key
+            if not api_key:
+                return ctx.err(
+                    "PROVIDER_KEY_MISSING",
+                    f"У провайдера '{decision['provider']}' нет ключа доступа для этого канала.",
+                    "Прав читать или записывать ключ у меня нет — это не ограничение вызова, а "
+                    "устройство сервера. Вставить ключ может только владелец и только вручную: "
+                    f"python scripts/set_provider_key.py --channel {table} "
+                    f"--provider {decision['provider']} (ввод скрыт, значение шифруется до записи). "
+                    "Пока ключа нет — поставь в строке канала провайдера, работающего без ключа "
+                    "(например, локального): это обычный table_update.")
+
         ok, adapter = ctx.safe(lambda: registry.load(decision["provider"], resource_type))
         if not ok:
             return adapter
 
         request = MediaRequest(input=input, params=params, target=target,
-                               models_dir=registry.models_dir)
+                               models_dir=registry.models_dir, api_key=api_key)
         ok, outcome = ctx.safe(lambda: adapter.generate(request))
         if not ok:
-            return outcome
+            return _hide_key(outcome, api_key)
 
         waited: dict = {}
         if outcome.task_id:

@@ -95,7 +95,7 @@ from dataclasses import dataclass, field
 import concurrent.futures
 from datetime import datetime
 
-from core.paths import safe_resolve  # D1/G17: единый containment внутри workspace/
+from core.paths import is_secret_path, safe_resolve  # D1/G17 + S23: секреты вне выдачи
 
 
 @dataclass
@@ -205,6 +205,10 @@ class FsSearcher:
             results = []
             for item in root.rglob("*"):
                 if not item.is_file():
+                    continue
+                # S23: обход идёт по диску, а не через резолвер — закрытый каталог не попадает
+                # ни в имена, ни в поиск по содержимому.
+                if is_secret_path(item.relative_to(self.workspace.resolve())):
                     continue
 
                 # Фильтр по расширению

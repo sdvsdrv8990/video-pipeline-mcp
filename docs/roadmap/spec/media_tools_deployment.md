@@ -306,7 +306,7 @@ output_schema = {
 | FFmpeg | stable-ts, WAV-обработка | нужна установка |
 | PyTorch (GPU) | stable-ts | желателен GPU |
 | stable-ts | STT-адаптер | репозиторий архивирован, рабочий |
-| LiteLLM | TTS + IMG адаптеры | нужен API ключ + URL |
+| LiteLLM | TTS + IMG адаптеры | нужен API ключ + URL. **Ключ (S23):** `<канал>/.secrets/provider_keys.enc`, шифрование Fernet, вносит владелец вручную `scripts/set_provider_key.py`; инструментам каталог закрыт (`SECRET_ACCESS_DENIED`), нет ключа → `PROVIDER_KEY_MISSING` |
 | Python httpx/requests | LiteLLM вызовы | в зависимостях |
 
 ---

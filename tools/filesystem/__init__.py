@@ -17,6 +17,7 @@ import yaml
 from core.contracts import Fact, ToolResult, as_untrusted
 from core.engine import Engine
 from core.ids import LinkError
+from core.paths import is_secret_path
 from core.search.fs_searcher import FsSearcher, FsSearchError, FsSearchTask
 from tools._context import ANNOTATIONS_MODIFY, ANNOTATIONS_READONLY, ToolContext
 
@@ -39,13 +40,17 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """Получение дерева каталогов."""
         try:
             target = ctx.resolve(path)
-        except ValueError:
-            return ctx.err("PATH_ESCAPE", f"Path escapes workspace: {path}")
+        except ValueError as _pe:
+            return ctx.err_path(_pe, f"Path escapes workspace: {path}")
         if not target.exists():
             return ctx.err("PATH_NOT_FOUND", f"Path not found: {path}")
         def build_tree(p: Path) -> dict:
             tree = {}
             for item in sorted(p.iterdir()):
+                # S23: обход идёт по диску мимо резолвера — закрытый каталог отсекаем здесь же,
+                # иначе он был бы «невидим для чтения, но виден в списке».
+                if is_secret_path(item.name):
+                    continue
                 if item.is_dir():
                     tree[item.name + "/"] = build_tree(item)
                 else:
@@ -57,8 +62,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """Чтение файла."""
         try:
             target = ctx.resolve(path)
-        except ValueError:
-            return ctx.err("PATH_ESCAPE", f"Path escapes workspace: {path}")
+        except ValueError as _pe:
+            return ctx.err_path(_pe, f"Path escapes workspace: {path}")
         if not target.exists():
             return ctx.err("FILE_NOT_FOUND", f"File not found: {path}")
         content = target.read_text(encoding="utf-8")
@@ -131,8 +136,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """Создание файла: владелец по вместимости всегда, собственный ID — по запросу (S18-g/S19)."""
         try:
             target = ctx.resolve(path)
-        except ValueError:
-            return ctx.err("PATH_ESCAPE", f"Path escapes workspace: {path}")
+        except ValueError as _pe:
+            return ctx.err_path(_pe, f"Path escapes workspace: {path}")
         ok_type, denied = ctx.safe(lambda: _check_write(path, content))
         if not ok_type:
             return denied
@@ -144,8 +149,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """Полная перезапись файла (владелец всегда, собственный ID — по запросу)."""
         try:
             target = ctx.resolve(path)
-        except ValueError:
-            return ctx.err("PATH_ESCAPE", f"Path escapes workspace: {path}")
+        except ValueError as _pe:
+            return ctx.err_path(_pe, f"Path escapes workspace: {path}")
         ok_type, denied = ctx.safe(lambda: _check_write(path, content))
         if not ok_type:
             return denied
@@ -161,8 +166,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """Перемещение файла или каталога (реестр переезжает вместе с диском, F65)."""
         try:
             src, dst = ctx.resolve(source), ctx.resolve(destination)
-        except ValueError:
-            return ctx.err("PATH_ESCAPE", "Path escapes workspace")
+        except ValueError as _pe:
+            return ctx.err_path(_pe, "Path escapes workspace")
         if not src.exists():
             return ctx.err("FILE_NOT_FOUND", f"Source not found: {source}")
         if dst.exists():
@@ -191,15 +196,15 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """Переименование файла или каталога."""
         try:
             src = ctx.resolve(path)
-        except ValueError:
-            return ctx.err("PATH_ESCAPE", f"Path escapes workspace: {path}")
+        except ValueError as _pe:
+            return ctx.err_path(_pe, f"Path escapes workspace: {path}")
         if not src.exists():
             return ctx.err("FILE_NOT_FOUND", f"Not found: {path}")
         dst = src.parent / new_name
         try:
             dst = ctx.resolve(str(dst.relative_to(ctx.workspace_path)))
-        except ValueError:
-            return ctx.err("PATH_ESCAPE", f"New name escapes workspace: {new_name}")
+        except ValueError as _pe:
+            return ctx.err_path(_pe, f"New name escapes workspace: {new_name}")
         if dst.exists():
             return ctx.err("FILE_EXISTS", f"Name exists: {new_name}")
         # S2: та же лазейка через переименование (notes.md → notes.sh).
@@ -220,8 +225,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """Удаление файла или каталога."""
         try:
             target = ctx.resolve(path)
-        except ValueError:
-            return ctx.err("PATH_ESCAPE", f"Path escapes workspace: {path}")
+        except ValueError as _pe:
+            return ctx.err_path(_pe, f"Path escapes workspace: {path}")
         if not target.exists():
             return ctx.err("FILE_NOT_FOUND", f"Not found: {path}")
         # S3: удаление необратимо → подтверждение обязательно ВСЕГДА, а не только для непустых
@@ -326,8 +331,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """Создание Python-скрипта с каркасом."""
         try:
             target = ctx.resolve(path)
-        except ValueError:
-            return ctx.err("PATH_ESCAPE", f"Path escapes workspace: {path}")
+        except ValueError as _pe:
+            return ctx.err_path(_pe, f"Path escapes workspace: {path}")
         if not path.endswith(".py"):
             return ctx.err("INVALID_EXTENSION", f"Not a Python file: {path}")
         desc = description or target.stem

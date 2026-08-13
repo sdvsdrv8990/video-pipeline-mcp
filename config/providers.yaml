@@ -55,6 +55,12 @@ adapters:
   by_provider:
     Local_piper: tts.piper_local:PiperLocalTTS
     Local_diffusers: img.diffusers_local:DiffusersLocalIMG
+    # Облачные: ключ ОБЯЗАТЕЛЕН, и объявляется это здесь, а не в данных канала — строку канала
+    # правит ИИ, и «ключ не нужен» не должно быть его решением. Адаптера пока нет намеренно
+    # (`litellm_*` — честные стабы): сервер скажет об этом прямо, а не сделает вид, что вызвал.
+    ElevenLabs: {requires_key: true}
+    OpenAI: {requires_key: true}
+    Fal: {requires_key: true}
 
 # ═══ Локальные модели ═══
 # Веса — зависимость, а не исходник: каталог в .gitignore, наполняется

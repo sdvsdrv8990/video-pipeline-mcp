@@ -35,6 +35,9 @@ class MediaRequest:
     params: dict                    # вся строка провайдера минус служебные столбцы
     target: Path                    # абсолютный путь результата (containment уже пройден)
     models_dir: Path                # корень локальных весов (для локальных адаптеров)
+    # S23: ключ доступа приходит сюда и уходит ТОЛЬКО в исходящий запрос. В ToolResult, факты,
+    # журнал и сообщения об ошибках он не попадает — значение наружу не возвращается никогда.
+    api_key: str = ""
 
 
 @dataclass
@@ -109,12 +112,26 @@ class AdapterRegistry:
                 suggested_tool="media_provider_status")
         return path
 
-    def spec(self, provider: str, resource_type: str = "") -> str:
-        """Объявленный путь адаптера. Пара «провайдер:ресурс» точнее одного имени и ищется первой."""
+    def _entry(self, provider: str, resource_type: str = "") -> dict | None:
+        """Объявление провайдера: строка-путь или запись с полями (`adapter`, `requires_key`)."""
         table = (self.config.get("adapters") or {}).get("by_provider") or {}
         for key in (f"{provider}:{resource_type}", provider):
             if key in table:
-                return str(table[key])
+                value = table[key]
+                return value if isinstance(value, dict) else {"adapter": str(value)}
+        return None
+
+    def requires_key(self, provider: str, resource_type: str = "") -> bool:
+        """Нужен ли этому провайдеру ключ доступа. Объявляется сервером, не данными канала:
+        строку канала правит ИИ, и «ключ не нужен» не должно быть его решением."""
+        return bool((self._entry(provider, resource_type) or {}).get("requires_key"))
+
+    def spec(self, provider: str, resource_type: str = "") -> str:
+        """Объявленный путь адаптера. Пара «провайдер:ресурс» точнее одного имени и ищется первой."""
+        table = (self.config.get("adapters") or {}).get("by_provider") or {}
+        entry = self._entry(provider, resource_type)
+        if entry and entry.get("adapter"):
+            return str(entry["adapter"])
         raise ProviderError(
             "PROVIDER_ADAPTER_MISSING", f"Для провайдера '{provider}' не объявлен адаптер.",
             reason=(f"Сервер знает, чем исполнять: {', '.join(sorted(table)) or '(ничего)'}. "
