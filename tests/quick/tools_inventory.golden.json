@@ -1466,6 +1466,16 @@
      "description": "Каких детей развернуть: {тип_ребёнка: [имена]}. Не названные — отложены (ChildDeferred).",
      "type": "object"
     },
+    "mode": {
+     "default": "default",
+     "description": "Кто материализует структуру: default — серверные шаблоны как есть; custom — шаблоны ЭТОГО проекта (сначала structure_customize); manual — сервер не создаёт ничего, работу делают fs_* и excel_*",
+     "enum": [
+      "default",
+      "custom",
+      "manual"
+     ],
+     "type": "string"
+    },
     "name": {
      "description": "Имя экземпляра (один сегмент пути, без '/')",
      "type": "string"
@@ -1495,6 +1505,43 @@
    "type": "object"
   },
   "title": "Структура: создать узел по шаблону"
+ },
+ "structure_customize": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Копирует СЕРВЕРНЫЕ шаблоны структуры и книг в проект (`<path>/.templates/`), чтобы править их ДО материализации. Дальше structure_create(mode=custom) находит копию сам — по адресу создания, без состояния «проект открыт». Серверные шаблоны остаются декларацией и не меняются. Уже существующую копию не затирает (overwrite=true — осознанно).",
+  "group": "structure",
+  "input_schema": {
+   "properties": {
+    "overwrite": {
+     "default": false,
+     "description": "Перезаписать уже скопированные шаблоны (правка проекта будет потеряна)",
+     "type": "boolean"
+    },
+    "path": {
+     "description": "Каталог проекта относительно workspace, куда лечь копии",
+     "type": "string"
+    },
+    "what": {
+     "default": "both",
+     "description": "Что копировать: шаблоны структуры, схемы книг или всё",
+     "enum": [
+      "workspace",
+      "tables",
+      "both"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "path"
+   ],
+   "type": "object"
+  },
+  "title": "Структура: свои шаблоны под проект"
  },
  "structure_find": {
   "annotations": {

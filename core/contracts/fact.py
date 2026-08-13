@@ -14,6 +14,8 @@ KNOWN_FACT_TYPES = {
     "DirectoryTree", "Echo", "FileCreated", "FileRead",
     "FileWritten", "FileMoved", "FileRenamed", "FileDeleted",
     "FileSearch", "StructureCreated", "FileAppended",
+    # Режимы создания (S20/F59): сервер объясняет выбор и отчитывается о нём
+    "CreationSkipped", "TemplatesCustomized",
     "MemoryRead", "MemoryWritten",
     "SearchCompleted", "QuickSearch", "MultiSearch",
     "FsSearch", "FsSearchYaml", "FsSearchMulti",

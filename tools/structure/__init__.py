@@ -9,15 +9,27 @@ tools/structure — материализация структуры workspace п
 import re
 
 from core.contracts import Fact, ToolResult, as_untrusted
-from core.engine import Engine, TableMaterializer
+from core.engine import Engine, TableMaterializer, TemplateEngine
+from core.engine.template_resolver import PROJECT_TEMPLATES_DIR
 from core.ids import LinkError
+from core.write_policy import WritePolicyError
 from tools._context import ANNOTATIONS_MODIFY, ANNOTATIONS_READONLY, ToolContext
+
+
+# Режимы создания (директива владельца S20): кто материализует структуру.
+MODES = {"default", "custom", "manual"}
 
 
 def register(engine: Engine, ctx: ToolContext) -> None:
     """Регистрация группы structure в движке."""
 
-    materializer = TableMaterializer(ctx.excel_engine, ctx.config_path / "templates" / "tables")
+    # Каталоги шаблонов больше не зашиты здесь: чьи шаблоны действуют — решает резолвер
+    # по АДРЕСУ создания (режим custom берёт `.templates/` проекта).
+    def _engines(target_path: str, mode: str):
+        dirs = ctx.template_resolver.resolve(target_path, mode)
+        return dirs, TemplateEngine(ctx.workspace_path, ctx.id_generator,
+                                    dirs["workspace_dir"], ctx.config_path), \
+            TableMaterializer(ctx.excel_engine, dirs["tables_dir"])
 
     def _adopt(paths: list[str]) -> list[dict]:
         """Усыновить каталоги, которые есть на диске, но не в реестре (структура опередила реестр).
@@ -51,7 +63,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
     # ─── Структура: шаблонное создание (Ф1) ───
 
     async def structure_create(type: str, name: str, parent_path: str = "",
-                               children: dict | None = None, adopt: bool = False) -> "ToolResult":
+                               children: dict | None = None, adopt: bool = False,
+                               mode: str = "default") -> "ToolResult":
         """Материализация узла структуры по шаблону с контролем глубины.
 
         Создаёт СВОИ папки/файлы узла + контейнеры детей; в детей спускается ТОЛЬКО
@@ -59,6 +72,23 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         материализуются здесь же — клиент передаёт только имена. ID узла присваивает сервер,
         предков берёт готовыми из каталога назначения (S18-h).
         """
+        if mode not in MODES:
+            return ctx.err("VALIDATION_ERROR", f"Неизвестный режим создания: {mode}.",
+                           f"Допустимо: {', '.join(sorted(MODES))}.")
+        dirs, template_engine, materializer = _engines(parent_path, mode)
+
+        # manual: сервер намеренно НЕ материализует ничего и отдаёт работу инструментам.
+        # Пустой ответ без объяснения выглядел бы как отказ, поэтому советы обязательны.
+        if mode == "manual":
+            return ToolResult(status="success", data={
+                "mode": mode, "created": [], "children": [], "entities": [],
+                "tables_materialized": [], "tables_deferred": [],
+                "templates_source": "none",
+                "recommendations": ctx.advice.get("structure_create.manual",
+                                                  path=f"{parent_path}{name}")},
+                facts=[Fact(type="CreationSkipped", data={
+                    "mode": mode, "type": type, "name": name, "parent_path": parent_path})])
+
         # S18-h: цепочка предков выводится ИЗ КАТАЛОГА, а не передаётся вызывающим (F63).
         ok, chain = ctx.safe(lambda: ctx.chain_resolver.resolve(parent_path, node_type=type))
         if not ok:
@@ -80,7 +110,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
 
         # Имена предков из цепочки — для подстановки {parent:<тип>} в контейнерах (§4).
         known_ancestors = {e["type"]: e["name"] for e in chain["chain"]}
-        ok, res = ctx.safe(lambda: ctx.template_engine.create_node(
+        ok, res = ctx.safe(lambda: template_engine.create_node(
             type, name, parent_path, chain["parent_ids"], children, known_ancestors))
         if not ok:
             return res
@@ -140,6 +170,14 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             facts.append(Fact(type="EntityOrphaned", data=o))
         res["orphan_notices"] = orphan_notices
 
+        # F59: сервер сам объясняет, какие режимы создания вообще есть — иначе выбора у ИИ
+        # нет не потому, что его нет, а потому что он о нём не знает.
+        res["mode"] = mode
+        res["templates_source"] = dirs["source"]
+        advice_key = ("structure_create.custom_without_templates"
+                      if dirs["source"] == "server_fallback" else "structure_create.modes")
+        res["recommendations"] = ctx.advice.get(advice_key, path=f"{parent_path}{name}")
+
         # S18-g: единый блок «имя + адрес + ID + цепочка» на КАЖДЫЙ созданный объект.
         res["entities"] = [_entity_block(nid) for nid in created_ids]
         res["adopted"] = adopted
@@ -147,6 +185,54 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         for e in res["entities"]:
             facts.append(Fact(type="EntityRegistered", data=e))
         return ToolResult(status="success", data=res, facts=facts)
+
+    async def structure_customize(path: str, what: str = "both",
+                                  overwrite: bool = False) -> "ToolResult":
+        """Скопировать серверные шаблоны в проект, чтобы править их ДО материализации.
+
+        Копия ложится в `<path>/.templates/`; дальше `structure_create(mode=custom)` найдёт её
+        резолвером. Серверные шаблоны остаются декларацией и не меняются — правится копия.
+        """
+        if what not in {"workspace", "tables", "both"}:
+            return ctx.err("VALIDATION_ERROR", f"Неизвестное what: {what}.",
+                           "Допустимо: workspace, tables, both.")
+        ok, root = ctx.safe(lambda: ctx.resolve(path))
+        if not ok:
+            return root
+        policy = ctx.write_policy
+        subs = ("workspace", "tables") if what == "both" else (what,)
+        copied: list[dict] = []
+        skipped: list[dict] = []
+        for sub in subs:
+            src_dir = ctx.config_path / "templates" / sub
+            if not src_dir.is_dir():
+                skipped.append({"what": sub, "reason": "no server templates"})
+                continue
+            dst_dir = root / PROJECT_TEMPLATES_DIR / sub
+            for src in sorted(src_dir.glob("*.yaml")):
+                dst = dst_dir / src.name
+                rel = str(dst.relative_to(ctx.workspace_path))
+                # Копия шаблона — обычная запись в workspace: та же дверь, что у fs_* (F68/F72).
+                text = src.read_text(encoding="utf-8")
+                try:
+                    policy.check(rel)
+                    policy.check_content(rel, text)
+                except WritePolicyError as e:
+                    skipped.append({"path": rel, "reason": e.message})
+                    continue
+                if dst.exists() and not overwrite:
+                    # Правку проекта не затираем молча — тот же закон, что у kind: config.
+                    skipped.append({"path": rel, "reason": "already customized"})
+                    continue
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.write_text(text, encoding="utf-8")
+                copied.append({"path": rel, "what": sub})
+        return ToolResult(status="success", data={
+            "path": path, "templates_dir": f"{path.rstrip('/')}/{PROJECT_TEMPLATES_DIR}",
+            "copied": copied, "skipped": skipped,
+            "recommendations": ctx.advice.get("structure_customize", path=path)},
+            facts=[Fact(type="TemplatesCustomized", data={
+                "path": path, "what": what, "copied": len(copied), "skipped": len(skipped)})])
 
     async def structure_resolve(path: str) -> "ToolResult":
         """Предпросмотр адреса: какая цепочка получится в этом каталоге (ничего не создаёт).
@@ -360,8 +446,26 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                          "additionalProperties": {"type": "array", "items": {"type": "string"}}},
             "adopt": {"type": "boolean", "default": False,
                       "description": "Зарегистрировать каталоги-предки, которые уже есть на диске (структура опередила реестр)"},
+            "mode": {"type": "string", "enum": ["default", "custom", "manual"], "default": "default",
+                     "description": "Кто материализует структуру: default — серверные шаблоны как есть; custom — шаблоны ЭТОГО проекта (сначала structure_customize); manual — сервер не создаёт ничего, работу делают fs_* и excel_*"},
         }, "required": ["type", "name"]},
         handler=structure_create, group="structure", annotations=ANNOTATIONS_MODIFY)
+    engine.register(
+        name="structure_customize",
+        title="Структура: свои шаблоны под проект",
+        description=(
+            "Копирует СЕРВЕРНЫЕ шаблоны структуры и книг в проект (`<path>/.templates/`), чтобы "
+            "править их ДО материализации. Дальше structure_create(mode=custom) находит копию сам — "
+            "по адресу создания, без состояния «проект открыт». Серверные шаблоны остаются "
+            "декларацией и не меняются. Уже существующую копию не затирает (overwrite=true — осознанно)."),
+        input_schema={"type": "object", "properties": {
+            "path": {"type": "string", "description": "Каталог проекта относительно workspace, куда лечь копии"},
+            "what": {"type": "string", "enum": ["workspace", "tables", "both"], "default": "both",
+                     "description": "Что копировать: шаблоны структуры, схемы книг или всё"},
+            "overwrite": {"type": "boolean", "default": False,
+                          "description": "Перезаписать уже скопированные шаблоны (правка проекта будет потеряна)"},
+        }, "required": ["path"]},
+        handler=structure_customize, group="structure", annotations=ANNOTATIONS_MODIFY)
     engine.register(
         name="structure_resolve",
         title="Структура: разрешить адрес каталога",

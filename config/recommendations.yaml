@@ -1,0 +1,48 @@
+# recommendations.yaml — что сервер СОВЕТУЕТ клиенту в успешном ответе (F59).
+#
+# Реестр реакций (server_reactions.yaml) объясняет ОШИБКИ. Этот файл — второй канал:
+# объяснение в момент УСПЕХА, когда у ИИ был выбор, о котором он не знал. Формат один и тот же
+# по духу: код → текст + инструмент + параметры, чтобы совет был исполним, а не прозой.
+#
+# Формат записи:
+#   <ключ>:
+#     - id: короткий идентификатор совета (стабилен, по нему пишут регрессии)
+#       text: что это и когда брать — одной фразой, без «очередей» и «многопоточности»
+#       tool: инструмент, которым совет исполняется (пусто — если действия не требуется)
+#       params: пример параметров вызова (подставляются {плейсхолдеры} из контекста)
+#
+# `{path}` подставляется вызывающим. Незнакомый плейсхолдер остаётся текстом — молча не гасим.
+
+structure_create.modes:
+  - id: mode_default
+    text: "Режим default (сейчас применён): папки и книги создаются по серверным шаблонам как есть. Обычный случай — брать, если структура проекта стандартная."
+    tool: structure_create
+    params: { mode: default }
+
+  - id: mode_custom
+    text: "Режим custom: проект получает СВОЮ копию шаблонов и правит её ДО материализации. Брать, если структура этого канала отличается от стандартной. Сначала structure_customize, потом structure_create с mode=custom."
+    tool: structure_customize
+    params: { path: "{path}", what: both }
+
+  - id: mode_manual
+    text: "Режим manual: сервер не материализует ничего, отдаёт работу инструментам fs_* и excel_*. Брать для разового нестандартного случая, когда шаблон писать дороже, чем собрать руками."
+    tool: structure_create
+    params: { mode: manual }
+
+structure_create.custom_without_templates:
+  - id: custom_no_templates
+    text: "Режим custom запрошен, но своих шаблонов у проекта нет — взяты серверные. Чтобы править структуру под проект, сначала скопируй шаблоны себе."
+    tool: structure_customize
+    params: { path: "{path}", what: both }
+
+structure_create.manual:
+  - id: manual_next
+    text: "Ничего не создано намеренно (mode=manual). Папки — fs_create_dir, файлы — fs_create_file, книги — excel_create_workbook + excel_add_sheet/excel_add_column. ID сущности назначается через structure_assign_id, иначе она останется без владельца."
+    tool: structure_assign_id
+    params: { path: "{path}" }
+
+structure_customize:
+  - id: customize_edit
+    text: "Шаблоны скопированы в проект. Правь их (fs_read/fs_write), затем создавай узел с mode=custom — материализация пойдёт по твоей копии, серверные шаблоны останутся нетронутыми."
+    tool: structure_create
+    params: { mode: custom }

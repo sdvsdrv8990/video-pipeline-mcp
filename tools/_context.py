@@ -21,9 +21,10 @@ from typing import Any, Callable
 
 import yaml
 
+from core.advice import Advice
 from core.contracts import ErrorDetail, Recovery, ToolResult
 from core.firewall.rules.injection_detector import InjectionDetector
-from core.engine import Engine, TableMaterializerError, TemplateEngine, TemplateError
+from core.engine import Engine, TableMaterializerError, TemplateEngine, TemplateError, TemplateResolver
 from core.excel import ExcelEngine, ExcelError
 from core.ids import ChainResolver, IDGenerator, LinkError, LinkRegistry, Taxonomy, TaxonomyError
 from core.integrity import InstanceIdentity
@@ -56,6 +57,16 @@ class ToolContext:
     def resolve(self, path: str) -> Path:
         """D1+D29: путь с containment внутри workspace/ (единая точка — core/paths, G17)."""
         return safe_resolve(path, self.workspace_path)
+
+    @property
+    def template_resolver(self) -> TemplateResolver:
+        """Чьи шаблоны действуют для адреса: проекта (`.templates/`) или сервера."""
+        return TemplateResolver(self.workspace_path, self.config_path)
+
+    @property
+    def advice(self) -> Advice:
+        """F59: советы в успешном ответе — тексты из config/recommendations.yaml, не из кода."""
+        return Advice(self.config_path / "recommendations.yaml")
 
     @property
     def write_policy(self) -> WritePolicy:

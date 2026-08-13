@@ -748,6 +748,79 @@ ok((_ws34 / "evil/n1/ok.md").exists(), "соседний легитимный ф
 ok({p.name for p in _ws34.rglob("*") if p.is_file()} == {"ok.md"},
    "в рабочей области только разрешённый файл — ничего с сервера не утекло")
 
+print("== 35. Три режима создания: сервер ПРЕДЛАГАЕТ выбор и держит периметр в каждом ==")
+import asyncio as _aio35
+from core.engine import Engine as _Eng35
+from core.state import StateManager as _SM35
+import server as _srv35
+
+_ws35 = Path(tempfile.mkdtemp(prefix="vpm_m35_")) / "workspace"
+_ws35.mkdir(parents=True)
+_sm35 = _SM35(_ws35)
+_eng35 = _Eng35(state_manager=_sm35)
+_srv35.register_basic_tools(_eng35, IDGenerator(), _sm35)
+
+
+def _call35(tool, **params):
+    return _aio35.run(_eng35.call(tool, params))
+
+
+# F59: из ОДНОГО ответа ИИ обязан увидеть все три режима и чем они отличаются.
+_d35 = _call35("structure_create", type="niche", name="n1", parent_path="niches/")
+_ids35 = [a["id"] for a in _d35.data.get("recommendations", [])]
+ok(_ids35 == ["mode_default", "mode_custom", "mode_manual"],
+   f"успешный ответ сам называет все три режима (получено {_ids35})")
+ok(all(a["text"] and a["tool"] for a in _d35.data["recommendations"]),
+   "каждый совет исполним: есть текст И инструмент, а не проза")
+ok(_d35.data["templates_source"] == "server", "default работает на серверных шаблонах")
+
+# manual: сервер намеренно НЕ создаёт — и это видно, а не выглядит отказом.
+_m35 = _call35("structure_create", type="niche", name="n2", parent_path="niches/", mode="manual")
+ok(_m35.status == "success" and _m35.data["created"] == [], "manual: не создано ничего")
+ok(not (_ws35 / "niches/n2").exists(), "manual: на диске каталог не появился")
+ok(any(f.type == "CreationSkipped" for f in _m35.facts), "manual: факт CreationSkipped в контракте")
+ok(_m35.data["recommendations"] and "fs_create_dir" in _m35.data["recommendations"][0]["text"],
+   "manual: сервер называет, ЧЕМ делать руками")
+
+# custom без своих шаблонов не выдаётся за custom — источник назван честно.
+_c35 = _call35("structure_create", type="niche", name="n3", parent_path="niches/", mode="custom")
+ok(_c35.data["templates_source"] == "server_fallback",
+   f"custom без своих шаблонов честно назван fallback (получено {_c35.data['templates_source']})")
+ok([a["id"] for a in _c35.data["recommendations"]] == ["custom_no_templates"],
+   "и ведёт к structure_customize, а не молчит")
+
+_cz35 = _call35("structure_customize", path="niches/n1", what="both")
+ok(_cz35.status == "success" and len(_cz35.data["copied"]) > 0,
+   f"шаблоны скопированы в проект ({len(_cz35.data['copied'])} файлов)")
+ok((_ws35 / "niches/n1/.templates/workspace").is_dir(), "копия легла в <проект>/.templates/")
+_cz35b = _call35("structure_customize", path="niches/n1", what="both")
+ok(all(s["reason"] == "already customized" for s in _cz35b.data["skipped"]) and not _cz35b.data["copied"],
+   "повторная кастомизация не затирает правку проекта молча")
+
+_srv35_dir = ROOT / "config" / "templates" / "workspace" / "channel.tpl.yaml"
+_before35 = _srv35_dir.read_text(encoding="utf-8")
+
+# ПЕРИМЕТР: в custom шаблон пишет сам ИИ — F72/F73 обязаны держаться так же, как в default.
+(_ws35 / "niches/n1/.templates/workspace/network.tpl.yaml").write_text(
+    'network:\n  id:\n    prefix: NW\n    strategy: hex\n'
+    '    ancestors:\n      - { type: niche, required: true }\n  files:\n'
+    '    - { name: "payload.sh", kind: file, required: true }\n'
+    '    - { name: "notes.md", kind: file, content: "#!/bin/sh\\nrm -rf /", required: true }\n'
+    '    - { name: "stolen.yaml", kind: config, source: "../.env", required: true }\n'
+    '    - { name: "ok.md", kind: file, required: true }\n', encoding="utf-8")
+_e35 = _call35("structure_create", type="network", name="n1",
+               parent_path="niches/n1/networks/", mode="custom")
+ok(_e35.data["templates_source"] == "project", "custom реально взял шаблон ПРОЕКТА")
+_sk35 = {(s.get("name") or ""): s.get("reason") for s in _e35.data.get("skipped", [])}
+ok(_sk35.get("payload.sh") == "forbidden", "custom: .sh отбит allowlist так же, как в default (M50)")
+ok(_sk35.get("notes.md") == "forbidden", "custom: shebang под .md отбит (M51)")
+ok(_sk35.get("stolen.yaml") == "source escape", "custom: source за пределы config/ отбит (M52)")
+_base35 = _ws35 / "niches/n1/networks/n1"
+ok({p.name for p in _base35.iterdir()} == {"ok.md"} if _base35.exists() else False,
+   "custom: на диске только легитимный файл — периметр не ослаб от смены шаблона")
+ok(_srv35_dir.read_text(encoding="utf-8") == _before35,
+   "серверные шаблоны не тронуты кастомизацией проекта")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:
