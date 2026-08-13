@@ -29,7 +29,8 @@ async def main():
 
     # tools/list: все новые инструменты + title
     names = {t["name"] for t in eng.list_tools()}
-    expected = {"table_get_column","table_get_row","table_set","table_append","table_delete",
+    expected = {"table_get_column","table_get_row","table_set","table_update","table_find_row",
+                "table_append","table_delete",
                 "json_push_to_queue","json_execute_queue","json_clear_queue",
                 "excel_create_workbook","excel_add_sheet","excel_rename_sheet","excel_delete_sheet",
                 "excel_reorder_sheets","excel_add_column","excel_delete_column","excel_move_column",
@@ -104,6 +105,63 @@ async def main():
     check("clear_queue cleared>=1", r.status=="success" and r.data["cleared"]>=1)
     r = await call("json_execute_queue", table=T)
     check("execute empty after clear", r.data["applied"]==0)
+
+    # ── F56: table_find_row — ID по ЗНАЧЕНИЮ (ИИ знает значение, писать надо по ID) ──
+    r = await call("table_find_row", table=T, sheet="META", where={"title": "Hook"})
+    check("find_row по значению нашёл ID", r.status=="success" and r.data["row_ids"]==["VID_1"])
+    r = await call("table_find_row", table=T, sheet="META", where={"title": "Hook", "status": "ready"})
+    check("find_row: условия соединяются И", r.status=="success" and r.data["count"]==1)
+    r = await call("table_find_row", table=T, sheet="META", where={"title": "нет такого"})
+    check("find_row: не нашлось → пусто, не ошибка", r.status=="success" and r.data["row_ids"]==[])
+    r = await call("table_find_row", table=T, sheet="META", where={"нет_столбца": 1})
+    check("find_row: неизвестный столбец → COLUMN_NOT_FOUND",
+          r.status=="error" and r.error.code=="COLUMN_NOT_FOUND")
+    r = await call("table_find_row", table=T, sheet="META", where={})
+    check("find_row без условий → INVALID_ACTION", r.status=="error" and r.error.code=="INVALID_ACTION")
+
+    # ── F56: table_update — несколько полей ОДНОЙ операцией, без частичного применения ──
+    r = await call("table_update", table=T, sheet="META", row_id="VID_1",
+                   data={"title": "Hook v2", "status": "published"})
+    check("update: 2 поля = ОДНА операция в очереди",
+          r.status=="success" and r.data["queued"]["action"]=="update" and r.data["fields"]==2)
+    r = await call("json_execute_queue", table=T)
+    check("update: очередь применила ровно одну операцию", r.data["applied"]==1)
+    r = await call("table_get_row", table=T, sheet="META", row_id="VID_1")
+    check("update: оба поля изменились",
+          r.data["row"]["title"]=="Hook v2" and r.data["row"]["status"]=="published")
+    # Главное свойство F56: плохое поле отменяет ВСЮ правку, а не половину.
+    r = await call("table_update", table=T, sheet="META", row_id="VID_1",
+                   data={"title": "не должно примениться", "status": "bogus"})
+    check("update: enum-нарушение отвергает всю правку до очереди",
+          r.status=="error" and r.error.code=="ENUM_VIOLATION")
+    r = await call("table_get_row", table=T, sheet="META", row_id="VID_1")
+    check("update: соседнее поле НЕ применилось частично", r.data["row"]["title"]=="Hook v2")
+    r = await call("table_update", table=T, sheet="META", row_id="ZZZ", data={"title": "x"})
+    check("update несуществующей строки → ROW_NOT_FOUND",
+          r.status=="error" and r.error.code=="ROW_NOT_FOUND")
+    r = await call("table_update", table=T, sheet="META", row_id="VID_1", data={})
+    check("update без полей → INVALID_ACTION", r.status=="error" and r.error.code=="INVALID_ACTION")
+    r = await call("json_push_to_queue", table=T,
+                   action={"action":"update","sheet":"META","row_id":"VID_1","data":{"title":"через очередь"}})
+    check("update принимается универсальной очередью", r.status=="success")
+    await call("json_execute_queue", table=T)
+    r = await call("table_get_row", table=T, sheet="META", row_id="VID_1")
+    check("update через очередь применился", r.data["row"]["title"]=="через очередь")
+
+    # Атомарность НА ПРИМЕНЕНИИ: между очередью и execute схема могла измениться.
+    # Пять `set` применились бы по одной и оставили строку наполовину правленой.
+    await call("table_update", table=T, sheet="META", row_id="VID_1",
+               data={"title": "атомарность", "status": "draft"})
+    _read = json.loads((vid / "read.json").read_text(encoding="utf-8"))
+    _read["META"]["schema"]["status"]["enum"] = ["published"]      # 'draft' стал недопустим
+    (vid / "read.json").write_text(json.dumps(_read), encoding="utf-8")
+    r = await call("json_execute_queue", table=T)
+    check("update: операция отвергнута целиком на применении",
+          r.data["applied"]==0 and len(r.data["skipped"])==1
+          and r.data["skipped"][0]["code"]=="ENUM_VIOLATION")
+    r = await call("table_get_row", table=T, sheet="META", row_id="VID_1")
+    check("update: ни одно поле не применилось частично (F56)",
+          r.data["row"]["title"]=="через очередь" and r.data["row"]["status"]=="published")
 
     # ── push_to_queue with read action → INVALID_ACTION ──
     r = await call("json_push_to_queue", table=T, action={"action":"get_row","sheet":"META","row_id":"VID_1"})

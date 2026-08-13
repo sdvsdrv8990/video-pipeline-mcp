@@ -34,7 +34,7 @@ from __future__ import annotations
 
 # Действия, которые можно класть в очередь (пишущие примитивы).
 # get_column/get_row — чтения, в очередь НЕ кладутся (ИНСТРУКЦИЯ §4).
-QUEUEABLE_ACTIONS = {"set", "append", "delete"}
+QUEUEABLE_ACTIONS = {"set", "update", "append", "delete"}
 
 
 class TableError(Exception):
@@ -129,6 +129,28 @@ class TableEngine:
                 reason="Проверь ID строки (get_column отдаст список ID) или создай через table_append.",
             )
         return dict(rows[row_id])
+
+    def find_row(self, table: str, sheet: str, where: dict, limit: int = 20) -> dict:
+        """ID строк по ЗНАЧЕНИЯМ столбцов (F56): {столбец: значение} → [row_id].
+
+        Закрывает разрыв «ИИ знает значение, а писать надо по ID»: без этого единственным
+        путём был скан всего листа. Условия соединяются И; сравнение строгое по значению.
+        """
+        if not where:
+            raise TableError(
+                "INVALID_ACTION", "В find_row не передано ни одного условия.",
+                reason="Передай where={столбец: значение}; полный список ID даёт table_get_column.")
+        sheet_obj = self._sheet(self._load(table), sheet)
+        schema = self._schema(sheet_obj)
+        unknown = [c for c in where if schema and c not in schema]
+        if unknown:
+            raise TableError(
+                "COLUMN_NOT_FOUND", f"Столбцы {unknown} не найдены в листе '{sheet}'.",
+                reason="Сверь имена со схемой (json_read_snapshot) или excel_get_column_names.")
+        found = [rid for rid, row in self._rows(sheet_obj).items()
+                 if all(c in row and row[c] == v for c, v in where.items())]
+        return {"sheet": sheet, "where": dict(where), "row_ids": found[:limit],
+                "count": len(found), "truncated": len(found) > limit}
 
     # ═══ ВАЛИДАЦИЯ ЗАПИСИ (защита формул + enum) ═══
 
@@ -261,6 +283,29 @@ class TableEngine:
         self.state.push_to_queue(table, op)
         return op
 
+    def update(self, table: str, sheet: str, row_id: str, data: dict) -> dict:
+        """Изменить НЕСКОЛЬКО полей строки ОДНОЙ операцией очереди (F56).
+
+        Отличие от пяти вызовов `set`: пять операций применяются по одной, и отказ на
+        третьей оставляет строку наполовину изменённой. Здесь операция одна и применяется
+        целиком или не применяется вовсе — частичного состояния не бывает.
+        """
+        if not data:
+            raise TableError(
+                "INVALID_ACTION", "В update не передано ни одного поля.",
+                reason="Передай data={столбец: значение, ...}; для одного поля есть table_set.")
+        snapshot = self._load(table)
+        sheet_obj = self._sheet(snapshot, sheet)
+        if row_id not in self._rows(sheet_obj):
+            raise TableError(
+                "ROW_NOT_FOUND", f"Строка '{row_id}' не найдена в листе '{sheet}'.",
+                reason="Найди ID по значению (table_find_row) или создай через table_append.")
+        for column, value in data.items():
+            self._validate_write(sheet_obj, sheet, column, value)
+        op = {"action": "update", "sheet": sheet, "row_id": row_id, "data": dict(data)}
+        self.state.push_to_queue(table, op)
+        return op
+
     def append(self, table: str, sheet: str, data: dict, id_prefix: str = "ROW") -> dict:
         """Новая строка. ID присваивает СЕРВЕР (не Claude), приходит в факте.
 
@@ -314,6 +359,8 @@ class TableEngine:
         # Дублируем валидацию типизированных методов (единый вход в очередь).
         if kind == "set":
             return self.set(table, sheet, action["row_id"], action["column"], action.get("value"))
+        if kind == "update":
+            return self.update(table, sheet, action["row_id"], action.get("data", {}))
         if kind == "append":
             return self.append(table, sheet, action.get("data", {}), action.get("id_prefix", "ROW"))
         return self.delete(table, sheet, action["row_id"])
@@ -348,6 +395,15 @@ class TableEngine:
                         raise TableError("ROW_NOT_FOUND", f"Строка '{rid}' исчезла до применения.")
                     self._validate_write(sheet_obj, sheet, col, op.get("value"))
                     rows[rid][col] = op.get("value")
+                elif kind == "update":
+                    rid, data = op["row_id"], op.get("data", {})
+                    if rid not in rows:
+                        raise TableError("ROW_NOT_FOUND", f"Строка '{rid}' исчезла до применения.")
+                    # Сперва проверяем ВСЕ поля, и только потом пишем хоть одно: иначе отказ
+                    # на третьем поле оставил бы строку наполовину изменённой (F56).
+                    for col, value in data.items():
+                        self._validate_write(sheet_obj, sheet, col, value)
+                    rows[rid].update(data)
                 elif kind == "append":
                     rows[op["row_id"]] = dict(op.get("data", {}))
                 elif kind == "delete":

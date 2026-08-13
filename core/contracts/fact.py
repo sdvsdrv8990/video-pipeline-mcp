@@ -19,7 +19,7 @@ KNOWN_FACT_TYPES = {
     "FsSearch", "FsSearchYaml", "FsSearchMulti",
     "RenderCompleted", "SnapshotRead", "TableRead",
     # Таблицы: данные (Категория 3)
-    "ColumnRead", "RowRead", "RowSet", "RowAppended", "RowDeleted",
+    "ColumnRead", "RowRead", "RowSet", "RowUpdated", "RowsFound", "RowAppended", "RowDeleted",
     "QueuePushed", "QueueExecuted", "QueueCleared",
     # Таблицы: структура (Категория 2, excel_*)
     "WorkbookCreated", "SheetAdded", "SheetRenamed", "SheetDeleted",

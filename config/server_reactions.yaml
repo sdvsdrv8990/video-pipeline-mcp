@@ -149,7 +149,8 @@ ROW_NOT_FOUND:
   class: ai_recoverable
   message_template: "Строка с таким ID не найдена."
   recovery:
-    reason: "Проверь ID строки (table_get_column отдаст список ID) или создай через table_append."
+    suggested_tool: table_find_row
+    reason: "Если известно ЗНАЧЕНИЕ, а не ID — найди ID через table_find_row(where={столбец: значение}); иначе создай строку через table_append."
 
 COMPUTED_READONLY:
   class: ai_recoverable

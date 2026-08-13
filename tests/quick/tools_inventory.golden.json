@@ -1117,12 +1117,12 @@
    "idempotentHint": false,
    "readOnlyHint": false
   },
-  "description": "Положить пишущую операцию (set/append/delete) в write.json.",
+  "description": "Положить пишущую операцию (set/update/append/delete) в write.json.",
   "group": "tables",
   "input_schema": {
    "properties": {
     "action": {
-     "description": "{action: set|append|delete, sheet, ...}",
+     "description": "{action: set|update|append|delete, sheet, ...}",
      "type": "object"
     },
     "table": {
@@ -1768,6 +1768,43 @@
   },
   "title": "Таблицы: удалить строку"
  },
+ "table_find_row": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "ID строк по значениям столбцов: {column: value} → [row_id]. Берут, когда значение известно, а ID нет.",
+  "group": "tables",
+  "input_schema": {
+   "properties": {
+    "limit": {
+     "default": 20,
+     "description": "Максимум ID в ответе",
+     "type": "integer"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    },
+    "table": {
+     "description": "Путь к таблице (сущности) относительно workspace",
+     "type": "string"
+    },
+    "where": {
+     "description": "Условия {column: value}, соединяются И",
+     "type": "object"
+    }
+   },
+   "required": [
+    "table",
+    "sheet",
+    "where"
+   ],
+   "type": "object"
+  },
+  "title": "Таблицы: найти строку по значению"
+ },
  "table_get_column": {
   "annotations": {
    "destructiveHint": false,
@@ -1872,5 +1909,42 @@
    "type": "object"
   },
   "title": "Таблицы: изменить поле"
+ },
+ "table_update": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Изменить НЕСКОЛЬКО полей строки ОДНОЙ операцией: применяется целиком или не применяется вовсе. Для одного поля дешевле table_set.",
+  "group": "tables",
+  "input_schema": {
+   "properties": {
+    "data": {
+     "description": "Изменяемые поля {column: value}",
+     "type": "object"
+    },
+    "row_id": {
+     "description": "ID строки (найти по значению — table_find_row)",
+     "type": "string"
+    },
+    "sheet": {
+     "description": "Имя листа (регистр важен)",
+     "type": "string"
+    },
+    "table": {
+     "description": "Путь к таблице (сущности) относительно workspace",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table",
+    "sheet",
+    "row_id",
+    "data"
+   ],
+   "type": "object"
+  },
+  "title": "Таблицы: изменить строку"
  }
 }

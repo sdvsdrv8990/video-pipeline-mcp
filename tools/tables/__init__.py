@@ -50,6 +50,21 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         return ToolResult(status="success", data={"queued": res},
                           facts=[Fact(type="RowSet", data={"table": table, "sheet": sheet, "row_id": row_id, "column": column})])
 
+    async def table_update(table: str, sheet: str, row_id: str, data: dict | None = None) -> "ToolResult":
+        ok, res = ctx.safe(lambda: ctx.table_engine.update(table, sheet, row_id, data or {}))
+        if not ok:
+            return res
+        return ToolResult(status="success", data={"queued": res, "fields": len(res["data"])},
+                          facts=[Fact(type="RowUpdated", data={"table": table, "sheet": sheet, "row_id": row_id,
+                                                               "columns": sorted(res["data"])})])
+
+    async def table_find_row(table: str, sheet: str, where: dict | None = None, limit: int = 20) -> "ToolResult":
+        ok, res = ctx.safe(lambda: ctx.table_engine.find_row(table, sheet, where or {}, limit))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res,
+                          facts=[Fact(type="RowsFound", data={"table": table, "sheet": sheet, "count": res["count"]})])
+
     async def table_append(table: str, sheet: str, data: dict | None = None, id_prefix: str = "ROW") -> "ToolResult":
         ok, res = ctx.safe(lambda: ctx.table_engine.append(table, sheet, data or {}, id_prefix))
         if not ok:
@@ -131,14 +146,20 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         ("table_set", "Таблицы: изменить поле", "Изменить поле строки (RMW через очередь). Защита формул + enum.",
          {"type": "object", "properties": {"table": TABLE, "sheet": SHEET, "row_id": {"type": "string", "description": "ID строки"}, "column": {"type": "string", "description": "Имя столбца"}, "value": {"description": "Новое значение (любой JSON-тип)"}}, "required": ["table", "sheet", "row_id", "column", "value"]},
          table_set, ANNOTATIONS_MODIFY),
+        ("table_update", "Таблицы: изменить строку", "Изменить НЕСКОЛЬКО полей строки ОДНОЙ операцией: применяется целиком или не применяется вовсе. Для одного поля дешевле table_set.",
+         {"type": "object", "properties": {"table": TABLE, "sheet": SHEET, "row_id": {"type": "string", "description": "ID строки (найти по значению — table_find_row)"}, "data": {"type": "object", "description": "Изменяемые поля {column: value}"}}, "required": ["table", "sheet", "row_id", "data"]},
+         table_update, ANNOTATIONS_MODIFY),
+        ("table_find_row", "Таблицы: найти строку по значению", "ID строк по значениям столбцов: {column: value} → [row_id]. Берут, когда значение известно, а ID нет.",
+         {"type": "object", "properties": {"table": TABLE, "sheet": SHEET, "where": {"type": "object", "description": "Условия {column: value}, соединяются И"}, "limit": {"type": "integer", "description": "Максимум ID в ответе", "default": 20}}, "required": ["table", "sheet", "where"]},
+         table_find_row, ANNOTATIONS_READONLY),
         ("table_append", "Таблицы: новая строка", "Добавить строку. ID присваивает сервер (приходит в facts).",
          {"type": "object", "properties": {"table": TABLE, "sheet": SHEET, "data": {"type": "object", "description": "Поля новой строки {column: value}"}, "id_prefix": {"type": "string", "description": "Префикс ID строки", "default": "ROW"}}, "required": ["table", "sheet", "data"]},
          table_append, ANNOTATIONS_MODIFY),
         ("table_delete", "Таблицы: удалить строку", "Удалить строку по ID (через очередь).",
          {"type": "object", "properties": {"table": TABLE, "sheet": SHEET, "row_id": {"type": "string", "description": "ID строки"}}, "required": ["table", "sheet", "row_id"]},
          table_delete, ANNOTATIONS_MODIFY),
-        ("json_push_to_queue", "Таблицы: очередь → добавить", "Положить пишущую операцию (set/append/delete) в write.json.",
-         {"type": "object", "properties": {"table": TABLE, "action": {"type": "object", "description": "{action: set|append|delete, sheet, ...}"}}, "required": ["table", "action"]},
+        ("json_push_to_queue", "Таблицы: очередь → добавить", "Положить пишущую операцию (set/update/append/delete) в write.json.",
+         {"type": "object", "properties": {"table": TABLE, "action": {"type": "object", "description": "{action: set|update|append|delete, sheet, ...}"}}, "required": ["table", "action"]},
          json_push_to_queue, ANNOTATIONS_MODIFY),
         ("json_execute_queue", "Таблицы: очередь → применить", "Применить очередь к read.json (RMW). Синк в .xlsx отложен.",
          {"type": "object", "properties": {"table": TABLE}, "required": ["table"]},
