@@ -62,6 +62,30 @@ adapters:
     OpenAI: {requires_key: true}
     Fal: {requires_key: true}
 
+# ═══ Онлайн-модели: спросить самого провайдера ═══
+# Реестр шлюза знает то, что знал на день своей сборки, — новая модель появляется у провайдера
+# раньше. Поэтому при наличии ключа список берётся у ПЕРВОИСТОЧНИКА, а реестр остаётся тем, что
+# добавляет к именам смысл: режим вызова, эндпоинт, цену. Ключ уходит только на объявленный здесь
+# адрес и только по https; в ответ клиенту он не возвращается никогда.
+online:
+  live:
+    OpenAI:
+      url: https://api.openai.com/v1/models
+      auth: bearer                  # Authorization: Bearer <ключ>
+      items: data                   # где в ответе лежит список
+      id_field: id
+    ElevenLabs:
+      url: https://api.elevenlabs.io/v1/models
+      auth: header:xi-api-key       # свой заголовок вместо Authorization
+      items: ""                     # ответ — сам массив
+      id_field: model_id
+  # Чем отличить картиночную модель от прочих в СЫРОМ списке провайдера: он отдаёт всё подряд.
+  # Правило — по имени, потому что режима вызова в его ответе нет. Новая линейка = строка здесь.
+  kinds:
+    image: ["gpt-image", "dall-e", "imagen", "flux", "stable-diffusion"]
+    tts: ["tts", "speech", "eleven_"]
+    stt: ["whisper", "transcribe", "scribe"]
+
 # ═══ Локальные модели ═══
 # Веса — зависимость, а не исходник: каталог в .gitignore, наполняется
 # `scripts/models.py pull`. Нет весов → честный LOCAL_MODEL_MISSING, а не молчаливый успех.

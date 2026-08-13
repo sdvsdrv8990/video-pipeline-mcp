@@ -323,9 +323,106 @@ class ModelCatalog:
 
 
 class OnlineCatalog:
-    """Какие модели умеет вызвать шлюз и каким эндпоинтом. Ключ для СПИСКА не нужен."""
+    """Какие модели умеет вызвать шлюз и каким эндпоинтом. Ключ для СПИСКА не нужен.
+
+    С ключом список можно уточнить у самого провайдера (`live`): реестр шлюза знает то, что знал
+    на день сборки, и новая модель появляется у провайдера раньше. Тогда роли делятся так —
+    провайдер говорит, ЧТО ему доступно сегодня, реестр добавляет к именам смысл (режим, цену).
+    """
 
     MODES = {"image": "image_generation", "tts": "audio_speech", "stt": "audio_transcription"}
+
+    def __init__(self, config_file: str | Path | None = None):
+        self.config_file = Path(config_file) if config_file else None
+        self._decl = Declaration(
+            config_file or Path("providers.yaml"), ProviderError, "провайдеров",
+            "Заведи config/providers.yaml — где спрашивать список моделей, объявлено там.")
+
+    @property
+    def config(self) -> dict:
+        return (self._decl.data.get("online") or {}) if self.config_file else {}
+
+    def _kind_of(self, model_id: str) -> str:
+        """Вид ресурса по имени модели: в сыром списке провайдера режима вызова нет."""
+        name = str(model_id).lower()
+        for kind, patterns in (self.config.get("kinds") or {}).items():
+            if any(str(p).lower() in name for p in patterns):
+                return kind
+        return ""
+
+    def live(self, provider: str, api_key: str, kind: str = "") -> list[dict]:
+        """Спросить провайдера, что ему доступно СЕГОДНЯ. Ключ уходит только на объявленный адрес."""
+        decl = (self.config.get("live") or {}).get(provider)
+        if not decl:
+            known = ", ".join(sorted(self.config.get("live") or {})) or "(никто)"
+            raise ProviderError(
+                "PROVIDER_ADAPTER_MISSING", f"Для '{provider}' не объявлено, где спрашивать список.",
+                reason=f"Объявлены: {known}. Добавь адрес в config/providers.yaml → online.live, "
+                       "если нужен ещё один провайдер.")
+        url = str(decl.get("url") or "")
+        if not url.lower().startswith("https://"):
+            # Ключ в открытом канале виден любому посреднику — это отказ, а не предупреждение.
+            raise ProviderError(
+                "DOWNLOAD_FORBIDDEN", f"Адрес списка моделей не https: {url}",
+                reason="С ключом ходим только по https — иначе его увидит любой посредник.")
+        try:
+            import httpx
+            headers = self._auth_headers(str(decl.get("auth") or "bearer"), api_key)
+            response = httpx.get(url, headers=headers, timeout=30, follow_redirects=False)
+        except Exception as e:                              # noqa: BLE001 — сеть/таймаут
+            raise ProviderError(
+                "PROVIDER_FAILED", f"Провайдер не ответил на запрос списка моделей: {e}",
+                reason="Сеть или сам провайдер недоступны. Список из реестра шлюза остаётся "
+                       "доступен без ключа.") from e
+        if response.status_code == 401 or response.status_code == 403:
+            raise ProviderError(
+                "AUTH_FAILED", f"Провайдер отклонил ключ при запросе списка ({response.status_code}).",
+                reason="Ключ недействителен или у него нет прав. Заменить может только владелец: "
+                       "python scripts/set_provider_key.py --channel <канал> --provider " + provider)
+        if response.status_code >= 400:
+            raise ProviderError(
+                "PROVIDER_FAILED", f"Провайдер ответил {response.status_code} на запрос списка.",
+                reason="Повтори позже; список из реестра шлюза доступен и без обращения к нему.")
+        items = response.json()
+        path = str(decl.get("items") or "")
+        if path:
+            items = items.get(path) or []
+        id_field = str(decl.get("id_field") or "id")
+        rows = []
+        for item in items:
+            name = str(item.get(id_field) or "") if isinstance(item, dict) else str(item)
+            if not name:
+                continue
+            of_kind = self._kind_of(name)
+            if kind and of_kind != kind:
+                continue
+            rows.append({"id": name, "provider": provider, "kind": of_kind, "source": "provider"})
+        rows.sort(key=lambda r: r["id"])
+        return rows
+
+    @staticmethod
+    def _auth_headers(scheme: str, api_key: str) -> dict:
+        """Как провайдер принимает ключ — объявлено; в коде только две формы, обе безымянные."""
+        if scheme.startswith("header:"):
+            return {scheme.split(":", 1)[1]: api_key}
+        return {"Authorization": f"Bearer {api_key}"}
+
+    def merge(self, live_rows: list[dict], kind: str = "") -> list[dict]:
+        """Список провайдера + смысл из реестра шлюза: режим, эндпоинт, цена.
+
+        Модель, которой в реестре нет (свежая линейка), не выбрасывается — она помечается
+        `known_to_gateway: false`. Иначе новинка была бы невидима именно тогда, когда нужна.
+        """
+        registry = {r["id"].split("/")[-1]: r for r in self.available(kind, limit=0)}
+        out = []
+        for row in live_rows:
+            known = registry.get(row["id"])
+            out.append({**row, "known_to_gateway": bool(known),
+                        "mode": (known or {}).get("mode", ""),
+                        "endpoints": (known or {}).get("endpoints", []),
+                        "cost_per_image": (known or {}).get("cost_per_image"),
+                        "cost_per_character": (known or {}).get("cost_per_character")})
+        return out
 
     def available(self, kind: str = "", provider: str = "", limit: int = 30) -> list[dict]:
         try:

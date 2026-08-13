@@ -18,7 +18,7 @@
 # данных, а не в коде — они устаревают быстрее любого релиза сервера.
 media_provider_status.choice:
   - id: image_openai
-    text: "Картинки онлайн: OpenAI gpt-image-2 — самая сильная модель линейки на сегодня (эндпоинт /v1/images/generations, порядка $0.22 за картинку 1K). Ставится строкой канала; ключ вносит владелец вручную. Учти: реестр шлюза в установленной версии знает линейку до gpt-image-1.5 — имя модели уходит провайдеру как есть, из строки."
+    text: "Картинки онлайн: OpenAI gpt-image-2 — самая сильная модель линейки на сегодня (эндпоинт /v1/images/generations, порядка $0.22 за картинку 1K). Ставится строкой канала; ключ вносит владелец вручную. Реестр шлюза её знает (есть и датированный снимок), а с ключом список можно спросить у самого провайдера: media_models(scope='online', provider='OpenAI', table='<канал>')."
     tool: table_update
     params: { table: "{table}", sheet: RESOURCE_LIMITS, row_id: "<строка image_generations>", data: { provider: OpenAI, model: gpt-image-2 } }
 

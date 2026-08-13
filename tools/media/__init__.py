@@ -289,28 +289,65 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         report["charged"] = True
         return report
 
-    async def media_models(kind: str = "", scope: str = "installed", limit: int = 20) -> "ToolResult":
+    async def media_models(kind: str = "", scope: str = "installed", limit: int = 20,
+                           provider: str = "", table: str = "") -> "ToolResult":
         """Какие модели стоят на машине, какие можно поставить и какие доступны онлайн.
 
         `scope=installed` — что уже лежит; `local` — что можно поставить сюда;
-        `online` — что умеет вызвать шлюз (ключ нужен для вызова, не для списка).
+        `online` — что умеет вызвать шлюз. С `provider` и `table` онлайн-список спрашивается у
+        САМОГО провайдера его ключом: новая линейка появляется у него раньше, чем в реестре шлюза.
         """
         registry = AdapterRegistry(ctx.config_path / "providers.yaml", ctx.config_path.parent)
         catalog = ModelCatalog(ctx.config_path / "providers.yaml", registry.models_dir)
+        online = OnlineCatalog(ctx.config_path / "providers.yaml")
+        source, live_error = "gateway_registry", None
         if scope == "installed":
             rows = [r for r in catalog.installed() if not kind or r["kind"] == kind]
+            source = "disk"
         elif scope == "online":
-            rows = OnlineCatalog().available(kind or "image", limit=limit)
+            rows = online.available(kind or "image", limit=limit)
+            if provider and table:
+                # Ключ берётся из закрытого файла канала и уходит только на объявленный адрес.
+                ok, key = ctx.safe(lambda: _key_for(table, provider))
+                if not ok:
+                    # Ключ нечитаем (чужой инстанс) — это причина рядом со списком, а не отказ
+                    # всего вызова: реестр шлюза остаётся доступен и без ключа.
+                    live_error = {"code": key.error.code if key.error else "INTERNAL_ERROR",
+                                  "message": key.error.message if key.error else ""}
+                    key = ""
+                if not ok:
+                    pass
+                elif not key:
+                    live_error = {"code": "PROVIDER_KEY_MISSING", "message": (
+                        f"Ключа '{provider}' для этого канала нет — спросить его список нечем. "
+                        "Ниже то, что знает реестр шлюза на день своей сборки.")}
+                else:
+                    ok, fresh = ctx.safe(lambda: online.merge(online.live(provider, key, kind), kind))
+                    if ok:
+                        rows, source = fresh[:limit] if limit else fresh, "provider"
+                    else:
+                        # Частичный результат помечаем: список из реестра остаётся, но он старее.
+                        live_error = {"code": fresh.error.code if fresh.error else "INTERNAL_ERROR",
+                                      "message": _hide_key(fresh, key).error.message if fresh.error else ""}
         else:
             ok, rows = ctx.safe(lambda: catalog.available(kind or "tts", limit=limit))
             if not ok:
                 return rows
-        return ToolResult(status="success", data={
-            "scope": scope, "kind": kind, "models": rows,
+            source = "catalog"
+        data = {
+            "scope": scope, "kind": kind, "source": source, "models": rows,
             "hint": ("Поставить локальную модель — media_model_install; исполнять ею — поставить "
                      "её имя в столбец model листа провайдеров книги канала (table_update). "
-                     "Онлайн-модели требуют ключа: его вносит владелец вручную."),
-        }, facts=[Fact(type="ModelsListed", data={"scope": scope, "kind": kind, "count": len(rows)})])
+                     "Онлайн-список свежее у самого провайдера: media_models(scope='online', "
+                     "provider='<имя>', table='<канал>') — понадобится ключ, его вносит владелец."),
+        }
+        if live_error:
+            data["live_error"] = live_error
+            data["note"] = ("Список НЕ от провайдера, а из реестра шлюза: он знает то, что знал на "
+                            "день сборки, и свежей линейки в нём может не быть.")
+        return ToolResult(status="success", data=data, facts=[Fact(type="ModelsListed", data={
+            "scope": scope, "kind": kind, "source": source, "count": len(rows),
+            "live_error": (live_error or {}).get("code", "")})])
 
     def _installer() -> ModelInstaller:
         """Наблюдатель за установками: пределы прозвонки — из декларации, не из кода."""
@@ -373,12 +410,14 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "Показывает модели: что уже стоит на машине (scope=installed), что можно поставить "
             "локально из живого каталога с отсевом по объявленным фильтрам (scope=local), и что "
             "умеет вызвать шлюз онлайн — с провайдером, эндпоинтом и ценой (scope=online). "
-            "Список онлайн-моделей виден БЕЗ ключа: ключ нужен для вызова, а не для списка."),
+            "Список онлайн-моделей виден БЕЗ ключа — из реестра шлюза. А с provider и table он спрашивается у САМОГО провайдера его ключом: новая линейка появляется у него раньше, чем в реестре, и модель, которой реестр не знает, придёт помеченной known_to_gateway=false, а не пропадёт. Ключ уходит только на объявленный адрес и в ответе не возвращается."),
         input_schema={"type": "object", "properties": {
             "kind": {"type": "string", "description": "Вид: tts, image, stt (пусто → по умолчанию для scope)"},
             "scope": {"type": "string", "enum": ["installed", "local", "online"], "default": "installed",
                       "description": "installed — стоит сейчас; local — можно поставить; online — умеет шлюз"},
             "limit": {"type": "integer", "default": 20, "description": "Сколько строк показать"},
+            "provider": {"type": "string", "description": "scope=online: спросить список у САМОГО провайдера (нужен его ключ)"},
+            "table": {"type": "string", "description": "scope=online: канал, чьим ключом спрашивать провайдера"},
         }}, handler=media_models, group="media", annotations=ANNOTATIONS_READONLY)
 
     engine.register(

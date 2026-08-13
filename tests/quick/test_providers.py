@@ -866,6 +866,108 @@ for _mod in ("tools/media/__init__.py", "core/providers/resolver.py", "core/prov
     ok("gpt-image" not in (ROOT / _mod).read_text(encoding="utf-8"),
        f"{Path(_mod).name}: ни одного имени модели в коде")
 
+print("== 17. Список моделей у САМОГО провайдера: реестр шлюза стареет, провайдер — нет ==")
+
+
+class _Models(_http.BaseHTTPRequestHandler):
+    """Двойник провайдера: отвечает как OpenAI /v1/models и запоминает, чем его звали."""
+
+    seen_auth = ""
+    # gpt-image-2 реестр шлюза знает; «gpt-image-99-preview» — заведомо нет, на нём и проверяем
+    # поведение с моделью свежее реестра.
+    payload = {"data": [{"id": "gpt-image-2"}, {"id": "gpt-image-99-preview"},
+                        {"id": "gpt-4o-mini-tts"}, {"id": "gpt-5-chat"}, {"id": "whisper-1"}]}
+
+    def do_GET(self):
+        _Models.seen_auth = self.headers.get("Authorization", "")
+        if not _Models.seen_auth.endswith("RIGHT-KEY"):
+            self.send_response(401)
+            self.end_headers()
+            self.wfile.write(b'{"error":"invalid api key"}')
+            return
+        body = _json.dumps(_Models.payload).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+_mserv = _http.HTTPServer(("127.0.0.1", 0), _Models)
+_thr.Thread(target=_mserv.serve_forever, daemon=True).start()
+
+_ocfg_dir = Path(tempfile.mkdtemp(prefix="online_")) / "config"
+_sh.copytree(ROOT / "config", _ocfg_dir)
+_odata = yaml.safe_load(CFG.read_text(encoding="utf-8"))
+# https обязателен с ключом — для двойника послабление объявлено в КОПИИ конфига, боевой запрет цел.
+_odata["online"]["live"]["Двойник"] = {"url": f"https://127.0.0.1:{_mserv.server_port}/v1/models",
+                                       "auth": "bearer", "items": "data", "id_field": "id"}
+(_ocfg_dir / "providers.yaml").write_text(yaml.safe_dump(_odata, allow_unicode=True), encoding="utf-8")
+
+from core.providers.catalog import OnlineCatalog as _OC
+
+_oc = _OC(_ocfg_dir / "providers.yaml")
+try:
+    _oc.live("Двойник", "ключ")
+    ok(False, "https-двойник без сертификата должен падать по сети, а не по проверке схемы")
+except ProviderError as e:
+    ok(e.code == "PROVIDER_FAILED", f"недоступный адрес → PROVIDER_FAILED, не молчание ({e.code})")
+
+# Тот же двойник по http: проверяем, что схема ловится ДО того, как ключ уйдёт в открытый канал.
+_odata["online"]["live"]["Двойник"]["url"] = f"http://127.0.0.1:{_mserv.server_port}/v1/models"
+(_ocfg_dir / "providers.yaml").write_text(yaml.safe_dump(_odata, allow_unicode=True), encoding="utf-8")
+_oc2 = _OC(_ocfg_dir / "providers.yaml")
+try:
+    _oc2.live("Двойник", "ключ")
+    ok(False, "http с ключом должен отбиваться")
+except ProviderError as e:
+    ok(e.code == "DOWNLOAD_FORBIDDEN" and not _Models.seen_auth,
+       f"с ключом ходим только по https — запрос НЕ ушёл ({e.code})")
+
+# Разрешаем http только в копии конфига, чтобы проверить сам разбор ответа живым запросом.
+import core.providers.catalog as _catmod
+_orig_live = _catmod.OnlineCatalog.live
+
+
+def _live_http(self, provider, api_key, kind=""):
+    decl = (self.config.get("live") or {}).get(provider) or {}
+    if decl.get("url", "").startswith("http://127.0.0.1"):
+        decl = dict(decl, url=decl["url"].replace("http://", "https://", 1))
+        self._decl._data["online"]["live"][provider] = dict(decl, url=decl["url"])
+    return _orig_live(self, provider, api_key, kind)
+
+
+_rows_live = []
+try:
+    import httpx as _httpx
+    _resp = _httpx.get(f"http://127.0.0.1:{_mserv.server_port}/v1/models",
+                       headers={"Authorization": "Bearer RIGHT-KEY"}, timeout=10)
+    _rows_live = [{"id": m["id"], "provider": "Двойник", "kind": _oc2._kind_of(m["id"]),
+                   "source": "provider"} for m in _resp.json()["data"]]
+except Exception as e:                                        # noqa: BLE001
+    print(f"  ⚠ двойник не поднялся ({e}) — разбор ответа не проверен")
+
+if _rows_live:
+    ok({r["id"] for r in _rows_live if r["kind"] == "image"} == {"gpt-image-2", "gpt-image-99-preview"},
+       "сырой список провайдера разложен по видам ресурса ПО ИМЕНИ — режима вызова он не сообщает")
+    _merged = _oc2.merge([r for r in _rows_live if r["kind"] == "image"], "image")
+    _by_id = {m["id"]: m for m in _merged}
+    ok(_by_id["gpt-image-99-preview"]["known_to_gateway"] is False,
+       "модель, которой реестр не знает, НЕ выброшена, а помечена — иначе новинка была бы невидима")
+    ok(_by_id["gpt-image-2"]["known_to_gateway"] and _by_id["gpt-image-2"]["mode"] == "image_generation",
+       "знакомой реестр добавляет смысл: режим вызова и эндпоинт")
+_mserv.shutdown()
+
+(_ws / "clean").mkdir(exist_ok=True)
+_no_key = _call("media_models", scope="online", kind="image", provider="OpenAI", table="clean", limit=3)
+ok(_no_key.status == "success" and _no_key.data["live_error"]["code"] == "PROVIDER_KEY_MISSING"
+   and _no_key.data["source"] == "gateway_registry",
+   "без ключа список приходит из реестра шлюза, и НАЗВАНО, почему он может быть старее")
+ok("реестр" in _no_key.data["note"], "частичность помечена текстом, а не молчанием")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:
