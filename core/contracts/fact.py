@@ -16,6 +16,8 @@ KNOWN_FACT_TYPES = {
     "FileSearch", "StructureCreated", "FileAppended",
     # Режимы создания (S20/F59): сервер объясняет выбор и отчитывается о нём
     "CreationSkipped", "TemplatesCustomized",
+    # Уникальность (A7.2): число, неполнота входов и сигнал в петлю решений
+    "UniquenessComputed", "UniquenessIncomplete", "UniquenessAlert",
     "MemoryRead", "MemoryWritten",
     "SearchCompleted", "QuickSearch", "MultiSearch",
     "FsSearch", "FsSearchYaml", "FsSearchMulti",

@@ -2035,5 +2035,31 @@
    "type": "object"
   },
   "title": "Таблицы: изменить строку"
+ },
+ "uniqueness_check": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Считает уникальность применения патерна ЛОКАЛЬНО (n-gram по словам, без внешних API) и честно сообщает, хватило ли данных: readiness = full (все входы на месте) / partial (часть входов нет — перечислены поимённо в missing_inputs) / empty (мерить нечего, число = объявленный ноль, а НЕ «100% уникально»). Выключенный в профиле тип фрагмента в расчёт не входит вовсе («тихий столбец»). Параметры, веса и пороги — config/uniqueness.yaml, профиль типов — данные канала; серверного планировщика нет, проверку дёргаешь ты сам.",
+  "group": "uniqueness",
+  "input_schema": {
+   "properties": {
+    "row_id": {
+     "description": "ID измеряемого применения патерна; пусто → текста нет, расчёт будет неполным",
+     "type": "string"
+    },
+    "table": {
+     "description": "Путь сущности с данными (где лежит read.json), напр. niches/n/networks/net1/channels/chA/videos/intro",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table"
+   ],
+   "type": "object"
+  },
+  "title": "Уникальность: посчитать по требованию"
  }
 }

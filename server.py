@@ -49,7 +49,7 @@ from core.ids import IDGenerator
 from core.state import StateManager
 # A2: движки, маппинг исключений ядра и аннотации MCP живут в контексте групп.
 from tools._context import build_context
-from tools import excel, filesystem, memory, search, structure, tables
+from tools import excel, filesystem, memory, search, structure, tables, uniqueness
 
 
 # ═══ КОНФИГУРАЦИЯ ═══
@@ -133,6 +133,7 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
     tables.register(engine, ctx)
     excel.register(engine, ctx)
     structure.register(engine, ctx)
+    uniqueness.register(engine, ctx)
     search.register(engine, ctx)
 
 

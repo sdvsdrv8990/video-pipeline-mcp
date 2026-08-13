@@ -1,0 +1,123 @@
+"""
+tools/uniqueness — расчёт уникальности по требованию (A7.2, doc `10 §2`/`§3`).
+
+Планировщика на сервере НЕТ намеренно (решение владельца S15): за туннелем один клиент, демон
+избыточен. Проверку дёргает сам ИИ, когда это нужно; сервер лишь рекомендует момент.
+
+Обёртка тонкая: собрать объявленные входы из данных проекта → отдать их `core/uniqueness` →
+упаковать в ToolResult. Ни параметров расчёта, ни имён листов здесь нет — всё в `config/uniqueness.yaml`.
+"""
+
+from core.contracts import Fact, ToolResult
+from core.engine import Engine
+from core.uniqueness import UniquenessEngine
+from tools._context import ANNOTATIONS_READONLY, ToolContext
+
+
+def register(engine: Engine, ctx: ToolContext) -> None:
+    """Регистрация группы uniqueness в движке."""
+
+    def _rows(table: str, sheet: str) -> dict:
+        """Строки листа из данных проекта. Нет листа — пусто, а не исключение: отсутствие входа
+        это факт расчёта (`readiness`), а не ошибка вызова."""
+        try:
+            snapshot = ctx.state_manager.read_snapshot(table) or {}
+        except Exception:                                  # noqa: BLE001 — нет данных = нет входа
+            return {}
+        sheet_obj = snapshot.get(sheet) or {}
+        return sheet_obj.get("rows") or {}
+
+    def _profile(table: str, spec: dict) -> tuple[list[dict], str]:
+        """Профиль фрагментов: сперва данные канала, иначе дефолт из декларации книги.
+
+        Источник называется в ответе: дефолт декларации — не то же самое, что настроенный
+        владельцем профиль, и выдавать одно за другое нельзя.
+        """
+        rows = _rows(table, spec.get("sheet", ""))
+        if rows:
+            return list(rows.values()), "project"
+        book = spec.get("fallback_book")
+        if not book:
+            return [], "none"
+        path = ctx.config_path / "templates" / "tables" / f"{book}.schema.yaml"
+        if not path.exists():
+            return [], "none"
+        import yaml
+        schema = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        for sheet in schema.get("sheets") or []:
+            if sheet.get("name") == spec.get("sheet"):
+                return list(sheet.get("rows") or []), "declaration"
+        return [], "none"
+
+    async def uniqueness_check(table: str, row_id: str = "") -> "ToolResult":
+        """Посчитать уникальность применения патерна и сказать, ХВАТИЛО ЛИ данных.
+
+        Отвечает не только числом: `readiness` = full / partial / empty и поимённый список
+        отсутствующих входов. Пустой вход даёт объявленный ноль, а не «100% уникально».
+        """
+        uniq = UniquenessEngine(ctx.config_path / "uniqueness.yaml")
+        ok, cfg = ctx.safe(lambda: uniq.config)
+        if not ok:
+            return cfg
+        sources = cfg.get("sources") or {}
+
+        text_spec = sources.get("text") or {}
+        text_rows = _rows(table, text_spec.get("sheet", ""))
+        text_col = text_spec.get("column", "")
+        text = str((text_rows.get(row_id) or {}).get(text_col, "") or "") if row_id else ""
+
+        corpus_spec = sources.get("corpus") or {}
+        corpus_rows = _rows(table, corpus_spec.get("sheet", ""))
+        corpus = [str(r.get(corpus_spec.get("column", ""), "") or "")
+                  for rid, r in corpus_rows.items()
+                  if not (corpus_spec.get("exclude_current") and rid == row_id)]
+        corpus = [c for c in corpus if c.strip()]
+
+        frag_spec = sources.get("fragments") or {}
+        fragments: dict[str, list] = {}
+        for r in _rows(table, frag_spec.get("sheet", "")).values():
+            ftype = r.get(frag_spec.get("type_column", ""))
+            if ftype is None:
+                continue
+            fragments.setdefault(str(ftype), []).append(r.get(frag_spec.get("id_column", "")))
+
+        profile_rows, profile_source = _profile(table, sources.get("profile") or {})
+
+        ok, res = ctx.safe(lambda: uniq.compute(text=text, corpus=corpus,
+                                                fragments=fragments, profile_rows=profile_rows))
+        if not ok:
+            return res
+        res["table"] = table
+        res["row_id"] = row_id
+        res["profile_source"] = profile_source
+
+        facts = [Fact(type="UniquenessComputed", data={
+            "table": table, "row_id": row_id, "readiness": res["readiness"],
+            "composed": res["composed"], "scores": res["scores"],
+            "profile_source": profile_source})]
+        if res["missing_inputs"]:
+            # Неполнота — самостоятельный факт: молча посчитать по части входов и отдать одно
+            # число значит выдать неготовность за результат.
+            facts.append(Fact(type="UniquenessIncomplete", data={
+                "table": table, "row_id": row_id, "missing": res["missing_inputs"]}))
+        if res["alert"]:
+            facts.append(Fact(type="UniquenessAlert", data={
+                "table": table, "row_id": row_id, "level": res["alert"],
+                "composed": res["composed"], "thresholds": res["thresholds"]}))
+        return ToolResult(status="success", data=res, facts=facts)
+
+    engine.register(
+        name="uniqueness_check",
+        title="Уникальность: посчитать по требованию",
+        description=(
+            "Считает уникальность применения патерна ЛОКАЛЬНО (n-gram по словам, без внешних API) "
+            "и честно сообщает, хватило ли данных: readiness = full (все входы на месте) / partial "
+            "(часть входов нет — перечислены поимённо в missing_inputs) / empty (мерить нечего, "
+            "число = объявленный ноль, а НЕ «100% уникально»). Выключенный в профиле тип фрагмента "
+            "в расчёт не входит вовсе («тихий столбец»). Параметры, веса и пороги — config/uniqueness.yaml, "
+            "профиль типов — данные канала; серверного планировщика нет, проверку дёргаешь ты сам."),
+        input_schema={"type": "object", "properties": {
+            "table": {"type": "string", "description": "Путь сущности с данными (где лежит read.json), напр. niches/n/networks/net1/channels/chA/videos/intro"},
+            "row_id": {"type": "string", "description": "ID измеряемого применения патерна; пусто → текста нет, расчёт будет неполным"},
+        }, "required": ["table"]},
+        handler=uniqueness_check, group="uniqueness", annotations=ANNOTATIONS_READONLY)
