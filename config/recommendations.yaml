@@ -13,6 +13,30 @@
 #
 # `{path}` подставляется вызывающим. Незнакомый плейсхолдер остаётся текстом — молча не гасим.
 
+# Чем исполнять медиа. Сервер СОВЕТУЕТ, а решает канал: провайдер и модель живут строкой книги,
+# и совет исполняется тем же table_update, что и любая её правка. Имена моделей стоят здесь, в
+# данных, а не в коде — они устаревают быстрее любого релиза сервера.
+media_provider_status.choice:
+  - id: image_openai
+    text: "Картинки онлайн: OpenAI gpt-image-2 — самая сильная модель линейки на сегодня (эндпоинт /v1/images/generations, порядка $0.22 за картинку 1K). Ставится строкой канала; ключ вносит владелец вручную. Учти: реестр шлюза в установленной версии знает линейку до gpt-image-1.5 — имя модели уходит провайдеру как есть, из строки."
+    tool: table_update
+    params: { table: "{table}", sheet: RESOURCE_LIMITS, row_id: "<строка image_generations>", data: { provider: OpenAI, model: gpt-image-2 } }
+
+  - id: audio_elevenlabs
+    text: "Озвучка онлайн: ElevenLabs eleven_v3 — их актуальная модель, считается по символам (это и есть usage_unit=character). Берётся, когда нужен живой голос и многоязычность."
+    tool: table_update
+    params: { table: "{table}", sheet: RESOURCE_LIMITS, row_id: "<строка tts_characters>", data: { provider: ElevenLabs, model: eleven_v3 } }
+
+  - id: audio_openai
+    text: "Озвучка онлайн подешевле: OpenAI gpt-4o-mini-tts — один ключ на картинки и звук, если не хочется двух счетов."
+    tool: table_update
+    params: { table: "{table}", sheet: RESOURCE_LIMITS, row_id: "<строка tts_characters>", data: { provider: OpenAI, model: gpt-4o-mini-tts } }
+
+  - id: local_first
+    text: "Проверить цепочку без денег и ключей: локальные провайдеры (Local_piper для озвучки, Local_diffusers для картинок) исполняют на этой машине. Их полезно оставлять последними в fallback_provider — тогда исчерпание облачного лимита не останавливает работу."
+    tool: media_models
+    params: { scope: installed }
+
 structure_create.modes:
   - id: mode_default
     text: "Режим default (сейчас применён): папки и книги создаются по серверным шаблонам как есть. Обычный случай — брать, если структура проекта стандартная."

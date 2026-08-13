@@ -22,7 +22,7 @@ KNOWN_FACT_TYPES = {
     # Медиа: какой провайдер и модель выбраны по данным канала и чем кончилось исполнение
     "ProviderResolved", "MediaGenerated",
     # Каталог моделей: что доступно и что поставлено на машину
-    "ModelsListed", "ModelInstalled",
+    "ModelsListed", "ModelInstalled", "ModelInstallStarted", "ModelInstallStatus",
     "MemoryRead", "MemoryWritten",
     "SearchCompleted", "QuickSearch", "MultiSearch",
     "FsSearch", "FsSearchYaml", "FsSearchMulti",

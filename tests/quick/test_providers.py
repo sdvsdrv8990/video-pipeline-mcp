@@ -772,6 +772,100 @@ _lst_on = _call("media_models", scope="online", kind="image", limit=5)
 ok(all(m["mode"] == "image_generation" for m in _lst_on.data["models"]),
    "и что умеет шлюз онлайн — с провайдером и эндпоинтом")
 
+print("== 16. Установка идёт долго: за ней наблюдают, и молчания нет ни в одном исходе ==")
+import time as _time
+from core.providers.installer import ModelInstaller
+
+
+class _SlowCatalog:
+    """Двойник каталога: установка длится, чтобы прозвонка была не теорией."""
+
+    def __init__(self, models_dir, seconds=0.6, fail=None):
+        self.models_dir = Path(models_dir)
+        self.seconds = seconds
+        self.fail = fail
+        self.install_rules = {}
+
+    def install(self, model_id, kind, progress=lambda _m: None):
+        _time.sleep(self.seconds)
+        if self.fail:
+            raise self.fail
+        (self.models_dir / "весы.onnx").write_bytes(b"x" * 2048)
+        return {"id": model_id, "kind": kind, "path": "весы.onnx", "mb": 0.002, "refused": []}
+
+
+_idir = Path(tempfile.mkdtemp(prefix="inst_"))
+_inst_ok = ModelInstaller(_SlowCatalog(_idir), heartbeat_sec=0.1, stale_after_sec=5)
+_st = _inst_ok.start("модель-1", "tts")
+ok(_st["phase"] == "running" and _st["install_id"],
+   "установка запущена и вернула идентификатор, а не ждала гигабайты в одном вызове")
+try:
+    _inst_ok.start("модель-1", "tts")
+    ok(False, "вторая установка тех же весов должна отбиваться")
+except ProviderError as e:
+    ok(e.code == "INVALID_ACTION", f"две загрузки одних весов в один каталог не пускаются ({e.code})")
+for _ in range(50):
+    _cur = _inst_ok.status(_st["install_id"])[0]
+    if _cur["phase"] != "running":
+        break
+    _time.sleep(0.1)
+ok(_cur["phase"] == "done" and _cur["path"] == "весы.onnx",
+   f"успех виден прозвонкой, с путём результата ({_cur['phase']})")
+ok(_cur["elapsed_sec"] > 0, "видно, сколько заняла установка")
+
+_inst_bad = ModelInstaller(
+    _SlowCatalog(Path(tempfile.mkdtemp(prefix="instf_")), seconds=0.2,
+                 fail=ProviderError("LOCAL_MODEL_MISSING", "источник оборвал соединение",
+                                    reason="повтори — скачанное не выбрасывается")),
+    heartbeat_sec=0.1, stale_after_sec=5)
+_bad_id = _inst_bad.start("модель-2", "tts")["install_id"]
+for _ in range(50):
+    _bad_state = _inst_bad.status(_bad_id)[0]
+    if _bad_state["phase"] != "running":
+        break
+    _time.sleep(0.1)
+ok(_bad_state["phase"] == "failed" and _bad_state["code"] == "LOCAL_MODEL_MISSING"
+   and "оборвал" in _bad_state["error"],
+   f"сбой посреди установки виден кодом и причиной, а не тишиной ({_bad_state['phase']})")
+
+# Сервер перезапустили посреди загрузки: «идёт» здесь было бы враньём.
+_stale_dir = Path(tempfile.mkdtemp(prefix="insts_"))
+_inst_stale = ModelInstaller(_SlowCatalog(_stale_dir), heartbeat_sec=0.1, stale_after_sec=1)
+_sid = _inst_stale.start("модель-3", "tts")["install_id"]
+_sfile = _inst_stale.state_dir / f"{_sid}.json"
+_time.sleep(0.8)
+_frozen = _json.loads(_sfile.read_text(encoding="utf-8"))
+_frozen.update({"phase": "running", "heartbeat": _time.time() - 999})
+_sfile.write_text(_json.dumps(_frozen), encoding="utf-8")
+_stale_state = _inst_stale.status(_sid)[0]
+ok(_stale_state["phase"] == "stale" and "Повтори" in _stale_state["reason"],
+   f"замершая установка называется прерванной и зовёт повторить ({_stale_state['phase']})")
+
+_status_all = _call("media_install_status")
+ok(_status_all.status == "success" and isinstance(_status_all.data["installs"], list),
+   "инструмент показывает все установки разом — не нужно помнить идентификаторы")
+
+print("== 16b. Чем исполнять — сервер СОВЕТУЕТ, а решает канал ==")
+_adv_res = _call("media_provider_status", table="ch")
+ok(_adv_res.status == "success", f"статус провайдеров отвечает ({_adv_res.error.code if _adv_res.error else 'ok'}: {_adv_res.error.message if _adv_res.error else ''})")
+_adv = (_adv_res.data or {}).get("recommendations") or []
+_ids = [a["id"] for a in _adv]
+ok("image_openai" in _ids and "audio_elevenlabs" in _ids and "local_first" in _ids,
+   f"совет по каждому виду ресурса приходит вместе со статусом ({_ids})")
+ok(all(a["tool"] for a in _adv) and any("table_update" == a["tool"] for a in _adv),
+   "совет исполним существующей дверью (table_update), а не прозой")
+# В §14 ключи канала «ch» записаны ключом ДРУГОГО инстанса (как при восстановлении из чужого
+# бэкапа). Такой файл не читается — но ослепить весь отчёт о провайдерах он не вправе.
+_unread = [r["key"] for r in _adv_res.data["resolved"] if r["key"].get("unreadable")]
+ok(_unread and _unread[0]["code"] == "SECRET_UNREADABLE",
+   "нечитаемый файл ключей назван по имени и не роняет статус остальных провайдеров")
+_rec_src = (ROOT / "config" / "recommendations.yaml").read_text(encoding="utf-8")
+ok("gpt-image-2" in _rec_src and "eleven_v3" in _rec_src,
+   "имена моделей стоят в декларации: они устаревают быстрее релизов сервера")
+for _mod in ("tools/media/__init__.py", "core/providers/resolver.py", "core/providers/catalog.py"):
+    ok("gpt-image" not in (ROOT / _mod).read_text(encoding="utf-8"),
+       f"{Path(_mod).name}: ни одного имени модели в коде")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

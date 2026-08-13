@@ -20,7 +20,8 @@ from core.engine import Engine
 from core.providers import (AdapterRegistry, MediaRequest, ProviderError, ProviderResolver,
                             ResultDownloader, TaskCycle, UsageLedger)
 from core.providers.catalog import ModelCatalog, OnlineCatalog
-from core.secrets import redact
+from core.providers.installer import ModelInstaller
+from core.secrets import SecretError, redact
 from tools._context import ANNOTATIONS_MODIFY, ANNOTATIONS_READONLY, ToolContext
 
 
@@ -70,8 +71,13 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         state = {"required": required, "present": False, "fingerprint": "", "updated": "",
                  "stored_at": owner}
         if owner:
-            for row in ctx.secrets.status(owner, provider):
-                state.update({k: row[k] for k in ("present", "fingerprint", "updated")})
+            try:
+                for row in ctx.secrets.status(owner, provider):
+                    state.update({k: row[k] for k in ("present", "fingerprint", "updated")})
+            except SecretError as e:
+                # Файл ключей есть, но не читается (чужой инстанс, потерянный ключ шифрования).
+                # Это про ОДИН канал: ослепить весь отчёт о провайдерах он не вправе.
+                state.update({"unreadable": True, "code": e.code, "reason": e.reason})
         if required and not state["present"]:
             state["how_to_set"] = (f"python scripts/set_provider_key.py --channel {table} "
                                    f"--provider {provider} — только владелец, только вручную: "
@@ -111,6 +117,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "resolved": resolved, "failed": failed,
             "switch_hint": (f"Сменить провайдера или модель — table_update по строке листа {sheet} "
                             "(колонки provider/model/daily_limit/fallback_provider). Перезапуск не нужен."),
+            # Сервер СОВЕТУЕТ, чем исполнять, и не навязывает: тексты и модели — в декларации.
+            "recommendations": ctx.advice.get("media_provider_status.choice", table=table),
         }, facts=[Fact(type="ProviderResolved", data={
             "table": table, "source": source,
             "active": {r["resource_type"]: r["provider"] for r in resolved},
@@ -304,8 +312,17 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                      "Онлайн-модели требуют ключа: его вносит владелец вручную."),
         }, facts=[Fact(type="ModelsListed", data={"scope": scope, "kind": kind, "count": len(rows)})])
 
+    def _installer() -> ModelInstaller:
+        """Наблюдатель за установками: пределы прозвонки — из декларации, не из кода."""
+        registry = AdapterRegistry(ctx.config_path / "providers.yaml", ctx.config_path.parent)
+        catalog = ModelCatalog(ctx.config_path / "providers.yaml", registry.models_dir)
+        progress = ((catalog.install_rules.get("progress")) or {})
+        return ModelInstaller(catalog,
+                              heartbeat_sec=float(progress.get("heartbeat_sec", 2)),
+                              stale_after_sec=float(progress.get("stale_after_sec", 120)))
+
     async def media_model_install(model_id: str, kind: str, confirm: bool = False) -> "ToolResult":
-        """Поставить локальную модель по имени из каталога (веса качаются на диск сервера).
+        """Начать установку локальной модели. Идёт в фоне — ход прозванивается отдельно.
 
         Ставится только объявленный формат и только из объявленного источника: `.bin/.ckpt/.pt`
         это pickle, его загрузка выполняет код из файла. Размер ограничен декларацией.
@@ -315,19 +332,39 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 "CONFIRM_REQUIRED", f"Установка '{model_id}' скачает веса на диск сервера.",
                 "Это гигабайты и внешний источник — операция подтверждается явно: повтори с "
                 "confirm=true. Сначала посмотри, что ставишь: media_models(scope='local').")
-        registry = AdapterRegistry(ctx.config_path / "providers.yaml", ctx.config_path.parent)
-        catalog = ModelCatalog(ctx.config_path / "providers.yaml", registry.models_dir)
-        ok, entry = ctx.safe(lambda: catalog.install(model_id, kind))
+        ok, state = ctx.safe(lambda: _installer().start(model_id, kind))
         if not ok:
-            return entry
+            return state
         return ToolResult(status="success", data={
-            "installed": entry["id"], "kind": entry["kind"], "path": entry["path"],
-            "mb": entry["mb"], "refused": entry.get("refused") or [],
-            "next": (f"Чтобы канал исполнял этой моделью — table_update по строке листа "
-                     f"провайдеров: model={entry['id']}."),
-        }, facts=[Fact(type="ModelInstalled", data={
-            "id": entry["id"], "kind": entry["kind"], "mb": entry["mb"],
-            "refused": len(entry.get("refused") or [])})])
+            "install_id": state["install_id"], "model_id": model_id, "kind": kind,
+            "phase": state["phase"],
+            "next": ("Установка идёт в фоне — гигабайты качаются минутами. Прозвони её: "
+                     f"media_install_status(install_id='{state['install_id']}'). Отвалившийся "
+                     "клиент установку не теряет и не спасает: она продолжается, статус "
+                     "прозванивается заново."),
+        }, facts=[Fact(type="ModelInstallStarted", data={
+            "install_id": state["install_id"], "model_id": model_id, "kind": kind})])
+
+    async def media_install_status(install_id: str = "") -> "ToolResult":
+        """Что с установками моделей: идёт, готово, отказ или прервано.
+
+        Прогресс считается по диску, а не по отчёту загрузчика: он способен отрапортовать и
+        оборваться. Если байты не растут дольше объявленного срока — это «прервано», а не «идёт».
+        """
+        ok, rows = ctx.safe(lambda: _installer().status(install_id))
+        if not ok:
+            return rows
+        done = [r for r in rows if r["phase"] == "done"]
+        broken = [r for r in rows if r["phase"] in ("failed", "stale")]
+        return ToolResult(status="success", data={
+            "installs": rows,
+            "running": [r["install_id"] for r in rows if r["phase"] == "running"],
+            "hint": ("Прерванную или упавшую установку можно просто повторить: скачанное не "
+                     "выбрасывается, загрузка продолжится с места обрыва."),
+        }, facts=[Fact(type="ModelInstallStatus", data={
+            "total": len(rows), "done": [r["model_id"] for r in done],
+            "failed": [{"model": r["model_id"], "code": r.get("code", ""),
+                        "phase": r["phase"]} for r in broken]})])
 
     engine.register(
         name="media_models",
@@ -348,8 +385,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         name="media_model_install",
         title="Медиа: поставить локальную модель",
         description=(
-            "Скачивает веса локальной модели на диск сервера и записывает её в опись — после "
-            "этого канал может исполнять ею, поставив имя в столбец model (table_update). "
+            "Начинает загрузку весов локальной модели на диск сервера. Гигабайты качаются "
+            "минутами, поэтому установка идёт В ФОНЕ и возвращает install_id — ход прозванивается "
+            "через media_install_status, который скажет и об успехе, и об обрыве. По завершении "
+            "модель попадает в опись, и канал может исполнять ею (table_update по столбцу model). "
             "Ставится только объявленный формат из объявленного источника и не больше объявленного "
             "размера: веса .bin/.ckpt/.pt — это pickle, чья загрузка выполняет код из файла. "
             "Требует confirm=true: это гигабайты с внешнего источника."),
@@ -360,6 +399,20 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                         "description": "Осознанное подтверждение загрузки весов на диск сервера"},
         }, "required": ["model_id", "kind"]},
         handler=media_model_install, group="media", annotations=ANNOTATIONS_MODIFY)
+
+    engine.register(
+        name="media_install_status",
+        title="Медиа: как идёт установка модели",
+        description=(
+            "Показывает ход установок весов: идёт, готово, отказ с причиной или прервано. "
+            "Прогресс меряется по диску (сколько байт реально легло), а не по отчёту загрузчика — "
+            "он способен отрапортовать и оборваться. Если байты не растут дольше объявленного "
+            "срока, установка честно называется прерванной, а не остаётся вечным «идёт». "
+            "Прерванную можно просто повторить: скачанное не выбрасывается."),
+        input_schema={"type": "object", "properties": {
+            "install_id": {"type": "string",
+                           "description": "Одна установка (пусто → все идущие и завершённые)"},
+        }}, handler=media_install_status, group="media", annotations=ANNOTATIONS_READONLY)
 
     engine.register(
         name="media_provider_status",
