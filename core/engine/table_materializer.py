@@ -89,7 +89,16 @@ class TableMaterializer:
                     self.excel.add_column(path, name, col_name, formula=formula)
                     if col.get("type") == "enum" and col.get("enum"):
                         self.excel.set_validation(path, name, col_name, allowed=col["enum"])
-                created.append({"sheet": name, "columns": [c["name"] for c in columns]})
+                # Строки-дефолты: лист может нести не только форму, но и стартовые значения
+                # (конфиг канала, переведённый в листы). Список в ячейке — через запятую.
+                rows = sheet.get("rows") or []
+                list_cols = {c["name"] for c in columns if c.get("type") == "list"}
+                for row in rows:
+                    self.excel.append_row(path, name, {
+                        k: (",".join(str(x) for x in v) if k in list_cols and isinstance(v, list) else v)
+                        for k, v in row.items()})
+                created.append({"sheet": name, "columns": [c["name"] for c in columns],
+                                "rows": len(rows)})
         except ExcelError as e:
             # Ошибка формы книги — код движка Excel уже в реестре реакций, не переобёртываем.
             raise TableMaterializerError(e.code, e.message, e.reason, e.suggested_tool) from e
@@ -98,6 +107,7 @@ class TableMaterializer:
             "book": book, "path": path, "level": schema.get("level", ""),
             "sheets": created,
             "columns_total": sum(len(s["columns"]) for s in created),
+            "rows_total": sum(s["rows"] for s in created),
         }
 
     def materialize_pending(self, pending: list[dict]) -> dict:

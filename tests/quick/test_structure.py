@@ -71,8 +71,8 @@ ok(any(d["type"] == "video" for d in res["deferred_children"]), "video отло�
 ok(list((base / "videos").iterdir()) == [], "videos/ пуст — ни одного видео")
 tp = {t["path"].split("/")[-1] for t in res["tables_pending"]}
 ok(tp == {"channel_data.xlsx"}, "книга канала отложена (tables_pending), не на диске")
-ok((base / "channel_config.yaml").exists(),
-   "конфиг канала — копия рядом, не отложенная книга (doc 10 §5.0)")
+ok(not (base / "channel_config.yaml").exists(),
+   "отдельного YAML-конфига у канала нет — он живёт листами в channel_data (S22)")
 ok(not (base / "channel_data.xlsx").exists(), "channel_data.xlsx НЕ создан (фаза таблиц, Ф3)")
 
 print("== 3. названное видео → всё поддерево видео ==")
@@ -653,27 +653,36 @@ ok(call("fs_rename", path=f"{V2}/data.txt", new_name="data.md").status == "succe
 ok(call("fs_rename", path=f"{V2}/folder", new_name="folder2").status == "success",
    "каталог переименовывается: правило про тип файла, а не про папки")
 
-print("== 33. Конфиг проекта: копия серверного дефолта, а не ссылка (doc 10 §5.0) ==")
+print("== 33. Механизм kind: config — копия дефолта в проект (doc 10 §5.1) ==")
+# Конфиг КАНАЛА с S22 живёт листами в channel_data (см. §33b), но сам механизм остаётся:
+# doc 10 §5.1 отдаёт его под per-project override конфига умного поиска. Поэтому проверяем
+# механизм на собственной декларации, а не на снятом channel_config — иначе вместе с именем
+# ушёл бы и периметр F72/F73 (containment источника, allowlist фрагмента).
+_cfgdir33 = Path(tempfile.mkdtemp(prefix="vpm_cfgdir_")) / "config"
+(_cfgdir33 / "templates" / "workspace").mkdir(parents=True)
+(_cfgdir33 / "probe_defaults.yaml").write_text("# СЕРВЕРНЫЙ ДЕФОЛТ\nkey: value\n", encoding="utf-8")
+(_cfgdir33 / "templates" / "workspace" / "probe.tpl.yaml").write_text(
+    'probe:\n  id:\n    prefix: PR\n    strategy: hex\n  files:\n'
+    '    - { name: "probe_defaults.yaml", kind: config, source: probe_defaults.yaml, required: true }\n',
+    encoding="utf-8")
 _ws33 = Path(tempfile.mkdtemp(prefix="vpm_cfg_"))
-_eng33 = TemplateEngine(_ws33, IDGenerator(), TPL_DIR, ROOT / "config")
-_r33 = _eng33.create_node("channel", "chA", parent_path="niches/n/networks/net1/channels/")
-_cfg33 = _ws33 / "niches/n/networks/net1/channels/chA/channel_config.yaml"
-_srv33 = ROOT / "config" / "channel_config.yaml"
-ok(_cfg33.exists(), "конфиг канала материализован копией в workspace")
+_eng33 = TemplateEngine(_ws33, IDGenerator(), _cfgdir33 / "templates" / "workspace", _cfgdir33)
+_r33 = _eng33.create_node("probe", "p1", parent_path="x/")
+_cfg33 = _ws33 / "x/p1/probe_defaults.yaml"
+_srv33 = _cfgdir33 / "probe_defaults.yaml"
+ok(_cfg33.exists(), "конфиг материализован копией в workspace")
 ok(_cfg33.read_text(encoding="utf-8") == _srv33.read_text(encoding="utf-8"),
    "копия идентична серверному дефолту")
 ok(any(c.get("kind") == "config" for c in _r33["created"]), "фрагмент отмечен как config, не как file")
 _cfg33.write_text("# ПРАВКА ПРОЕКТА\n", encoding="utf-8")
-_eng33.create_node("channel", "chA", parent_path="niches/n/networks/net1/channels/")
+_eng33.create_node("probe", "p1", parent_path="x/")
 ok(_cfg33.read_text(encoding="utf-8").startswith("# ПРАВКА"),
    "правка проекта переживает повторную материализацию (копию не затираем)")
-ok(len(_srv33.read_text(encoding="utf-8").splitlines()) == 312,
+ok(_srv33.read_text(encoding="utf-8").startswith("# СЕРВЕРНЫЙ ДЕФОЛТ"),
    "серверная декларация не тронута правкой проекта")
-_bad33 = Path(tempfile.mkdtemp()) / "cfg"
-_shutil.copytree(ROOT / "config", _bad33)
-(_bad33 / "channel_config.yaml").unlink()
+_srv33.unlink()
 _r33b = TemplateEngine(Path(tempfile.mkdtemp(prefix="vpm_cfg2_")), IDGenerator(),
-                       _bad33 / "templates" / "workspace", _bad33).create_node("channel", "chB", parent_path="x/")
+                       _cfgdir33 / "templates" / "workspace", _cfgdir33).create_node("probe", "p2", parent_path="x/")
 ok(any(s.get("kind") == "config" and s.get("reason") == "no default" for s in _r33b["skipped"]),
    "нет дефолта на диске → честный пропуск с причиной, а не выдуманный файл")
 # Объявленное обязано иметь источник: книга без схемы = вечный TEMPLATE_NOT_FOUND
@@ -687,6 +696,32 @@ _have = {p.name.replace(".schema.yaml", "") for p in (ROOT / "config/templates/t
 _specs = {p.name.replace(".schema.md", "") for p in (ROOT / "docs/roadmap/spec/schemas").glob("*.schema.md")}
 ok(_declared <= _specs, f"у каждой объявленной книги есть спека-источник: без спеки {sorted(_declared - _specs)}")
 print(f"    (схем собрано {len(_declared & _have)}/{len(_declared)}: ждут авторинга {sorted(_declared - _have)})")
+
+print("== 33b. Конфиг канала переехал в листы, имя channel_config снято (S22) ==")
+_book33 = _y.safe_load((ROOT / "config/templates/tables/channel_data.schema.yaml").read_text(encoding="utf-8"))
+_sheets33 = {s["name"]: s for s in _book33["sheets"]}
+_want33 = ["WORKFLOW_SEQUENCES", "PUBLISHING_SCHEDULE", "RESOURCE_LIMITS", "METADATA_DEFAULTS",
+           "AUTOMATION_RULES", "SCENE_PROFILE", "RENDER_CONFIG"]
+ok(all(n in _sheets33 for n in _want33),
+   f"7 секций конфига стали листами channel_data: нет {[n for n in _want33 if n not in _sheets33]}")
+ok(sum(len(_sheets33[n].get("rows") or []) for n in _want33 if n in _sheets33) == 34,
+   "листы несут строки-дефолты, а не пустую форму (значения конфига не потеряны)")
+# «Тихий столбец» и единый источник провайдеров — те самые РЕШЕНИЯ, ради которых делался перенос.
+ok({c["name"] for c in _sheets33.get("SCENE_PROFILE", {}).get("columns", [])} >= {"enabled", "niche_weight"},
+   "SCENE_PROFILE сохранил тумблер enabled («тихий столбец»)")
+ok({c["name"] for c in _sheets33.get("RESOURCE_LIMITS", {}).get("columns", [])} >= {"provider", "fallback_provider", "sync_mode"},
+   "RESOURCE_LIMITS остался единым источником провайдеров (provider+fallback+sync_mode)")
+
+# Инвариант против рецидива: имя вернётся тем же путём, каким пришло — «кто-то поможет».
+ok(not (ROOT / "config" / "channel_config.yaml").exists(), "config/channel_config.yaml удалён")
+_live33 = []
+for _p in list((ROOT / "config").rglob("*.yaml")) + list((ROOT / "core").rglob("*.py")) \
+        + list((ROOT / "tools").rglob("*.py")) + [ROOT / "server.py"]:
+    for _i, _line in enumerate(_p.read_text(encoding="utf-8").splitlines(), 1):
+        # Комментарий-провенанс («листы из бывшего …») разрешён: он объясняет, куда делось имя.
+        if "channel_config" in _line and not _line.lstrip().startswith("#"):
+            _live33.append(f"{_p.relative_to(ROOT)}:{_i}")
+ok(not _live33, f"имя channel_config не осталось живой декларацией или кодом: {_live33}")
 
 print("== 34. F72/F73: шаблон проекта — пишущий путь, а не обход allowlist ==")
 _tpl34 = Path(tempfile.mkdtemp(prefix="vpm_tpl34_"))

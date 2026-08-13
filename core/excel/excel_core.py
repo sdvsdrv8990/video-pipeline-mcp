@@ -239,6 +239,27 @@ class ExcelEngine:
         self._save(wb, path)
         return {"path": path, "sheet": sheet, "column": column, "index": new_idx}
 
+    def append_row(self, path: str, sheet: str, values: dict) -> dict:
+        """Строка данных в конец листа: {заголовок: значение}.
+
+        Заголовок обязан существовать — молча создавать столбец под неизвестный ключ нельзя,
+        иначе опечатка в декларации тихо расширяет книгу.
+        """
+        wb = self._load(path)
+        ws = self._sheet(wb, sheet)
+        headers = self._headers(ws)
+        unknown = [k for k in values if k not in headers]
+        if unknown:
+            raise ExcelError("COLUMN_NOT_FOUND",
+                             f"Лист '{sheet}': нет столбцов {unknown}.",
+                             reason="Сверь имена с заголовками (excel_get_column_names).")
+        # Пишем после последней непустой строки: у листа с формулой-образцом занята строка 2.
+        last = max((c.row for row in ws.iter_rows() for c in row if c.value is not None), default=1)
+        for name, value in values.items():
+            ws.cell(row=last + 1, column=headers[name], value=value)
+        self._save(wb, path)
+        return {"path": path, "sheet": sheet, "row": last + 1, "written": len(values)}
+
     def delete_column(self, path: str, sheet: str, column: str) -> dict:
         wb = self._load(path)
         ws = self._sheet(wb, sheet)

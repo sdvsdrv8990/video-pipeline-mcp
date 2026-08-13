@@ -15,7 +15,8 @@
 
 **Следствие для F2/F7 (исправление):** «config/ops пуст = архитектура сломана» — **НЕВЕРНО.**
 Декларативный `config/ops` и `model_routing.yaml` **намеренно упразднены**: реестр операций и
-fallback-цепочки консолидированы в `config/channel_config.yaml → resource_limits`. Один конфиг =
+fallback-цепочки консолидированы в конфиге канала → `resource_limits` (с S22 это лист
+`channel_data.RESOURCE_LIMITS`, до того — `config/channel_config.yaml`). Один источник =
 один источник правды (`media_tools_deployment.md §0`). README просто не обновлён под это решение.
 >
 > **F23 РЕШЁН (S8, OQ6 = reconcile-by-purpose):** конфликт снят по назначению. `config/ops/{filesystem,tables,
@@ -26,7 +27,8 @@ fallback-цепочки консолидированы в `config/channel_config
 
 **Иерархия сущностей:** `niche → networks → channel → video` (+ ветка `competitors/` под нашим каналом).
 
-**Конфиг:** консолидированный `config/channel_config.yaml` — 7 секций: `workflow_sequences`,
+**Конфиг (актуализировано S22):** 7 секций конфига канала переехали в **листы книги
+`channel_data.xlsx`** — одна книга на сущность, отдельного YAML у канала нет. Листы: `WORKFLOW_SEQUENCES`,
 `publishing_schedule`, `resource_limits` (провайдер+модель+голос+лимиты+fallback+retry+sync_mode),
 `metadata_defaults`, `automation_rules`, `scene_profile`, `render_config`. **НЕТ** отдельных
 ops/model_routing — это by design.
@@ -60,8 +62,8 @@ rejected; статус видео draft…archived) — их в Excel ещё н�
 из `resource_limits` **конкретного канала**, не из глобального `model_routing.yaml` (его **НЕ строим** —
 per-channel конфига достаточно; это отменяет «минорно» из F23). Механизм загрузки: адаптер провайдера,
 получив контекст канала (из параметров инструмента: `video_slug`/`channel_id` → путь канала), подхватывает
-`channel_config` **этого** канала при работе с ним. `config/channel_config.yaml` (дерево сервера) = шаблон/дефолт,
-материализуется в per-channel `channel_config` (в `workspace/…/channel/`) при создании канала.
+листы конфига из `channel_data` **этого** канала при работе с ним. Дефолты живут в декларации
+`config/templates/tables/channel_data.schema.yaml` (`rows:`) и материализуются строками книги при создании канала.
 **Открыто для P2–P4 (решаем при реализации провайдеров):** пломбировка «активного канала» (явный параметр
 инструмента vs session-state в `core/state`) + связь шаблон↔per-channel (как дефолт перекрывается каналом).
 
@@ -71,7 +73,7 @@ per-channel конфига достаточно; это отменяет «ми�
 |---|---|---|
 | Workspace-шаблоны (6 tpl) | ✅ **DONE** | `config/templates/workspace/*.tpl.yaml` × 6 |
 | `structure_create/link/migrate/status` | ✅ **DONE** | server.py + `tests/quick/test_structure.py` 35/35 |
-| `channel_config.yaml` (7 секций) | ✅ **DONE** | grep секций — все на месте |
+| Конфиг канала (7 секций → листы `channel_data`) | ✅ **DONE (S22)** | `test_structure §33b`: 7 листов + 34 строки-дефолта |
 | Таблично-схемный слой `config/templates/tables/*.schema.yaml` | ❌ **MISSING** | `config/templates/tables/` пуст |
 | `scripts/introspect_tables.py` | ❌ **MISSING** | не существует |
 | Лист `SCENES` + статус-столбцы в книгах | ❌ **MISSING** | по спеке §5.2/5.3 — руками |

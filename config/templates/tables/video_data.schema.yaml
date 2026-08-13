@@ -106,7 +106,7 @@ sheets:
       - { name: sound_assets, type: string, flag: W }   # звуковые эффекты
       - { name: filter_assets, type: string, flag: W }   # фильтры/обработка
       - { name: transition_assets, type: string, flag: W }   # переходы
-      - { name: scene_uniqueness, type: float, flag: W }   # взвешенная композиция по типам; веса/активность из `channel_config.SCENE_PROFILE`; выключенный тип не входит; определена
+      - { name: scene_uniqueness, type: float, flag: W }   # взвешенная композиция по типам; веса/активность из `channel_data.SCENE_PROFILE`; выключенный тип не входит; определена
       - { name: animation_order, type: string, flag: W }   # порядок появления элементов
       - { name: animation_speed, type: enum, flag: W }   # Fast/Medium/Slow
       - { name: retention_at_this_sec, type: float, flag: F }   # из YouTube Analytics
@@ -209,7 +209,7 @@ sheets:
     columns:
       - { name: render_id, type: string, flag: id }   # ключ рендера
       - { name: render_stage, type: enum, flag: W }   # `draft` / `final`
-      - { name: render_profile, type: string, flag: fk }   # профиль из `channel_config.RENDER_CONFIG` (codec/res/aspect)
+      - { name: render_profile, type: string, flag: fk }   # профиль из `channel_data.RENDER_CONFIG` (codec/res/aspect)
       - { name: format_label, type: string, flag: W }   # напр. `long_16x9` / `short_9x16` (если форматов несколько)
       - { name: file_path, type: string, flag: W }   # путь в `videos/<video>/renders/` (с `video_id` в имени)
       - { name: file_name, type: string, flag: F }   # `{video_slug}_{render_stage}[_{format_label}].mp4`

@@ -30,7 +30,7 @@ class FFMpegAdapter:
         video_id: str,
         scene_id: str,
         render_stage: str,  # "draft" или "final"
-        render_profile: str,  # профиль из channel_config.RENDER_CONFIG
+        render_profile: str,  # профиль из channel_data.RENDER_CONFIG
         scene_data: dict,  # данные из video_data.SCENES
         layout_data: dict,  # данные из scene_layouts/
         output_path: str,  # videos/<video>/renders/

@@ -65,7 +65,7 @@
 
 > **F23 РЕШЁН (OQ6 = reconcile-by-purpose):** `config/ops/{filesystem,tables,excel}.ops.yaml` = декларативный
 > реестр операций для tool-обёрток (ядро архитектуры «обёртка→ops→движок», закон §3) — **строим** (A3, пара к A2).
-> **media** остаётся консолидирован в `channel_config.resource_limits` (media-план) — своего `media.ops.yaml` НЕТ.
+> **media** остаётся консолидирован в листе `channel_data.RESOURCE_LIMITS` (S22; раньше — YAML-конфиг канала) — своего `media.ops.yaml` НЕТ.
 > `model_routing.yaml`/`paths.yaml` — минорно/по мере надобности. Оба документа владельца правы в своём скоупе.
 
 > **Как это исполняется (S18):** воркстримы не берутся поодиночке — сессия берёт **блок** из

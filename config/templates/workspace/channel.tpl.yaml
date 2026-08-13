@@ -13,9 +13,8 @@ channel:
     - { name: "videos", required: true }
   files:
     - { name: "channel_data.xlsx", kind: table, table_template: channel_data, required: true }
-    # Конфиг канала — КОПИЯ серверного дефолта (doc 10 §5.0), не книга: спека описывает YAML,
-    # а не листы Excel. Правится инструментами в копии; config/ остаётся декларацией.
-    - { name: "channel_config.yaml", kind: config, source: channel_config.yaml, required: true }
+    # Конфиг канала с S22 живёт ЛИСТАМИ в channel_data.xlsx (7 листов со строками-дефолтами),
+    # отдельного YAML у канала больше нет: одна книга на сущность (`13 §S20`).
     - { name: "project_memory.md", kind: file, required: true }
   children:
     - { type: video, container: "videos/" }

@@ -1,4 +1,5 @@
-# channel_data.xlsx — черновик из спеки (scripts/spec_to_schema.py). ТРЕБУЕТ ВЫЧИТКИ.
+# channel_data.xlsx — из спеки (scripts/spec_to_schema.py) + листы конфига канала
+# (scripts/config_to_schema.py, S22). ДОСОБРАН — spec_to_schema его больше не перезаписывает.
 # Источник: docs/roadmap/spec/schemas/channel_data.schema.md. Формат: spec/TABLE_SCHEMA_FORMAT.md.
 book: channel_data
 level: channel
@@ -234,3 +235,313 @@ sheets:
       - { name: last_3_uniqueness_avg, type: string, flag: F }
       - { name: trend, type: string, flag: F }
       - { name: alert, type: string, flag: F }
+
+  # ═══ Листы из бывшего config/channel_config.yaml (S22) ═══
+  # Перенесены механически scripts/config_to_schema.py (round-trip проверен).
+  # РЕШЕНИЯ, которые несла спека channel_config.schema.md:
+  #  1. WORKFLOW_SEQUENCES — allow-list разрешённых переходов + human-gate,
+  #     а НЕ жёсткий маршрут: маршрут выбирает ИИ, сервер лишь ограничивает.
+  #  2. RESOURCE_LIMITS — ЕДИНЫЙ источник провайдеров: одна строка = провайдер +
+  #     модель + параметры + лимит + fallback; адаптер читает строку целиком.
+  #  3. sync_mode отличает синхронный вызов от async (trigger → poll → download).
+  #  4. SCENE_PROFILE.enabled — «тихий столбец»: гасит ПОВЕДЕНИЕ, не структуру;
+  #     per-video сбор идёт только из включённых типов фрагментов.
+  #  5. AUTOMATION_RULES.severity=CRITICAL — жёсткий блок с вызовом человека.
+  - name: WORKFLOW_SEQUENCES
+    columns:
+      - { name: sequence_id, type: string, flag: id }
+      - { name: trigger_tool, type: string, flag: W }
+      - { name: allowed_next_tools, type: list, flag: W }
+      - { name: requires_human_approval, type: boolean, flag: W }
+      - { name: approval_ui_hint, type: string, flag: W }
+      - { name: fallback_action, type: string, flag: W }
+    rows:
+      - sequence_id: seq_01
+        trigger_tool: scenario_generate
+        allowed_next_tools:
+        - prepare_tts_input
+        - trigger_tts_generation
+        - human_approve
+        requires_human_approval: false
+        approval_ui_hint: ''
+        fallback_action: pause
+      - sequence_id: seq_02
+        trigger_tool: trigger_tts_generation
+        allowed_next_tools:
+        - poll_tts_status
+        - download_and_rename_audio
+        - trigger_transcription
+        requires_human_approval: false
+        approval_ui_hint: ''
+        fallback_action: retry_with_fallback
+      - sequence_id: seq_03
+        trigger_tool: trigger_transcription
+        allowed_next_tools:
+        - parse_timestamps_and_silence
+        - poll_transcription_status
+        requires_human_approval: false
+        approval_ui_hint: ''
+        fallback_action: retry_smaller_model
+      - sequence_id: seq_04
+        trigger_tool: trigger_image_generation
+        allowed_next_tools:
+        - poll_image_status
+        - download_and_rename_image
+        requires_human_approval: false
+        approval_ui_hint: ''
+        fallback_action: retry_with_fallback
+      - sequence_id: seq_human
+        trigger_tool: human_approve
+        allowed_next_tools:
+        - prepare_tts_input
+        - trigger_tts_generation
+        - trigger_image_generation
+        requires_human_approval: true
+        approval_ui_hint: Проверь результат и подтверди/отклони
+        fallback_action: pause
+
+  - name: PUBLISHING_SCHEDULE
+    columns:
+      - { name: schedule_id, type: string, flag: id }
+      - { name: day_of_week, type: string, flag: W }
+      - { name: time, type: string, flag: W }
+      - { name: timezone, type: string, flag: W }
+      - { name: frequency, type: string, flag: W }
+      - { name: status, type: enum, flag: W, enum: ['ACTIVE'] }
+      - { name: min_uniqueness_required, type: float, flag: W }
+    rows:
+      - schedule_id: sched_01
+        day_of_week: monday
+        time: '10:00'
+        timezone: Europe/Moscow
+        frequency: WEEKLY
+        status: ACTIVE
+        min_uniqueness_required: 0.7
+      - schedule_id: sched_02
+        day_of_week: thursday
+        time: '18:00'
+        timezone: Europe/Moscow
+        frequency: WEEKLY
+        status: ACTIVE
+        min_uniqueness_required: 0.65
+
+  - name: RESOURCE_LIMITS
+    columns:
+      - { name: resource_type, type: string, flag: id }
+      - { name: provider, type: string, flag: W }
+      - { name: fallback_provider, type: string, flag: W }
+      - { name: daily_limit, type: integer, flag: W }
+      - { name: current_usage, type: integer, flag: W }
+      - { name: warning_threshold, type: integer, flag: W }
+      - { name: model, type: string, flag: W }
+      - { name: voice, type: string, flag: W }
+      - { name: response_format, type: string, flag: W }
+      - { name: speed, type: float, flag: W }
+      - { name: timeout, type: integer, flag: W }
+      - { name: retry_count, type: integer, flag: W }
+      - { name: retry_delay, type: integer, flag: W }
+      - { name: sync_mode, type: boolean, flag: W }
+      - { name: model_size, type: string, flag: W }
+      - { name: img_size, type: string, flag: W }
+      - { name: img_n, type: integer, flag: W }
+    rows:
+      - resource_type: tts_characters
+        provider: ElevenLabs
+        fallback_provider: OpenAI
+        daily_limit: 100000
+        current_usage: 0
+        warning_threshold: 80000
+        model: eleven_multilingual_v2
+        voice: Rachel
+        response_format: wav
+        speed: 1.0
+        timeout: 60
+        retry_count: 2
+        retry_delay: 5
+        sync_mode: true
+      - resource_type: tts_characters
+        provider: OpenAI
+        fallback_provider: ''
+        daily_limit: 50000
+        current_usage: 0
+        warning_threshold: 40000
+        model: tts-1
+        voice: alloy
+        response_format: wav
+        speed: 1.0
+        timeout: 30
+        retry_count: 1
+        retry_delay: 3
+        sync_mode: true
+      - resource_type: stt_characters
+        provider: Local
+        fallback_provider: ''
+        daily_limit: -1
+        current_usage: 0
+        warning_threshold: -1
+        model: whisper-large-v3
+        model_size: large
+        timeout: 300
+        retry_count: 2
+        retry_delay: 0
+        sync_mode: true
+      - resource_type: image_generations
+        provider: Fal
+        fallback_provider: OpenAI
+        daily_limit: 500
+        current_usage: 0
+        warning_threshold: 400
+        model: flux-pro-1.1
+        img_size: 1024x1024
+        img_n: 1
+        timeout: 120
+        retry_count: 2
+        retry_delay: 10
+        sync_mode: false
+      - resource_type: image_generations
+        provider: OpenAI
+        fallback_provider: ''
+        daily_limit: 200
+        current_usage: 0
+        warning_threshold: 150
+        model: dall-e-3
+        img_size: 1024x1024
+        img_n: 1
+        timeout: 90
+        retry_count: 1
+        retry_delay: 5
+        sync_mode: false
+      - resource_type: svg_tracing
+        provider: Local_vtracer
+        fallback_provider: ''
+        daily_limit: -1
+        current_usage: 0
+        warning_threshold: -1
+        timeout: 30
+        retry_count: 0
+        sync_mode: true
+
+  - name: METADATA_DEFAULTS
+    columns:
+      - { name: metadata_type, type: string, flag: id }
+      - { name: template_string, type: string, flag: W }
+      - { name: variables_allowed, type: list, flag: W }
+      - { name: example_output, type: string, flag: W }
+    rows:
+      - metadata_type: title
+        template_string: '{topic} — {niche} | {channel_name}'
+        variables_allowed:
+        - topic
+        - niche
+        - channel_name
+        example_output: Биткоин — криптовалюта | CryptoDaily
+      - metadata_type: description
+        template_string: 'Видео о {topic} в жанре {niche}. Канал: {channel_name}'
+        variables_allowed:
+        - topic
+        - niche
+        - channel_name
+        example_output: 'Видео о биткоине в жанре криптовалюта. Канал: CryptoDaily'
+      - metadata_type: tags
+        template_string: '{topic},{niche},{channel_name}'
+        variables_allowed:
+        - topic
+        - niche
+        - channel_name
+        example_output: биткоин,криптовалюта,CryptoDaily
+
+  - name: AUTOMATION_RULES
+    columns:
+      - { name: rule_id, type: string, flag: id }
+      - { name: condition, type: string, flag: W }
+      - { name: action, type: enum, flag: W, enum: ['block', 'alert_human', 'pause_and_notify', 'switch_to_fallback'] }
+      - { name: severity, type: enum, flag: W, enum: ['CRITICAL', 'HIGH', 'MED'] }
+    rows:
+      - rule_id: AUTO_01
+        condition: uniqueness_score < 0.50
+        action: block
+        severity: CRITICAL
+      - rule_id: AUTO_02
+        condition: current_usage >= warning_threshold
+        action: alert_human
+        severity: HIGH
+      - rule_id: AUTO_03
+        condition: content_rejected_count >= 3
+        action: pause_and_notify
+        severity: CRITICAL
+      - rule_id: AUTO_04
+        condition: provider_failed_count >= 5
+        action: switch_to_fallback
+        severity: MED
+
+  - name: SCENE_PROFILE
+    columns:
+      - { name: fragment_type, type: string, flag: id }
+      - { name: enabled, type: boolean, flag: W }
+      - { name: niche_weight, type: float, flag: W }
+      - { name: signal_on_reuse, type: boolean, flag: W }
+      - { name: reuse_threshold, type: integer, flag: W }
+    rows:
+      - fragment_type: svg_bg
+        enabled: true
+        niche_weight: 0.3
+        signal_on_reuse: true
+        reuse_threshold: 5
+      - fragment_type: svg_character
+        enabled: true
+        niche_weight: 0.4
+        signal_on_reuse: true
+        reuse_threshold: 3
+      - fragment_type: svg_component
+        enabled: true
+        niche_weight: 0.2
+        signal_on_reuse: false
+        reuse_threshold: 0
+      - fragment_type: music
+        enabled: true
+        niche_weight: 0.5
+        signal_on_reuse: true
+        reuse_threshold: 2
+      - fragment_type: sound
+        enabled: false
+        niche_weight: 0.0
+        signal_on_reuse: false
+        reuse_threshold: 0
+      - fragment_type: filter
+        enabled: false
+        niche_weight: 0.0
+        signal_on_reuse: false
+        reuse_threshold: 0
+      - fragment_type: transition
+        enabled: true
+        niche_weight: 0.1
+        signal_on_reuse: false
+        reuse_threshold: 0
+
+  - name: RENDER_CONFIG
+    columns:
+      - { name: param, type: string, flag: id }
+      - { name: value, type: string, flag: W }
+      - { name: notes, type: string, flag: W }
+    rows:
+      - param: codec
+        value: h265
+        notes: HEVC для YouTube/Telegram
+      - param: resolution
+        value: 1920x1080
+        notes: Full HD
+      - param: aspect_ratio
+        value: '16:9'
+        notes: Горизонтальный
+      - param: fps
+        value: '30'
+        notes: Стандарт для Shorts/Reels
+      - param: crf
+        value: '20'
+        notes: Баланс качества и размера
+      - param: bitrate
+        value: 8M
+        notes: Для 1080p@30fps
+      - param: container
+        value: mp4
+        notes: Универсальный контейнер

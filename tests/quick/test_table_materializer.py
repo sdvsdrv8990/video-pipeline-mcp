@@ -173,6 +173,25 @@ ok(any(f.type == "TableMaterialized" for f in res.facts),
    "факт TableMaterialized доехал в контракт (тип заведён в KNOWN_FACT_TYPES, D25)")
 
 
+print("== 7b. Строки-дефолты из схемы доезжают В КНИГУ, а не только в декларацию ==")
+ws5 = tempfile.mkdtemp(prefix="tm5_")
+r5 = new_materializer(ws5).materialize("channel_data", "ch.xlsx")
+wb5 = openpyxl.load_workbook(Path(ws5) / "ch.xlsx")
+ok(r5["rows_total"] == 34, f"материализатор отчитался о 34 строках-дефолтах (получено {r5['rows_total']})")
+_sp = wb5["SCENE_PROFILE"]
+_vals = {row[0]: row[1] for row in _sp.iter_rows(min_row=2, values_only=True) if row[0]}
+ok(len(_vals) == 7, f"SCENE_PROFILE: 7 строк данных на листе (получено {len(_vals)})")
+ok(_vals.get("sound") is False and _vals.get("svg_bg") is True,
+   "значения дефолтов легли как есть: выключенный тип остался выключенным (тихий столбец)")
+_wf = wb5["WORKFLOW_SEQUENCES"]
+_hdr = [c.value for c in _wf[1]]
+_first = next(_wf.iter_rows(min_row=2, values_only=True), ())     # строк может не быть вовсе
+_row2 = {_hdr[i]: v for i, v in enumerate(_first)}
+ok(_row2.get("allowed_next_tools") == "prepare_tts_input,trigger_tts_generation,human_approve",
+   "список в ячейке — через запятую, значения не потеряны")
+ok(isinstance(_row2.get("requires_human_approval"), bool),
+   "булево осталось булевым, а не строкой 'False'")
+
 print("== 8. Конвертер спека→схема: что разобрано, а что честно отдано человеку ==")
 import importlib.util
 

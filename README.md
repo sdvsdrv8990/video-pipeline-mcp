@@ -16,9 +16,9 @@ video_pipeline_mcp/
 ├── install.sh · run.sh    ✅ установка (.venv + cloudflared) · запуск (--tunnel)
 │
 ├── config/                ✅ декларации (поведение, НЕ код)
-│   ├── channel_config.yaml    ✅ ЕДИНЫЙ конфиг канала: resource_limits (провайдеры/модели/
-│   │                             лимиты/fallback), workflow_sequences, publishing_schedule,
-│   │                             metadata_defaults, automation_rules, scene_profile, render_config
+│   │                          (конфиг канала с S22 — не файл, а 7 листов channel_data.xlsx:
+│   │                           RESOURCE_LIMITS, WORKFLOW_SEQUENCES, PUBLISHING_SCHEDULE,
+│   │                           METADATA_DEFAULTS, AUTOMATION_RULES, SCENE_PROFILE, RENDER_CONFIG)
 │   ├── server_reactions.yaml  ✅ реестр реакций (коды → класс + recovery)
 │   ├── firewall.yaml          ✅ правила файрвола
 │   ├── tunnel.yaml            ✅ конфиг туннеля (gitignored — секрет)
