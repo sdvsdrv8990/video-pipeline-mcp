@@ -1525,6 +1525,31 @@ if _bg_model:
     ok(any(k.startswith("onnx|") for k in _keys15) and _second <= _first,
        f"модель осталась поднятой между вызовами инструмента ({_first:.2f} с → {_second:.2f} с)")
 
+print("== 16. Кто формирует задачу и куда кладёт результат (инварианты под раннер, S24) ==")
+import re as _re16                                            # noqa: E402
+
+# Задачу провайдеру (а завтра — раннеру) собирает СЕРВЕР из строки канала. Клиент не может
+# передать ни адрес вызова, ни путь сохранения: иначе Claude выбирал бы, куда ходить и куда писать.
+_schema16 = _eng.get_tool("media_generate").input_schema["properties"]
+_addressy = [k for k in _schema16 if _re16.search(r"url|endpoint|host|target|dest|save|path", k, _re16.I)]
+ok(not _addressy,
+   f"инструмент не принимает от клиента адрес вызова или путь сохранения ({_addressy or 'таких полей нет'})")
+
+# Куда класть — решает сервер: сущность выбирает ИИ (table), раскладку внутри неё — декларация.
+if _bg_model:
+    (_ws / "pic" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+        "B1": _row_bg}}}), encoding="utf-8")
+    _r16 = _call("media_generate", table="pic", resource_type="bg_removals",
+                 input="pic/frame.png", scene_id="s16")
+    _p16 = _r16.data["files"][0]
+    ok(_p16.startswith("pic/"),
+       f"результат лёг внутрь указанной сущности, а не в общее место ({_p16})")
+    _assets16 = yaml.safe_load(CFG.read_text(encoding="utf-8"))["assets"]["by_resource"]["bg_removals"]
+    ok(f"/{_assets16['dir']}/" in _p16 and _p16.endswith(f".{_assets16['ext']}"),
+       f"раскладка и расширение взяты из декларации, а не придуманы вызовом ({_p16})")
+    ok((_ws / _p16).is_file(),
+       "файл лежит по этому пути сразу — без промежуточного места и последующего переноса")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:
