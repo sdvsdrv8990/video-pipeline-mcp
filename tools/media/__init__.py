@@ -302,7 +302,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         catalog = ModelCatalog(ctx.config_path / "providers.yaml", registry.models_dir)
         online = OnlineCatalog(ctx.config_path / "providers.yaml")
         source, live_error = "gateway_registry", None
-        hardware = probe(registry.models_dir)
+        hardware = probe(registry.models_dir, catalog.local.get("gpu"))
         if scope == "installed":
             rows = catalog.with_fit([r for r in catalog.installed() if not kind or r["kind"] == kind],
                                     hardware)

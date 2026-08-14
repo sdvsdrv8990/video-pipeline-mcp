@@ -261,8 +261,9 @@ class ModelCatalog:
         """Дописать к строкам вердикт «влезет ли на эту машину»."""
         from .hardware import FitEstimator, probe
 
-        hw = hardware or probe(self.models_dir)
+        hw = hardware or probe(self.models_dir, self.local.get("gpu"))
         est = FitEstimator(self.local.get("fit") or {})
+        pool, idle = est.pool(hw), est.idle_gpu(hw)
         out = []
         for row in rows:
             need = est.bytes_for(row.get("params_by_dtype") or {}, row.get("params_total") or 0)
@@ -270,7 +271,13 @@ class ModelCatalog:
                 # Число параметров источник не сообщил — тогда мерим тем, что известно: размером
                 # весов на диске. Это грубее, но лучше, чем промолчать про пригодность вовсе.
                 need = int(float(row["mb"]) * 1e6 * est.overhead)
-            out.append({**row, "fit": est.verdict(need, hw.get("ram_available_mb", 0))})
+            fit = est.verdict(need, pool["available_mb"], pool["device"])
+            if idle and need:
+                # Карта на машине есть, но её память расчёту недоступна: показываем, что было бы
+                # на ней, и чем это перекрыто, — иначе «no» на ОЗУ выглядит приговором железу.
+                fit["on_gpu"] = {**est.verdict(need, idle["vram_free_mb"], idle["name"]),
+                                 "usable": False, "blocked_by": idle["why"]}
+            out.append({**row, "fit": fit})
         return out
 
     # ═══ Установка ═══

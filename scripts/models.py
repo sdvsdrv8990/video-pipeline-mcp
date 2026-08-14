@@ -64,13 +64,19 @@ def cmd_local(args) -> int:
         print("Каталог пуст после отсева — ослабь фильтры в config/providers.yaml → local.sources.")
         return 1
     cat = _catalog()
-    for r in cat.with_fit(rows):
+    scored, last = cat.with_fit(rows), {}
+    for r in scored:
         size = f"{r['mb']} МБ" if r.get("mb") else f"↓{r.get('downloads', 0)}"
         params = f"{r['params_total'] / 1e9:.1f}B" if r.get("params_total") else "—"
         active = f"/{r['params_active'] / 1e9:.1f}B акт." if r.get("params_active") else ""
-        fit = r.get("fit") or {}
+        fit = last = r.get("fit") or {}
+        gpu = f"  (на карте: {fit['on_gpu']['verdict']})" if fit.get("on_gpu") else ""
         print(f"  {r['id']:<44}{size:<12}{params + active:<12}"
-              f"{fit.get('verdict', '?'):<7}{fit.get('need_mb', 0)} МБ")
+              f"{fit.get('verdict', '?'):<7}{fit.get('need_mb', 0)} МБ{gpu}")
+    if last.get("device"):
+        print(f"\nВердикт считался по: {last['device']} ({last.get('available_mb', 0)} МБ).")
+    if last.get("on_gpu"):
+        print(f"Память карты в вердикт не вошла: {last['on_gpu']['blocked_by']}")
     print(f"\nВсего {len(rows)}. Поставить: python scripts/models.py install <id> --kind {args.kind}")
     return 0
 
@@ -79,14 +85,18 @@ def cmd_hardware(args) -> int:
     """Что за железо под сервером — без прав root."""
     from core.providers.hardware import probe
 
-    hw = probe(_catalog().models_dir)
+    cat = _catalog()
+    hw = probe(cat.models_dir, cat.local.get("gpu"))
     print(f"  память:        {hw['ram_available_mb']} МБ доступно из {hw['ram_total_mb']} МБ")
     if hw["container_limit_mb"]:
         print(f"  лимит контейнера: {hw['container_limit_mb']} МБ")
     print(f"  ядра:          {hw['cpu_count']}")
     print(f"  диск:          {hw['disk_free_mb']} МБ свободно под веса")
     for card in hw["gpu"]:
-        print(f"  видеокарта:    {card['name']} — {card['free_mb']} МБ свободно из {card['total_mb']}")
+        vram = (f"{card['vram_free_mb']} МБ свободно из {card['vram_total_mb']}"
+                if card["vram_total_mb"] else "объём памяти драйвер не сообщает")
+        print(f"  видеокарта:    {card['name']} [{card['driver']}] — {vram}")
+        print(f"    расчёт:      {'ДОСТУПНА' if card['usable'] else 'НЕДОСТУПНА'} — {card['why']}")
     for gap in hw["unknown"]:
         print(f"  НЕ ЗНАЕМ:      {gap}")
     print(f"  {hw['note']}")

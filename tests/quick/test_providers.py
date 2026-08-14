@@ -976,15 +976,24 @@ ok("реестр" in _no_key.data["note"], "частичность помече�
 print("== 18. Влезет ли модель: параметры + железо, и всё это БЕЗ root ==")
 from core.providers.hardware import FitEstimator, probe
 
-_hw = probe(ROOT)
+_gpu_rules = (yaml.safe_load(CFG.read_text(encoding="utf-8"))["local"] or {}).get("gpu") or {}
+_hw = probe(ROOT, _gpu_rules)
 ok(_hw["ram_total_mb"] > 0 and _hw["ram_available_mb"] > 0 and _hw["cpu_count"] > 0,
    f"память и ядра прочитаны без root ({_hw['ram_available_mb']} из {_hw['ram_total_mb']} МБ, "
    f"{_hw['cpu_count']} ядер)")
 ok(_hw["ram_available_mb"] <= _hw["ram_total_mb"],
    "доступно не больше общего — читается MemAvailable, а не выдуманное число")
 ok(_hw["disk_free_mb"] > 0, "свободное место под веса известно")
-ok(_hw["gpu"] or any("nvidia-smi" in g for g in _hw["unknown"]),
+ok(_hw["gpu"] or any("НЕ проверено" in g for g in _hw["unknown"]),
    "видеокарты нет в ответе — значит сказано, что она НЕ проверена, а не «её нет»")
+ok(all({"name", "driver", "vram_total_mb", "vram_free_mb", "usable", "why"} <= set(c)
+       for c in _hw["gpu"]),
+   f"карта описана целиком: имя, драйвер, её память и доступна ли она расчёту ({_hw['gpu']})")
+ok(all(c["why"] for c in _hw["gpu"]),
+   "у каждой карты названа ПРИЧИНА вердикта доступности — «нет» без причины неотличимо от сбоя")
+ok(all(c["vram_free_mb"] <= c["vram_total_mb"] for c in _hw["gpu"] if c["vram_total_mb"])
+   and all(c["vram_total_mb"] or any(c["name"] in g for g in _hw["unknown"]) for c in _hw["gpu"]),
+   "объём памяти карты либо прочитан из sysfs без root, либо назван непрочитанным")
 
 _est = FitEstimator({"dtype_bytes": {"F32": 4, "F16": 2}, "overhead": 1.0, "tight_ratio": 0.8})
 ok(_est.bytes_for({"F32": 1_000_000_000}) == 4_000_000_000
@@ -1001,6 +1010,29 @@ ok(_est.verdict(0, 8000)["verdict"] == "unknown"
    "нет числа параметров → «не знаю», а не «влезет»")
 ok("ОЦЕНКА" in _est.verdict(1_000_000_000, 8000)["why"],
    "вердикт назван оценкой, а не замером — иначе ему поверят как факту")
+
+# Чем считать: карта или ОЗУ. Железо синтетическое — вердикт не должен зависеть от этой машины.
+_amd = {"ram_available_mb": 30000, "gpu": [{"name": "карта", "driver": "amdgpu", "usable": False,
+                                            "vram_total_mb": 16000, "vram_free_mb": 15000,
+                                            "why": "сборка под другой ускоритель"}]}
+_ok_gpu = {"ram_available_mb": 30000, "gpu": [{**_amd["gpu"][0], "usable": True, "why": "ок"}]}
+ok(_est.pool(_amd) == {"target": "cpu", "device": "ОЗУ", "available_mb": 30000},
+   "карта видна, но расчёту недоступна → считаем по ОЗУ: чужую память не обещаем")
+ok(_est.pool(_ok_gpu)["target"] == "gpu" and _est.pool(_ok_gpu)["available_mb"] == 15000,
+   "карта доступна → вердикт считается по ЕЁ памяти, а не по ОЗУ")
+ok(_est.pool({"ram_available_mb": 8000})["available_mb"] == 8000,
+   "карты нет вовсе → прежнее поведение, ОЗУ")
+ok(_est.idle_gpu(_amd)["vram_free_mb"] == 15000 and not _est.idle_gpu(_ok_gpu),
+   "простаивающая карта возвращается отдельно — иначе про её 15 ГБ никто не узнает")
+ok("карта" in _est.verdict(1_000_000_000, 15000, "карта")["why"],
+   "в вердикте названо, ПО КАКОЙ памяти он посчитан")
+
+_gpu_rows = ModelCatalog(CFG, ROOT / "vendor" / "models").with_fit(
+    [{"id": "тяжёлая", "params_by_dtype": {"F32": 3_700_000_000}}], _amd)
+ok(_gpu_rows[0]["fit"]["verdict"] == "fits" and _gpu_rows[0]["fit"]["on_gpu"]["verdict"] == "no"
+   and _gpu_rows[0]["fit"]["on_gpu"]["blocked_by"],
+   "строка каталога несёт оба числа: что на ОЗУ и что было бы на карте — с причиной "
+   f"({_gpu_rows[0]['fit']['verdict']} / {_gpu_rows[0]['fit']['on_gpu']['verdict']})")
 
 _mc = ModelCatalog(CFG, ROOT / "vendor" / "models")
 _fit_rows = _mc.with_fit([{"id": "тяжёлая", "params_by_dtype": {"F32": 20_000_000_000},
