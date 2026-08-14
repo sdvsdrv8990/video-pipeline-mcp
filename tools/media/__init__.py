@@ -12,12 +12,13 @@ tools/media — медиа-слой: кто исполняет ресурс, и 
 граница — отвалившийся клиент задачу не теряет и не спасает, её статус прозванивается заново.
 """
 
+import json
 from collections import defaultdict
 from pathlib import Path
 
 from core.contracts import Fact, ToolResult
 from core.engine import Engine
-from core.providers import (AdapterRegistry, MediaRequest, ProviderError, ProviderResolver,
+from core.providers import (AdapterRegistry, MediaRequest, ModelSpec, ProviderError, ProviderResolver,
                             ResultDownloader, TaskCycle, UsageLedger)
 from core.providers.catalog import ModelCatalog, OnlineCatalog
 from core.providers.hardware import probe
@@ -235,6 +236,24 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                     "Пока ключа нет — поставь в строке канала провайдера, работающего без ключа "
                     "(например, локального): это обычный table_update.")
 
+        # Что модель принимает и в каких пределах, знает сама модель. Расхождение ловим ДО вызова:
+        # у платного провайдера неверный параметр стоит денег, у локального — минут расчёта, и в
+        # обоих случаях ответ «не то, что просили» приходит без жалобы.
+        spec_engine = ModelSpec(registry)
+        ok, spec = ctx.safe(lambda: spec_engine.of(decision["provider"],
+                                                   str(params.get("model") or ""), api_key))
+        if ok:
+            gaps = spec_engine.check(spec, params)
+            if gaps:
+                return ctx.err(
+                    "VALIDATION_ERROR",
+                    "Строка канала просит у модели то, чего она не умеет: "
+                    + "; ".join(f"{g['param']}={g['value']!r} — {g['problem']}" for g in gaps),
+                    f"Допустимое: {json.dumps({g['param']: g['allowed'] for g in gaps}, ensure_ascii=False)}. "
+                    f"Источник спецификации — {spec.get('source')}. Поправь строку листа провайдеров "
+                    "(table_update) или возьми модель, которая это умеет: "
+                    "media_models(scope='spec', provider=..., model=...).")
+
         ok, adapter = ctx.safe(lambda: registry.load(decision["provider"], resource_type))
         if not ok:
             return adapter
@@ -316,7 +335,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         return report
 
     async def media_models(kind: str = "", scope: str = "installed", limit: int = 20,
-                           provider: str = "", table: str = "") -> "ToolResult":
+                           provider: str = "", table: str = "", model: str = "") -> "ToolResult":
         """Какие модели стоят на машине, какие можно поставить и какие доступны онлайн.
 
         `scope=installed` — что уже лежит; `local` — что можно поставить сюда;
@@ -328,6 +347,28 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         online = OnlineCatalog(ctx.config_path / "providers.yaml")
         source, live_error = "gateway_registry", None
         hardware = probe(registry.models_dir, catalog.local.get("gpu"))
+        if scope == "spec":
+            # Что модель принимает и в каких пределах. Спрашивается у неё самой (или у её файлов),
+            # а не сочиняется: список параметров модели — её свойство, и оно меняется без нас.
+            key = ""
+            if provider and table and registry.requires_key(provider):
+                ok_key, key = ctx.safe(lambda: _key_for(table, provider))
+                key = key if ok_key else ""
+            ok, spec = ctx.safe(lambda: ModelSpec(registry).of(provider, model, key))
+            if not ok:
+                return spec
+            return ToolResult(status="success", data={
+                "scope": scope, "provider": provider, "model": model,
+                "known": spec.get("known"), "source": spec.get("source"), "why": spec.get("why"),
+                "parameters": (spec.get("schema") or {}).get("properties") or {},
+                "required": (spec.get("schema") or {}).get("required") or [],
+                "hint": ("Столбцы строки провайдера должны укладываться в эти пределы — иначе "
+                         "media_generate откажет ДО вызова (у платного это стоило бы денег). "
+                         "Правится table_update по строке листа провайдеров."),
+            }, facts=[Fact(type="ModelSpecRead", data={
+                "provider": provider, "model": model, "source": spec.get("source"),
+                "known": bool(spec.get("known")),
+                "parameters": sorted((spec.get("schema") or {}).get("properties") or {})})])
         if scope == "installed":
             rows = catalog.with_fit([r for r in catalog.installed() if not kind or r["kind"] == kind],
                                     hardware)
@@ -444,14 +485,21 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "Показывает модели: что уже стоит на машине (scope=installed), что можно поставить "
             "локально из живого каталога с отсевом по объявленным фильтрам (scope=local), и что "
             "умеет вызвать шлюз онлайн — с провайдером, эндпоинтом и ценой (scope=online). "
-            "Список онлайн-моделей виден БЕЗ ключа — из реестра шлюза. А с provider и table он спрашивается у САМОГО провайдера его ключом: новая линейка появляется у него раньше, чем в реестре, и модель, которой реестр не знает, придёт помеченной known_to_gateway=false, а не пропадёт. Ключ уходит только на объявленный адрес и в ответе не возвращается."),
+            "Список онлайн-моделей виден БЕЗ ключа — из реестра шлюза. А с provider и table он спрашивается у САМОГО провайдера его ключом: новая линейка появляется у него раньше, чем в реестре, и модель, которой реестр не знает, придёт помеченной known_to_gateway=false, а не пропадёт. Ключ уходит только на объявленный адрес и в ответе не возвращается. "
+            "scope=spec отвечает на другой вопрос — ЧТО МОДЕЛЬ УМЕЕТ: какие параметры принимает, "
+            "с какими значениями, дефолтами и пределами (одна модель работает на 1024 и 2048 и не "
+            "умеет 4К, у другой нативные 512). Спека берётся у самого провайдера, из справочника "
+            "проекта или из файлов модели — источник назван в ответе, и «неизвестно» не выдаётся "
+            "за «ограничений нет». Спрашивать её стоит ДО правки строки канала: media_generate "
+            "сверяет параметры со спекой и откажет до вызова, а не после оплаты."),
         input_schema={"type": "object", "properties": {
             "kind": {"type": "string", "description": "Вид: tts, image, stt, bg_removal, upscale (пусто → по умолчанию для scope)"},
-            "scope": {"type": "string", "enum": ["installed", "local", "online"], "default": "installed",
-                      "description": "installed — стоит сейчас; local — можно поставить; online — умеет шлюз"},
+            "scope": {"type": "string", "enum": ["installed", "local", "online", "spec"], "default": "installed",
+                      "description": "installed — стоит сейчас; local — можно поставить; online — умеет шлюз; spec — что модель принимает на вход"},
             "limit": {"type": "integer", "default": 20, "description": "Сколько строк показать"},
-            "provider": {"type": "string", "description": "scope=online: спросить список у САМОГО провайдера (нужен его ключ)"},
-            "table": {"type": "string", "description": "scope=online: канал, чьим ключом спрашивать провайдера"},
+            "provider": {"type": "string", "description": "scope=online/spec: у КОГО спрашивать (для scope=online нужен его ключ)"},
+            "table": {"type": "string", "description": "scope=online/spec: канал, чьим ключом спрашивать провайдера"},
+            "model": {"type": "string", "description": "scope=spec: модель, чьи параметры и пределы показать"},
         }}, handler=media_models, group="media", annotations=ANNOTATIONS_READONLY)
 
     engine.register(

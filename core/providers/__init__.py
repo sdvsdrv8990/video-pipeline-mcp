@@ -4,10 +4,11 @@ from .adapters import AdapterRegistry, MediaOutcome, MediaRequest
 from .declaration import Declaration
 from .download import ResultDownloader
 from .installer import ModelInstaller
+from .model_spec import ModelSpec
 from .resolver import ProviderError, ProviderResolver
 from .task_cycle import TaskCycle, TaskCycleError
 from .usage import UsageLedger
 
 __all__ = ["ProviderResolver", "ProviderError", "TaskCycle", "TaskCycleError",
            "AdapterRegistry", "MediaRequest", "MediaOutcome", "Declaration",
-           "ResultDownloader", "UsageLedger", "ModelInstaller"]
+           "ResultDownloader", "UsageLedger", "ModelInstaller", "ModelSpec"]

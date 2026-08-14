@@ -1401,6 +1401,59 @@ try:
 except ProviderError as _ebig:
     ok(_ebig.code == "CONTENT_REJECTED", f"файл сверх предела отклонён до сети ({_ebig.code})")
 
+print("== 14. Что модель умеет: спека параметров и отказ ДО вызова (S24) ==")
+from core.providers import ModelSpec                          # noqa: E402
+
+_ms = ModelSpec(_reg)
+
+# Локальная модель описывает себя сама — сетью для этого ходить незачем.
+_sp_local = _ms.of("Local_diffusers", "sd-turbo")
+ok(_sp_local["source"] == "model_files" and _sp_local["known"],
+   f"локальная модель описана своими файлами, без сети ({_sp_local['source']})")
+ok("512x512" in str(_sp_local["schema"]["properties"].get("img_size", {}).get("default")),
+   f"нативное разрешение прочитано из модели ({_sp_local['schema']['properties'].get('img_size', {}).get('default')})")
+
+# Неизвестное НЕ выдаётся за «ограничений нет» — иначе пустота выглядела бы как разрешение.
+_sp_none = _ms.of("Local_piper", "нет-такой-модели")
+ok(_sp_none["source"] == "none" and _sp_none["known"] is False and _sp_none["why"],
+   "нет спеки — так и сказано, а не «ограничений нет»")
+ok(_ms.check(_sp_none, {"что_угодно": 4096}) == [],
+   "без спеки сверка никого не блокирует: неизвестность не повод отказывать")
+
+# Сверка по схеме: пределы модели против того, что просит строка канала.
+_schema14 = {"schema": {"type": "object", "properties": {
+    "operating_resolution": {"type": "string", "enum": ["1024x1024", "2048x2048"]},
+    "steps": {"type": "integer", "minimum": 1, "maximum": 8}}}, "source": "book", "known": True}
+_gaps14 = _ms.check(_schema14, {"operating_resolution": "4096x4096", "steps": 50, "tile": 256})
+ok(len(_gaps14) == 2 and {g["param"] for g in _gaps14} == {"operating_resolution", "steps"},
+   f"расхождения найдены по обоим полям ({[g['param'] for g in _gaps14]})")
+ok(all(g["allowed"] for g in _gaps14),
+   "в отказе названо ДОПУСТИМОЕ, иначе ИИ чинит вслепую")
+ok(not any(g["param"] == "tile" for g in _gaps14),
+   "наши служебные столбцы строки не объявлены моделью и не считаются нарушением")
+
+# Сквозь инструмент: спека приходит ИИ с источником и параметрами.
+_spec_tool = _call("media_models", scope="spec", provider="Local_diffusers", model="sd-turbo")
+ok(_spec_tool.status == "success" and _spec_tool.data["source"] == "model_files"
+   and _spec_tool.data["parameters"],
+   f"инструмент отдаёт спеку с источником ({_spec_tool.data.get('source')})")
+ok(_spec_tool.facts and _spec_tool.facts[0].type == "ModelSpecRead",
+   "чтение спеки приходит фактом контракта (тип заведён в KNOWN_FACT_TYPES, D25)")
+
+# И главное: вызов не состоится, если строка канала просит невозможное.
+(_ws / "spec14").mkdir()
+_PILImage.new("RGB", (32, 32), "#101010").save(_ws / "spec14" / "in.png")
+(_ws / "spec14" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+    "S1": {"resource_type": "image_generations", "provider": "Local_diffusers",
+           "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+           "warning_threshold": -1, "model": "sd-turbo", "img_size": 4096}}}}), encoding="utf-8")
+_deny14 = _call("media_generate", table="spec14", resource_type="image_generations",
+                input="кадр", scene_id="s1")
+ok(_deny14.status == "error" and _deny14.error.code == "VALIDATION_ERROR",
+   f"строка канала просит у модели невозможное — отказ ДО вызова ({_deny14.error.code if _deny14.error else 'успех!'})")
+ok("4096" in (_deny14.error.message if _deny14.error else ""),
+   "в отказе названо, ЧТО именно не подошло")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:
