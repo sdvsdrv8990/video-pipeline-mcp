@@ -404,6 +404,20 @@ ok(_IMG(_reg)._call_kwargs({}) == {},
 ok("guidance_scale" in _IMG(_reg)._call_kwargs({"guidance": 0}),
    "guidance=0 — осмысленное значение (пошаговые модели), а не «не задано»")
 
+# Параметры ПОДЪЁМА — по объявленной карте «столбец → параметр библиотеки», а не ветками.
+_ldk = _IMG(_reg)._load_kwargs
+ok(_ldk({}, {"variant": "fp16"}) == {"variant": "fp16"},
+   "вариант весов приходит из ОПИСИ: ИИ не обязан знать, что лежит на диске (F80)")
+ok(_ldk({"variant": "fp32"}, {"variant": "fp16"})["variant"] == "fp32",
+   "непустой столбец строки перекрывает опись — но только непустой")
+ok(_ldk({"device_map": "balanced", "max_memory": {0: "8GiB"}}, {}) ==
+   {"device_map": "balanced", "max_memory": {0: "8GiB"}},
+   "новый рычаг библиотеки = строка в декларации, а не ветка в коде")
+ok(_ldk({"выдуманный_столбец": "x", "steps": 4}, {}) == {},
+   "чего в объявленной карте нет — в загрузчик не уезжает, даже если это знакомый столбец")
+ok(_reg.model_entry("такой-модели-нет") == {},
+   "неизвестной модели опись не выдумывает свойств")
+
 # Модель берётся из ОПИСИ, а не зашита в тест: источник локальных моделей один (S23).
 from core.providers.catalog import ModelCatalog as _MCat
 from core.providers.hardware import probe as _probe
@@ -416,9 +430,10 @@ if _img_entry:
     (_ws / "i" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
         "I1": {"resource_type": "image_generations", "provider": "Local_diffusers",
                "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+               # `variant` в строке НЕТ намеренно: он приходит из описи (F80). Если регрессия
+               # вернёт требование столбца, вызов упадёт LOCAL_MODEL_MISSING прямо здесь.
                "warning_threshold": -1, "model": _img_entry["id"], "img_size": "512x512",
-               "img_n": 1, "steps": 1, "variant": _img_entry.get("variant", ""),
-               "usage_unit": "image"}}}}), encoding="utf-8")
+               "img_n": 1, "steps": 1, "usage_unit": "image"}}}}), encoding="utf-8")
     _gi = _call("media_generate", table="i", resource_type="image_generations",
                 input="a lighthouse on a cliff at sunrise", scene_id="scene01", video_slug="demo")
     ok(_gi.status == "success", f"локальная генерация картинки исполнена моделью {_img_entry['id']} "
@@ -430,6 +445,24 @@ if _img_entry:
     ok(_cmp.get("device") != "cpu" or not any(c["usable"] for c in _hw_now["gpu"]),
        f"на процессоре считаем, ТОЛЬКО если доступной карты нет ({_cmp.get('device')}, "
        f"карт доступных: {sum(c['usable'] for c in _hw_now['gpu'])})")
+    ok(_cmp.get("placement", {}).get("mode") == "device",
+       f"модель влезла — положили целиком, без выгрузки ({_cmp.get('placement')})")
+
+    # Ветка выгрузки — на настоящей модели и настоящей карте: меняется только объявленный порог,
+    # при котором она перестаёт «влезать». Иначе ветка живёт непроверенной до первой большой модели.
+    _big_decl = yaml.safe_load(CFG.read_text(encoding="utf-8"))
+    _big_decl["local"]["fit"]["overhead"] = 100.0
+    _big_cfg = _ws.parent / "providers_oversize.yaml"
+    _big_cfg.write_text(yaml.safe_dump(_big_decl, allow_unicode=True), encoding="utf-8")
+    _off_reg = AdapterRegistry(_big_cfg, ROOT)
+    _off = _IMG(_off_reg).generate(MediaRequest(
+        input="a lighthouse", target=_ws / "offload.png", models_dir=_off_reg.models_dir,
+        params={"model": _img_entry["id"], "img_size": "256x256", "img_n": 1, "steps": 1}))
+    ok(_off.meta["compute"]["placement"]["mode"] == "model_offload"
+       and (_ws / "offload.png").stat().st_size > 5000,
+       "модель больше карты — не приговор: выгрузка включилась по декларации, картинка нарисована "
+       f"({_off.meta['compute']['placement']['mode']}, "
+       f"{(_ws / 'offload.png').stat().st_size // 1024} КБ)")
     _pi = _ws / _gi.data["files"][0]
     ok(_pi.is_file() and _pi.stat().st_size > 10000,
        f"картинка на диске и не пустая ({_pi.stat().st_size if _pi.is_file() else 0} байт)")
@@ -1060,6 +1093,22 @@ ok(compute_device(_gpu_rules, want="cpu", hw=_ok_gpu)["device"] == "cpu"
    "столбец строки перекрывает пробу: оператор знает про машину то, чего проба не видит")
 ok(compute_device({}, hw=_ok_gpu)["device"] == "cpu",
    "драйвер не объявлен в декларации → процессор, а не угаданное имя устройства")
+
+from core.providers.hardware import placement
+
+_where_gpu = compute_device(_gpu_rules, hw=_ok_gpu | {"gpu": [{**_ok_gpu["gpu"][0], "driver": "amdgpu"}]})
+_fit_rules = yaml.safe_load(CFG.read_text(encoding="utf-8"))["local"]["fit"]
+_small = {"params_total": 500_000_000}
+_huge = {"params_total": 20_000_000_000}
+ok(placement(_gpu_rules, _fit_rules, _small, _where_gpu)["mode"] == "device",
+   "влезает → кладём целиком, без лишних механизмов")
+ok(placement(_gpu_rules, _fit_rules, _huge, _where_gpu)["mode"] == "model_offload",
+   "не влезает → режим выгрузки ИЗ ДЕКЛАРАЦИИ, а не «возьми модель полегче»")
+ok(placement({**_gpu_rules, "oversize": "error"}, _fit_rules, _huge, _where_gpu)["mode"] == "error",
+   "объявили отказ — получаем отказ: молча считать вдесятеро дольше хуже, чем не начать")
+ok(placement(_gpu_rules, _fit_rules, {}, _where_gpu)["mode"] == "device"
+   and "неизвестен" in placement(_gpu_rules, _fit_rules, {}, _where_gpu)["why"],
+   "размер неизвестен → кладём целиком и говорим об этом: гадать «не влезет» не лучше")
 
 _gpu_rows = ModelCatalog(CFG, ROOT / "vendor" / "models").with_fit(
     [{"id": "тяжёлая", "params_by_dtype": {"F32": 3_700_000_000}}], _amd)

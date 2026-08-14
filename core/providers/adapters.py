@@ -75,6 +75,15 @@ class AdapterRegistry:
         from .catalog import ModelCatalog
         return ModelCatalog(self.config_file, self.models_dir).entries()
 
+    def model_entry(self, name: str) -> dict:
+        """Что опись знает об этой модели: вариант весов, размер, число параметров.
+
+        Свойства СКАЧАННОГО живут в описи, а не в строке канала: требовать их от ИИ значит
+        ронять вызов из-за незаполненного столбца (так и было с `variant` — F80).
+        """
+        wanted = str(name or "").strip()
+        return next((e for e in self.catalog if str(e.get("id")) == wanted), {})
+
     def model_path(self, name: str) -> Path:
         """Где лежат веса модели, названной строкой канала.
 

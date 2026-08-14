@@ -264,7 +264,7 @@ class ModelCatalog:
         """Дописать к строкам вердикт «влезет ли на эту машину»."""
         from .hardware import FitEstimator, probe
 
-        from .hardware import compute_device
+        from .hardware import OVERSIZE_MODES, compute_device
 
         hw = hardware or probe(self.models_dir, self.local.get("gpu"))
         est = FitEstimator(self.local.get("fit") or {})
@@ -274,6 +274,7 @@ class ModelCatalog:
         gpu_rules = self.local.get("gpu") or {}
         load = compute_device(gpu_rules, hw=hw)["dtype"]
         gpu_load = str((gpu_rules.get("dtype") or {}).get("gpu", ""))
+        oversize = str(gpu_rules.get("oversize") or "error").lower()
         out = []
         for row in rows:
             pbd, ptotal = row.get("params_by_dtype") or {}, row.get("params_total") or 0
@@ -283,6 +284,11 @@ class ModelCatalog:
                 # весов на диске. Это грубее, но лучше, чем промолчать про пригодность вовсе.
                 need = int(float(row["mb"]) * 1e6 * est.overhead)
             fit = {**est.verdict(need, pool["available_mb"], pool["device"]), "dtype": load}
+            if fit["verdict"] == "no" and oversize != "error":
+                # «Не влезает» — не приговор: библиотека умеет держать на устройстве по одной
+                # части. Молчать об этом значит советовать модель полегче там, где она не нужна.
+                fit["oversize"] = {"mode": oversize, "note": OVERSIZE_MODES.get(
+                    oversize, f"режим '{oversize}' не объявлен")}
             if idle and need:
                 # Карта на машине есть, но её память расчёту недоступна: показываем, что было бы
                 # на ней, и чем это перекрыто, — иначе «no» на ОЗУ выглядит приговором железу.

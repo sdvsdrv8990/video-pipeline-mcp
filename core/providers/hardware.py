@@ -37,6 +37,13 @@ from pathlib import Path
 MEMINFO = Path("/proc/meminfo")
 CGROUP_MAX = Path("/sys/fs/cgroup/memory.max")
 SYSFS_DRM = Path("/sys/class/drm")
+# Что делать с моделью, которая больше устройства. Механизмы — библиотечные (diffusers/accelerate),
+# здесь только их человеческая цена: она нужна и вердикту в каталоге, и объяснению при подъёме.
+OVERSIZE_MODES = {
+    "model_offload": "держим на устройстве по одной части, остальное в ОЗУ — медленнее в разы",
+    "sequential_offload": "держим по одному слою — медленнее в десятки раз, но влезает почти всё",
+    "error": "объявлен отказ вместо выгрузки",
+}
 PCI_IDS = Path("/usr/share/hwdata/pci.ids")     # системная база имён устройств, читается всеми
 
 
@@ -251,20 +258,49 @@ def compute_device(gpu_rules: dict, want: str = "", hw: dict | None = None) -> d
     rules = gpu_rules or {}
     dtypes = rules.get("dtype") or {}
     drivers = rules.get("drivers") or {}
+    hw = probe(".", rules) if hw is None else hw
+    ram = int(hw.get("ram_available_mb") or 0)
     asked = str(want or "").strip().lower()
     if asked and asked != "auto":
         on_cpu = asked == "cpu"
+        card = next((c for c in (hw.get("gpu") or []) if c.get("vram_free_mb")), {})
         return {"device": asked, "dtype": str(dtypes.get("cpu" if on_cpu else "gpu", "")),
+                "available_mb": ram if on_cpu else int(card.get("vram_free_mb") or 0),
                 "source": "строка канала", "why": f"устройство '{asked}' задано столбцом строки"}
-    hw = probe(".", rules) if hw is None else hw
     for card in hw.get("gpu") or []:
         name = str((drivers.get(card.get("driver")) or {}).get("torch_device") or "")
         if card.get("usable") and card.get("vram_free_mb") and name:
-            return {"device": name, "dtype": str(dtypes.get("gpu", "")), "source": "проба железа",
+            return {"device": name, "dtype": str(dtypes.get("gpu", "")),
+                    "available_mb": int(card["vram_free_mb"]), "source": "проба железа",
                     "why": f"{card['name']}: {card['vram_free_mb']} МБ свободно, {card['why']}"}
     idle = [c for c in (hw.get("gpu") or []) if not c.get("usable")]
-    return {"device": "cpu", "dtype": str(dtypes.get("cpu", "")), "source": "проба железа",
+    return {"device": "cpu", "dtype": str(dtypes.get("cpu", "")), "available_mb": ram,
+            "source": "проба железа",
             "why": ("считаем на процессоре: " + (idle[0]["why"] if idle else "карты не нашлось"))}
+
+
+def placement(gpu_rules: dict, fit_rules: dict, entry: dict, where: dict) -> dict:
+    """Класть модель целиком или с выгрузкой: она может быть больше выбранного устройства.
+
+    Ответ на «не влезает» — не другой набор весов, а механизм самой библиотеки: держать на карте
+    по одному блоку, остальное в ОЗУ. Медленнее, но работает; какой режим брать — объявлено, а не
+    решено здесь. `error` означает отказ вслух: молча посчитать вдесятеро дольше — хуже отказа.
+    """
+    mode = str((gpu_rules or {}).get("oversize") or "error").lower()
+    need_mb = round(FitEstimator(fit_rules).bytes_for(
+        entry.get("params_by_dtype") or {}, int(entry.get("params_total") or 0),
+        as_dtype=where.get("dtype", "")) / 1e6)
+    free = int(where.get("available_mb") or 0)
+    base = {"need_mb": need_mb, "available_mb": free, "device": where.get("device", "")}
+    if where.get("device") == "cpu" or not need_mb or not free or need_mb <= free:
+        # Неизвестный размер тоже кладём целиком: гадать «наверное, не влезет» — не лучше, а
+        # отказ библиотеки по памяти будет громким и с настоящей причиной.
+        return {**base, "mode": "device",
+                "why": (f"нужно ~{need_mb} МБ из {free} МБ" if need_mb and free
+                        else "размер модели неизвестен — кладём целиком")}
+    return {**base, "mode": mode,
+            "why": (f"нужно ~{need_mb} МБ, а на устройстве {free} МБ — "
+                    + OVERSIZE_MODES.get(mode, f"режим '{mode}' не объявлен, размещать нечем"))}
 
 
 class FitEstimator:

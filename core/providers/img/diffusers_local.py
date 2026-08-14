@@ -36,15 +36,34 @@ class DiffusersLocalIMG:
         self.models_dir = Path(registry.models_dir)
         self._pipelines: dict[str, object] = {}
 
+    @property
+    def _gpu_rules(self) -> dict:
+        return (self.registry.config.get("local") or {}).get("gpu") or {}
+
     def _where(self, params: dict) -> dict:
         """Где считать: решает проба железа (или столбец строки), а не этот файл."""
         from ..hardware import compute_device
-        return compute_device((self.registry.config.get("local") or {}).get("gpu") or {},
-                              str(params.get("device") or "").strip())
+        return compute_device(self._gpu_rules, str(params.get("device") or "").strip())
 
-    def _pipeline(self, model_path: Path, variant: str, where: dict):
+    def _load_kwargs(self, params: dict, entry: dict) -> dict:
+        """Параметры ПОДЪЁМА модели по объявленной карте «столбец строки → параметр библиотеки».
+
+        Новый рычаг библиотеки добавляется строкой в декларации, а не веткой здесь. `variant`
+        (какие файлы весов лежат на диске — fp16 или полные) берётся из ОПИСИ: его записал
+        установщик, и требовать его от ИИ значило бы ронять вызов из-за незаполненного столбца.
+        """
+        out = {}
+        for column, param in (self._gpu_rules.get("load_from_row") or {}).items():
+            value = params.get(column)
+            if value not in (None, ""):
+                out[str(param)] = value
+        if entry.get("variant") and "variant" not in out:
+            out["variant"] = entry["variant"]
+        return out
+
+    def _pipeline(self, model_path: Path, load: dict, where: dict, place: dict):
         """Пайплайн живёт до конца процесса: его подъём — десятки секунд и гигабайты."""
-        key = f"{model_path}#{variant}#{where['device']}#{where['dtype']}"
+        key = f"{model_path}#{sorted(load.items())}#{where['device']}#{where['dtype']}#{place['mode']}"
         if key not in self._pipelines:
             try:
                 import torch
@@ -56,26 +75,40 @@ class DiffusersLocalIMG:
             dtype = getattr(torch, where["dtype"], None) if where["dtype"] else None
             try:
                 # local_files_only: молча тянуть модель из интернета посреди вызова нельзя.
-                # variant — какие файлы весов лежат в каталоге (fp16/fp32): это свойство
-                # СКАЧАННОГО, поэтому приходит столбцом строки, а не жёстко стоит в коде.
                 pipe = AutoPipelineForText2Image.from_pretrained(
-                    str(model_path), local_files_only=True, safety_checker=None,
-                    **({"variant": variant} if variant else {}),
+                    str(model_path), local_files_only=True, safety_checker=None, **load,
                     **({"torch_dtype": dtype} if dtype else {}))
             except Exception as e:                          # noqa: BLE001 — битые/неполные веса
                 raise ProviderError(
                     "LOCAL_MODEL_MISSING", f"Веса модели не поднимаются: {e}",
                     reason="Каталог есть, но модель из него не читается — перекачай: "
                            "python scripts/models.py pull.") from e
-            if where["device"] != "cpu":
+            if where["device"] != "cpu" and "device_map" not in load:
+                # Перенос и выгрузка исключают друг друга: у выгруженного пайплайна `.to()`
+                # ругается сама библиотека. Поэтому здесь ровно одна ветка из трёх.
+                # У методов выгрузки первый позиционный аргумент — `gpu_id`, а не устройство,
+                # поэтому оно передаётся ИМЕНЕМ: позиционно получается 'cuda:cuda'.
+                mover = {
+                    "device": lambda dev: pipe.to(dev),
+                    "model_offload": lambda dev: pipe.enable_model_cpu_offload(device=dev),
+                    "sequential_offload": lambda dev: pipe.enable_sequential_cpu_offload(device=dev),
+                }.get(place["mode"])
+                if mover is None:
+                    raise ProviderError(
+                        "LOCAL_INFERENCE_FAILED",
+                        f"Модель не влезает на '{where['device']}': {place['why']}.",
+                        reason="Объяви в config/providers.yaml → local.gpu.oversize режим выгрузки "
+                               "(model_offload — медленнее в разы, sequential_offload — в десятки, "
+                               "но влезает почти всё) или возьми модель полегче: media_models "
+                               "показывает вердикт по каждой.")
                 try:
-                    pipe.to(where["device"])
+                    mover(where["device"])
                 except Exception as e:                      # noqa: BLE001 — нет устройства/памяти
                     # Молча посчитать на процессоре нельзя: разница во времени — десятки раз, и
                     # тот, кто ждал карту, обязан узнать, что её не дали, вместе с причиной.
                     raise ProviderError(
                         "LOCAL_INFERENCE_FAILED",
-                        f"Модель не переносится на '{where['device']}': {e}",
+                        f"Модель не размещается на '{where['device']}' ({place['mode']}): {e}",
                         reason=f"Проба железа выбрала это устройство ({where['why']}). Посмотри "
                                "media_models → hardware; чтобы считать на процессоре намеренно, "
                                "поставь device=cpu в строке провайдера.") from e
@@ -89,9 +122,13 @@ class DiffusersLocalIMG:
                 "CONTENT_REJECTED", "Пустой промпт рисовать нечем.",
                 reason="Передай описание кадра — повтор пустого запроса даст тот же отказ.")
         params = request.params
+        from ..hardware import placement
+        entry = self.registry.model_entry(params.get("model"))
         where = self._where(params)
+        place = placement(self._gpu_rules, (self.registry.config.get("local") or {}).get("fit") or {},
+                          entry, where)
         pipe = self._pipeline(self.registry.require_model(params.get("model"), must_be_dir=True),
-                              str(params.get("variant") or "").strip(), where)
+                              self._load_kwargs(params, entry), where, place)
         request.target.parent.mkdir(parents=True, exist_ok=True)
         try:
             images = pipe(prompt=request.input, **self._call_kwargs(params)).images
@@ -107,8 +144,9 @@ class DiffusersLocalIMG:
                 f"{request.target.stem}_{i + 1}{request.target.suffix}")
             image.save(target)
             files.append(target)
-        return MediaOutcome(files=files, meta={"engine": "diffusers", "sync": True,
-                                               "call": self._call_kwargs(params), "compute": where})
+        return MediaOutcome(files=files, meta={
+            "engine": "diffusers", "sync": True, "call": self._call_kwargs(params),
+            "compute": {**where, "placement": place}})
 
     def _call_kwargs(self, params: dict) -> dict:
         """Столбцы строки → аргументы вызова. Чего в строке нет — не передаём: пусть решает модель."""
