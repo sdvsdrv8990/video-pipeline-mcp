@@ -12,9 +12,14 @@ core/providers/img/diffusers_local.py — картинка локальной м
 `guidance=0` верно для дистиллированных пошаговых моделей и портит картинку у обычных.
 
 ## Веса — зависимость
-Где лежат веса, знает декларация (`local.catalog`), а не этот файл. Нет весов —
+Где лежат веса, знает реестр по описи поставленного, а не этот файл. Нет весов —
 `LOCAL_MODEL_MISSING`, а не молчаливая попытка скачать из сети: загрузка гигабайтов посреди
 вызова инструмента — не то, чего ждёт клиент.
+
+## Где считается
+Устройство выбирает проба железа (`core/providers/hardware.compute_device`), а перекрыть её может
+столбец `device` строки. Отказ переноса на карту — ошибка, а не тихий откат на процессор: разница
+во времени — десятки раз, и тот, кто ждал карту, обязан узнать, что её не дали.
 """
 
 from pathlib import Path
@@ -31,28 +36,50 @@ class DiffusersLocalIMG:
         self.models_dir = Path(registry.models_dir)
         self._pipelines: dict[str, object] = {}
 
-    def _pipeline(self, model_path: Path, variant: str = ""):
+    def _where(self, params: dict) -> dict:
+        """Где считать: решает проба железа (или столбец строки), а не этот файл."""
+        from ..hardware import compute_device
+        return compute_device((self.registry.config.get("local") or {}).get("gpu") or {},
+                              str(params.get("device") or "").strip())
+
+    def _pipeline(self, model_path: Path, variant: str, where: dict):
         """Пайплайн живёт до конца процесса: его подъём — десятки секунд и гигабайты."""
-        key = f"{model_path}#{variant}"
+        key = f"{model_path}#{variant}#{where['device']}#{where['dtype']}"
         if key not in self._pipelines:
             try:
+                import torch
                 from diffusers import AutoPipelineForText2Image
             except ImportError as e:
                 raise ProviderError(
                     "LOCAL_INFERENCE_FAILED", f"Среда локальной генерации не установлена: {e}",
                     reason="Поставь зависимости группы local (diffusers, transformers) в окружение сервера.") from e
+            dtype = getattr(torch, where["dtype"], None) if where["dtype"] else None
             try:
                 # local_files_only: молча тянуть модель из интернета посреди вызова нельзя.
                 # variant — какие файлы весов лежат в каталоге (fp16/fp32): это свойство
                 # СКАЧАННОГО, поэтому приходит столбцом строки, а не жёстко стоит в коде.
-                self._pipelines[key] = AutoPipelineForText2Image.from_pretrained(
+                pipe = AutoPipelineForText2Image.from_pretrained(
                     str(model_path), local_files_only=True, safety_checker=None,
-                    **({"variant": variant} if variant else {}))
+                    **({"variant": variant} if variant else {}),
+                    **({"torch_dtype": dtype} if dtype else {}))
             except Exception as e:                          # noqa: BLE001 — битые/неполные веса
                 raise ProviderError(
                     "LOCAL_MODEL_MISSING", f"Веса модели не поднимаются: {e}",
                     reason="Каталог есть, но модель из него не читается — перекачай: "
                            "python scripts/models.py pull.") from e
+            if where["device"] != "cpu":
+                try:
+                    pipe.to(where["device"])
+                except Exception as e:                      # noqa: BLE001 — нет устройства/памяти
+                    # Молча посчитать на процессоре нельзя: разница во времени — десятки раз, и
+                    # тот, кто ждал карту, обязан узнать, что её не дали, вместе с причиной.
+                    raise ProviderError(
+                        "LOCAL_INFERENCE_FAILED",
+                        f"Модель не переносится на '{where['device']}': {e}",
+                        reason=f"Проба железа выбрала это устройство ({where['why']}). Посмотри "
+                               "media_models → hardware; чтобы считать на процессоре намеренно, "
+                               "поставь device=cpu в строке провайдера.") from e
+            self._pipelines[key] = pipe
         return self._pipelines[key]
 
     def generate(self, request: MediaRequest) -> MediaOutcome:
@@ -62,8 +89,9 @@ class DiffusersLocalIMG:
                 "CONTENT_REJECTED", "Пустой промпт рисовать нечем.",
                 reason="Передай описание кадра — повтор пустого запроса даст тот же отказ.")
         params = request.params
+        where = self._where(params)
         pipe = self._pipeline(self.registry.require_model(params.get("model"), must_be_dir=True),
-                              str(params.get("variant") or "").strip())
+                              str(params.get("variant") or "").strip(), where)
         request.target.parent.mkdir(parents=True, exist_ok=True)
         try:
             images = pipe(prompt=request.input, **self._call_kwargs(params)).images
@@ -80,7 +108,7 @@ class DiffusersLocalIMG:
             image.save(target)
             files.append(target)
         return MediaOutcome(files=files, meta={"engine": "diffusers", "sync": True,
-                                               "call": self._call_kwargs(params)})
+                                               "call": self._call_kwargs(params), "compute": where})
 
     def _call_kwargs(self, params: dict) -> dict:
         """Столбцы строки → аргументы вызова. Чего в строке нет — не передаём: пусть решает модель."""

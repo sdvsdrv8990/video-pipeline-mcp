@@ -102,6 +102,9 @@ class ModelCatalog:
             out.append({"id": entry.get("id"), "kind": entry.get("kind"), "repo": entry.get("repo"),
                         "path": str(entry.get("path") or entry.get("dest") or ""),
                         "present": bool(files),
+                        # Вариант весов — свойство ТОГО, ЧТО ЛЕЖИТ на диске, и его надо поставить
+                        # в столбец строки: без него модель с файлами fp16 не поднимется вовсе.
+                        "variant": str(entry.get("variant") or ""),
                         "mb": round(sum(f.stat().st_size for f in files) / 1e6, 1),
                         "params_total": int(entry.get("params_total") or 0),
                         "params_by_dtype": dict(entry.get("params_by_dtype") or {}),
@@ -261,31 +264,53 @@ class ModelCatalog:
         """Дописать к строкам вердикт «влезет ли на эту машину»."""
         from .hardware import FitEstimator, probe
 
+        from .hardware import compute_device
+
         hw = hardware or probe(self.models_dir, self.local.get("gpu"))
         est = FitEstimator(self.local.get("fit") or {})
         pool, idle = est.pool(hw), est.idle_gpu(hw)
+        # Вердикт считается в той разрядности, в какой модель поднимут на выбранном устройстве:
+        # веса fp32 на диске занимают вдвое меньше, если грузятся в fp16 (так на карте).
+        gpu_rules = self.local.get("gpu") or {}
+        load = compute_device(gpu_rules, hw=hw)["dtype"]
+        gpu_load = str((gpu_rules.get("dtype") or {}).get("gpu", ""))
         out = []
         for row in rows:
-            need = est.bytes_for(row.get("params_by_dtype") or {}, row.get("params_total") or 0)
+            pbd, ptotal = row.get("params_by_dtype") or {}, row.get("params_total") or 0
+            need = est.bytes_for(pbd, ptotal, as_dtype=load)
             if not need and row.get("mb"):
                 # Число параметров источник не сообщил — тогда мерим тем, что известно: размером
                 # весов на диске. Это грубее, но лучше, чем промолчать про пригодность вовсе.
                 need = int(float(row["mb"]) * 1e6 * est.overhead)
-            fit = est.verdict(need, pool["available_mb"], pool["device"])
+            fit = {**est.verdict(need, pool["available_mb"], pool["device"]), "dtype": load}
             if idle and need:
                 # Карта на машине есть, но её память расчёту недоступна: показываем, что было бы
                 # на ней, и чем это перекрыто, — иначе «no» на ОЗУ выглядит приговором железу.
-                fit["on_gpu"] = {**est.verdict(need, idle["vram_free_mb"], idle["name"]),
-                                 "usable": False, "blocked_by": idle["why"]}
+                need_gpu = est.bytes_for(pbd, ptotal, as_dtype=gpu_load) or need
+                fit["on_gpu"] = {**est.verdict(need_gpu, idle["vram_free_mb"], idle["name"]),
+                                 "dtype": gpu_load, "usable": False, "blocked_by": idle["why"]}
             out.append({**row, "fit": fit})
         return out
 
     # ═══ Установка ═══
 
+    def apply_transfer(self) -> str:
+        """Каким протоколом тянуть веса. Решает декларация, а не переменная окружения снаружи.
+
+        Клиент HF по умолчанию идёт через Xet; на этой сети он давал 0.08–3 МБ/с и подвисал на
+        середине, обычный HTTPS — 9.5 МБ/с на том же файле. Константа читается ЖИВЬЁМ на каждой
+        загрузке, поэтому её достаточно выставить здесь, а не переменной среды при запуске.
+        """
+        from huggingface_hub import constants
+        mode = str((self.local.get("install") or {}).get("transfer") or "https").lower()
+        constants.HF_HUB_DISABLE_XET = mode != "xet"
+        return mode
+
     def install(self, model_id: str, kind: str, progress=lambda _m: None) -> dict:
         """Поставить модель: проверить источник, формат и размер, скачать, записать в опись."""
         src = self.source(kind)
         self.check_repo(src.get("repo") or "huggingface.co")
+        self.apply_transfer()
         how = str(src.get("kind") or "")
         entry = (self._install_piper(model_id, src, progress) if how == "piper_index"
                  else self._install_hf(model_id, src, progress))

@@ -240,6 +240,33 @@ def probe(disk_for: str | Path = ".", gpu_rules: dict | None = None) -> dict:
     }
 
 
+def compute_device(gpu_rules: dict, want: str = "", hw: dict | None = None) -> dict:
+    """Где считать эту модель: устройство и разрядность. Решает железо, а не адаптер.
+
+    Автовыбор — карта, если она есть, её память известна и сборка расчёта до неё дотягивается;
+    иначе процессор. `want` (столбец строки канала) перекрывает автовыбор: оператор может знать
+    про машину то, чего проба не видит — например, что карту уже занял соседний процесс.
+    Имя устройства объявлено у драйвера: у ROCm-сборки оно то же `cuda`, отдельного нет.
+    """
+    rules = gpu_rules or {}
+    dtypes = rules.get("dtype") or {}
+    drivers = rules.get("drivers") or {}
+    asked = str(want or "").strip().lower()
+    if asked and asked != "auto":
+        on_cpu = asked == "cpu"
+        return {"device": asked, "dtype": str(dtypes.get("cpu" if on_cpu else "gpu", "")),
+                "source": "строка канала", "why": f"устройство '{asked}' задано столбцом строки"}
+    hw = probe(".", rules) if hw is None else hw
+    for card in hw.get("gpu") or []:
+        name = str((drivers.get(card.get("driver")) or {}).get("torch_device") or "")
+        if card.get("usable") and card.get("vram_free_mb") and name:
+            return {"device": name, "dtype": str(dtypes.get("gpu", "")), "source": "проба железа",
+                    "why": f"{card['name']}: {card['vram_free_mb']} МБ свободно, {card['why']}"}
+    idle = [c for c in (hw.get("gpu") or []) if not c.get("usable")]
+    return {"device": "cpu", "dtype": str(dtypes.get("cpu", "")), "source": "проба железа",
+            "why": ("считаем на процессоре: " + (idle[0]["why"] if idle else "карты не нашлось"))}
+
+
 class FitEstimator:
     """Влезет ли модель: параметры → память, память → вердикт. Пороги объявлены, не зашиты."""
 
@@ -249,14 +276,21 @@ class FitEstimator:
         self.default_bytes = float(rules.get("default_dtype_bytes", 4))
         self.overhead = float(rules.get("overhead", 1.35))
         self.tight_ratio = float(rules.get("tight_ratio", 0.8))
+        self.aliases = {str(k).lower(): str(v).upper() for k, v in (rules.get("dtype_alias") or {}).items()}
 
-    def bytes_for(self, params_by_dtype: dict, params_total: int = 0) -> int:
+    def bytes_for(self, params_by_dtype: dict, params_total: int = 0, as_dtype: str = "") -> int:
         """Сколько памяти нужно под веса + запас на активации.
 
         Считаем по РАЗРЯДНОСТИ каждого куска весов: одна и та же модель в fp16 весит вдвое
-        меньше, чем в fp32, и вердикт из-за этого меняется на противоположный.
+        меньше, чем в fp32, и вердикт из-за этого меняется на противоположный. `as_dtype` —
+        разрядность, в которой модель РЕАЛЬНО поднимут (её задаёт устройство): веса лежат в
+        fp32, а грузятся в fp16 — считать по диску значило бы завысить вдвое.
         """
-        if params_by_dtype:
+        key = self.aliases.get(str(as_dtype).lower(), "")
+        total = int(params_total or 0) or sum(int(c) for c in (params_by_dtype or {}).values())
+        if key and total:
+            raw = total * self.dtype_bytes.get(key, self.default_bytes)
+        elif params_by_dtype:
             raw = sum(int(count) * self.dtype_bytes.get(str(dtype).upper(), self.default_bytes)
                       for dtype, count in params_by_dtype.items())
         else:

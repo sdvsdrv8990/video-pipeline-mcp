@@ -1,5 +1,11 @@
 # requirements.lock — точные пины (I2). Сгенерировано: pip freeze.
 # Репро-установка: pip install -r requirements.lock . Источник абстрактных deps — pyproject.toml.
+# ⚠️ Здесь БАЗОВАЯ установка: `torch==2.13.0` — это сборка с PyPI (CUDA). Группа `gpu-amd` из
+# pyproject в лок не входит и входить не может — она машинная: тот же номер версии, но сборка под
+# карту (`+rocm7.1`), и один лок не может быть верен и для AMD, и для nvidia. На машине с картой
+# ставь ПОСЛЕ лока:  pip install -e ".[gpu-amd]" --extra-index-url https://download.pytorch.org/whl/rocm7.1
+# Иначе прогон по локу молча вернёт CUDA-сборку, и расчёт уедет на процессор (это будет видно в
+# media_models → hardware и в media_generate → compute, но проверить придётся глазами).
 aiohappyeyeballs==2.7.1
 aiohttp==3.14.3
 aiosignal==1.4.0

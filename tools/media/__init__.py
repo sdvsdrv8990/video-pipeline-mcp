@@ -267,6 +267,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "model": params.get("model", ""), "source": source,
             "files": [v["path"] for v in verified], "verified": verified,
             "on_fallback": decision["exhausted_chain"], "warning": decision["warning"],
+            # Где считалось: карта или процессор. Без этого «медленно» неотличимо от «сломано».
+            "compute": outcome.meta.get("compute") or {},
             "usage": usage, "task": {k: v for k, v in waited.items() if k != "answer"},
         }
         return ToolResult(status="success", data=data, facts=[Fact(type="MediaGenerated", data={

@@ -14,6 +14,11 @@ from pathlib import Path
 import yaml
 
 warnings.simplefilter("error", UserWarning)
+# ...но только на СВОИ предупреждения. Чужие библиотеки предупреждают штатно (ROCm сообщает, что
+# быстрый бэкенд внимания на этой карте экспериментальный), и падать из-за чужой информационной
+# строки значит получить красный тест там, где ничего не сломано.
+for _noisy in ("torch.*", "transformers.*", "diffusers.*", "huggingface_hub.*"):
+    warnings.filterwarnings("default", category=UserWarning, module=_noisy)
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -399,17 +404,32 @@ ok(_IMG(_reg)._call_kwargs({}) == {},
 ok("guidance_scale" in _IMG(_reg)._call_kwargs({"guidance": 0}),
    "guidance=0 — осмысленное значение (пошаговые модели), а не «не задано»")
 
-_img_model = _reg.models_dir / "img" / "sd-turbo"
-if _img_model.is_dir() and any(_img_model.rglob("*.safetensors")):
+# Модель берётся из ОПИСИ, а не зашита в тест: источник локальных моделей один (S23).
+from core.providers.catalog import ModelCatalog as _MCat
+from core.providers.hardware import probe as _probe
+
+_gpu_decl = (yaml.safe_load(CFG.read_text(encoding="utf-8"))["local"] or {}).get("gpu") or {}
+_img_entry = next((e for e in _MCat(CFG, _reg.models_dir).installed()
+                   if e["kind"] == "image" and e["present"]), None)
+if _img_entry:
     (_ws / "i").mkdir()
     (_ws / "i" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
         "I1": {"resource_type": "image_generations", "provider": "Local_diffusers",
                "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
-               "warning_threshold": -1, "model": "sd-turbo", "img_size": "512x512", "img_n": 1,
-               "steps": 1, "variant": "fp16", "usage_unit": "image"}}}}), encoding="utf-8")
+               "warning_threshold": -1, "model": _img_entry["id"], "img_size": "512x512",
+               "img_n": 1, "steps": 1, "variant": _img_entry.get("variant", ""),
+               "usage_unit": "image"}}}}), encoding="utf-8")
     _gi = _call("media_generate", table="i", resource_type="image_generations",
                 input="a lighthouse on a cliff at sunrise", scene_id="scene01", video_slug="demo")
-    ok(_gi.status == "success", f"локальная генерация картинки исполнена ({_gi.error.code if _gi.error else 'ok'})")
+    ok(_gi.status == "success", f"локальная генерация картинки исполнена моделью {_img_entry['id']} "
+                                f"({_gi.error.code + ': ' + _gi.error.message if _gi.error else 'ok'})")
+    _cmp = (_gi.data or {}).get("compute") or {}
+    ok(_cmp.get("device") and _cmp.get("why"),
+       f"в ответе сказано, ГДЕ считалось и почему — иначе «медленно» неотличимо от «сломано» ({_cmp})")
+    _hw_now = _probe(_reg.models_dir, _gpu_decl)
+    ok(_cmp.get("device") != "cpu" or not any(c["usable"] for c in _hw_now["gpu"]),
+       f"на процессоре считаем, ТОЛЬКО если доступной карты нет ({_cmp.get('device')}, "
+       f"карт доступных: {sum(c['usable'] for c in _hw_now['gpu'])})")
     _pi = _ws / _gi.data["files"][0]
     ok(_pi.is_file() and _pi.stat().st_size > 10000,
        f"картинка на диске и не пустая ({_pi.stat().st_size if _pi.is_file() else 0} байт)")
@@ -1027,12 +1047,29 @@ ok(_est.idle_gpu(_amd)["vram_free_mb"] == 15000 and not _est.idle_gpu(_ok_gpu),
 ok("карта" in _est.verdict(1_000_000_000, 15000, "карта")["why"],
    "в вердикте названо, ПО КАКОЙ памяти он посчитан")
 
+from core.providers.hardware import compute_device
+
+_live = compute_device(_gpu_rules, hw=_ok_gpu | {"gpu": [{**_ok_gpu["gpu"][0], "driver": "amdgpu"}]})
+ok(_live["device"] == "cuda" and _live["dtype"] == "float16",
+   f"карта доступна → считаем на ней и в объявленной разрядности ({_live})")
+ok(compute_device(_gpu_rules, hw=_amd)["device"] == "cpu"
+   and "сборка" in compute_device(_gpu_rules, hw=_amd)["why"],
+   "карта недоступна → процессор, и названа причина, а не молчание")
+ok(compute_device(_gpu_rules, want="cpu", hw=_ok_gpu)["device"] == "cpu"
+   and compute_device(_gpu_rules, want="cpu", hw=_ok_gpu)["source"] == "строка канала",
+   "столбец строки перекрывает пробу: оператор знает про машину то, чего проба не видит")
+ok(compute_device({}, hw=_ok_gpu)["device"] == "cpu",
+   "драйвер не объявлен в декларации → процессор, а не угаданное имя устройства")
+
 _gpu_rows = ModelCatalog(CFG, ROOT / "vendor" / "models").with_fit(
     [{"id": "тяжёлая", "params_by_dtype": {"F32": 3_700_000_000}}], _amd)
-ok(_gpu_rows[0]["fit"]["verdict"] == "fits" and _gpu_rows[0]["fit"]["on_gpu"]["verdict"] == "no"
-   and _gpu_rows[0]["fit"]["on_gpu"]["blocked_by"],
-   "строка каталога несёт оба числа: что на ОЗУ и что было бы на карте — с причиной "
-   f"({_gpu_rows[0]['fit']['verdict']} / {_gpu_rows[0]['fit']['on_gpu']['verdict']})")
+_f = _gpu_rows[0]["fit"]
+ok(_f["device"] == "ОЗУ" and _f["on_gpu"]["available_mb"] == 15000 and _f["on_gpu"]["blocked_by"],
+   f"строка каталога несёт оба числа: что на ОЗУ и что было бы на карте — с причиной ({_f})")
+ok(_f["dtype"] == "float32" and _f["on_gpu"]["dtype"] == "float16"
+   and _f["on_gpu"]["need_mb"] * 2 == _f["need_mb"],
+   "память считается в той разрядности, в какой модель ПОДНИМУТ: на карте fp16 — ровно вдвое "
+   f"меньше, чем fp32 на процессоре ({_f['need_mb']} → {_f['on_gpu']['need_mb']} МБ)")
 
 _mc = ModelCatalog(CFG, ROOT / "vendor" / "models")
 _fit_rows = _mc.with_fit([{"id": "тяжёлая", "params_by_dtype": {"F32": 20_000_000_000},
@@ -1048,6 +1085,19 @@ ok("catalog" not in _cfg_local,
    "каталога-декларации в конфиге нет: локальные модели приходят одним путём")
 ok(_mc.entries() == _mc.inventory(),
    "что знает сервер о локальных моделях = опись поставленного, второго списка нет")
+
+from huggingface_hub import constants as _hfc
+
+ok(_mc.apply_transfer() == "https" and _hfc.HF_HUB_DISABLE_XET,
+   "протокол загрузки весов берётся из декларации: объявлен https → Xet выключен")
+_xet_cfg = _ws.parent / "providers_xet.yaml"
+_xet_data = yaml.safe_load(CFG.read_text(encoding="utf-8"))
+_xet_data["local"]["install"]["transfer"] = "xet"
+_xet_cfg.write_text(yaml.safe_dump(_xet_data, allow_unicode=True), encoding="utf-8")
+ok(ModelCatalog(_xet_cfg, ROOT / "vendor" / "models").apply_transfer() == "xet"
+   and not _hfc.HF_HUB_DISABLE_XET,
+   "поменяли декларацию — поменялся протокол: значение не зашито в код и не берётся из среды")
+_mc.apply_transfer()        # вернуть как объявлено в проекте
 
 _inst_tool = _call("media_models", scope="installed")
 ok(_inst_tool.data["hardware"]["ram_available_mb"] > 0,

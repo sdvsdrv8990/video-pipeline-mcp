@@ -72,6 +72,18 @@ local = [
     "accelerate>=1.0",
     "safetensors>=0.5",
 ]
+# Расчёт на видеокарте AMD. Пин ЛОКАЛЬНОЙ версии (`+rocm7.1`) — не придирчивость: колесо с PyPI
+# собрано под CUDA и на amdgpu карту не увидит, а номер версии у них одинаковый. Только пин
+# отличает одно от другого, и он же не даёт обычному `pip install -e .` молча вернуть CUDA-сборку.
+# Индекс объявлен ниже в [tool.pip] и передаётся ключом --extra-index-url: PEP 508 адрес индекса
+# внутри зависимости выразить не умеет. Системный ROCm НЕ нужен — библиотеки лежат внутри колеса,
+# нужен лишь драйвер ядра amdgpu и доступ к /dev/kfd.
+#   .venv/bin/pip install -e ".[local,gpu-amd]" --extra-index-url https://download.pytorch.org/whl/rocm7.1
+# Карта другого вендора — своя группа с тем же смыслом (nvidia: `+cu…` с индекса cuXXX).
+gpu-amd = [
+    "torch==2.13.0+rocm7.1",
+    "torchaudio==2.11.0+rocm7.1",
+]
 
 [project.scripts]
 video-pipeline-mcp = "server:main"
