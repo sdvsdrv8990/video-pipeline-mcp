@@ -7,7 +7,7 @@
 
 | Слой | Что покрывает | Инструмент | Статус |
 |---|---|---|---|
-| **Unit (in-process)** | контракты, engine, reactions, ids, tables/excel логика | pytest / скрипты | ✅ частично (`tests/quick/*`) но **tests/ в .gitignore** (F12) |
+| **Unit (in-process)** | контракты, engine, reactions, ids, tables/excel логика | pytest (канонический раннер, T0) | ✅ `tests/quick/*` в git (31 файл, F12 закрыт), гейт в CI, покрытие 61% с ratchet-порогом |
 | **Contract** | каждый инструмент возвращает `ToolResult`; ошибка = `ErrorDetail` с кодом из реестра; parity-gap G14/D30 (facts/status не теряются на MCP-границе) | pytest + asserts | 🟠 частично |
 | **Симуляции (adversarial)** | `virus_injection`, `cache_injection`, `cache_overflow`, `bot_army` против `core/firewall` | скрипты-симуляторы | 🟠 замысел в скиле, покрытие не подтверждено (F18) |
 | **Регрессия D#** | каждый закрытый дефект = тест, который краснеет при откате (D1,D2,D4,D5,D6,D8,D9,D13 — есть в `test_audit_fixes`) | pytest | ✅ есть, расширять |

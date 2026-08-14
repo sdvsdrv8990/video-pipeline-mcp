@@ -48,7 +48,7 @@
 | 1 | **I4** линт/типы | R-DECL2/3 | `ruff`+`mypy`+`pre-commit` (конфиг под стиль) — закрывает static F38/F44/F45/F10 | DIM-13/14 | ✅ |
 | 2 | **I3** CI | R-TEST | GitHub Actions matrix: ruff+mypy+pytest+`bandit`+`gitleaks`+`pip-audit`; firewall/tunnel=integration→skip | DIM-6/8 | ✅ (гейт под C-тесты) |
 | 3 | **A2** распил монолита | R-ARCH1 | layout `github/github-mcp-server` (структура групп `tools/<g>/`) — паттерн, не копия | DIM-13/15 | ✅ |
-| 4 | **A3** ops-слой | R-ARCH2 | декларативные tool-манифесты MCP SDK → `config/ops/*.yaml` заменяет inline спек-списки | DIM-14 | ✅ |
+| 4 | ~~**A3** ops-слой~~ ❌ снят S22 | R-ARCH2 | ops-реестр упразднён как слой; декларативность держат `config/providers.yaml` / `server_reactions.yaml` / `firewall.yaml` / `config/templates/` | DIM-14 | ❌ |
 | 5 | **A6** ядро реакций | R-CONTRACT1/2 | НЕТ внешнего (наш `server_reactions.yaml`); паттерн «errors-as-data» + MCP error-handling — все пути через `get_error` | DIM-10 | ✅ (закрывает F43/F5/F40) |
 | 6 | **A5** харден search | R-DECL1 | `rapidfuzz`/`rank-bm25` для relevance (F31); фикс F38–F42 — наш код | DIM-6 | ✅ |
 | 7 | **A-tables** формулы | R-PROD2 | `formulas`/`pycel` (реальный пересчёт → убить театр F29) + `table_materializer` (loader F30) | DIM-12 | ✅ (ядро продукта) |
