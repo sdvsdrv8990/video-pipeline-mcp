@@ -80,7 +80,11 @@ adapters:
     # Платные «файл → файл»: адаптер один на всех, чем они отличаются — ниже, в online.http.
     RemoveBg: {adapter: img.http_image:HttpImageAPI, requires_key: true}
     Bria: {adapter: img.http_image:HttpImageAPI, requires_key: true}
-    FalUpscale: {adapter: img.http_image:HttpImageAPI, requires_key: true}
+    Replicate: {adapter: img.http_image:HttpImageAPI, requires_key: true}
+    # У `Fal` два ремесла: картинку он рисует (стаб выше), а фон и апскейл исполняет очередью.
+    # Пара «провайдер:вид ресурса» точнее одного имени и ищется первой — для этого она и есть.
+    Fal:bg_removals: {adapter: img.http_image:HttpImageAPI, requires_key: true}
+    Fal:upscales: {adapter: img.http_image:HttpImageAPI, requires_key: true}
 
 # ═══ Онлайн-модели: спросить самого провайдера ═══
 # Реестр шлюза знает то, что знал на день своей сборки, — новая модель появляется у провайдера
@@ -123,16 +127,42 @@ online:
       response: json                # в ответе ссылка; она скачивается правилами media_tasks.yaml
       send: {}
       kinds: [bg_removals]
-    # Не всякий провайдер принимает multipart: этот ждёт данные в JSON и отвечает ссылкой.
-    FalUpscale:
-      url: https://fal.run/fal-ai/clarity-upscaler
+    # ═══ Агрегаторы: один ключ — сотни моделей ═══
+    # Прямой API дешевле, но знает одну модель. Агрегатор берёт наценку и даёт выбор: bria,
+    # birefnet, rembg, real-esrgan, clarity-upscaler — сменой столбца `model` строки канала.
+    # Оба отвечают ЗАДАЧЕЙ, а не файлом: адрес статуса они сообщают сами, дальше работает общий
+    # цикл ожидания (`config/media_tasks.yaml`) — тот же, что у любого асинхронного провайдера.
+    # Коды повтора — те же, на которых повторяют их собственные официальные клиенты.
+    Replicate:
+      url: https://api.replicate.com/v1/predictions
+      auth: bearer
+      send_mode: json_base64
+      max_inline_mb: 10
+      file_field: input.image       # у него параметры вызова вложены в `input`
+      send: {version: model, input.scale: scale}
+      response: task
+      task_field: id
+      status_url_field: urls.get    # адрес прозвонки приходит в ответе, а не строится нами
+      result_path: output[0]
+      retry_on: [429, 503, 504]
+      kinds: [bg_removals, upscales]
+    Fal:
+      # Имя модели из строки канала подставляется в адрес; после подстановки он проверяется
+      # заново — хост обязан остаться объявленным (строку канала правит ИИ).
+      url: https://queue.fal.run/{model}
       auth: header:Authorization
       auth_prefix: "Key "
+      send_mode: json_base64
+      max_inline_mb: 10
       file_field: image_url
-      send_mode: json_base64        # провайдер принимает не multipart, а ссылку/данные в JSON
-      response: json
-      send: {scale: scale, prompt: input}
-      kinds: [upscales]
+      send: {}
+      response: task
+      task_field: request_id
+      status_url_field: status_url
+      result_url_field: response_url  # у очереди результат лежит отдельным адресом от статуса
+      result_path: image.url
+      retry_on: [429, 503, 504]
+      kinds: [bg_removals, upscales]
 
   # Чем отличить картиночную модель от прочих в СЫРОМ списке провайдера: он отдаёт всё подряд.
   # Правило — по имени, потому что режима вызова в его ответе нет. Новая линейка = строка здесь.

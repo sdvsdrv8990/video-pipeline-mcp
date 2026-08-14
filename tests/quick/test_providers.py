@@ -1231,7 +1231,7 @@ else:
 
 # Платный онлайн: ключ — свойство провайдера, объявленное сервером, а не решение данных канала.
 _http12 = _reg.load("RemoveBg", "bg_removals")
-ok(_reg.requires_key("RemoveBg", "bg_removals") and _reg.requires_key("FalUpscale", "upscales"),
+ok(_reg.requires_key("RemoveBg", "bg_removals") and _reg.requires_key("Fal", "upscales"),
    "платным «файл → файл» ключ объявлен обязательным на стороне сервера")
 try:
     _http12.generate(MediaRequest(input="pic/frame.png", params={}, target=_ws / "x.png",
@@ -1247,6 +1247,159 @@ try:
 except ProviderError as _e13:
     ok(_e13.code == "PROVIDER_ADAPTER_MISSING",
        f"необъявленного провайдера сервер не вызывает ({_e13.code})")
+
+print("== 13. Платные агрегаторы: стенд по их контракту (ключей нет — есть их API-контракт) ==")
+# Живой платный вызов упирается в аккаунт, а не в код, поэтому проверяется НАШ путь против
+# стенда, отвечающего ровно так, как описано у самих провайдеров (эндпоинты, поля и статусы взяты
+# из официального клиента Replicate и fal_client). Мок здесь законен: это истинно внешний сервис.
+import httpx as _httpx                                       # noqa: E402
+
+_seen = {"requests": [], "polls": 0}
+_PNG = (_ws / "pic" / "frame.png").read_bytes()
+
+
+class _Resp:
+    def __init__(self, status=200, data=None, content=b"", headers=None):
+        self.status_code, self._data = status, data
+        self.content, self.headers = content, headers or {}
+
+    def json(self):
+        if self._data is None:
+            raise ValueError("не JSON")
+        return self._data
+
+    @property
+    def text(self):
+        return _json.dumps(self._data or {})
+
+
+class _Stream:
+    def __init__(self, payload): self.status_code, self._payload = 200, payload
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def iter_bytes(self, size=0): yield self._payload
+
+
+_real = {"request": _httpx.request, "get": _httpx.get, "stream": _httpx.stream}
+
+
+def _stand_request(method, url, **kw):
+    _seen["requests"].append({"method": method, "url": url, "headers": kw.get("headers") or {},
+                              "json": kw.get("json"), "files": kw.get("files")})
+    if "replicate.com" in url:
+        return _Resp(201, {"id": "pred1", "status": "starting",
+                           "urls": {"get": "https://api.replicate.com/v1/predictions/pred1"}})
+    if "queue.fal.run" in url:
+        return _Resp(200, {"request_id": "req1",
+                           "status_url": "https://queue.fal.run/req1/status",
+                           "response_url": "https://queue.fal.run/req1"})
+    return _Resp(404, {"detail": "нет такого"})
+
+
+def _stand_get(url, **kw):
+    if url.endswith("/status"):
+        return _Resp(200, {"status": "COMPLETED"})
+    if "predictions/pred1" in url:
+        _seen["polls"] += 1
+        return _Resp(200, {"status": "processing"} if _seen["polls"] < 2 else
+                     {"status": "succeeded", "output": ["https://replicate.delivery/out.png"]})
+    return _Resp(200, {"image": {"url": "https://fal.media/out.png"}})
+
+
+_httpx.request, _httpx.get, _httpx.stream = (
+    _stand_request, _stand_get, lambda m, u, **kw: _Stream(_PNG))
+try:
+    _rows13 = {"resource_type": "upscales", "provider": "Replicate", "fallback_provider": "",
+               "daily_limit": 100, "current_usage": 0, "warning_threshold": -1,
+               "model": "owner/real-esrgan:abc123", "scale": 2, "response_format": "png",
+               "retry_count": 1, "retry_delay": 0, "usage_unit": "image"}
+    (_ws / "pic" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+        "R13": _rows13}}}), encoding="utf-8")
+    _ad13 = _reg.load("Replicate", "upscales")
+    _out13 = _ad13.generate(MediaRequest(input="pic/frame.png", params=_rows13,
+                                         target=_ws / "up13.png", models_dir=_reg.models_dir,
+                                         source=_ws / "pic" / "frame.png", api_key="secret-key",
+                                         provider="Replicate"))
+    _req13 = _seen["requests"][-1]
+    ok(_out13.task_id == "pred1" and not _out13.meta["sync"],
+       f"ответ-задача разобран: id и адрес прозвонки взяты из ответа ({_out13.task_id})")
+    ok(_req13["headers"].get("Authorization") == "Bearer secret-key",
+       "ключ уходит в объявленной форме заголовка")
+    ok(_req13["json"]["version"] == "owner/real-esrgan:abc123"
+       and str(_req13["json"]["input"]["image"]).startswith("data:image/png;base64,")
+       and _req13["json"]["input"]["scale"] == 2,
+       "тело собрано по контракту провайдера: вложенный input, файл как data-URI, поля из строки")
+
+    _cycle13 = TaskCycle(ROOT / "config" / "media_tasks.yaml", sleep=lambda _s: None)
+    _waited13 = _cycle13.wait(_ad13.poll, _out13.task_id)
+    ok(_waited13["outcome"] == "done" and _waited13["attempts"] == 2,
+       f"промежуточный статус не выдан за успех — ждали до конца ({_waited13['attempts']} опроса)")
+    _got13 = _ad13.fetch(_waited13["answer"], _ws / "up13.png")
+    ok(_got13.read_bytes() == _PNG,
+       "результат достан по объявленному пути output[0] и скачан общими правилами загрузки")
+
+    # Очередь fal: статус говорит лишь «готово», результат лежит отдельным адресом.
+    _ad13f = _reg.load("Fal", "upscales")
+    _outf = _ad13f.generate(MediaRequest(input="pic/frame.png",
+                                         params={"model": "fal-ai/clarity-upscaler"},
+                                         target=_ws / "up13f.png", models_dir=_reg.models_dir,
+                                         source=_ws / "pic" / "frame.png", api_key="k",
+                                         provider="Fal", ))
+    ok(_seen["requests"][-1]["url"] == "https://queue.fal.run/fal-ai/clarity-upscaler",
+       f"модель из строки канала подставлена в адрес ({_seen['requests'][-1]['url']})")
+    ok(_seen["requests"][-1]["headers"].get("Authorization") == "Key k",
+       "у fal своя форма ключа — и она объявлена, а не зашита")
+    ok(_ad13f.fetch(_ad13f.poll(_outf.task_id), _ws / "up13f.png").read_bytes() == _PNG,
+       "результат очереди забран вторым адресом (response_url), а не из статуса")
+
+    # Повтор: перегрузку повторяем, отказ по ключу — нет (иначе жжём платный лимит).
+    _tries = {"n": 0}
+
+    def _flaky(method, url, **kw):
+        _tries["n"] += 1
+        return _Resp(429, {"detail": "rate limited"}, headers={"Retry-After": "0"}) if _tries["n"] == 1 \
+            else _stand_request(method, url, **kw)
+
+    _httpx.request = _flaky
+    _ad13r = _reg.load("Replicate", "upscales")
+    _ad13r.generate(MediaRequest(input="pic/frame.png", params={**_rows13, "retry_count": 2},
+                                 target=_ws / "up13r.png", models_dir=_reg.models_dir,
+                                 source=_ws / "pic" / "frame.png", api_key="k", provider="Replicate"))
+    ok(_tries["n"] == 2, f"перегрузка (429) повторена по столбцу retry_count строки канала ({_tries['n']})")
+
+    _httpx.request = lambda method, url, **kw: _Resp(401, {"detail": "bad token"})
+    _calls401 = {"n": 0}
+
+    def _count401(method, url, **kw):
+        _calls401["n"] += 1
+        return _Resp(401, {"detail": "bad token"})
+
+    _httpx.request = _count401
+    try:
+        _reg.load("Replicate", "upscales").generate(MediaRequest(
+            input="pic/frame.png", params={**_rows13, "retry_count": 3}, target=_ws / "x.png",
+            models_dir=_reg.models_dir, source=_ws / "pic" / "frame.png", api_key="bad",
+            provider="Replicate"))
+        ok(False, "неверный ключ обязан отказать")
+    except ProviderError as _e401:
+        ok(_e401.code == "AUTH_FAILED" and _calls401["n"] == 1,
+           f"отказ по ключу не повторяется — платный лимит не жжём ({_e401.code}, попыток {_calls401['n']})")
+finally:
+    _httpx.request, _httpx.get, _httpx.stream = _real["request"], _real["get"], _real["stream"]
+
+# Предел встроенной отправки: base64 раздувает файл, и большой кадр так не уедет.
+_big = _ws / "pic" / "big.png"
+_PILImage.new("RGB", (2000, 2000), "#808080").save(_big)
+_decl13 = yaml.safe_load(CFG.read_text(encoding="utf-8"))["online"]["http"]["Replicate"]
+ok(float(_decl13.get("max_inline_mb") or 0) > 0, "у встроенной отправки объявлен предел размера")
+try:
+    _reg.load("Replicate", "upscales")._body(
+        {**_decl13, "max_inline_mb": 0.001},
+        MediaRequest(input="x", params={}, target=_ws / "x.png", models_dir=_reg.models_dir,
+                     source=_big, api_key="k", provider="Replicate"))
+    ok(False, "файл сверх предела обязан отказать до отправки")
+except ProviderError as _ebig:
+    ok(_ebig.code == "CONTENT_REJECTED", f"файл сверх предела отклонён до сети ({_ebig.code})")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

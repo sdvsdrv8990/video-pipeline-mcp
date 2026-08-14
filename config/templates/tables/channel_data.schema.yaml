@@ -513,18 +513,20 @@ sheets:
         retry_delay: 0
         sync_mode: true
         usage_unit: call
+      # Агрегатор: модель выбирается столбцом model — им же меняется и сам движок увеличения.
       - resource_type: upscales
-        provider: FalUpscale
+        provider: Fal
         fallback_provider: ''
         daily_limit: 100
         current_usage: 0
         warning_threshold: 80
+        model: fal-ai/clarity-upscaler
         scale: 2
         response_format: png
         timeout: 300
-        retry_count: 1
-        retry_delay: 10
-        sync_mode: true
+        retry_count: 2
+        retry_delay: 5
+        sync_mode: false
         usage_unit: image
 
   - name: METADATA_DEFAULTS
