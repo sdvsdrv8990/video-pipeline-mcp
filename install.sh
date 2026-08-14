@@ -63,6 +63,18 @@ else
     fi
 fi
 
+# 8. Локальный инференс картинок (удаление фона, апскейл) — граф ONNX
+# Веса сюда НЕ тянутся: какую модель ставить, решает владелец из живого каталога, а не этот файл.
+echo "Проверка onnxruntime (удаление фона, апскейл)..."
+if python3 -c "import onnxruntime" 2>/dev/null; then
+    echo "onnxruntime OK — модели ставятся отдельно:"
+    echo "  python scripts/models.py local --kind bg_removal   # что доступно (с описанием)"
+    echo "  python scripts/models.py install <id> --kind bg_removal"
+    echo "  то же для --kind upscale; из Claude — media_models / media_model_install"
+else
+    echo "ВНИМАНИЕ: onnxruntime не поднялся — удаление фона и апскейл откажут честно (LOCAL_INFERENCE_FAILED)"
+fi
+
 echo ""
 echo "=== Установка завершена ==="
 echo "Для запуска сервера + туннеля одной командой: ./run.sh"

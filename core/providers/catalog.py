@@ -113,7 +113,22 @@ class ModelCatalog:
 
     # ═══ Что доступно (живые каталоги) ═══
 
-    def available(self, kind: str, limit: int = 20, **overrides) -> list[dict]:
+    @property
+    def cache_dir(self) -> Path:
+        """Куда складывает загрузчик. Внутри каталога весов, а не в домашнем каталоге.
+
+        Иначе одни и те же гигабайты лежат дважды — в кэше и здесь, — и «сколько весит проект»
+        не имеет одного ответа.
+        """
+        return self.models_dir / str(self.local.get("cache_dir") or ".cache")
+
+    @property
+    def _hf(self) -> dict:
+        """Общее для всех вызовов загрузчика: куда класть скачанное."""
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        return {"cache_dir": str(self.cache_dir)}
+
+    def available(self, kind: str, limit: int = 20, describe: bool = False, **overrides) -> list[dict]:
         """Свежий список моделей вида `kind` по объявленным фильтрам."""
         src = self.source(kind)
         filters = {**(src.get("filters") or {}), **{k: v for k, v in overrides.items() if v not in (None, "")}}
@@ -121,7 +136,7 @@ class ModelCatalog:
         if how == "piper_index":
             return self._from_piper(src, filters, limit)
         if how == "hf_hub":
-            return self._from_hf(src, filters, limit)
+            return self._from_hf(src, filters, limit, kind, describe)
         raise ProviderError(
             "SCHEMA_INVALID", f"Неизвестный вид каталога: '{how}'.",
             reason="Поддерживаются piper_index и hf_hub — как читать каталог, это код, "
@@ -131,7 +146,7 @@ class ModelCatalog:
         """Индекс голосов piper: одна запись = голос со своими файлами и размерами."""
         from huggingface_hub import hf_hub_download
 
-        path = hf_hub_download(src["repo"], src.get("index", "voices.json"))
+        path = hf_hub_download(src["repo"], src.get("index", "voices.json"), **self._hf)
         index = json.loads(Path(path).read_text(encoding="utf-8"))
         language = str(filters.get("language") or "")
         max_mb = float(filters.get("max_mb") or 0)
@@ -150,19 +165,27 @@ class ModelCatalog:
         rows.sort(key=lambda r: (r["language"], r["id"]))
         return rows[:limit] if limit else rows          # limit=0 — «без ограничения», а не «ничего»
 
-    def _from_hf(self, src: dict, filters: dict, limit: int) -> list[dict]:
+    def _from_hf(self, src: dict, filters: dict, limit: int, kind: str,
+                 describe: bool = False) -> list[dict]:
         """Каталог Hugging Face по задаче: отбираем живое, открытое и влезающее на эту машину."""
         from huggingface_hub import HfApi
 
         api = HfApi()
+        # Задача задаётся либо pipeline_tag, либо тегами. У фона и апскейла pipeline_tag общий с
+        # чужими задачами (сегментация одежды, img2img-диффузия), и один он отбирает не то.
+        tags = [str(t) for t in (src.get("tags") or [])]
+        if src.get("library"):
+            tags.append(str(src["library"]))
         # expand отдаёт число параметров ВМЕСТЕ со списком: иначе пришлось бы делать
         # по запросу на модель, а без параметров вопрос «влезет ли» не решается.
-        kwargs = {"pipeline_tag": src.get("pipeline_tag"), "sort": "downloads",
-                  "limit": max(limit * 4, 40),
+        kwargs = {"sort": "downloads", "limit": max(limit * 4, 40),
                   "expand": ["safetensors", "downloads", "gated", "tags"]}
-        if src.get("library"):
-            kwargs["filter"] = src["library"]
+        if src.get("pipeline_tag"):
+            kwargs["pipeline_tag"] = src["pipeline_tag"]
+        if tags:
+            kwargs["filter"] = tags
         min_downloads = int(filters.get("min_downloads") or 0)
+        want = [str(f).lower() for f in (src.get("require_formats") or [])]
         rows = []
         for model in api.list_models(**kwargs):
             downloads = int(model.downloads or 0)
@@ -172,7 +195,7 @@ class ModelCatalog:
                 continue
             st = getattr(model, "safetensors", None)
             by_dtype = dict(getattr(st, "parameters", None) or {})
-            rows.append({"id": model.id, "kind": "image", "repo": model.id,
+            rows.append({"id": model.id, "kind": kind, "repo": model.id,
                          "downloads": downloads, "likes": int(model.likes or 0),
                          "gated": bool(model.gated), "mb": None,
                          "params_total": int(getattr(st, "total", 0) or 0),
@@ -182,9 +205,105 @@ class ModelCatalog:
                          "params_active": self._active_params(model),
                          "license": (model.tags or []) and next(
                              (t.split(":", 1)[1] for t in model.tags if t.startswith("license:")), "")})
-            if len(rows) >= limit:
+            # Требование формата и описание доспрашиваются по модели, и часть кандидатов отпадёт,
+            # поэтому берём с запасом: обрезка до limit — уже после отсева.
+            if len(rows) >= (limit * 2 if (want or describe) else limit):
                 break
-        return rows
+        if want or describe:
+            rows = self._enrich(rows, want, describe, float(filters.get("max_mb") or 0),
+                                float(filters.get("min_mb") or 0))
+        return rows[:limit] if limit else rows
+
+    def _enrich(self, rows: list[dict], want: list[str], describe: bool,
+                max_mb: float = 0, min_mb: float = 0) -> list[dict]:
+        """Дописать то, чего в списке нет: какой файл ляжет, сколько весит и что модель делает."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        workers = int((self.local.get("describe") or {}).get("workers") or 8)
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            details = list(pool.map(lambda r: self._detail(r["id"], want, describe), rows))
+        out = []
+        for row, detail in zip(rows, details):
+            if want and not detail.get("file"):
+                # Нужного формата в репозитории нет — установщик обязан её отклонить, значит
+                # и предлагать её нельзя: список из того, что поставить НЕЛЬЗЯ, — обман.
+                continue
+            # Пустое поле карточки не затирает уже известное: лицензия ONNX-порта живёт в тегах,
+            # а его card_data пуста — иначе найденное терялось бы по дороге.
+            row = {**row, **{k: v for k, v in detail.items() if v not in (None, "")}}
+            if max_mb and (row.get("mb") or 0) > max_mb:
+                continue
+            if min_mb and (row.get("mb") or 0) < min_mb:
+                # Файл нужного формата нашёлся, но он посторонний: у LoRA-репозиториев рядом
+                # лежит чужой детектор лиц на сотню килобайт, и по нему модель попадала в список.
+                continue
+            out.append(row)
+        return out
+
+    def _detail(self, model_id: str, want: list[str], describe: bool) -> dict:
+        """Файлы модели, их размеры и описание — список моделей этого не отдаёт."""
+        from huggingface_hub import model_info
+
+        try:
+            info = model_info(model_id, files_metadata=True)
+        except Exception as e:                              # noqa: BLE001 — сеть/закрытый репозиторий
+            # Не знаем — так и говорим: молча выкинуть модель значило бы соврать, что её нет.
+            return {"detail_error": str(e)[:120]}
+        sizes = {s.rfilename: int(s.size or 0) for s in (info.siblings or [])}
+        names = [n for n in sizes if not want or n.lower().endswith(tuple(want))]
+        keep, _ = self.allowed_files(names)
+        chosen = self.prefer(keep) or (keep[0] if keep else "")
+        card = info.card_data.to_dict() if getattr(info, "card_data", None) else {}
+        base = card.get("base_model")
+        base = str(base[0]) if isinstance(base, list) and base else str(base or "")
+        out = {"file": chosen, "base_model": base,
+               "mb": round(sizes.get(chosen, 0) / 1e6, 1) if chosen else None,
+               "license": str(card.get("license") or "")}
+        if describe:
+            out["description"] = self.describe_model(model_id, base)
+        return out
+
+    def describe_model(self, repo: str, base: str = "") -> str:
+        """Что модель делает, словами её автора. У ONNX-порта карточка вырождена — тогда базовая."""
+        rules = self.local.get("describe") or {}
+        text = self._prose(repo, rules)
+        markers = [str(m).lower() for m in (rules.get("port_markers") or [])]
+        if base and (not text or any(m in text.lower() for m in markers)):
+            text = self._prose(base, rules) or text
+        return text
+
+    PROSE_SKIP = ("#", "!", "<", "|", "-", "*", ">", "[", "`", "=")
+
+    def _prose(self, repo: str, rules: dict) -> str:
+        """Первый связный абзац карточки: заголовки, картинки, таблицы и код описанием не считаем."""
+        from huggingface_hub import hf_hub_download
+
+        try:
+            path = hf_hub_download(repo, str(rules.get("from") or "README.md"), **self._hf)
+            text = Path(path).read_text(encoding="utf-8")
+        except Exception:                                   # noqa: BLE001 — карточки может не быть
+            return ""
+        text = re.sub(r"^---.*?---", "", text, flags=re.S)  # фронт-маттер — не проза
+        limit = int(rules.get("max_chars") or 240)
+        picked: list[str] = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith(self.PROSE_SKIP):
+                continue
+            picked.append(line)
+            if sum(len(p) for p in picked) >= limit:
+                break
+        return " ".join(picked)[:limit]
+
+    def prefer(self, names: list[str]) -> str:
+        """Какой из равнозначных файлов берём (один граф в разных разрядностях) — по декларации."""
+        from fnmatch import fnmatch
+
+        for pattern in (self.install_rules.get("prefer_files") or []):
+            for name in names:
+                if fnmatch(name, str(pattern)):
+                    return name
+        return ""
 
     ACTIVE_FIELDS = ("num_activated_params", "activated_params", "active_params",
                      "num_active_params")
@@ -319,7 +438,7 @@ class ModelCatalog:
         self.apply_transfer()
         how = str(src.get("kind") or "")
         entry = (self._install_piper(model_id, src, progress) if how == "piper_index"
-                 else self._install_hf(model_id, src, progress))
+                 else self._install_hf(model_id, src, progress, kind))
         self._remember(entry)
         return entry
 
@@ -341,23 +460,25 @@ class ModelCatalog:
         import shutil
         for remote in keep:
             progress(f"тяну {Path(remote).name}")
-            got = hf_hub_download(src["repo"], remote)
+            got = hf_hub_download(src["repo"], remote, **self._hf)
             shutil.copyfile(got, target_dir / Path(remote).name)
         model_file = next((f for f in keep if f.endswith(".onnx")), keep[0] if keep else "")
         return {"id": model_id, "kind": "tts", "repo": src["repo"],
                 "path": str(dest / Path(model_file).name), "mb": voice["mb"], "refused": refused}
 
-    def _install_hf(self, model_id: str, src: dict, progress) -> dict:
+    def _install_hf(self, model_id: str, src: dict, progress, kind: str = "image") -> dict:
         from huggingface_hub import model_info, snapshot_download
 
         info = model_info(model_id, files_metadata=True)
         if getattr(info, "gated", False):
             raise ProviderError(
                 "LOCAL_MODEL_MISSING", f"Модель '{model_id}' закрыта (gated) — нужен доступ автора.",
-                reason="Выбери открытую модель: python scripts/models.py local --kind image.")
+                reason=f"Выбери открытую модель: python scripts/models.py local --kind {kind}.")
         names = [s.rfilename for s in (info.siblings or [])]
         keep, refused = self.allowed_files(names)
         sizes = {s.rfilename: (s.size or 0) for s in (info.siblings or [])}
+        if src.get("require_formats"):
+            return self._install_single(model_id, src, progress, kind, keep, refused, sizes)
         # Половинная точность и полная — одни и те же веса; берём одну, иначе диск съедается вдвое.
         variant = [n for n in keep if ".fp16." in n]
         chosen = variant + [n for n in keep if not n.endswith(".safetensors")] if variant else keep
@@ -366,9 +487,9 @@ class ModelCatalog:
         dest = Path(str(src.get("dest") or "img")) / model_id.split("/")[-1]
         progress(f"тяну {len(chosen)} файлов, ~{round(total_mb)} МБ")
         snapshot_download(repo_id=model_id, local_dir=str(self.models_dir / dest),
-                          allow_patterns=chosen or None)
+                          allow_patterns=chosen or None, **self._hf)
         st = getattr(info, "safetensors", None)
-        return {"id": model_id.split("/")[-1], "kind": "image", "repo": model_id,
+        return {"id": model_id.split("/")[-1], "kind": kind, "repo": model_id,
                 "path": str(dest), "mb": total_mb, "refused": refused,
                 "variant": "fp16" if variant else "",
                 # Число параметров кладём в опись сразу: потом оно понадобится, чтобы судить
@@ -376,6 +497,49 @@ class ModelCatalog:
                 "params_total": int(getattr(st, "total", 0) or 0),
                 "params_by_dtype": dict(getattr(st, "parameters", None) or {}),
                 "params_active": self._active_params(info)}
+
+    def _install_single(self, model_id: str, src: dict, progress, kind: str,
+                        keep: list[str], refused: list[dict], sizes: dict) -> dict:
+        """Модель — ОДИН файл графа (ONNX): рядом лежат те же веса в других разрядностях.
+
+        Снимок репозитория тянуть незачем — это копии одного и того же. Берём файл по
+        объявленному порядку предпочтения плюс мелкие описания рядом (их читает адаптер).
+        """
+        from huggingface_hub import hf_hub_download
+
+        want = tuple(str(f).lower() for f in (src.get("require_formats") or []))
+        graphs = [n for n in keep if n.lower().endswith(want)]
+        chosen = self.prefer(graphs) or (graphs[0] if graphs else "")
+        if not chosen:
+            raise ProviderError(
+                "LOCAL_MODEL_MISSING", f"У '{model_id}' нет файла нужного формата ({', '.join(want)}).",
+                reason="Модель этого вида ставится одним файлом графа. Посмотри, что доступно: "
+                       f"python scripts/models.py local --kind {kind}.",
+                suggested_tool="media_models")
+        # Мелкие описания (нормализация, размер входа) лежат рядом и нужны адаптеру; веса —
+        # только выбранный граф.
+        extras = [n for n in keep if n.lower().endswith(".json") and Path(n).name != "README.md"]
+        total_mb = round((sizes.get(chosen, 0) + sum(sizes.get(n, 0) for n in extras)) / 1e6, 1)
+        self.check_size(total_mb)
+        dest = Path(str(src.get("dest") or kind)) / model_id.split("/")[-1]
+        target_dir = self.models_dir / dest
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for remote in [chosen, *extras]:
+            progress(f"тяну {Path(remote).name}")
+            # Сразу в целевой каталог, а не через кэш: иначе те же байты лежат дважды — блобом
+            # в кэше и копией здесь (проверено: 33 МБ кэша на 33 МБ моделей).
+            got = Path(hf_hub_download(model_id, remote, local_dir=str(target_dir)))
+            # Плоско по имени: адаптеру важен файл графа рядом с его описаниями, а не раскладка
+            # репозитория (в ней граф лежит в подкаталоге onnx/).
+            if got.parent != target_dir:
+                got.replace(target_dir / got.name)
+                try:
+                    got.parent.rmdir()                      # опустевший каталог репозитория
+                except OSError:
+                    pass
+        return {"id": model_id.split("/")[-1], "kind": kind, "repo": model_id,
+                "path": str(dest / Path(chosen).name), "mb": total_mb, "refused": refused,
+                "file": Path(chosen).name}
 
     def install_declared(self, entry: dict, progress=lambda _m: None) -> dict:
         """Поставить модель, объявленную в конфиге: тянем ровно то, что там перечислено.
@@ -393,13 +557,13 @@ class ModelCatalog:
         if entry.get("snapshot"):
             progress(f"тяну снимок {entry.get('repo')}")
             snapshot_download(repo_id=str(entry["repo"]), local_dir=str(dest),
-                              allow_patterns=entry.get("allow") or None)
+                              allow_patterns=entry.get("allow") or None, **self._hf)
         else:
             dest.mkdir(parents=True, exist_ok=True)
             keep, _ = self.allowed_files(list(entry.get("files") or []))
             for remote in keep:
                 progress(f"тяну {Path(remote).name}")
-                got = hf_hub_download(str(entry["repo"]), remote)
+                got = hf_hub_download(str(entry["repo"]), remote, **self._hf)
                 # Плоско по имени: piper ждёт .onnx и .onnx.json рядом, без вложенности репозитория.
                 shutil.copyfile(got, dest / Path(remote).name)
         path = self.models_dir / str(entry.get("path") or entry.get("dest") or "")

@@ -25,6 +25,7 @@ et_xmlfile==2.0.0
 fastuuid==0.14.0
 ffmpeg-python==0.2.0
 filelock==3.32.2
+flatbuffers==25.12.19
 frozenlist==1.8.0
 fsspec==2026.7.0
 future==1.0.0
@@ -37,8 +38,8 @@ idna==3.18
 importlib_metadata==8.9.0
 Jinja2==3.1.6
 jiter==0.16.0
-jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
+jsonschema==4.26.0
 litellm==1.96.2
 llvmlite==0.49.0
 MarkupSafe==3.0.3
@@ -63,14 +64,17 @@ nvidia-nccl-cu13==2.29.7
 nvidia-nvjitlink==13.3.33
 nvidia-nvshmem-cu13==3.4.5
 nvidia-nvtx==13.0.85
-openai==2.54.0
+onnxruntime==1.28.0
 openai-whisper==20250625
+openai==2.54.0
 openpyxl==3.1.5
 packaging==26.3
+pillow==12.3.0
 propcache==0.5.2
+protobuf==7.35.1
 pycparser==3.0
-pydantic==2.13.4
 pydantic-settings==2.15.0
+pydantic==2.13.4
 pydantic_core==2.46.4
 python-dotenv==1.2.2
 PyYAML==6.0.3

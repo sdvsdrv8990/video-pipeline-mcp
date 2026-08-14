@@ -1154,6 +1154,100 @@ ok(_inst_tool.data["hardware"]["ram_available_mb"] > 0,
 ok(all("fit" in m for m in _inst_tool.data["models"]),
    "у каждой поставленной модели есть вердикт пригодности")
 
+print("== 12. Переработка готового файла: удаление фона и апскейл (S24) ==")
+_pcfg = yaml.safe_load(CFG.read_text(encoding="utf-8"))
+ok(_pcfg["resources"]["by_resource"]["bg_removals"]["input"] == "file"
+   and _pcfg["resources"]["by_resource"]["upscales"]["input"] == "file",
+   "чем является input для вида ресурса — объявлено, а не разобрано ветками в коде")
+for _kind in ("bg_removal", "upscale"):
+    _src = _pcfg["local"]["sources"][_kind]
+    ok(".onnx" in (_src.get("require_formats") or []),
+       f"{_kind}: показываем только то, что установщик вправе поставить (формат объявлен)")
+
+from PIL import Image as _PILImage                              # noqa: E402
+
+from core.providers.catalog import ModelCatalog as _MC          # noqa: E402
+
+_cat12 = _MC(CFG, _reg.models_dir)
+ok(_cat12.prefer(["onnx/model_fp16.onnx", "onnx/model.onnx"]) == "onnx/model.onnx",
+   "из одинаковых по смыслу файлов берётся объявленный первым, а не первый попавшийся")
+ok(str(_cat12.cache_dir).startswith(str(_reg.models_dir)),
+   f"загрузчик складывает скачанное внутрь каталога зависимостей проекта ({_cat12.cache_dir})")
+
+_installed12 = {m["id"]: m for m in _cat12.installed() if m["present"]}
+_bg_model = next((m for m in _installed12.values() if m["kind"] == "bg_removal"), None)
+_up_model = next((m for m in _installed12.values() if m["kind"] == "upscale"), None)
+
+(_ws / "pic").mkdir()
+_PILImage.new("RGB", (64, 48), "#3070c0").save(_ws / "pic" / "frame.png")
+_row_bg = {"resource_type": "bg_removals", "provider": "Local_onnx_bg", "fallback_provider": "",
+           "daily_limit": -1, "current_usage": 0, "warning_threshold": -1,
+           "model": (_bg_model or {}).get("id", ""), "input_size": 320, "usage_unit": "call"}
+_row_up = {"resource_type": "upscales", "provider": "Local_onnx_upscale", "fallback_provider": "",
+           "daily_limit": -1, "current_usage": 0, "warning_threshold": -1,
+           "model": (_up_model or {}).get("id", ""), "tile": 0, "usage_unit": "call"}
+(_ws / "pic" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+    "B1": _row_bg, "U1": _row_up}}}), encoding="utf-8")
+
+# Путь исходника приходит от ИИ: он обязан пройти containment той же дверью, что и запись.
+_esc12 = _call("media_generate", table="pic", resource_type="bg_removals",
+               input="../../../../etc/passwd", scene_id="s1")
+ok(_esc12.status == "error" and _esc12.error.code in ("PATH_ESCAPE", "FILE_NOT_FOUND"),
+   f"путь исходника наружу рабочей области не читается ({_esc12.error.code if _esc12.error else 'успех!'})")
+
+_miss12 = _call("media_generate", table="pic", resource_type="bg_removals",
+                input="pic/нет-такой.png", scene_id="s1")
+ok(_miss12.status == "error" and _miss12.error.code == "FILE_NOT_FOUND",
+   f"нет исходника — отказ кодом реестра, а не пустой файл ({_miss12.error.code if _miss12.error else 'успех!'})")
+
+if _bg_model:
+    _bg12 = _call("media_generate", table="pic", resource_type="bg_removals",
+                  input="pic/frame.png", scene_id="s1")
+    ok(_bg12.status == "success", f"фон снят локальной моделью ({_bg12.error.code if _bg12.error else 'ok'})")
+    if _bg12.status == "success":
+        _out12 = _ws / _bg12.data["files"][0]
+        ok(_out12.name == "frame_nobg.png",
+           f"имя собрано от ИСХОДНИКА, а не от сцены ({_out12.name})")
+        ok(_PILImage.open(_out12).mode == "RGBA",
+           "результат несёт прозрачность — вырезан фон, а не перерисован кадр")
+        ok(_bg12.data["compute"].get("device") == "cpu" and _bg12.data["compute"].get("runtime"),
+           f"сказано, где считалось ({_bg12.data['compute'].get('runtime')})")
+        _u12 = _json.loads((_ws / "pic" / "read.json").read_text())["RESOURCE_LIMITS"]["rows"]["B1"]
+        ok(_bg12.data["usage"]["charged"] and _u12["current_usage"] == 1,
+           f"расход переработки учтён строкой канала ({_u12['current_usage']})")
+else:
+    print("  ⚠ модель удаления фона не поставлена (media_model_install) — живой прогон пропущен")
+
+if _up_model:
+    _up12 = _call("media_generate", table="pic", resource_type="upscales",
+                  input="pic/frame.png", scene_id="s1")
+    ok(_up12.status == "success", f"апскейл исполнен ({_up12.error.code if _up12.error else 'ok'})")
+    if _up12.status == "success":
+        _big = _PILImage.open(_ws / _up12.data["files"][0])
+        ok(_big.size[0] > 64 and _big.size[0] % 64 == 0,
+           f"картинка выросла кратно, а не «как получилось» ({_big.size})")
+else:
+    print("  ⚠ модель апскейла не поставлена (media_model_install) — живой прогон пропущен")
+
+# Платный онлайн: ключ — свойство провайдера, объявленное сервером, а не решение данных канала.
+_http12 = _reg.load("RemoveBg", "bg_removals")
+ok(_reg.requires_key("RemoveBg", "bg_removals") and _reg.requires_key("FalUpscale", "upscales"),
+   "платным «файл → файл» ключ объявлен обязательным на стороне сервера")
+try:
+    _http12.generate(MediaRequest(input="pic/frame.png", params={}, target=_ws / "x.png",
+                                   models_dir=_reg.models_dir, source=_ws / "pic" / "frame.png",
+                                   provider="RemoveBg"))
+    ok(False, "вызов без ключа обязан отказать, а не уйти в сеть")
+except ProviderError as _e12:
+    ok(_e12.code == "PROVIDER_KEY_MISSING",
+       f"без ключа — отказ до обращения к провайдеру ({_e12.code})")
+try:
+    _http12._decl("Неизвестный")
+    ok(False, "неизвестный провайдер обязан отказать")
+except ProviderError as _e13:
+    ok(_e13.code == "PROVIDER_ADAPTER_MISSING",
+       f"необъявленного провайдера сервер не вызывает ({_e13.code})")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

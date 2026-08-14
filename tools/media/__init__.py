@@ -148,15 +148,22 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 return value.strip()
         return ""
 
+    def _input_mode(cfg: dict, resource_type: str) -> str:
+        """Чем является `input` для этого вида ресурса: текстом или путём к файлу."""
+        rules = cfg.get("resources") or {}
+        rule = (rules.get("by_resource") or {}).get(resource_type) or rules.get("default") or {}
+        return str(rule.get("input") or "text")
+
     def _asset_path(cfg: dict, cycle: TaskCycle, table: str, resource_type: str,
-                    video_slug: str, scene_id: str, params: dict) -> str:
+                    video_slug: str, scene_id: str, params: dict, source_stem: str = "") -> str:
         """Куда лёг бы результат. Имя — шаблон из декларации, расширение — из строки провайдера."""
         assets = cfg.get("assets") or {}
         rule = (assets.get("by_resource") or {}).get(resource_type) or assets.get("default") or {}
         template = str(rule.get("name") or "{video_slug}_{resource_type}_{scene_id}")
         # Неизвестное поле в шаблоне не роняет вызов: подставляется пустым, имя остаётся читаемым.
         base = template.format_map(defaultdict(str, video_slug=video_slug,
-                                               resource_type=resource_type, scene_id=scene_id))
+                                               resource_type=resource_type, scene_id=scene_id,
+                                               source_stem=source_stem))
         base = "_".join(p for p in base.split("_") if p) or resource_type
         name = cycle.expected_name(base, params)
         if name == base and rule.get("ext"):
@@ -184,7 +191,22 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         cycle = TaskCycle(ctx.config_path / "media_tasks.yaml")
         params = decision["params"]
         slug = video_slug or Path(table).name
-        rel = _asset_path(cfg, cycle, table, resource_type, slug, scene_id, params)
+
+        # Виды ресурса, которые ПЕРЕРАБАТЫВАЮТ готовый файл (фон, апскейл), получают путь, а не
+        # текст. Путь приходит от ИИ, поэтому проходит containment той же дверью, что и запись:
+        # `../../.env` в поле input иначе уехало бы клиенту вместе с результатом.
+        source_file = None
+        if _input_mode(cfg, resource_type) == "file":
+            ok, source_file = ctx.safe(lambda: ctx.resolve(input))
+            if not ok:
+                return source_file
+            if not source_file.is_file():
+                return ctx.err(
+                    "FILE_NOT_FOUND", f"Исходного файла нет: {input}",
+                    f"Вид ресурса '{resource_type}' перерабатывает готовый файл, а не создаёт "
+                    "новый: в input нужен путь к существующему файлу внутри рабочей области.")
+        rel = _asset_path(cfg, cycle, table, resource_type, slug, scene_id, params,
+                          source_stem=source_file.stem if source_file else "")
         # Тип файла — та же дверь, что у любой записи (S2): результат провайдера не привилегирован.
         ok, target = ctx.safe(lambda: (ctx.write_policy.check(rel), ctx.resolve(rel))[1])
         if not ok:
@@ -218,7 +240,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             return adapter
 
         request = MediaRequest(input=input, params=params, target=target,
-                               models_dir=registry.models_dir, api_key=api_key)
+                               models_dir=registry.models_dir, api_key=api_key, source=source_file,
+                               provider=decision["provider"])
         ok, outcome = ctx.safe(lambda: adapter.generate(request))
         if not ok:
             return _hide_key(outcome, api_key)
@@ -335,7 +358,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                         live_error = {"code": fresh.error.code if fresh.error else "INTERNAL_ERROR",
                                       "message": _hide_key(fresh, key).error.message if fresh.error else ""}
         else:
-            ok, rows = ctx.safe(lambda: catalog.available(kind or "tts", limit=limit))
+            # Описание тянется всегда: выбирать модель по размеру и числу загрузок — вслепую.
+            ok, rows = ctx.safe(lambda: catalog.available(kind or "tts", limit=limit, describe=True))
             if not ok:
                 return rows
             # Число параметров без объёма памяти не значит ничего: вердикт идёт вместе со списком.
@@ -422,7 +446,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "умеет вызвать шлюз онлайн — с провайдером, эндпоинтом и ценой (scope=online). "
             "Список онлайн-моделей виден БЕЗ ключа — из реестра шлюза. А с provider и table он спрашивается у САМОГО провайдера его ключом: новая линейка появляется у него раньше, чем в реестре, и модель, которой реестр не знает, придёт помеченной known_to_gateway=false, а не пропадёт. Ключ уходит только на объявленный адрес и в ответе не возвращается."),
         input_schema={"type": "object", "properties": {
-            "kind": {"type": "string", "description": "Вид: tts, image, stt (пусто → по умолчанию для scope)"},
+            "kind": {"type": "string", "description": "Вид: tts, image, stt, bg_removal, upscale (пусто → по умолчанию для scope)"},
             "scope": {"type": "string", "enum": ["installed", "local", "online"], "default": "installed",
                       "description": "installed — стоит сейчас; local — можно поставить; online — умеет шлюз"},
             "limit": {"type": "integer", "default": 20, "description": "Сколько строк показать"},
@@ -443,7 +467,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "Требует confirm=true: это гигабайты с внешнего источника."),
         input_schema={"type": "object", "properties": {
             "model_id": {"type": "string", "description": "Имя модели из media_models(scope='local')"},
-            "kind": {"type": "string", "description": "Вид модели: tts или image"},
+            "kind": {"type": "string", "description": "Вид модели: tts, image, bg_removal, upscale"},
             "confirm": {"type": "boolean", "default": False,
                         "description": "Осознанное подтверждение загрузки весов на диск сервера"},
         }, "required": ["model_id", "kind"]},
@@ -483,7 +507,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         title="Медиа: исполнить ресурс активным провайдером",
         description=(
             "Исполняет вид ресурса тем провайдером и той моделью, что стоят в строке канала: "
-            "озвучивает текст, рисует промпт. Файл кладётся в рабочую область по объявленному "
+            "озвучивает текст, рисует промпт, снимает фон с картинки, увеличивает её. Виды, "
+            "которые ПЕРЕРАБАТЫВАЮТ готовый файл (bg_removals, upscales), ждут в input путь к "
+            "нему внутри рабочей области, а не текст — что именно ждёт вид ресурса, объявлено "
+            "сервером. Файл кладётся в рабочую область по объявленному "
             "имени ассета и принимается ПО ДИСКУ (существует, не пуст), а не по коду ответа. "
             "Асинхронный провайдер прозванивается циклом внутри этого же вызова — чтобы причина "
             "отказа (модерация, лимит, недоступность) вернулась текстом, а не молчанием. "
@@ -491,8 +518,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "на fallback работают, а не остаются теорией."),
         input_schema={"type": "object", "properties": {
             "table": {"type": "string", "description": "Путь сущности с данными канала (где лежит read.json)"},
-            "resource_type": {"type": "string", "description": "Вид ресурса из листа провайдеров (tts_characters, image_generations, …)"},
-            "input": {"type": "string", "description": "Текст для озвучки или промпт картинки"},
+            "resource_type": {"type": "string", "description": "Вид ресурса из листа провайдеров (tts_characters, image_generations, bg_removals, upscales, …)"},
+            "input": {"type": "string", "description": "Текст озвучки, промпт картинки — либо путь к исходному файлу для видов, перерабатывающих готовое (bg_removals, upscales)"},
             "scene_id": {"type": "string", "description": "Фрагмент/сцена — попадает в имя файла и связывает ассет с листом сцен"},
             "video_slug": {"type": "string", "description": "Имя видео в названии файла (пусто → имя каталога сущности)"},
         }, "required": ["table", "resource_type", "input", "scene_id"]},

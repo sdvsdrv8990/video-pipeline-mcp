@@ -19,9 +19,9 @@ local.sources.*.filters`, поэтому отсев правится данны�
 
 Прогон:
   python scripts/models.py online --kind image|tts [--provider openai] [--limit N]
-  python scripts/models.py local  --kind image|tts [--language ru_RU] [--limit N]
+  python scripts/models.py local  --kind image|tts|bg_removal|upscale [--language ru_RU] [--limit N]
   python scripts/models.py installed
-  python scripts/models.py install <id> --kind image|tts
+  python scripts/models.py install <id> --kind image|tts|bg_removal|upscale
 """
 
 import argparse
@@ -59,7 +59,7 @@ def cmd_online(args) -> int:
 
 
 def cmd_local(args) -> int:
-    rows = _catalog().available(args.kind, limit=args.limit, language=args.language)
+    rows = _catalog().available(args.kind, limit=args.limit, language=args.language, describe=True)
     if not rows:
         print("Каталог пуст после отсева — ослабь фильтры в config/providers.yaml → local.sources.")
         return 1
@@ -71,8 +71,14 @@ def cmd_local(args) -> int:
         active = f"/{r['params_active'] / 1e9:.1f}B акт." if r.get("params_active") else ""
         fit = last = r.get("fit") or {}
         gpu = f"  (на карте: {fit['on_gpu']['verdict']})" if fit.get("on_gpu") else ""
-        print(f"  {r['id']:<44}{size:<12}{params + active:<12}"
+        print(f"  {r['id']:<44} {size:<12}{params + active:<12}"
               f"{fit.get('verdict', '?'):<7}{fit.get('need_mb', 0)} МБ{gpu}")
+        if r.get("description"):
+            # Числа не отвечают, ЧТО модель делает: без этого выбор идёт вслепую.
+            print(f"      {r['description'][:150]}")
+        if r.get("license"):
+            print(f"      лицензия: {r['license']}"
+                  + (f" · файл: {r['file']}" if r.get("file") else ""))
     if last.get("device"):
         print(f"\nВердикт считался по: {last['device']} ({last.get('available_mb', 0)} МБ).")
     if last.get("on_gpu"):
@@ -156,7 +162,7 @@ def main(argv: list[str]) -> int:
     p.set_defaults(func=cmd_online)
 
     p = sub.add_parser("local", help="какие локальные модели доступны к установке")
-    p.add_argument("--kind", default="tts", help="tts | image")
+    p.add_argument("--kind", default="tts", help="tts | image | bg_removal | upscale")
     p.add_argument("--language", default="", help="язык (для голосов)")
     p.add_argument("--limit", type=int, default=20)
     p.set_defaults(func=cmd_local)
@@ -174,7 +180,7 @@ def main(argv: list[str]) -> int:
 
     p = sub.add_parser("install", help="поставить модель по имени")
     p.add_argument("id")
-    p.add_argument("--kind", required=True, help="tts | image")
+    p.add_argument("--kind", required=True, help="tts | image | bg_removal | upscale")
     p.set_defaults(func=cmd_install)
 
     args = ap.parse_args(argv[1:])

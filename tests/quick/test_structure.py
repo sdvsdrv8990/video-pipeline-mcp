@@ -704,8 +704,12 @@ _want33 = ["WORKFLOW_SEQUENCES", "PUBLISHING_SCHEDULE", "RESOURCE_LIMITS", "META
            "AUTOMATION_RULES", "SCENE_PROFILE", "RENDER_CONFIG"]
 ok(all(n in _sheets33 for n in _want33),
    f"7 секций конфига стали листами channel_data: нет {[n for n in _want33 if n not in _sheets33]}")
-ok(sum(len(_sheets33[n].get("rows") or []) for n in _want33 if n in _sheets33) == 36,
-   "листы несут строки-дефолты, а не пустую форму (значения конфига не потеряны)")
+_rows33 = {n: len(_sheets33[n].get("rows") or []) for n in _want33 if n in _sheets33}
+# Число строк растёт при каждом новом провайдере (S24: фон и апскейл), поэтому сверяется не оно,
+# а само свойство: ни один лист не приехал пустой формой, и суммарно дефолтов не убыло.
+ok(all(_rows33.values()) and sum(_rows33.values()) >= 36,
+   f"листы несут строки-дефолты, а не пустую форму (пустые: {[n for n, c in _rows33.items() if not c]}, "
+   f"всего {sum(_rows33.values())})")
 ok({r["provider"] for r in _sheets33["RESOURCE_LIMITS"]["rows"]} >= {"Local_piper", "Local_diffusers"},
    "в дефолтах есть провайдеры, работающие без ключей — цепочка fallback кончается исполнимым")
 # «Тихий столбец» и единый источник провайдеров — те самые РЕШЕНИЯ, ради которых делался перенос.

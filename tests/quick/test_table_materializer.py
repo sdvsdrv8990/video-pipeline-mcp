@@ -178,7 +178,13 @@ print("== 7b. Строки-дефолты из схемы доезжают В К
 ws5 = tempfile.mkdtemp(prefix="tm5_")
 r5 = new_materializer(ws5).materialize("channel_data", "ch.xlsx")
 wb5 = openpyxl.load_workbook(Path(ws5) / "ch.xlsx")
-ok(r5["rows_total"] == 36, f"материализатор отчитался о 36 строках-дефолтах (получено {r5['rows_total']})")
+# Считаем по самой схеме: новый провайдер добавляет строки (S24 — фон и апскейл), и сверка с
+# числом, вписанным сюда однажды, ловила бы не потерю дефолтов, а факт их добавления.
+import yaml
+_declared_rows = sum(len(s.get("rows") or []) for s in yaml.safe_load(
+    (ROOT / "config/templates/tables/channel_data.schema.yaml").read_text(encoding="utf-8"))["sheets"])
+ok(r5["rows_total"] == _declared_rows,
+   f"все строки-дефолты схемы доехали в книгу ({r5['rows_total']} из {_declared_rows})")
 _sp = wb5["SCENE_PROFILE"]
 _vals = {row[0]: row[1] for row in _sp.iter_rows(min_row=2, values_only=True) if row[0]}
 ok(len(_vals) == 7, f"SCENE_PROFILE: 7 строк данных на листе (получено {len(_vals)})")

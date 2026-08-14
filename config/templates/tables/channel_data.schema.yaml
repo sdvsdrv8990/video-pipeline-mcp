@@ -348,6 +348,14 @@ sheets:
       - { name: steps, type: integer, flag: W }
       - { name: variant, type: string, flag: W }
       - { name: guidance, type: float, flag: W }
+      # Переработка готового файла (фон, апскейл): размер входа модели, порог отсечения маски,
+      # заливка вместо прозрачности, нарезка большой картинки на куски и кратность увеличения.
+      - { name: input_size, type: integer, flag: W }
+      - { name: cutoff, type: float, flag: W }
+      - { name: bg_color, type: string, flag: W }
+      - { name: tile, type: integer, flag: W }
+      - { name: tile_overlap, type: integer, flag: W }
+      - { name: scale, type: integer, flag: W }
     rows:
       - resource_type: tts_characters
         provider: ElevenLabs
@@ -460,6 +468,64 @@ sheets:
         timeout: 30
         retry_count: 0
         sync_mode: true
+      # Удаление фона и апскейл перерабатывают ГОТОВЫЙ файл: input у них — путь к картинке.
+      # Основным стоит локальный (без сети, ключа и счёта), платный — запасным: он включится
+      # сам, когда локальный исчерпает лимит, и потребует внесённого владельцем ключа.
+      - resource_type: bg_removals
+        provider: Local_onnx_bg
+        fallback_provider: RemoveBg
+        daily_limit: -1
+        current_usage: 0
+        warning_threshold: -1
+        model: modnet
+        input_size: 512
+        response_format: png
+        timeout: 120
+        retry_count: 0
+        retry_delay: 0
+        sync_mode: true
+        usage_unit: call
+      - resource_type: bg_removals
+        provider: RemoveBg
+        fallback_provider: ''
+        daily_limit: 50
+        current_usage: 0
+        warning_threshold: 40
+        response_format: png
+        img_size: auto
+        timeout: 120
+        retry_count: 1
+        retry_delay: 5
+        sync_mode: true
+        usage_unit: image
+      - resource_type: upscales
+        provider: Local_onnx_upscale
+        fallback_provider: FalUpscale
+        daily_limit: -1
+        current_usage: 0
+        warning_threshold: -1
+        model: swin2SR-lightweight-x2-64
+        tile: 256
+        tile_overlap: 32
+        response_format: png
+        timeout: 600
+        retry_count: 0
+        retry_delay: 0
+        sync_mode: true
+        usage_unit: call
+      - resource_type: upscales
+        provider: FalUpscale
+        fallback_provider: ''
+        daily_limit: 100
+        current_usage: 0
+        warning_threshold: 80
+        scale: 2
+        response_format: png
+        timeout: 300
+        retry_count: 1
+        retry_delay: 10
+        sync_mode: true
+        usage_unit: image
 
   - name: METADATA_DEFAULTS
     columns:
