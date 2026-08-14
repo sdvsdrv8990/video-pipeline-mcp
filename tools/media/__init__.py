@@ -411,6 +411,9 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             # Железо читается БЕЗ root (/proc/meminfo, cgroup, ядра, свободное место); чего
             # прочесть нельзя — перечислено в hardware.unknown, а не выдано за отсутствие.
             "hardware": hardware if scope != "online" else None,
+            # Что держим поднятым прямо сейчас: подъём модели стоит секунд, и видеть занятое так
+            # же важно, как свободное — иначе «карта полная» выглядит поломкой железа.
+            "pool": registry.pool.stats() if scope == "installed" else None,
             "hint": ("Поставить локальную модель — media_model_install; исполнять ею — поставить "
                      "её имя в столбец model листа провайдеров книги канала (table_update). "
                      "Онлайн-список свежее у самого провайдера: media_models(scope='online', "

@@ -1454,6 +1454,77 @@ ok(_deny14.status == "error" and _deny14.error.code == "VALIDATION_ERROR",
 ok("4096" in (_deny14.error.message if _deny14.error else ""),
    "в отказе названо, ЧТО именно не подошло")
 
+print("== 15. Поднятая модель переживает вызов: пул с бюджетом (S24) ==")
+import time as _time                                          # noqa: E402
+
+from core.providers.pool import ModelPool as _Pool            # noqa: E402
+import core.providers.pool as _pool_mod                       # noqa: E402
+
+_pool_mod._ENTRIES.clear()
+_hw15 = {"ram_available_mb": 1000, "gpu": []}
+_lifts = {"n": 0}
+
+
+def _lift(tag="x"):
+    def _loader():
+        _lifts["n"] += 1
+        return {"model": tag, "n": _lifts["n"]}
+    return _loader
+
+
+_p15 = _Pool({"enabled": True, "budget_ratio": 0.5, "idle_ttl_sec": 0, "max_entries": 0}, _hw15)
+_a = _p15.get("m1", _lift("a"), need_bytes=100_000_000, device="cpu")
+_b = _p15.get("m1", _lift("a"), need_bytes=100_000_000, device="cpu")
+ok(_a is _b and _lifts["n"] == 1,
+   f"вторая просьба о той же модели не поднимает её заново ({_lifts['n']} подъём)")
+
+# Бюджет — доля СВОБОДНОЙ памяти: 1000 МБ × 0.5 = 500 МБ, третья модель по 300 МБ не влезет.
+_pool_mod._ENTRIES.clear(); _lifts["n"] = 0
+_p15.get("big1", _lift("b1"), need_bytes=300_000_000, device="cpu")
+_p15.get("big2", _lift("b2"), need_bytes=300_000_000, device="cpu")
+_held = {r["key"] for r in _p15.stats()["models"]}
+ok(_held == {"big2"},
+   f"не влезающее вытеснено по бюджету, а не сложено сверх памяти ({sorted(_held)})")
+ok(_p15.stats()["budget_mb"]["cpu"] == 500,
+   f"бюджет считается от свободной памяти и объявленной доли ({_p15.stats()['budget_mb']})")
+
+# Простой: залежавшееся убирается при СЛЕДУЮЩЕМ обращении, а не демоном в фоне (S15).
+_pool_mod._ENTRIES.clear(); _lifts["n"] = 0
+_p_idle = _Pool({"enabled": True, "budget_ratio": 0.9, "idle_ttl_sec": 0.05}, _hw15)
+_p_idle.get("old", _lift("old"), need_bytes=1000, device="cpu")
+_time.sleep(0.1)
+_p_idle.get("new", _lift("new"), need_bytes=1000, device="cpu")
+ok({r["key"] for r in _p_idle.stats()["models"]} == {"new"},
+   "модель, которой давно не пользовались, выгружена при следующем обращении")
+
+# Выключатель обязан выключать (F54-класс): без пула модель поднимается каждый раз.
+_pool_mod._ENTRIES.clear(); _lifts["n"] = 0
+_p_off = _Pool({"enabled": False}, _hw15)
+_p_off.get("m", _lift("m"), need_bytes=1, device="cpu")
+_p_off.get("m", _lift("m"), need_bytes=1, device="cpu")
+ok(_lifts["n"] == 2 and not _p_off.stats()["models"],
+   f"enabled=false действительно отключает пул ({_lifts['n']} подъёма, ничего не держим)")
+
+# Сквозь инструмент: занятое видно рядом со свободным.
+_pool_mod._ENTRIES.clear()
+_inst15 = _call("media_models", scope="installed")
+ok(isinstance(_inst15.data.get("pool"), dict) and "budget_mb" in _inst15.data["pool"],
+   "инструмент показывает, что держится поднятым, вместе с бюджетом")
+
+# И живьём: та же модель через два вызова инструмента поднимается один раз.
+if _bg_model:
+    _pool_mod._ENTRIES.clear()
+    # Строку канала вернули: предыдущие секции переписывали этот лист под свои сценарии.
+    (_ws / "pic" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+        "B1": _row_bg}}}), encoding="utf-8")
+    _t1 = _time.time(); _call("media_generate", table="pic", resource_type="bg_removals",
+                              input="pic/frame.png", scene_id="p1"); _first = _time.time() - _t1
+    _t2 = _time.time(); _call("media_generate", table="pic", resource_type="bg_removals",
+                              input="pic/frame.png", scene_id="p2"); _second = _time.time() - _t2
+    _keys15 = [r["key"] for r in _reg.pool.stats()["models"]]
+    ok(any(k.startswith("onnx|") for k in _keys15) and _second <= _first,
+       f"модель осталась поднятой между вызовами инструмента ({_first:.2f} с → {_second:.2f} с)")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

@@ -74,6 +74,15 @@ class AdapterRegistry:
         return self.project_root / str(local.get("models_dir", "vendor/models"))
 
     @property
+    def pool(self) -> "object":
+        """Живые модели процесса. Адаптер создаётся на каждый вызов, а поднятая модель — нет."""
+        from .hardware import probe
+        from .pool import ModelPool
+
+        local = self.config.get("local") or {}
+        return ModelPool(local.get("pool") or {}, probe(self.models_dir, local.get("gpu")))
+
+    @property
     def catalog(self) -> list[dict]:
         """Известные локальные модели: объявленные в конфиге + поставленные скриптом (опись)."""
         from .catalog import ModelCatalog

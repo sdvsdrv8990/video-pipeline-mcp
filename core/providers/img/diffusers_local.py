@@ -34,7 +34,6 @@ class DiffusersLocalIMG:
     def __init__(self, registry):
         self.registry = registry
         self.models_dir = Path(registry.models_dir)
-        self._pipelines: dict[str, object] = {}
 
     @property
     def _gpu_rules(self) -> dict:
@@ -62,9 +61,15 @@ class DiffusersLocalIMG:
         return out
 
     def _pipeline(self, model_path: Path, load: dict, where: dict, place: dict):
-        """Пайплайн живёт до конца процесса: его подъём — десятки секунд и гигабайты."""
-        key = f"{model_path}#{sorted(load.items())}#{where['device']}#{where['dtype']}#{place['mode']}"
-        if key not in self._pipelines:
+        """Пайплайн живёт в пуле процесса: его подъём — десятки секунд и гигабайты.
+
+        Прежде он кэшировался внутри адаптера, а тот создаётся заново на КАЖДЫЙ вызов — то есть
+        кэш не переживал вызов и создавал лишь видимость переиспользования (замер S24: 1.4 с
+        против 0.2 с на кадре sd-turbo).
+        """
+        key = f"diffusers|{model_path}#{sorted(load.items())}#{where['device']}#{where['dtype']}#{place['mode']}"
+
+        def build():
             try:
                 import torch
                 from diffusers import AutoPipelineForText2Image
@@ -112,8 +117,15 @@ class DiffusersLocalIMG:
                         reason=f"Проба железа выбрала это устройство ({where['why']}). Посмотри "
                                "media_models → hardware; чтобы считать на процессоре намеренно, "
                                "поставь device=cpu в строке провайдера.") from e
-            self._pipelines[key] = pipe
-        return self._pipelines[key]
+            return pipe
+
+        # Сколько модель займёт — считает оценщик по описи; на карте пул уточнит это замером.
+        from ..hardware import FitEstimator
+        entry = self.registry.model_entry(model_path.name) or {}
+        need = FitEstimator((self.registry.config.get("local") or {}).get("fit") or {}).bytes_for(
+            entry.get("params_by_dtype") or {}, entry.get("params_total") or 0,
+            as_dtype=where["dtype"])
+        return self.registry.pool.get(key, build, need_bytes=need, device=where["device"])
 
     def generate(self, request: MediaRequest) -> MediaOutcome:
         """Нарисовать промпт в файл. Синхронно: результат сразу на диске."""

@@ -30,20 +30,20 @@ class PiperLocalTTS:
     def __init__(self, registry):
         self.registry = registry
         self.models_dir = Path(registry.models_dir)
-        self._voices: dict[str, object] = {}
 
     def _voice(self, model_path: Path):
-        """Загруженная модель живёт до конца процесса: повторная загрузка — секунды на каждый вызов."""
-        key = str(model_path)
-        if key not in self._voices:
+        """Модель живёт в пуле процесса: адаптер создаётся на каждый вызов, а голос — нет."""
+        def load():
             try:
                 from piper import PiperVoice
             except ImportError as e:
                 raise ProviderError(
                     "LOCAL_INFERENCE_FAILED", f"Среда локальной озвучки не установлена: {e}",
                     reason="Поставь зависимости группы local (piper-tts) в окружение сервера.") from e
-            self._voices[key] = PiperVoice.load(model_path)
-        return self._voices[key]
+            return PiperVoice.load(model_path)
+
+        size = model_path.stat().st_size if model_path.is_file() else 0
+        return self.registry.pool.get(f"piper|{model_path}", load, need_bytes=size, device="cpu")
 
     def generate(self, request: MediaRequest) -> MediaOutcome:
         """Озвучить текст в файл. Синхронно: ждать нечего, результат сразу на диске."""

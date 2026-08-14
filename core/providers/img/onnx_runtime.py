@@ -22,32 +22,33 @@ class OnnxImage:
 
     def __init__(self, registry):
         self.registry = registry
-        self._sessions: dict[str, object] = {}
 
     @property
     def rules(self) -> dict:
         return ((self.registry.config.get("local") or {}).get("onnx")) or {}
 
     def session(self, model_path: Path):
-        """Сессия живёт до конца процесса: её подъём — секунды и сотни мегабайт."""
-        key = str(model_path)
-        if key in self._sessions:
-            return self._sessions[key]
-        try:
-            import onnxruntime as ort
-        except ImportError as e:
-            raise ProviderError(
-                "LOCAL_INFERENCE_FAILED", f"Среда локального инференса не установлена: {e}",
-                reason="Поставь зависимости группы local (onnxruntime) в окружение сервера.") from e
+        """Сессия живёт в пуле процесса: адаптер создаётся на каждый вызов, а модель — нет."""
         providers = [str(p) for p in (self.rules.get("providers") or ["CPUExecutionProvider"])]
-        try:
-            self._sessions[key] = ort.InferenceSession(str(model_path), providers=providers)
-        except Exception as e:                              # noqa: BLE001 — битый или чужой граф
-            raise ProviderError(
-                "LOCAL_MODEL_MISSING", f"Граф модели не читается: {e}",
-                reason="Файл есть, но onnxruntime его не поднимает — перекачай модель: "
-                       "media_model_install по тому же имени.") from e
-        return self._sessions[key]
+
+        def load():
+            try:
+                import onnxruntime as ort
+            except ImportError as e:
+                raise ProviderError(
+                    "LOCAL_INFERENCE_FAILED", f"Среда локального инференса не установлена: {e}",
+                    reason="Поставь зависимости группы local (onnxruntime) в окружение сервера.") from e
+            try:
+                return ort.InferenceSession(str(model_path), providers=providers)
+            except Exception as e:                          # noqa: BLE001 — битый или чужой граф
+                raise ProviderError(
+                    "LOCAL_MODEL_MISSING", f"Граф модели не читается: {e}",
+                    reason="Файл есть, но onnxruntime его не поднимает — перекачай модель: "
+                           "media_model_install по тому же имени.") from e
+
+        size = model_path.stat().st_size if model_path.is_file() else 0
+        return self.registry.pool.get(f"onnx|{model_path}|{','.join(providers)}", load,
+                                      need_bytes=size, device="cpu")
 
     @staticmethod
     def preprocessing(model_path: Path) -> dict:
