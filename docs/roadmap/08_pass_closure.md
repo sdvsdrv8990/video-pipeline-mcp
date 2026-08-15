@@ -35,19 +35,22 @@
 
 ## 2. Файлы, которых НЕТ и которые нужны для честного закрытия
 
-Ничего из ниже на диске нет (проверено). Сгруппировано по гейту зрелости.
+> **Перепроверено по диску S24 (2026-08-15).** Таблица датировалась Сессией 14 и к моменту проверки
+> врала на 5 строк из 8: перечисленное как «нет» давно построено. Файл, называющий себя мерой
+> честного закрытия, сам был самым устаревшим артефактом среза — это и чинится здесь.
+> Строки-«есть» оставлены вычеркнутыми: важно видеть, что гейт пройден, а не что его не было.
 
 ### Гейт L2 (Beta — repo стоит сам, воспроизводим)
-| Файл | Зачем / DIM | Воркстрим |
+| Файл | Зачем / DIM | Статус на S24 |
 |---|---|---|
-| `LICENSE` | публичный репо без лицензии = «all rights reserved» (F19); DIM-9 | I2/I8 (ждёт выбора владельца) |
-| `SECURITY.md` | канал репорта уязвимостей [M8]; DIM-9 | I8 |
-| `CONTRIBUTING.md` | как контрибьютить [M8]; DIM-9 | I8 |
-| `.github/workflows/ci.yml` | линт+типы+тесты+security-scan на PR (F13); DIM-6/8 | I3 |
-| `.pre-commit-config.yaml` | ruff/mypy/bandit локально до пуша; DIM-6 | I4 |
-| `conftest.py` + pytest-раннер | канонический раннер (сейчас часть тестов = скрипты); DIM-6 | I7 |
-| `ruff`/`mypy` секции (в `pyproject`) | типы/линт (I4); DIM-6 | I4 |
-| `CHANGELOG.md` | история релизов; DIM-9 | I8 |
+| ~~`LICENSE`~~ | публичный репо без лицензии = «all rights reserved» (F19); DIM-9 | ✅ есть |
+| `SECURITY.md` | канал репорта уязвимостей [M8]; DIM-9 | ⬜ нет — I8 |
+| `CONTRIBUTING.md` | как контрибьютить [M8]; DIM-9 | ⬜ нет — I8 |
+| ~~`.github/workflows/ci.yml`~~ | линт+типы+тесты+security-scan на PR (F13); DIM-6/8 | ✅ есть: ruff, mypy, pytest, bandit, gitleaks, pip-audit |
+| ~~`.pre-commit-config.yaml`~~ | ruff/mypy/bandit локально до пуша; DIM-6 | ✅ есть |
+| ~~`conftest.py` + pytest-раннер~~ | канонический раннер; DIM-6 | ✅ есть: `tests/conftest.py` + `tests/test_suites.py` (наборы находятся сами, F50) |
+| ~~`ruff`/`mypy` секции (в `pyproject`)~~ | типы/линт (I4); DIM-6 | ✅ есть; с S24 `mypy` зелёный на 87 файлах без исключений (F88) |
+| `CHANGELOG.md` | история релизов; DIM-9 | ⬜ нет — I8 |
 
 ### Гейт L3 (Production-candidate)
 | Файл | Зачем / DIM | Воркстрим |
@@ -55,10 +58,10 @@
 | `Dockerfile` + `.dockerignore` | портируемость, non-root USER, read-only (DIM-8/5) [M8] | I3 |
 | `RELEASING.md` + OIDC-publish | supply-chain, без registry-токенов [M8]; DIM-9 | I8 |
 | OAuth 2.1 модуль (`core/auth/`?) | Resource Server + PKCE (DIM-2, D3) [M3] | I6 |
-| `core/paths.py` write-allowlist-конфиг (`config/write_policy.yaml`) | default-deny (F34, §F); DIM-5 | I6 |
-| provenance-обёртка вывода | недоверенный workspace (F33/OUT1); DIM-4 | I6 |
+| ~~write-allowlist-конфиг~~ | default-deny (F34, §F); DIM-5 | ✅ построен, но НЕ отдельным `config/write_policy.yaml`: список объявлен в `config/firewall.yaml → write_allowlist` (имя И содержимое), исполняет `core/write_policy.py`. Файла с таким именем не будет — строка описывала форму, а не требование |
+| provenance-обёртка вывода | недоверенный workspace (F33/OUT1); DIM-4 | 🔶 частично: `core/contracts/untrusted.py` метит чужой текст на чтении файла, но результаты поиска идут БЕЗ пометки (F87) |
 | observability (`structlog` + `/health` + audit-trail) | DIM-7 [M2] | I5 |
-| `tests/agent_swarm/test_agent_swarm.py` | раннер по `patterns.yaml` (F32); DIM-6 | I7 |
+| ~~`tests/agent_swarm/test_agent_swarm.py`~~ | раннер по `patterns.yaml` (F32); DIM-6 | ✅ построен S24: 34 исполнителя против живого сервера, 28 защищено / 5 известных дыр |
 | systemd unit / deploy-hardening (`06 §G.1`) | seccomp/Landlock/cap-drop; DIM-5 | I6 |
 
 ### Гейт L4 (Enterprise)
