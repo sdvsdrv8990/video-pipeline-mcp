@@ -7,7 +7,9 @@ core/providers/ffmpeg/__init__ — точка входа для FFmpeg пров�
 
 ## Архитектурные связи
 - Использует: core.contracts (ToolResult, ErrorDetail, TaskStatus, Fact)
-- Используется: tools/video/* (инструменты монтажа)
+- Используется: ПОКА НИКЕМ — инструментов монтажа в сервере нет. Адаптер стоит готовым (честные
+  NotImplementedError внутри), и это состояние названо здесь намеренно: «используется группой X»
+  про несуществующую группу читалось бы как рабочая проводка.
 """
 
 from .ffmpeg_adapter import FFMpegAdapter

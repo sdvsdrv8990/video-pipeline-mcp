@@ -35,7 +35,8 @@ class AnomalyDetector:
         dangerous_tools: Множество деструктивных инструментов (D18)
     """
 
-    # D18: дефолтный список (если не задан через config/ops/*.yaml).
+    # D18: дефолтный список. Перекрывается декларацией firewall.yaml →
+    # anomaly_detection.dangerous_tools (её читает core/firewall/firewall.py).
     DEFAULT_DANGEROUS_TOOLS = frozenset({
         "fs_delete", "fs_remove", "fs_move_outside",
         "config_delete", "system_shutdown", "system_restart",

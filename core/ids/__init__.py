@@ -6,7 +6,7 @@ core/ids/__init__ — Точка входа для генерации ID
     from core.ids import IDGenerator
 
 ## Архитектурные связи
-- Используется: tools/filesystem, tools/tables, tools/video
+- Используется: server.py, tools/_context, tools/filesystem, tools/structure
 """
 
 from .chain_resolver import ChainResolver

@@ -26,15 +26,22 @@
 
 ## Ось 2 — Контракт (`ToolResult`/`ErrorDetail`, коды, parity)
 
-- **R-CONTRACT1 — ЕДИНОЕ ядро реакций: все пути ошибок через `get_error(code, params)`; движки эмитят ТОЛЬКО код.**
+- **R-CONTRACT1 — ЕДИНАЯ точка реакций: все пути ошибок через `get_error(code, params)`; движки эмитят ТОЛЬКО код.**
+  («Ядро реакций» — это реестр `server_reactions.yaml` + 102 строки читалки-маппера `core/reactions`,
+  а не отдельный движок; слово уточнено S24 по F83, чтобы требование не искали в несуществующем модуле.)
   *Откуда:* F43/F5/B2 (реестр обходится хендлерами `_err`; DEFAULT игнорит template), DIM-10. *Приёмка:* strict-xfail
   F43/F5 (`test_audit_fixes`) становятся 🟢; `_err` и `engine._error` идут через реестр; `reaction_class`/`message`/
   `recovery` — из `server_reactions.yaml`, не хардкод в движках. *GitHub-кандидат:* нет (наш реестр); паттерн «errors as data».
 - **R-CONTRACT2 — коды всех подсистем ⊂ `server_reactions.yaml`; `KNOWN_ERROR_CODES` синхронен с реестром.**
   *Откуда:* F40 (search-орфаны `QUERY_NOT_FOUND`/`PATH_NOT_FOUND`), DIM-10. *Приёмка:* strict-xfail F40 → 🟢; тест
   паритета «коды кода ⊂ реестр» в CI. *GitHub-кандидат:* нет.
-- **R-CONTRACT3 — parity до клиента: `reaction_class`/`recovery` доезжают в MCP `structuredContent`.**
+- ✅ **R-CONTRACT3 — parity до клиента: `reaction_class`/`recovery` доезжают в MCP `structuredContent`.**
   *Откуда:* D30 (транспорт ГОТОВ — под-7) + F43 (хендлеры не заполняют). *Приёмка:* живой C2 видит class/recovery в error.
+  **ВЫПОЛНЕНО S24 и проверено живым сервером** (`test_firewall` §3): на отказе приезжают `code`,
+  `reaction_class` и `recovery.reason`, на успехе — `facts`; роль `status` играет родное `isError`.
+  То есть паритет G14/D30 на проводе ЕСТЬ — прежняя формулировка «внутренний ToolResult богаче
+  того, что видит клиент» устарела и держалась на чтении кода, а не на прогоне.
+  *Осталось от T7:* сам conformance-гейт в CI (DIM-1), а не паритет.
   *GitHub-кандидат:* `modelcontextprotocol/conformance` (parity-гейт, DIM-1).
 
 ## Ось 3 — Безопасность (ОБА направления) — паттерны/фиксы из `06`, GitHub НЕ ищем

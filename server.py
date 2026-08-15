@@ -59,7 +59,10 @@ HOST = os.environ.get("MCP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MCP_PORT", "8080"))
 
 BASE_PATH = Path(__file__).parent
-WORKSPACE_PATH = BASE_PATH / "workspace"
+# Рабочая область переопределяется переменной среды по той же причине, что хост и порт: иначе
+# поднять сервер рядом с боевым нечем, и тест против ЖИВОГО сервера правил бы настоящие данные
+# канала. Значение резолвится и создаётся — «указал и не создал» иначе падало бы позже и глуше.
+WORKSPACE_PATH = Path(os.environ.get("MCP_WORKSPACE") or (BASE_PATH / "workspace")).resolve()
 CONFIG_PATH = BASE_PATH / "config"
 
 # D12: если задан — валидируем заголовок Origin (анти-DNS-rebinding).

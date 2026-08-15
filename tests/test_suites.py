@@ -17,17 +17,22 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Наборы, которым нужен ЖИВОЙ сервер/туннель — отдельный маркер, вне основного гейта (до харнесса T2).
-LIVE = {"test_firewall.py"}
+# Наборы, которым нужен ЖИВОЙ сервер/туннель. Пусто с S24: харнесс `tests/harness` (T2) поднимает
+# сервер сам — свой порт, своя временная область, настоящий ключ, — поэтому «живые» наборы больше
+# не требуют запущенного вручную сервера и идут в общем гейте наравне.
+LIVE: set[str] = set()
 # Adversarial-симуляции: маркер для селекции (`-m sim`), в гейте участвуют наравне.
 SIM_DIRS = {"virus_injection", "cache_injection", "cache_overflow", "bot_army", "config_change",
             "render_draft_final", "agent_swarm"}
 # Не наборы: этот раннер и его инфраструктура.
 SKIP_FILES = {"test_suites.py", "conftest.py"}
+# Не наборы: харнесс — библиотека для наборов, а не набор (в нём нет своих проверок).
+SKIP_DIRS = {"harness"}
 
 
 def _discover() -> list[Path]:
-    return sorted(p for p in (ROOT / "tests").rglob("test_*.py") if p.name not in SKIP_FILES)
+    return sorted(p for p in (ROOT / "tests").rglob("test_*.py")
+                  if p.name not in SKIP_FILES and not (set(p.parts) & SKIP_DIRS))
 
 
 def _params():

@@ -1,7 +1,8 @@
 # I3: CI-гейт под фазу фиксов. Хард-гейты: ruff, mypy, тесты (in-process), bandit, gitleaks.
 # Advisory: pip-audit (уязвимости зависимостей — требуют dep-bump с регрессией на живом сервере).
-# Тесты — через pytest-раннер (T0): наборы находятся автоматически, `-m "not live"` отсекает те,
-# что требуют поднятого сервера/туннеля (вернутся с харнессом T2). Симуляции C2 — in-process, в гейте.
+# Тесты — через pytest-раннер (T0): наборы находятся автоматически. Отсечения «живых» больше НЕТ
+# (S24, T2): харнесс `tests/harness` поднимает сервер сам — свой порт, своя временная рабочая
+# область, настоящий ключ, — поэтому периметр проверяется в CI, а не «когда-нибудь руками».
 name: CI
 
 on:
@@ -45,7 +46,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-calc
       # I7 T0: единый раннер вместо ручного перечисления файлов (F50 — забытая строка = тест вне гейта).
       # tests/test_suites.py находит все наборы сам и гоняет каждый подпроцессом (exit-код = вердикт).
-      # `not live` отсекает наборы, которым нужен поднятый сервер/туннель — вернутся с харнессом (T2).
+      # S24 (T2): маркер `live` больше никого не отсекает — сервер поднимает харнесс.
       - name: tests (pytest gate) + покрытие
         # T1: VPM_COVERAGE=1 → наборы гоняются под `coverage run --parallel-mode` (иначе подпроцессы
         # не считаются и цифра = 0%). Порог — RATCHET от факта S18 (61%): падение ниже = красный гейт.
@@ -54,7 +55,7 @@ jobs:
           VPM_COVERAGE: "1"
         run: |
           python -m coverage erase
-          python -m pytest -m "not live"
+          python -m pytest
           python -m coverage combine
           python -m coverage report --fail-under=60
           python -m coverage xml
