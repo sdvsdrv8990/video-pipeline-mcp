@@ -267,6 +267,26 @@ _ctx = ToolContext(_eng, _ids, _sm, None, ExcelEngine(ws18),
                    TemplateEngine(ws18, _ids, TPL_DIR), LinkRegistry(ws18), ws18, CFG)
 _structure_group.register(_eng, _ctx)
 
+print("== 17b. Холодный старт: пустой реестр — не «всё в порядке» (F26) ==")
+_cold_ws = Path(tempfile.mkdtemp(prefix="vpm_cold_"))
+try:
+    _cold_sm = StateManager(_cold_ws)
+    _cold_eng = Engine(reactions=Reactions(CFG / "server_reactions.yaml"), state_manager=_cold_sm)
+    _cold_ctx = ToolContext(_cold_eng, IDGenerator(), _cold_sm, None, ExcelEngine(_cold_ws),
+                            TemplateEngine(_cold_ws, IDGenerator(), TPL_DIR),
+                            LinkRegistry(_cold_ws), _cold_ws, CFG)
+    _structure_group.register(_cold_eng, _cold_ctx)
+    _cold = asyncio.run(_cold_eng.call("structure_status", {}))
+    ok(_cold.data.get("cold_start") is True,
+       "на пустом реестре сервер говорит, что данных нет (а не молчит двумя пустыми списками)")
+    _advice_ids = [r["id"] for r in _cold.data.get("recommendations") or []]
+    ok(_advice_ids == ["no_data_yet", "study_competitors_first", "own_channel_fallback"],
+       f"советы приходят из декларации в объявленном порядке ({_advice_ids})")
+    ok(all(r["text"] for r in _cold.data["recommendations"]),
+       "у каждого совета есть текст: пустой совет хуже отсутствующего")
+finally:
+    _shutil.rmtree(_cold_ws, ignore_errors=True)
+
 
 def call(tool, **kw):
     return asyncio.run(_eng.tools[tool].handler(**kw))

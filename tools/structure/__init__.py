@@ -422,9 +422,13 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         orphans = ctx.link_registry.find_orphans()
         ours_no_comp = ctx.link_registry.find_childless("channel", "competitor_channel")
         facts = [Fact(type="EntityOrphaned", data=o) for o in orphans]
-        return ToolResult(status="success",
-                          data={"orphans": orphans, "our_channels_without_competitor": ours_no_comp},
-                          facts=facts)
+        data: dict = {"orphans": orphans, "our_channels_without_competitor": ours_no_comp}
+        # F26: на пустом реестре два пустых списка выглядят как «всё в порядке». Это холодный
+        # старт, и сервер обязан сказать, что данных нет, и с чего начать — советом, не запретом.
+        if not ctx.link_registry.check_integrity()["total_entities"]:
+            data["cold_start"] = True
+            data["recommendations"] = ctx.advice.get("structure_status.cold_start")
+        return ToolResult(status="success", data=data, facts=facts)
 
     async def structure_check_integrity() -> "ToolResult":
         """Фоновая проверка целостности реестра: висящие ссылки, дубликаты путей, сироты."""
