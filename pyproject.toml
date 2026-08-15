@@ -154,5 +154,6 @@ ignore_missing_imports = true
 explicit_package_bases = true
 namespace_packages = true
 # Прагматичный базовый уровень I4 (не strict). Ужесточение аннотаций — отдельным воркстримом.
-# Провайдеры — честные NotImplementedError-стабы (G16), out-of-MVP; типизируются в P-оси при постройке.
-exclude = "core/providers/"
+# `exclude = "core/providers/"` СНЯТ (S24, F88): он не работал — mypy идёт в провайдеров по импортам
+# из tools/media, а не обходом каталога, — и потому 15 ошибок типов там жили, пока сессии писали
+# «mypy PASS». Провайдеры давно не стабы: локальные адаптеры реальны и типизируются наравне.

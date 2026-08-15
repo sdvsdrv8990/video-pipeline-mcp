@@ -18,6 +18,10 @@ core/providers/adapters.py — какой КОД исполняет провай
 """
 
 import importlib
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:                       # рантайм-импорт остаётся ленивым (цикл модулей)
+    from .pool import ModelPool
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -78,7 +82,7 @@ class AdapterRegistry:
         return self.project_root / str(local.get("models_dir", "vendor/models"))
 
     @property
-    def pool(self) -> "object":
+    def pool(self) -> "ModelPool":
         """Живые модели процесса. Адаптер создаётся на каждый вызов, а поднятая модель — нет."""
         from .hardware import probe
         from .pool import ModelPool

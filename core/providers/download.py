@@ -77,7 +77,7 @@ class ResultDownloader:
             candidates = [host]
         except ValueError:
             try:
-                candidates = [info[4][0] for info in socket.getaddrinfo(host, None)]
+                candidates = [str(info[4][0]) for info in socket.getaddrinfo(host, None)]
             except OSError:
                 # Имя не резолвится — пусть отказывает сама загрузка, с её сообщением.
                 return False

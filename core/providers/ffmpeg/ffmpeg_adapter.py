@@ -6,7 +6,7 @@ core/providers/ffmpeg/ffmpeg_adapter.py — FFmpeg Adapter
 Claude видит только наш интерфейс, внешний MCP скрыт за адаптером.
 """
 
-from core.contracts import ToolResult, ErrorDetail, Recovery, TaskStatus, Fact
+from core.contracts import ToolResult, ErrorDetail, Recovery, TaskStatus
 
 
 class FFMpegAdapter:
@@ -130,80 +130,13 @@ class FFMpegAdapter:
         Returns:
             ToolResult с путями к draft и final
         """
-        # 1. Trigger draft
-        draft_result = await self.trigger_render(
-            video_id=video_id,
-            scene_id=scene_id,
-            render_stage="draft",
-            render_profile=render_profile,
-            scene_data=scene_data,
-            layout_data=layout_data,
-            output_path=f"{output_dir}/{video_id}_draft.mp4"
-        )
-        if draft_result.status == "error":
-            return draft_result
-
-        # 2. Poll draft
-        draft_task_id = draft_result.data["task_id"]
-        while True:
-            status = await self.poll_render_status(draft_task_id)
-            if status.status in ("completed", "failed"):
-                break
-            # ждём...
-
-        if status.status == "failed":
-            return ToolResult(status="error", error=status.error)
-
-        # 3. Download + verify draft
-        draft_download = await self.download_rendered(draft_task_id)
-        if draft_download.status == "error":
-            return draft_download
-
-        draft_render_id = draft_download.data["render_id"]
-
-        # 4. Trigger final (с привязкой к draft)
-        final_result = await self.trigger_render(
-            video_id=video_id,
-            scene_id=scene_id,
-            render_stage="final",
-            render_profile=render_profile,
-            scene_data=scene_data,
-            layout_data=layout_data,
-            output_path=f"{output_dir}/{video_id}_final.mp4",
-            derived_from_render_id=draft_render_id
-        )
-        if final_result.status == "error":
-            return final_result
-
-        # 5. Poll final
-        final_task_id = final_result.data["task_id"]
-        while True:
-            status = await self.poll_render_status(final_task_id)
-            if status.status in ("completed", "failed"):
-                break
-
-        if status.status == "failed":
-            return ToolResult(status="error", error=status.error)
-
-        # 6. Download + verify final
-        final_download = await self.download_rendered(final_task_id)
-        if final_download.status == "error":
-            return final_download
-
-        return ToolResult(
-            status="success",
-            data={
-                "draft_render_id": draft_render_id,
-                "draft_file_path": draft_download.data["file_path"],
-                "final_render_id": final_download.data["render_id"],
-                "final_file_path": final_download.data["file_path"],
-                "verified": final_download.data["verified"]
-            },
-            facts=[
-                Fact(type="RenderCompleted", data={"video_id": video_id, "scene_id": scene_id, "stage": "draft"}),
-                Fact(type="RenderCompleted", data={"video_id": video_id, "scene_id": scene_id, "stage": "final"})
-            ]
-        )
+        # Оркестрация написана против четырёх примитивов выше, а они все — честные
+        # NotImplementedError: собранная последовательность не исполнялась ни разу и вызывающих
+        # у неё нет. Держать 90 строк мёртвого сценария вместо честного отказа = обещать
+        # работу, которой нет (G16). Порядок шагов, когда провайдер появится:
+        # draft → poll → download+verify → final (derived_from draft) → poll → download+verify.
+        raise NotImplementedError(
+            "render_full_pipeline будет реализован при подключении внешнего MCP: сначала примитивы trigger/poll/download, затем сборка")
 
     def _map_error(self, external_error: dict) -> ErrorDetail:
         """Маппинг ошибки внешнего MCP на нашу систему.

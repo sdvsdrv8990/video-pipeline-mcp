@@ -253,7 +253,8 @@ class ModelCatalog:
         names = [n for n in sizes if not want or n.lower().endswith(tuple(want))]
         keep, _ = self.allowed_files(names)
         chosen = self.prefer(keep) or (keep[0] if keep else "")
-        card = info.card_data.to_dict() if getattr(info, "card_data", None) else {}
+        card_data = getattr(info, "card_data", None)
+        card = card_data.to_dict() if card_data else {}
         base = card.get("base_model")
         base = str(base[0]) if isinstance(base, list) and base else str(base or "")
         out = {"file": chosen, "base_model": base,

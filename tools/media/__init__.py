@@ -14,6 +14,7 @@ tools/media — медиа-слой: кто исполняет ресурс, и 
 
 import json
 from collections import defaultdict
+from functools import partial
 from pathlib import Path
 
 from core.contracts import Fact, ToolResult
@@ -106,7 +107,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         registry = AdapterRegistry(ctx.config_path / "providers.yaml", ctx.config_path.parent)
         resolved, failed = [], []
         for rt in types:
-            ok_r, res = ctx.safe(lambda t=rt: resolver.resolve(rows, t, source=source))
+            ok_r, res = ctx.safe(partial(resolver.resolve, rows, rt, source=source))
             if ok_r:
                 res["key"] = _key_state(table, res["provider"], rt, registry)
                 resolved.append(res)
@@ -210,7 +211,11 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         rel = _asset_path(cfg, cycle, table, resource_type, slug, scene_id, params,
                           source_stem=source_file.stem if source_file else "")
         # Тип файла — та же дверь, что у любой записи (S2): результат провайдера не привилегирован.
-        ok, target = ctx.safe(lambda: (ctx.write_policy.check(rel), ctx.resolve(rel))[1])
+        def _checked_target() -> Path:
+            ctx.write_policy.check(rel)          # бросает при запрещённом типе
+            return ctx.resolve(rel)
+
+        ok, target = ctx.safe(_checked_target)
         if not ok:
             return target
         # Каталог ассетов заводит тот, кто владеет путём. Адаптер получает готовое место —
@@ -287,9 +292,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                     "Асинхронный провайдер обязан уметь прозвонить статус — иначе причина "
                     "отказа (модерация, лимит, недоступность) не вернётся никогда.")
             # Прозвонка нужна не «дождаться», а поймать причину отказа.
-            ok, waited = ctx.safe(lambda: cycle.wait(adapter.poll, outcome.task_id))
+            ok, polled = ctx.safe(lambda: cycle.wait(adapter.poll, outcome.task_id))
             if not ok:
-                return waited
+                return polled
+            waited = polled
             answer = waited.get("answer") or {}
             if callable(getattr(adapter, "fetch", None)):
                 ok, fetched = ctx.safe(lambda: adapter.fetch(answer, target))
@@ -310,7 +316,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         verified = []
         for path in outcome.files:
             rel_file = str(Path(path).relative_to(ctx.workspace_path))
-            ok, report = ctx.safe(lambda p=rel_file: cycle.verify_download(p, ctx.workspace_path))
+            ok, report = ctx.safe(partial(cycle.verify_download, rel_file, ctx.workspace_path))
             if not ok:
                 return report
             verified.append(report)
@@ -408,8 +414,9 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                         rows, source = fresh[:limit] if limit else fresh, "provider"
                     else:
                         # Частичный результат помечаем: список из реестра остаётся, но он старее.
-                        live_error = {"code": fresh.error.code if fresh.error else "INTERNAL_ERROR",
-                                      "message": _hide_key(fresh, key).error.message if fresh.error else ""}
+                        hidden = _hide_key(fresh, key).error
+                        live_error = {"code": hidden.code if hidden else "INTERNAL_ERROR",
+                                      "message": hidden.message if hidden else ""}
         else:
             # Описание тянется всегда: выбирать модель по размеру и числу загрузок — вслепую.
             ok, rows = ctx.safe(lambda: catalog.available(kind or "tts", limit=limit, describe=True))

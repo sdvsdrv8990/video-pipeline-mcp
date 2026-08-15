@@ -90,7 +90,7 @@ class OnnxImage:
         from PIL import Image
 
         if size:
-            image = image.resize(size, Image.BICUBIC)
+            image = image.resize(size, Image.Resampling.BICUBIC)
         arr = np.asarray(image.convert("RGB"), dtype=np.float32)
         if prep.get("do_rescale", True):
             arr = arr * float(prep.get("rescale_factor") or 1 / 255)

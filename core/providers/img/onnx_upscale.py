@@ -43,6 +43,10 @@ class OnnxUpscale(OnnxImage):
                 from PIL import Image
                 out = Image.new("RGB", (image.width * scale, image.height * scale))
             out.paste(piece, (box[0] * scale, box[1] * scale))
+        if out is None:
+            raise ProviderError(
+                "LOCAL_INFERENCE_FAILED", "Апскейл не дал ни одной плитки.",
+                reason="Картинка пуста или плитка больше самого кадра — проверь tile/tile_overlap.")
         request.target.parent.mkdir(parents=True, exist_ok=True)
         out.save(request.target)
         return MediaOutcome(files=[request.target], meta={

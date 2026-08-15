@@ -179,18 +179,23 @@ class HttpImageAPI:
 
     def _body(self, decl: dict, request: MediaRequest) -> dict:
         """Тело запроса: файл + поля строки. Форма отправки — свойство провайдера, не наше."""
+        source = request.source
+        if source is None:
+            raise ProviderError(
+                "VALIDATION_ERROR", "Этот вид ресурса перерабатывает готовый файл, а его нет.",
+                reason="В input нужен путь к существующему файлу внутри рабочей области.")
         fields = self._fields(decl, request)
         field = str(decl.get("file_field") or "file")
         mode = str(decl.get("send_mode") or "multipart")
         if mode == "paths":
             return {"json": self._paths_body(request, fields)}
         if mode != "json_base64":
-            return {"files": {field: (request.source.name, request.source.read_bytes())},
+            return {"files": {field: (source.name, source.read_bytes())},
                     "data": {k: v for k, v in fields.items() if not isinstance(v, (dict, list))}}
         # Провайдер принимает не multipart, а данные прямо в JSON. Base64 раздувает файл на треть,
         # поэтому предел объявлен: кадр 4К иначе уедет запросом на десятки мегабайт.
         limit_mb = float(decl.get("max_inline_mb") or 0)
-        size_mb = request.source.stat().st_size / 1e6
+        size_mb = source.stat().st_size / 1e6
         if limit_mb and size_mb > limit_mb:
             raise ProviderError(
                 "CONTENT_REJECTED",
@@ -198,8 +203,8 @@ class HttpImageAPI:
                 reason="Этот провайдер принимает картинку внутри запроса, и большой файл он "
                        "отклонит сам. Уменьши кадр или подними max_inline_mb в "
                        "config/providers.yaml → online.http.")
-        data = base64.b64encode(request.source.read_bytes()).decode()
-        suffix = request.source.suffix.lstrip(".") or "png"
+        data = base64.b64encode(source.read_bytes()).decode()
+        suffix = source.suffix.lstrip(".") or "png"
         self._put(fields, field, f"data:image/{suffix};base64,{data}")
         return {"json": fields}
 
@@ -266,7 +271,7 @@ class HttpImageAPI:
         timeout = (float(timeout) if isinstance(timeout, (int, float))
                    else float(decl.get("timeout_sec") or 120.0))
         headers = self._headers(decl, request.api_key)
-        last = None
+        last: Exception | None = None
         for attempt in range(attempts):
             try:
                 response = httpx.request(method, url, headers=headers, timeout=timeout,
@@ -278,13 +283,17 @@ class HttpImageAPI:
                     return response
                 last = self._refusal(response)
                 if response.status_code not in retry_on:
-                    raise last
+                    raise last or ProviderError(
+                        "PROVIDER_FAILED", "Провайдер не ответил и не назвал причины.",
+                        reason="Ни одна попытка не дошла до ответа — повтори позже.")
                 # Провайдер сам говорит, когда повторять — его срок важнее нашего.
                 pause = max(pause, float(response.headers.get("Retry-After") or 0))
             if attempt + 1 < attempts and pause:
                 time.sleep(pause)
                 pause *= 2                                  # перегрузку не лечат равномерным долблением
-        raise last
+        raise last or ProviderError(
+            "PROVIDER_FAILED", "Провайдер не ответил и не назвал причины.",
+            reason="Ни одна попытка не дошла до ответа — повтори позже или смени провайдера.")
 
     @staticmethod
     def _unreachable(decl: dict, provider: str, exc: Exception) -> ProviderError:
@@ -338,7 +347,8 @@ class HttpImageAPI:
         """
         import re
 
-        fields = (next(iter(self._decl_cache.values()), {}) or {}).get("error_fields") or {}
+        first: dict = next(iter(self._decl_cache.values()), {})
+        fields = first.get("error_fields") or {}
         if not fields:
             return None
         try:
@@ -383,14 +393,14 @@ class HttpImageAPI:
         return self._json(response)
 
     def _poll_headers(self) -> dict:
-        decl = next(iter(self._decl_cache.values()), {})
+        decl: dict = next(iter(self._decl_cache.values()), {})
         return self._headers(decl, self._api_key) if self._api_key else {}
 
     def fetch(self, answer: dict, target: Path) -> Path:
         """Забрать результат. Правила загрузки — общие, из media_tasks.yaml."""
         from ..download import ResultDownloader
 
-        decl = next(iter(self._decl_cache.values()), {})
+        decl: dict = next(iter(self._decl_cache.values()), {})
         if self._result_url:
             # Очередь fal отдаёт результат отдельным адресом: статус говорит лишь «готово».
             answer = self._json(self._get(self._result_url))

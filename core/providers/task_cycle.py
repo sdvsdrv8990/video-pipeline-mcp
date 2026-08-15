@@ -126,7 +126,7 @@ class TaskCycle:
         """
         rules = ((self.config.get("download") or {}).get("verify") or {})
         # Ссылка приходит извне, адресу доверять нельзя: containment обязателен (G17).
-        target = safe_resolve(rel_path, workspace)
+        target = safe_resolve(rel_path, Path(workspace))
         checks: dict[str, bool] = {}
 
         if rules.get("exists", True):

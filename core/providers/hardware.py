@@ -263,7 +263,7 @@ def compute_device(gpu_rules: dict, want: str = "", hw: dict | None = None) -> d
     asked = str(want or "").strip().lower()
     if asked and asked != "auto":
         on_cpu = asked == "cpu"
-        card = next((c for c in (hw.get("gpu") or []) if c.get("vram_free_mb")), {})
+        card: dict = next((c for c in (hw.get("gpu") or []) if c.get("vram_free_mb")), {})
         return {"device": asked, "dtype": str(dtypes.get("cpu" if on_cpu else "gpu", "")),
                 "available_mb": ram if on_cpu else int(card.get("vram_free_mb") or 0),
                 "source": "строка канала", "why": f"устройство '{asked}' задано столбцом строки"}

@@ -161,7 +161,7 @@ def build_context(engine: Engine, id_generator: IDGenerator, state_manager: Stat
     # S23: какие каталоги внутри рабочей области закрыты — объявлено в firewall.yaml. Конфиг
     # только РАСШИРЯЕТ встроенный минимум: не загрузился — запрет остаётся (fail-closed).
     _fw = config_path / "firewall.yaml"
-    _declared = []
+    _declared: list[str] = []
     if _fw.exists():
         try:
             _declared = ((yaml.safe_load(_fw.read_text(encoding="utf-8")) or {})

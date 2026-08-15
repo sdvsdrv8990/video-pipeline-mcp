@@ -19,6 +19,7 @@ core/providers/model_spec.py — что модель принимает на в�
 
 import json
 import time
+from typing import Any
 from pathlib import Path
 
 from .declaration import Declaration
@@ -125,7 +126,7 @@ class ModelSpec:
     @staticmethod
     def _dig_schema(data: dict, path: str) -> dict:
         """Достать схему по объявленному пути. `{Input}` — имя схемы, кончающееся на Input."""
-        node = data
+        node: Any = data
         for part in path.split("."):
             if not part:
                 continue

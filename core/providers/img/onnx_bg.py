@@ -65,7 +65,7 @@ class OnnxBGRemoval(OnnxImage):
             # Резкая граница вместо полупрозрачной каймы: нужна для плашек и оверлеев.
             alpha = (alpha >= float(cutoff)).astype(np.float32)
         alpha_img = Image.fromarray((alpha * 255).astype(np.uint8), mode="L").resize(
-            image.size, Image.BILINEAR)
+            image.size, Image.Resampling.BILINEAR)
         cut = image.convert("RGB")
         colour = str(params.get("bg_color") or "").strip()
         if colour:

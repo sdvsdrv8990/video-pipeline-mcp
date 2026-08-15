@@ -97,9 +97,9 @@ class ProviderResolver:
         current = candidates[0]
         depth = int(self.config.get("max_fallback_depth", 5))
         for _ in range(depth):
-            name = current.get(prov_col)
-            if name in chain:
-                break                                   # кольцо в данных — дальше не идём
+            name = str(current.get(prov_col) or "")
+            if not name or name in chain:
+                break                                   # пусто или кольцо в данных — дальше не идём
             chain.append(name)
             if not self._exhausted(current):
                 return {
