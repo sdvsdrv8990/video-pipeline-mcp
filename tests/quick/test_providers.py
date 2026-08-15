@@ -337,7 +337,7 @@ except ProviderError as e:
     ok(e.code == "LOCAL_MODEL_MISSING", f"имя модели из данных не выводит за корень весов ({e.code})")
 for _mod in ("core/providers/tts/piper_local.py", "core/providers/img/diffusers_local.py"):
     _msrc = (ROOT / _mod).read_text(encoding="utf-8")
-    _code = "\n".join(l for l in _msrc.splitlines() if not l.lstrip().startswith("#"))
+    _code = "\n".join(_line for _line in _msrc.splitlines() if not _line.lstrip().startswith("#"))
     _code = _code.split('"""', 2)[-1]                     # шапку модуля не считаем кодом
     ok("SUBDIR" not in _code and 'models_dir /' not in _code,
        f"{Path(_mod).name}: подкаталог весов не зашит в код")
@@ -634,7 +634,8 @@ ok(not _out.exists(), "недописанный файл удалён, а не �
 _srv_http.shutdown()
 
 print("== 14. Ключи провайдеров: лежат в канале, зашифрованы, ИИ недоступны (S23) ==")
-from core.paths import BUILTIN_SECRET_DIRS, SecretAccessError, configure_secret_dirs, is_secret_path
+from core.paths import (BUILTIN_SECRET_DIRS, PathEscapeError, SecretAccessError,
+                        configure_secret_dirs, is_secret_path, safe_resolve)
 from core.secrets import ChannelSecrets, fingerprint, redact
 
 _KEY = "sk-СЕКРЕТНЫЙ-КЛЮЧ-1234567890"
@@ -693,6 +694,16 @@ configure_secret_dirs(["мои_ключи"])
 ok(is_secret_path("ch/мои_ключи/x") and is_secret_path("ch/.secrets/x"),
    "конфиг добавляет закрытые имена к встроенному минимуму")
 configure_secret_dirs(sorted(BUILTIN_SECRET_DIRS))
+
+# «Двери нет» и «путь наружу» — РАЗНЫЕ причины, и различает их сам тип исключения. Без этого
+# закрытый каталог пришёл бы как PATH_ESCAPE, и модель искала бы обход там, где двери просто нет.
+try:
+    safe_resolve("ch/.secrets/provider_keys.enc", _ws)
+    ok(False, "закрытый каталог обязан отказывать")
+except SecretAccessError:
+    ok(True, "закрытый каталог → SecretAccessError, а не общий выход за область")
+except PathEscapeError:
+    ok(False, "закрытый каталог назван «выходом за область» — причина подменена")
 
 print("== 14b. Провайдеру нужен ключ: сервер говорит «прав нет», а не молчит ==")
 _kcfg_dir = Path(tempfile.mkdtemp(prefix="key_cfg_")) / "config"

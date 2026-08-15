@@ -318,6 +318,59 @@ ok(any("проверить полноту" in w for w in r["warnings"]),
    "секционный дашборд помечен как возможно неполный, а не выдан за полный")
 
 
+print("== 9. Инструмент фазы ТАБЛИЦЫ (F76: падал NameError при ЛЮБОМ вызове) ==")
+import asyncio as _aio                                        # noqa: E402
+import yaml as _yaml                                          # noqa: E402
+from core.engine import Engine as _Eng                        # noqa: E402
+from core.ids import IDGenerator as _IDG                      # noqa: E402
+from core.state import StateManager as _SM                    # noqa: E402
+import server as _srv                                         # noqa: E402
+
+_ws9 = Path(tempfile.mkdtemp(prefix="tm9_")) / "workspace"
+_ws9.mkdir(parents=True)
+_sm9 = _SM(_ws9)
+_eng9 = _Eng(state_manager=_sm9)
+_srv.register_basic_tools(_eng9, _IDG(), _sm9)
+
+
+def _call9(**params):
+    return _aio.run(_eng9.call("structure_materialize_tables", params))
+
+
+# Ядро материализатора было покрыто (§5–§7), а обёртка — нет: она звала имя, которого в ней нет.
+_r9 = _call9(pending=[{"path": "networks/n1/network_config.xlsx",
+                       "table_template": "network_config", "file_id": "F1"}])
+ok(_r9.status == "success",
+   f"инструмент отработал, а не упал на собственной проводке ({_r9.error.code if _r9.error else 'ok'})")
+ok((_ws9 / "networks" / "n1" / "network_config.xlsx").is_file(),
+   "книга легла на диск ЧЕРЕЗ инструмент, а не только через ядро")
+ok(_r9.facts and _r9.facts[0].type == "TableMaterialized", "результат пришёл фактом контракта")
+
+# mode=custom: схемы берутся из `.templates/` ПО АДРЕСУ книги. Без режима сюда молча приезжали
+# бы серверные схемы — проект, который свои завёл, не узнал бы, что они не сработали.
+_proj9 = _ws9 / "networks" / ".templates" / "tables"
+_proj9.mkdir(parents=True)
+(_proj9 / "network_config.schema.yaml").write_text(_yaml.safe_dump({
+    "book": "network_config", "level": "network",
+    "sheets": [{"name": "ТОЛЬКО_ПРОЕКТНЫЙ",
+                "columns": [{"name": "col", "type": "string", "flag": "W"}]}]},
+    allow_unicode=True), encoding="utf-8")
+_r9c = _call9(pending=[{"path": "networks/n2/network_config.xlsx",
+                        "table_template": "network_config"}], mode="custom")
+ok(_r9c.status == "success"
+   and _r9c.data["templates"]["networks/n2/network_config.xlsx"] == "project",
+   f"сказано, ЧЬИ шаблоны сработали ({_r9c.data.get('templates') if _r9c.status == 'success' else _r9c.error.code})")
+ok(_r9c.status == "success"
+   and [s["sheet"] for s in _r9c.data["materialized"][0]["sheets"]] == ["ТОЛЬКО_ПРОЕКТНЫЙ"],
+   "проектная схема ПРИМЕНЕНА, а не только названа")
+_r9d = _call9(pending=[{"path": "networks/n3/network_config.xlsx",
+                        "table_template": "network_config"}])
+ok(_r9d.status == "success" and len(_r9d.data["materialized"][0]["sheets"]) > 1,
+   "без режима действуют серверные схемы — проектные не подмешиваются сами")
+_r9m = _call9(pending=[], mode="нечто")
+ok(_r9m.status == "error" and _r9m.error.code == "VALIDATION_ERROR",
+   f"неизвестный режим → отказ кодом реестра ({_r9m.error.code if _r9m.error else 'успех!'})")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

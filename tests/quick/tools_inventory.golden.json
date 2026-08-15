@@ -1853,10 +1853,19 @@
    "idempotentHint": false,
    "readOnlyHint": false
   },
-  "description": "ДОГОНЯЮЩАЯ фаза ТАБЛИЦЫ (обычно не нужна: structure_create материализует книги сам). Создаёт .xlsx-книги по отложенным записям structure_create (факты TableDeferred: path + table_template). Форма книги берётся из декларации config/templates/tables/<table_template>.schema.yaml — листы, столбцы, формулы вычисляемых колонок, выпадающие списки enum. Отказ одной книги не отменяет остальные: результат содержит materialized и failed с кодом реакции на каждую неудачу.",
+  "description": "ДОГОНЯЮЩАЯ фаза ТАБЛИЦЫ (обычно не нужна: structure_create материализует книги сам). Создаёт .xlsx-книги по отложенным записям structure_create (факты TableDeferred: path + table_template). Форма книги берётся из декларации config/templates/tables/<table_template>.schema.yaml — листы, столбцы, формулы вычисляемых колонок, выпадающие списки enum. Отказ одной книги не отменяет остальные: результат содержит materialized и failed с кодом реакции на каждую неудачу. Режим передавай тот же, каким создавалась структура: при mode=custom схемы берутся из `.templates/` проекта по адресу КАЖДОЙ книги, и ответ говорит, чьи шаблоны сработали.",
   "group": "structure",
   "input_schema": {
    "properties": {
+    "mode": {
+     "default": "default",
+     "description": "Чьи схемы книг применять: серверные (default) или проектные `.templates/` (custom)",
+     "enum": [
+      "default",
+      "custom"
+     ],
+     "type": "string"
+    },
     "pending": {
      "description": "Отложенные книги из фактов TableDeferred",
      "items": {

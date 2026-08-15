@@ -309,7 +309,7 @@ async def main():
     _body = _env.read_text(encoding="utf-8")
     check("S21 в .env хранится отпечаток, а не ключ", f"{DIGEST_VAR}=" in _body and _new not in _body)
     check("S21 строки с открытым значением в файле нет",
-          not any(l.startswith(f"{TOKEN_VAR}=") for l in _body.splitlines()))
+          not any(_line.startswith(f"{TOKEN_VAR}=") for _line in _body.splitlines()))
     _legacy = Path(_tf.mkdtemp(prefix="s1old_")) / ".env"
     _legacy.write_text(f"KEEP=1\n{TOKEN_VAR}=старый-открытый-ключ\n", encoding="utf-8")
     _mig, _ = ensure_digest(_legacy, env={})

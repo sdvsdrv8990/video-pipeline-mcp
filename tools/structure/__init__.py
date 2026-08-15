@@ -579,9 +579,31 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "new_path": {"type": "string", "description": "Новый путь относительно workspace"},
         }, "required": ["entity_id", "new_path"]},
         handler=structure_migrate, group="structure", annotations=ANNOTATIONS_MODIFY)
-    async def structure_materialize_tables(pending: list[dict] | None = None) -> "ToolResult":
+    def _materialize_pending(pending: list[dict], mode: str) -> dict:
+        """Каждая книга материализуется шаблонами СВОЕГО адреса.
+
+        При `mode=custom` `.templates/` ищется вверх от адреса книги: один материализатор на весь
+        список молча подставил бы соседям чужие схемы. Чьи шаблоны сработали — в ответе.
+        """
+        out: dict = {"materialized": [], "failed": [], "total": len(pending), "templates": {}}
+        for item in pending:
+            path = str(item.get("path") or "")
+            dirs = ctx.template_resolver.resolve(path, mode)
+            part = TableMaterializer(ctx.excel_engine,
+                                     dirs["tables_dir"]).materialize_pending([item])
+            out["materialized"] += part["materialized"]
+            out["failed"] += part["failed"]
+            out["templates"][path] = dirs["source"]
+        out["created"] = len(out["materialized"])
+        return out
+
+    async def structure_materialize_tables(pending: list[dict] | None = None,
+                                           mode: str = "default") -> "ToolResult":
         """Фаза ТАБЛИЦЫ: материализация отложенных книг по декларациям (A1′)."""
-        ok, res = ctx.safe(lambda: materializer.materialize_pending(pending or []))
+        if mode not in MODES:
+            return ctx.err("VALIDATION_ERROR", f"Неизвестный режим создания: {mode}.",
+                           f"Допустимо: {', '.join(sorted(MODES))}.")
+        ok, res = ctx.safe(lambda: _materialize_pending(pending or [], mode))
         if not ok:
             return res
         facts = [Fact(type="TableMaterialized", data={
@@ -607,8 +629,12 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "(факты TableDeferred: path + table_template). Форма книги берётся из декларации "
             "config/templates/tables/<table_template>.schema.yaml — листы, столбцы, формулы "
             "вычисляемых колонок, выпадающие списки enum. Отказ одной книги не отменяет остальные: "
-            "результат содержит materialized и failed с кодом реакции на каждую неудачу."),
+            "результат содержит materialized и failed с кодом реакции на каждую неудачу. "
+            "Режим передавай тот же, каким создавалась структура: при mode=custom схемы берутся из "
+            "`.templates/` проекта по адресу КАЖДОЙ книги, и ответ говорит, чьи шаблоны сработали."),
         input_schema={"type": "object", "properties": {
+            "mode": {"type": "string", "enum": ["default", "custom"], "default": "default",
+                     "description": "Чьи схемы книг применять: серверные (default) или проектные `.templates/` (custom)"},
             "pending": {"type": "array", "description": "Отложенные книги из фактов TableDeferred",
                         "items": {"type": "object", "properties": {
                             "path": {"type": "string", "description": "Путь книги относительно workspace"},

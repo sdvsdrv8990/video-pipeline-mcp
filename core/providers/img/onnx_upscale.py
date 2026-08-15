@@ -12,8 +12,6 @@ core/providers/img/onnx_upscale.py — увеличение картинки л�
 (`tile_overlap`), чтобы шов не был виден. Пусто — считаем картинку целиком.
 """
 
-from pathlib import Path
-
 from ..adapters import MediaOutcome, MediaRequest
 from ..resolver import ProviderError
 from .onnx_runtime import OnnxImage
