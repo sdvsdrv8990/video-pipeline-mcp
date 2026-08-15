@@ -264,6 +264,10 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
                                    -32000, f"Blocked: {fw_result.reason}"),
                     status=403
                 )
+            # Пропуск С причиной = сигнал log-only (деструктивный инструмент). Печатаем его:
+            # иначе сигнал живёт только в счётчике, который в проде не читает никто.
+            if fw_result.reason:
+                print(f"🔎 [firewall] подозрительно: {fw_result.reason}")
 
         # Лог факта подключения клиента: MCP-метод `initialize` = новый сеанс.
         # Это авторитетный сигнал, что Claude AI Web достучался до сервера через туннель.

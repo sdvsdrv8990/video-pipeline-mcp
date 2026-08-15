@@ -69,12 +69,16 @@ class Firewall:
             section: bool(config.get(section, {}).get("enabled", True))
             for section in ("rate_limit", "ip_blocklist", "injection_detection", "anomaly_detection")
         }
-        return rate_limiter, injection_detector, ip_blocklist, anomaly_detector, enabled
+        # Родня F54: `logging.log_suspicious` объявлялся в конфиге и не читался никем, поэтому
+        # сигнал log-only оставался немым — счётчик в памяти видели только тесты.
+        log_suspicious = bool(config.get("logging", {}).get("log_suspicious", True))
+        return (rate_limiter, injection_detector, ip_blocklist, anomaly_detector,
+                enabled, log_suspicious)
 
     def _assign(self, rules):
         """Присвоить собранный набор правил (атомарная точка подмены)."""
         (self.rate_limiter, self.injection_detector,
-         self.ip_blocklist, self.anomaly_detector, self.enabled) = rules
+         self.ip_blocklist, self.anomaly_detector, self.enabled, self.log_suspicious) = rules
 
     def reload(self, config: dict | None) -> bool:
         """Горячая перезагрузка правил из нового config БЕЗ пересоздания файрвола.
@@ -151,7 +155,10 @@ class Firewall:
                 reason=anomaly.reason,
             )
 
-        # Всё ок
+        # Пропускаем — но сигнал log-only обязан доехать наружу причиной: иначе деструктивный
+        # вызов в проде не оставляет следа нигде, а `reason` детектора выбрасывался здесь.
+        if self.log_suspicious and anomaly.reason:
+            return FirewallResult(decision=FirewallDecision.ALLOW, reason=anomaly.reason)
         return FirewallResult(decision=FirewallDecision.ALLOW)
 
     def block_ip(self, ip: str, reason: str = ""):
