@@ -321,6 +321,11 @@ def atk_write_py_then_execute(c: Ctx):
 
 
 def atk_shell_escape(c: Ctx):
+    """Метасимволы в параметрах + инвариант источника: ни одного вызова через оболочку.
+
+    Поведенческой пробы мало: sink может появиться там, куда рой не бьёт. Раньше инвариант
+    звучал «единственный subprocess — cloudflared» и устаревал с каждым новым сайтом.
+    """
     marker = ROOT / "tests" / "agent_swarm" / ".pwned_meta"
     marker.unlink(missing_ok=True)
     for name, args in (("fs_read_file", {"path": f"; touch {marker}"}),
@@ -329,7 +334,16 @@ def atk_shell_escape(c: Ctx):
         c.call(name, args)
     executed = marker.exists()
     marker.unlink(missing_ok=True)
-    return not executed, f"метасимволы не дошли до shell: {'ок' if not executed else 'ДОШЛИ'}"
+    sinks = []
+    for path in list((ROOT / "core").rglob("*.py")) + list((ROOT / "tools").rglob("*.py")) \
+            + [ROOT / "server.py"]:
+        source = path.read_text(encoding="utf-8")
+        for bad in ("shell=True", "os.system(", "os.popen(", "eval(", "exec("):
+            if bad in source:
+                sinks.append(f"{path.relative_to(ROOT)}:{bad}")
+    return (not executed) and not sinks, \
+        f"метасимволы не дошли до shell: {'ок' if not executed else 'ДОШЛИ'}; " \
+        f"sink-и в исходниках: {sinks or 'ни одного'}"
 
 
 def atk_run_as_root(c: Ctx):

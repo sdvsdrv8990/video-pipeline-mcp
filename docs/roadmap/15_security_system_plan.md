@@ -17,7 +17,7 @@
 | Containment путей `core/paths.safe_resolve` (G17 choke-point) | единая реализация, импортят все модули с путями; типизированный `PathEscapeError` | мутация M7 → `test_audit_fixes` + `test_search` краснеют |
 | Bearer-auth (D3) | код есть с первого коммита: `compare_digest`, 401 **до** файрвола | `server.py:67/181` |
 | Санитайзер секретов в `ErrorDetail` (D23) | `***REDACTED***` по ключам + вложенно | мутация M6 → красный |
-| No-root инвариант (§G) | exec-sinks (`os.system`/`eval`/`exec`/`shell=True`/`pickle`) — **∅**; uid 1000; единственный subprocess = cloudflared arg-списком | grep ∅; bandit -ll в CI |
+| No-root инвариант (§G) | exec-sinks (`os.system`/`eval`/`exec`/`shell=True`/`pickle`) — **∅**; uid 1000; 5 сайтов subprocess (tunnel, hardware, runner ×2, excel), КАЖДЫЙ arg-списком без оболочки (S24: было сказано «единственный — cloudflared», это устарело) | grep ∅; bandit -ll в CI |
 | Контракт инструментов (анти-rug-pull) | эталон `tools_inventory.golden.json` — тихая правка описания ловится | мутация M10 → красный |
 | **Auth fail-CLOSED (S1, F14)** | сервер сам выпускает токен при первом старте (`.env`, `0600`); пустой токен больше не открывает сервер; калитка только явным `MCP_ALLOW_NO_AUTH=1` | мутации M34–M36 → красные (`test_audit_fixes` 63) |
 | **Выключатели конфига живые (S0, F54)** | `enabled:` читается всеми правилами — `false` реально выключает | мутация M14 → красная |
