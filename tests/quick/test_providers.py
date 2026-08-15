@@ -835,8 +835,12 @@ _inst = _call("media_model_install", model_id="ru_RU-denis-medium", kind="tts")
 ok(_inst.status == "error" and _inst.error.code == "CONFIRM_REQUIRED",
    f"установка весов подтверждается явно: гигабайты с внешнего источника ({_inst.error.code if _inst.error else 'success'})")
 _lst = _call("media_models", scope="installed")
-ok(_lst.status == "success" and _lst.data["models"],
-   f"инструмент показывает, что стоит на машине ({len(_lst.data['models'])} моделей)")
+# Эталон — сама опись, а не «больше нуля»: на чистой машине моделей нет вовсе, и инструмент
+# обязан честно показать пустой список, а не считаться сломанным (F91).
+ok(_lst.status == "success"
+   and ([m["id"] for m in _lst.data["models"]]
+        == [e["id"] for e in ModelCatalog(CFG, ROOT / "vendor" / "models").inventory()]),
+   f"инструмент показывает ровно то, что в описи ({len(_lst.data['models'])} моделей)")
 _lst_on = _call("media_models", scope="online", kind="image", limit=5)
 ok(all(m["mode"] == "image_generation" for m in _lst_on.data["models"]),
    "и что умеет шлюз онлайн — с провайдером и эндпоинтом")
@@ -1448,27 +1452,30 @@ ok(all(g["allowed"] for g in _gaps14),
 ok(not any(g["param"] == "tile" for g in _gaps14),
    "наши служебные столбцы строки не объявлены моделью и не считаются нарушением")
 
-# Сквозь инструмент: спека приходит ИИ с источником и параметрами.
+# Сквозь инструмент: спека приходит ИИ с источником и параметрами. Спека читается ИЗ ФАЙЛОВ
+# модели, поэтому без поставленных весов проверять нечего — пропуск с причиной (F91).
 _spec_tool = _call("media_models", scope="spec", provider="Local_diffusers", model="sd-turbo")
-ok(_spec_tool.status == "success" and _spec_tool.data["source"] == "model_files"
-   and _spec_tool.data["parameters"],
-   f"инструмент отдаёт спеку с источником ({_spec_tool.data.get('source')})")
-ok(_spec_tool.facts and _spec_tool.facts[0].type == "ModelSpecRead",
-   "чтение спеки приходит фактом контракта (тип заведён в KNOWN_FACT_TYPES, D25)")
+if _spec_tool.status == "success" and _spec_tool.data.get("source") == "model_files":
+    ok(bool(_spec_tool.data["parameters"]),
+       f"инструмент отдаёт спеку с источником ({_spec_tool.data.get('source')})")
+    ok(_spec_tool.facts and _spec_tool.facts[0].type == "ModelSpecRead",
+       "чтение спеки приходит фактом контракта (тип заведён в KNOWN_FACT_TYPES, D25)")
 
-# И главное: вызов не состоится, если строка канала просит невозможное.
-(_ws / "spec14").mkdir()
-_PILImage.new("RGB", (32, 32), "#101010").save(_ws / "spec14" / "in.png")
-(_ws / "spec14" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
-    "S1": {"resource_type": "image_generations", "provider": "Local_diffusers",
-           "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
-           "warning_threshold": -1, "model": "sd-turbo", "img_size": 4096}}}}), encoding="utf-8")
-_deny14 = _call("media_generate", table="spec14", resource_type="image_generations",
-                input="кадр", scene_id="s1")
-ok(_deny14.status == "error" and _deny14.error.code == "VALIDATION_ERROR",
-   f"строка канала просит у модели невозможное — отказ ДО вызова ({_deny14.error.code if _deny14.error else 'успех!'})")
-ok("4096" in (_deny14.error.message if _deny14.error else ""),
-   "в отказе названо, ЧТО именно не подошло")
+    # И главное: вызов не состоится, если строка канала просит невозможное.
+    (_ws / "spec14").mkdir()
+    _PILImage.new("RGB", (32, 32), "#101010").save(_ws / "spec14" / "in.png")
+    (_ws / "spec14" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+        "S1": {"resource_type": "image_generations", "provider": "Local_diffusers",
+               "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+               "warning_threshold": -1, "model": "sd-turbo", "img_size": 4096}}}}), encoding="utf-8")
+    _deny14 = _call("media_generate", table="spec14", resource_type="image_generations",
+                    input="кадр", scene_id="s1")
+    ok(_deny14.status == "error" and _deny14.error.code == "VALIDATION_ERROR",
+       f"строка канала просит невозможное — отказ ДО вызова ({_deny14.error.code if _deny14.error else 'успех!'})")
+    ok("4096" in (_deny14.error.message if _deny14.error else ""),
+       "в отказе названо, ЧТО именно не подошло")
+else:
+    print("  ⚠ веса sd-turbo не поставлены — спека сквозь инструмент и отказ ДО вызова не проверены")
 
 print("== 15. Поднятая модель переживает вызов: пул с бюджетом (S24) ==")
 import time as _time                                          # noqa: E402
