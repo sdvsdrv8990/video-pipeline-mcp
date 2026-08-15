@@ -234,6 +234,20 @@ integ = reg13.check_integrity()
 ok(any(i["type"] == "missing_path" and i["id"] == "CH_solo" for i in integ["issues"]),
    "перенос мимо реестра → missing_path (раньше 0 issues)")
 
+# F25: обратная сторона — каталог создан мимо сервера, в реестре его нет.
+_stray = ws13 / "niches/gaming/channels/chStray"
+_stray.mkdir(parents=True, exist_ok=True)
+integ_back = reg13.check_integrity(tx)
+ok(any(i["type"] == "unregistered_path" and i["path"].endswith("chStray")
+       for i in integ_back["issues"]),
+   "каталог мимо сервера → unregistered_path (раньше диск не смотрели вовсе)")
+ok(any(i["type"] == "unregistered_path" and i["entity_type"] == "channel"
+       for i in integ_back["issues"]),
+   "тип узла берётся из объявления шаблонов, а не из имени каталога")
+ok(reg13.check_integrity()["disk_scan"].startswith("не выполнен"),
+   "без таксономии обратный проход НЕ выполняется и говорит об этом (а не молчит зелёным)")
+_stray.rmdir()
+
 print("== 18. Инструменты: создание ВТОРЫМ вызовом наследует цепочку (F63, сценарий владельца) ==")
 import asyncio
 

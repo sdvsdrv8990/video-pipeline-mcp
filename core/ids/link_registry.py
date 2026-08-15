@@ -245,8 +245,15 @@ class LinkRegistry:
                 "structure_status")
         return hits[0]
 
-    def check_integrity(self) -> dict:
-        """Проверка целостности реестра: висящие ссылки, дубликаты путей, сироты."""
+    def check_integrity(self, taxonomy=None) -> dict:
+        """Целостность в ОБЕ стороны: реестр→диск и диск→реестр.
+
+        Прямая сторона (запись есть, каталога нет) была всегда. Обратной не было, и каталог,
+        созданный мимо сервера, оставался невидимым: «целостность зелёная» при расхождении —
+        тот же класс немой потери, что и молчаливый отказ (F25). Обратный проход требует
+        таксономии (что здесь контейнер, а что сущность); без неё он честно НЕ выполняется
+        и это написано в ответе, а не подразумевается.
+        """
         data = self._load()
         entities = data.get("entities", {})
         issues = []
@@ -278,12 +285,49 @@ class LinkRegistry:
         for o in orphans:
             issues.append({"type": "orphan", "id": o["id"], "entity_type": o["type"],
                            "name": o["name"], "needs": o["needs_parent_type"]})
+        disk = self._scan_disk(taxonomy, set(paths_seen))
+        issues.extend(disk["issues"])
         return {
             "total_entities": len(entities),
             "by_type": ids_by_type,
             "issues_count": len(issues),
             "issues": issues,
+            "disk_scan": disk["state"],
         }
+
+    def _scan_disk(self, taxonomy, registered: set) -> dict:
+        """Обратный проход: каталоги-сущности на диске, которых нет в реестре (F25)."""
+        if taxonomy is None:
+            return {"issues": [], "state": "не выполнен: таксономия не передана"}
+        containers = taxonomy.containers
+        issues, checked = [], 0
+        for node in sorted(self.ws.rglob("*")):
+            if not node.is_dir():
+                continue
+            rel = node.relative_to(self.ws)
+            # Служебное (`.secrets`, `_шаблоны`) и сами контейнеры сущностями не являются.
+            if any(part[:1] in (".", "_") for part in rel.parts) or rel.name in containers:
+                continue
+            if rel.parent == Path(".") or rel.parent.name not in containers:
+                continue
+            checked += 1
+            if self._norm(str(rel)) not in registered:
+                issues.append({"type": "unregistered_path", "path": str(rel),
+                               "container": rel.parent.name,
+                               "entity_type": self._type_by_container(taxonomy, rel.parent.name)})
+        return {"issues": issues, "state": f"выполнен: узлов на диске {checked}"}
+
+    @staticmethod
+    def _type_by_container(taxonomy, container: str) -> str:
+        """Какой тип живёт в этом контейнере — по объявлению шаблонов, а не по имени каталога."""
+        guess = taxonomy.type_for_root_container(container)
+        if guess:
+            return guess
+        for node_type in taxonomy.node_types:
+            child = taxonomy.child_type_for(node_type, container)
+            if child:
+                return child
+        return ""
 
     def link(self, child_type: str = "", child_name: str = "", parent_type: str = "",
              parent_name: str = "", child_id: str = "", parent_id: str = "",

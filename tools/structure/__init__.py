@@ -428,7 +428,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
 
     async def structure_check_integrity() -> "ToolResult":
         """Фоновая проверка целостности реестра: висящие ссылки, дубликаты путей, сироты."""
-        ok, res = ctx.safe(lambda: ctx.link_registry.check_integrity())
+        ok, res = ctx.safe(lambda: ctx.link_registry.check_integrity(ctx.taxonomy))
         if not ok:
             return res
         facts = []
