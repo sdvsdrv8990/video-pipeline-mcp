@@ -74,9 +74,10 @@ per-channel конфига достаточно; это отменяет «ми�
 | Workspace-шаблоны (6 tpl) | ✅ **DONE** | `config/templates/workspace/*.tpl.yaml` × 6 |
 | `structure_create/link/migrate/status` | ✅ **DONE** | server.py + `tests/quick/test_structure.py` 35/35 |
 | Конфиг канала (7 секций → листы `channel_data`) | ✅ **DONE (S22)** | `test_structure §33b`: 7 листов + 34 строки-дефолта |
-| Таблично-схемный слой `config/templates/tables/*.schema.yaml` | ❌ **MISSING** | `config/templates/tables/` пуст |
-| `scripts/introspect_tables.py` | ❌ **MISSING** | не существует |
-| Лист `SCENES` + статус-столбцы в книгах | ❌ **MISSING** | по спеке §5.2/5.3 — руками |
+| Таблично-схемный слой `config/templates/tables/*.schema.yaml` | ✅ **DONE (S22, F20)** | 6 схем, **74 листа / 869 столбцов**; `scripts/spec_to_schema.py`, приёмка `test_table_materializer` 63/63 |
+| `scripts/introspect_tables.py` | ➖ **снят** | обратную задачу закрыл `scripts/spec_to_schema.py` (спека владельца → схема), интроспекция книг не понадобилась |
+| Лист `SCENES` | ✅ **DONE** | объявлен в `video_data.schema.yaml` (18 колонок, вкл. `scene_uniqueness`) |
+| Статус-enum-столбцы (HP active/damaged, производственный, статус видео) | ❌ **MISSING** | `grep 'damaged\|under_review' config/templates/tables/*.yaml` → ∅ |
 | Media-инструменты `tools/media/` + адаптеры | 🟡 **ЧАСТИЧНО (S22)** | `media_provider_status` + `media_generate` живые; адаптеры **локальные** (piper/diffusers) исполняют на этой машине, **облачные** (`litellm_*`) остались честными стабами — нет ключей и живого LiteLLM. Учёт расхода, цикл прозвонки, загрузка по ссылке и приёмка по диску — есть (`test_providers` 74/74) |
 | Table-примитивы `core/tables`/`core/excel` + `table_*`/`excel_*` | ✅ **DONE** | tables 33/33 |
 
