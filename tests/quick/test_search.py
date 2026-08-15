@@ -143,6 +143,51 @@ def main():
             check("D36 QueryPlanner.load_query('/etc/passwd') → PATH_ESCAPE",
                   getattr(e, "code", "") == "PATH_ESCAPE")
 
+        print("== QueryPlanner: фильтры и сортировка в СВОЕЙ зоне (F55, слепая зона 3) ==")
+        # Мутации M-F55 показали: регрессия F42 живёт только в `test_audit_fixes`, а хозяин зоны
+        # поиска фильтрацию/сортировку не проверял вовсе — снятие фильтра его не красило.
+        class _Snapshot:
+            """Источник данных планировщика: лист как его отдаёт движок таблиц."""
+
+            @staticmethod
+            def load_snapshot(_table):
+                return {"META": {"rows": {
+                    "R1": {"name": "альфа", "views": 100, "tag": "игры"},
+                    "R2": {"name": "бета", "views": 20, "tag": "музыка"},
+                    "R3": {"name": "гамма", "views": "много", "tag": "игры"},
+                }}}
+
+        qp2 = QueryPlanner(table_engine=_Snapshot(), workspace=ws)
+
+        def _rows(read_extra=None, sort=None):
+            data = {"name": "q", "description": "d",
+                    "reads": [{"table": "t", "sheet": "META", **(read_extra or {})}]}
+            if sort:
+                data["sort"] = sort
+            return qp2.execute_plan(qp2.load_query_from_dict(data))["rows"]
+
+        got = _rows({"filter": {"tag": "игры"}})
+        check("фильтр по равенству отбирает строки, а не отдаёт всё",
+              sorted(r["_row_id"] for r in got) == ["R1", "R3"], [r["_row_id"] for r in got])
+        got = _rows({"filter": {"views": {"gt": 50}}})
+        check("фильтр gt отбирает по числу и не падает на строковом значении (F42)",
+              [r["_row_id"] for r in got] == ["R1"], [r["_row_id"] for r in got])
+        got = _rows({"filter": {"name": {"contains": "ам"}}})
+        check("фильтр contains ищет подстроку", [r["_row_id"] for r in got] == ["R3"],
+              [r["_row_id"] for r in got])
+        got = _rows({"filter": {"tag": {"in": ["музыка"]}}})
+        check("фильтр in сужает по списку", [r["_row_id"] for r in got] == ["R2"],
+              [r["_row_id"] for r in got])
+        got = _rows(sort={"column": "views", "order": "desc"})
+        check("сортировка убыванием: наибольшее первым, чужеродное в хвосте (F90)",
+              [r["_row_id"] for r in got] == ["R1", "R2", "R3"], [r["_row_id"] for r in got])
+        got = _rows(sort={"column": "views", "order": "asc"})
+        check("сортировка возрастанием: порядок чисел развернулся, хвост остался хвостом (F90)",
+              [r["_row_id"] for r in got] == ["R2", "R1", "R3"], [r["_row_id"] for r in got])
+        got = _rows(sort={"column": "name", "order": "desc"})
+        check("текстовый столбец сортируется по-прежнему по алфавиту в обе стороны",
+              [r["_row_id"] for r in got] == ["R3", "R2", "R1"], [r["_row_id"] for r in got])
+
         print("== FsSearcher: _detect_entity_type (D37 FIXED — все уровни иерархии) ==")
         fs_tx = FsSearcher(ws, taxonomy=Taxonomy(TPL_DIR))
         def det(rel):

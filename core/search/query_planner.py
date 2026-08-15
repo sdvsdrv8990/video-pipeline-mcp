@@ -328,17 +328,29 @@ class QueryPlanner:
         return [r for r in rows if self._match_filter(r, filter_dict)]
 
     def _apply_sort(self, rows: list[dict], sort_config: dict) -> list[dict]:
-        """Сортировка результатов (разнотипные значения не роняют sorted — F42)."""
+        """Сортировка результатов (разнотипные значения не роняют sorted — F42).
+
+        Чужеродные для столбца значения всегда в ХВОСТЕ, в обе стороны (F90): раньше группа
+        участвовала в развороте, и «топ по просмотрам» по убыванию начинался с текстовых
+        заглушек и пустых ячеек — то есть ответ на «покажи лучшие» открывался мусором.
+        """
         column = sort_config.get("column", "")
         reverse = sort_config.get("order", "asc") == "desc"
 
-        def _key(r: dict) -> tuple:
-            v = r.get(column)
-            if isinstance(v, bool):  # bool — подтип int, держим предсказуемо
-                v = int(v)
-            # Числа и строки в разных группах → sorted не сравнивает разнотипное.
-            if isinstance(v, (int, float)):
-                return (0, float(v), "")
-            return (1, 0.0, str(v) if v is not None else "")
+        def numeric(v) -> bool:
+            return isinstance(v, (int, float))          # bool — подтип int, сравним как число
 
-        return sorted(rows, key=_key, reverse=reverse)
+        values = [r.get(column) for r in rows]
+        # Тип столбца — по большинству заполненных значений, а не по первой строке.
+        filled = [v for v in values if v is not None]
+        by_number = sum(1 for v in filled if numeric(v)) >= sum(1 for v in filled if not numeric(v))
+
+        def fits(v) -> bool:
+            return v is not None and numeric(v) == by_number
+
+        main = [r for r in rows if fits(r.get(column))]
+        tail = [r for r in rows if not fits(r.get(column))]
+        key = ((lambda r: float(r.get(column))) if by_number   # type: ignore[arg-type]
+               else (lambda r: str(r.get(column))))
+        return (sorted(main, key=key, reverse=reverse)
+                + sorted(tail, key=lambda r: str(r.get(column) or "")))

@@ -88,6 +88,9 @@
 
 | F# | Что | Метод | Тест-хозяин (не плодить) | Статус |
 |---|---|---|---|---|
+| **F55** | слепые зоны: `bot_army` не читал боевые лимиты, `test_search` не проверял фильтры/сортировку | behavioral | `bot_army/test_bot_army.py` (`test_shipped_config_is_enforced`) + `quick/test_search.py` (раздел фильтров) | 🟢 **ЗАКРЫТ S24** (мутации M99/M100 → красный) |
+| **F90** | при `order: desc` нечисловые значения всплывали наверх — «топ» начинался с заглушек | behavioral | `quick/test_search.py` (сортировка в обе стороны) | 🟢 **ЗАКРЫТ S24** (мутация M101 → красный) |
+| **F91** | набор провайдеров зависел от весов вне git — зелёным был только на одной машине | behavioral | `quick/test_providers.py` (пропуск с причиной) | 🟢 **ЗАКРЫТ S24** (пруф — красный CI-прогон) |
 | **F32** | симуляции одновариантны — нет агентного роя (честные+атакующие в одном прогоне, outbound) | behavioral | `agent_swarm/test_agent_swarm.py` (34 исполнителя против живого сервера) | 🟢 **ЗАКРЫТ S24** |
 | **F85** | `patterns.yaml` не парсился — «декларация», которую машина не читала | behavioral | `agent_swarm/test_agent_swarm.py` (грузит реестр первым действием; падение = красный гейт) | 🟢 **ЗАКРЫТ S24** |
 | **F86** | сигнал аномалии немой: `reason` выбрасывался на ALLOW, `log_suspicious` — мёртвый knob | behavioral | `agent_swarm/test_agent_swarm.py` → `atk_anomaly_sequence` (след в консоли живого сервера) | 🟢 **ЗАКРЫТ S24** (мутация M98: `if False and …` → красный) |
@@ -134,6 +137,10 @@
 
 | # | Что сломано | Файл | Тест-хозяин | Результат |
 |---|---|---|---|---|
+| M99 | файрвол игнорирует объявленный порог (`max_requests=10⁹`) | `core/firewall/firewall.py` | `bot_army` | 🔴 ловит (S24) |
+| M100 | `_match_filter` пропускает всё | `core/search/query_planner.py` | `test_search` | 🔴 ловит (S24) |
+| M101 | чужеродные значения снова участвуют в развороте сортировки (откат F90) | `core/search/query_planner.py` | `test_search` | 🔴 ловит (S24) |
+| M98 | сигнал аномалии снова выбрасывается на ALLOW-пути (откат F86) | `core/firewall/firewall.py` | `agent_swarm` | 🔴 ловит (S24) |
 | M1 | `ToolContext.err` мимо реестра реакций (откат F43) | `tools/_context.py` | `test_audit_fixes` | 🔴 ловит |
 | M2 | DEFAULT-fallback хардкодит message (откат F5) | `core/reactions/reactions.py` | `test_audit_fixes` | 🔴 ловит |
 | M3 | `QUERY_NOT_FOUND` убран из реестра (откат F40) | `config/server_reactions.yaml` | `test_audit_fixes` | 🔴 ловит |

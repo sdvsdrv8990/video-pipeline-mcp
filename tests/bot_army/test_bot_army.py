@@ -141,7 +141,50 @@ def test_legitimate_after_ban():
     check("IP2 проходит (легитимный)", res.decision.value == "allow")
 
 
+def test_shipped_config_is_enforced():
+    """F55(1): боевые пороги из `config/firewall.yaml` реально исполняются, а не только объявлены.
+
+    Прежде набор строил `Firewall({...})` со своими числами: подмена дефолтов на 10⁹ оставляла
+    его зелёным. Ожидаемое считается ИЗ конфига — осознанная правка порога тест не красит,
+    а вот разрыв проводки (порог объявлен, но не читается) красит сразу.
+    """
+    import yaml
+    print("=== Боевая конфигурация исполняется (F55) ===")
+
+    cfg = yaml.safe_load((ROOT / "config" / "firewall.yaml").read_text(encoding="utf-8"))
+    limit = int(cfg["rate_limit"]["max_requests_per_minute"])
+    ban_after = int(cfg["rate_limit"]["ban_after_violations"])
+    fw = Firewall(cfg)
+    ip = "203.0.113.77"
+
+    # Все запросы внутри ОДНОГО окна: шаг в секунду растянул бы их ровно на минуту, и первый
+    # успевал бы выпасть из окна — тест мерил бы длину окна, а не порог.
+    passed = [fw.check(FirewallRequest(ip=ip, method="ping", params={}, timestamp=9000.0 + i / 1000))
+              for i in range(limit)]
+    check(f"первые {limit} запросов (объявленный порог) проходят",
+          all(r.decision.value == "allow" for r in passed),
+          {r.decision.value for r in passed})
+
+    over = fw.check(FirewallRequest(ip=ip, method="ping", params={}, timestamp=9000.0 + limit / 1000))
+    check(f"запрос {limit + 1} упирается в объявленный порог",
+          over.decision.value == "rate_limit", f"decision={over.decision.value}")
+
+    for i in range(ban_after):
+        fw.check(FirewallRequest(ip=ip, method="ping", params={}, timestamp=9000.0 + (limit + 1 + i) / 1000))
+    check(f"после {ban_after} нарушений (объявленный порог) IP забанен",
+          fw.ip_blocklist.is_blocked(ip))
+
+    # Инъекция: список паттернов тоже боевой, а не тестовый.
+    phrase = str((cfg["injection_detection"]["patterns"] or ["ignore previous instructions"])[0])
+    fresh = Firewall(cfg)
+    verdict = fresh.check(FirewallRequest(ip="203.0.113.78", method="tools/call",
+                                          params={"arguments": {"q": phrase}}, timestamp=9500.0))
+    check("фраза ИЗ боевого списка паттернов блокируется",
+          verdict.decision.value == "block", f"decision={verdict.decision.value}")
+
+
 def main():
+    test_shipped_config_is_enforced()
     test_rate_limiting()
     test_ban_after_violations()
     test_anomaly_detection()
