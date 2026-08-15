@@ -23,6 +23,8 @@ KNOWN_FACT_TYPES = {
     "ProviderResolved", "MediaGenerated",
     # Каталог моделей: что доступно и что поставлено на машину
     "ModelsListed", "ModelInstalled", "ModelInstallStarted", "ModelInstallStatus", "ModelSpecRead",
+    # Раннер (S24): где именно считаются локальные модели — в сервере или в отдельном процессе
+    "RunnerState",
     "MemoryRead", "MemoryWritten",
     "SearchCompleted", "QuickSearch", "MultiSearch",
     "FsSearch", "FsSearchYaml", "FsSearchMulti",

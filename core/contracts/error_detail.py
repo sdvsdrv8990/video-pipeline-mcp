@@ -39,6 +39,8 @@ KNOWN_ERROR_CODES = {
     "PROVIDER_NOT_CONFIGURED", "PROVIDER_EXHAUSTED",
     "PROVIDER_TIMEOUT", "DOWNLOAD_INCOMPLETE", "DOWNLOAD_FORBIDDEN",
     "PROVIDER_ADAPTER_MISSING", "LOCAL_MODEL_MISSING", "USAGE_UNIT_UNKNOWN",
+    # Раннер (S24): строка канала просит считать вне сервера, а он не поднят
+    "RUNNER_NOT_RUNNING",
     # Ключи провайдеров (S23): значение не выдаётся никогда, только отпечаток
     "SECRET_ACCESS_DENIED", "PROVIDER_KEY_MISSING", "SECRET_UNREADABLE",
     "SECRET_ENCRYPTION_UNAVAILABLE",

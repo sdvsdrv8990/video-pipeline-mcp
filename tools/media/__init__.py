@@ -23,6 +23,7 @@ from core.providers import (AdapterRegistry, MediaRequest, ModelSpec, ProviderEr
 from core.providers.catalog import ModelCatalog, OnlineCatalog
 from core.providers.hardware import probe
 from core.providers.installer import ModelInstaller
+from core.runner import RunnerSupervisor
 from core.secrets import SecretError, redact
 from tools._context import ANNOTATIONS_MODIFY, ANNOTATIONS_READONLY, ToolContext
 
@@ -221,7 +222,17 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         # только до конца вызова.
         registry = AdapterRegistry(ctx.config_path / "providers.yaml", ctx.config_path.parent)
         api_key = ""
-        if registry.requires_key(decision["provider"], resource_type):
+        if registry.key_source(decision["provider"], resource_type) == "runner":
+            # Ключ раннера — не секрет владельца, а токен, выданный сервером при запуске. Нет
+            # токена — значит раннера нет: отказ ведёт к инструменту, а не к скрипту с ключами.
+            # Молчаливого отката «посчитаем в сервере» здесь нет намеренно: строка канала просила
+            # изоляцию, и подменить её тишиной значило бы соврать про то, где идёт расчёт.
+            api_key = _supervisor().token()
+            if not api_key:
+                return ctx.err(
+                    "RUNNER_NOT_RUNNING", "Строка канала просит считать в раннере, а он не поднят.",
+                    "Подними его: media_runner(action='start').")
+        elif registry.requires_key(decision["provider"], resource_type):
             ok, api_key = ctx.safe(lambda: _key_for(table, decision["provider"]))
             if not ok:
                 return api_key
@@ -260,7 +271,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
 
         request = MediaRequest(input=input, params=params, target=target,
                                models_dir=registry.models_dir, api_key=api_key, source=source_file,
-                               provider=decision["provider"])
+                               provider=decision["provider"], resource_type=resource_type,
+                               workspace=ctx.workspace_path)
         ok, outcome = ctx.safe(lambda: adapter.generate(request))
         if not ok:
             return _hide_key(outcome, api_key)
@@ -427,6 +439,11 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "scope": scope, "kind": kind, "source": source, "count": len(rows),
             "live_error": (live_error or {}).get("code", "")})])
 
+    def _supervisor() -> RunnerSupervisor:
+        """Жизненный цикл раннера. Адрес, порт и пределы ожидания — из декларации, не из кода."""
+        registry = AdapterRegistry(ctx.config_path / "providers.yaml", ctx.config_path.parent)
+        return RunnerSupervisor(registry, ctx.config_path.parent)
+
     def _installer() -> ModelInstaller:
         """Наблюдатель за установками: пределы прозвонки — из декларации, не из кода."""
         registry = AdapterRegistry(ctx.config_path / "providers.yaml", ctx.config_path.parent)
@@ -480,6 +497,56 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "total": len(rows), "done": [r["model_id"] for r in done],
             "failed": [{"model": r["model_id"], "code": r.get("code", ""),
                         "phase": r["phase"]} for r in broken]})])
+
+    async def media_runner(action: str = "status", mode: str = "process") -> "ToolResult":
+        """Поднять, остановить или прозвонить раннер локальных моделей.
+
+        Раннер считает модели в ОТДЕЛЬНОМ процессе: его падение или нехватка памяти не роняют
+        сервер и не рвут связь. Сам он не поднимается никогда — только этой командой.
+        """
+        if action not in ("start", "stop", "status"):
+            return ctx.err(
+                "VALIDATION_ERROR", f"Неизвестное действие раннера: '{action}'.",
+                "Действия ровно три: start (поднять), stop (остановить), status (прозвонить).")
+        calls = {"start": lambda: _supervisor().start(ctx.workspace_path, mode=mode),
+                 "stop": lambda: _supervisor().stop(),
+                 "status": lambda: _supervisor().status()}
+        ok, state = ctx.safe(calls[action])
+        if not ok:
+            return state
+        return ToolResult(status="success", data={
+            **state, "action": action,
+            "hint": ("Считать в раннере или в самом сервере — выбор строки канала: провайдер "
+                     "Local_runner исполняет модель в раннере, Local_onnx_bg и прочие Local_* — "
+                     "прямо в сервере. Переключение обычным table_update, без перезапуска. "
+                     "Раннер не поднимается сам ни по расписанию, ни при первом вызове."),
+        }, facts=[Fact(type="RunnerState", data={
+            "action": action, "phase": state.get("phase"), "pid": state.get("pid", 0),
+            "mode": state.get("mode", ""), "url": state.get("url", "")})])
+
+    engine.register(
+        name="media_runner",
+        title="Медиа: раннер локальных моделей (отдельный процесс)",
+        description=(
+            "Управляет раннером — отдельным процессом, в котором считаются локальные модели. "
+            "Зачем он: инференс в самом сервере роняет сервер вместе с собой (нехватка памяти или "
+            "сбой в графе рвут связь с клиентом), а рестарт сервера теряет поднятые модели. "
+            "action=start поднимает раннер и ждёт, пока он ответит; stop останавливает; status "
+            "показывает фазу (running, exited, stopped), pid, время работы и что раннер держит "
+            "поднятым. Упавший раннер виден как exited вместе с хвостом его журнала — сам он не "
+            "перезапускается, потому что тихий подъём спрятал бы причину падения. "
+            "Сервер не поднимает раннер самостоятельно: ни по расписанию, ни при первом вызове — "
+            "фоновых процессов у сервера нет по решению владельца. "
+            "Считать В раннере или в самом сервере — выбор строки канала (провайдер Local_runner "
+            "против Local_*), обычный table_update. Пока раннер не поднят, вызов через Local_runner "
+            "честно откажет кодом RUNNER_NOT_RUNNING, а не посчитает молча в сервере: строка "
+            "канала просила изоляцию, и подмена её тишиной скрыла бы, что изоляции нет."),
+        input_schema={"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["status", "start", "stop"], "default": "status",
+                       "description": "status — прозвонить; start — поднять; stop — остановить"},
+            "mode": {"type": "string", "enum": ["process", "docker"], "default": "process",
+                     "description": "action=start: process — тем же интерпретатором; docker — в контейнере (зависимости инференса заперты в образе)"},
+        }}, handler=media_runner, group="media", annotations=ANNOTATIONS_MODIFY)
 
     engine.register(
         name="media_models",

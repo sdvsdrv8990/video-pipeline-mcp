@@ -36,6 +36,7 @@ video_pipeline_mcp/
 │   ├── tables/ · excel/   ✅ слой таблиц и Excel-книг
 │   ├── search/            ✅ поиск по ФС/таблицам (FsSearcher + QueryPlanner)
 │   ├── transport/         ✅ туннель к Claude (transport + tunnel)
+│   ├── runner/            ✅ инференс в отдельном процессе: сервис на петле + супервизор
 │   ├── paths.py           ✅ containment путей в workspace/
 │   └── providers/         🟠 адаптеры провайдеров (заглушки — в разработке)
 │       ├── stt/ (stable-ts) · tts/ (LiteLLM) · img/ (LiteLLM) · ffmpeg/ (внешний MCP)
@@ -43,6 +44,7 @@ video_pipeline_mcp/
 ├── tools/                 🔲 тонкие обёртки Bounded Context (план: вынос из server.py, A2)
 ├── pipeline/              🔲 оркестрация процессов (entry_points + steps) — план
 ├── scripts/               🔲 утилиты (план: introspect_tables.py — A1′)
+├── docker/                ✅ образ раннера (среда инференса заперта в контейнере)
 ├── tests/                 ✅ quick/ (unit) + симуляции (virus/bot_army/cache_*/…)
 └── docs/
     ├── dev/               — история файлов, спеки (gitignored)

@@ -1,5 +1,5 @@
 """
-core/providers/img/http_image.py — платный онлайн-провайдер «файл → файл» по объявленному описанию.
+core/providers/img/http_image.py — провайдер «файл → файл» по HTTP, по объявленному описанию.
 
 ## Почему один адаптер на всех
 Удаление фона и апскейл у платных сервисов — это HTTP-вызов с приложенным файлом; режима для них
@@ -8,13 +8,21 @@ core/providers/img/http_image.py — платный онлайн-провайд�
 вызова, а КТО именно вызывается — в `config/providers.yaml → online.http`. Новый провайдер = блок
 в декларации, а не новый модуль.
 
-## Три формы ответа, потому что их три в жизни
+## Четыре формы ответа, потому что их четыре в жизни
 `binary` — файл телом (remove.bg); `json` — ссылка сразу (fal.run); `task` — идентификатор задачи и
-опрос (Replicate, очередь fal). Форма объявлена, ждать умеет общий цикл `core/providers/task_cycle`.
+опрос (Replicate, очередь fal); `files` — файл уже на диске, пришёл только путь (раннер, S24).
+Форма объявлена, ждать умеет общий цикл `core/providers/task_cycle`.
+
+## Он же возит задачи РАННЕРУ, и это не натяжка
+Раннер локальных моделей (`core/runner`) говорит тем же «файл → файл» по HTTP, поэтому отдельного
+адаптера ему не заведено: отличия объявлены данными — `send_mode: paths` (обмен путями, а не
+байтами), `allow_insecure_host` (петля без https), `on_unreachable` (не «повтори позже», а «подними
+раннер»). Так переключение «в процессе → в раннере» остаётся правкой строки канала.
 
 ## Ключ
-Уходит ТОЛЬКО на объявленный адрес и только по https, в ответ клиенту не возвращается никогда;
-сообщение об отказе провайдера чистится вызывающим (`_hide_key`).
+Уходит ТОЛЬКО на объявленный адрес и только по https (исключение — объявленная петля, где сеть не
+пересекается), в ответ клиенту не возвращается никогда; сообщение об отказе провайдера чистится
+вызывающим (`_hide_key`).
 """
 
 import base64
@@ -65,7 +73,12 @@ class HttpImageAPI:
             url = template.format_map({k: str(v) for k, v in params.items()})
         declared_host = urlparse(template.split("{", 1)[0]).netloc
         parsed = urlparse(url)
-        if parsed.scheme != "https" or (declared_host and parsed.netloc != declared_host):
+        # Петля — единственное послабление, и оно объявлено ДАННЫМИ: раннер живёт на 127.0.0.1, а
+        # требовать https от петли значит запретить саму идею раннера. Действует только на
+        # объявленный хост и только на http; чужой адрес по http остаётся отказом.
+        insecure_host = str(decl.get("allow_insecure_host") or "")
+        loopback_ok = bool(insecure_host) and parsed.scheme == "http" and parsed.hostname == insecure_host
+        if (parsed.scheme != "https" and not loopback_ok) or (declared_host and parsed.netloc != declared_host):
             raise ProviderError(
                 "DOWNLOAD_FORBIDDEN", f"Адрес вызова не совпал с объявленным: {url}",
                 reason=f"Ключ уходит только по https и только на {declared_host or 'объявленный хост'}. "
@@ -121,7 +134,10 @@ class HttpImageAPI:
     # ═══ Вызов ═══
 
     def generate(self, request: MediaRequest) -> MediaOutcome:
-        if request.source is None:
+        decl = self._decl(request.provider)
+        # Байты кладутся в тело запроса — без файла его не собрать. Обмен ПУТЯМИ (раннер) исключение:
+        # там исходника может не быть вовсе (озвучка создаёт из текста), и решает это вид ресурса.
+        if request.source is None and str(decl.get("send_mode") or "") != "paths":
             raise ProviderError(
                 "CONTENT_REJECTED", "Отправлять провайдеру нечего: не передан исходный файл.",
                 reason="Для этого вида ресурса input — путь к файлу внутри рабочей области.")
@@ -129,7 +145,6 @@ class HttpImageAPI:
             raise ProviderError(
                 "PROVIDER_KEY_MISSING", f"У провайдера '{request.provider}' нет ключа доступа.",
                 reason="Ключ вносит владелец: python scripts/set_provider_key.py.")
-        decl = self._decl(request.provider)
         self._api_key = request.api_key
         response = self._request(decl, "POST", self._url(decl, request.params), request,
                                  body=self._body(decl, request))
@@ -141,6 +156,12 @@ class HttpImageAPI:
             request.target.write_bytes(response.content)
             return MediaOutcome(files=[request.target], meta={**meta, "sync": True})
         answer = self._json(response)
+        if kind == "files":
+            # Файл уже на диске: раннер видит ту же рабочую область и пишет прямо в место,
+            # назначенное сервером. Считать здесь нечего — только убедиться, что он там.
+            return MediaOutcome(files=[self._landed(answer, request)],
+                                meta={**meta, "sync": True,
+                                      "compute": answer.get("compute") or meta["compute"]})
         if kind == "task":
             # Адрес статуса провайдер сообщает сам (Replicate — urls.get, очередь fal — status_url):
             # строить его из имени модели значило бы дублировать знание, которое он уже прислал.
@@ -160,7 +181,10 @@ class HttpImageAPI:
         """Тело запроса: файл + поля строки. Форма отправки — свойство провайдера, не наше."""
         fields = self._fields(decl, request)
         field = str(decl.get("file_field") or "file")
-        if str(decl.get("send_mode") or "multipart") != "json_base64":
+        mode = str(decl.get("send_mode") or "multipart")
+        if mode == "paths":
+            return {"json": self._paths_body(request, fields)}
+        if mode != "json_base64":
             return {"files": {field: (request.source.name, request.source.read_bytes())},
                     "data": {k: v for k, v in fields.items() if not isinstance(v, (dict, list))}}
         # Провайдер принимает не multipart, а данные прямо в JSON. Base64 раздувает файл на треть,
@@ -179,6 +203,51 @@ class HttpImageAPI:
         self._put(fields, field, f"data:image/{suffix};base64,{data}")
         return {"json": fields}
 
+    @staticmethod
+    def _paths_body(request: MediaRequest, fields: dict) -> dict:
+        """Задача раннеру: ПУТИ, а не байты — он видит ту же рабочую область.
+
+        Пути идут относительными: тогда раннеру не нужно, чтобы рабочая область была смонтирована
+        по тому же абсолютному пути, и он разрешает их собственным containment — доверия к
+        вызывающему у него не больше, чем у сервера к клиенту.
+        """
+        root = request.workspace
+        if root is None:
+            raise ProviderError(
+                "INTERNAL_ERROR", "Раннеру не с чем сопоставить пути: не передана рабочая область.",
+                reason="MediaRequest.workspace заполняет вызывающий инструмент — это проводка, "
+                       "а не данные канала.")
+        return {"kind": request.resource_type, "input": request.input,
+                "source": str(request.source.relative_to(root)) if request.source else "",
+                "target": str(request.target.relative_to(root)),
+                # Строка канала уходит целиком: какие рычаги у модели — знает модель, и
+                # перечислять их здесь значило бы держать вторую копию списка столбцов.
+                "params": {**request.params, **fields}}
+
+    @staticmethod
+    def _landed(answer: dict, request: MediaRequest) -> Path:
+        """Файл, который назначил СЕРВЕР, — и никакой другой.
+
+        Путь из ответа берётся не на веру: раннер отчитывается о своём, а хозяин раскладки —
+        сервер. Разошлись — это отказ, а не «успех куда-то».
+        """
+        reported = [f for f in (answer.get("files") or []) if isinstance(f, str)]
+        root = request.workspace
+        same = [f for f in reported
+                if not root or (root / f).resolve() == request.target.resolve()]
+        if not request.target.is_file():
+            raise ProviderError(
+                "PROVIDER_FAILED", f"Раннер ответил успехом, но файла нет: {request.target.name}",
+                reason="Он пишет результат сам, в место, назначенное сервером. Пустое место при "
+                       "успешном ответе значит, что раннер и сервер видят РАЗНУЮ рабочую область: "
+                       "проверь монтирование workspace (media_runner(action='status')).")
+        if reported and not same:
+            raise ProviderError(
+                "PROVIDER_FAILED", f"Раннер записал файл не туда: {', '.join(reported)}",
+                reason="Раскладкой владеет сервер, а не раннер. Путь из ответа не совпал с "
+                       "назначенным — результат не принимается.")
+        return request.target
+
     def _request(self, decl: dict, method: str, url: str, request: MediaRequest, body: dict | None = None):
         """Вызов с повторами. Сколько раз повторять — столбцы строки канала, а не число в коде.
 
@@ -192,7 +261,10 @@ class HttpImageAPI:
         pause = float(request.params.get("retry_delay") or 0)
         retry_on = {int(c) for c in (decl.get("retry_on") or [])}
         timeout = request.params.get("timeout")
-        timeout = float(timeout) if isinstance(timeout, (int, float)) else 120.0
+        # Сколько ждать — свойство адресата: платный отвечает за секунды, локальный расчёт идёт
+        # минутами. Строка канала перекрывает объявленное, объявленное перекрывает общее.
+        timeout = (float(timeout) if isinstance(timeout, (int, float))
+                   else float(decl.get("timeout_sec") or 120.0))
         headers = self._headers(decl, request.api_key)
         last = None
         for attempt in range(attempts):
@@ -200,11 +272,7 @@ class HttpImageAPI:
                 response = httpx.request(method, url, headers=headers, timeout=timeout,
                                          follow_redirects=False, **(body or {}))
             except Exception as e:                          # noqa: BLE001 — сеть/таймаут
-                last = ProviderError(
-                    "PROVIDER_FAILED", f"Провайдер не ответил: {e}",
-                    reason="Сеть или сам сервис недоступны. Повтори позже либо переключи строку "
-                           "канала на локального провайдера — он работает без сети и ключа.",
-                    suggested_tool="media_provider_status")
+                last = self._unreachable(decl, request.provider, e)
             else:
                 if response.status_code < 400:
                     return response
@@ -219,8 +287,36 @@ class HttpImageAPI:
         raise last
 
     @staticmethod
-    def _refusal(response) -> ProviderError:
+    def _unreachable(decl: dict, provider: str, exc: Exception) -> ProviderError:
+        """Адресат молчит. Почему это не всегда «повтори позже».
+
+        Платный сервис недоступен по сети — ждать. Раннер недоступен потому, что его НЕ ПОДНЯЛИ:
+        повтор здесь не поможет никогда, и подсказка обязана вести к инструменту. Какой код
+        уместен, знает объявление провайдера (`on_unreachable`), а не этот код.
+        """
+        import httpx
+
+        if isinstance(exc, httpx.TimeoutException):
+            # Не молчание, а «не успел»: раннер, считающий большую модель, жив и занят. Сказать
+            # здесь «не поднят» значило бы отправить ИИ поднимать то, что и так работает.
+            return ProviderError(
+                "PROVIDER_TIMEOUT", f"'{provider}' не ответил за отведённое время: {exc}",
+                reason="Работа могла и не оборваться — она идёт дольше отведённого. Увеличь "
+                       "столбец timeout строки канала либо timeout_sec в объявлении провайдера.")
+        declared = str(decl.get("on_unreachable") or "")
+        if declared:
+            return ProviderError(declared, f"'{provider}' не ответил по адресу {decl.get('url')}: {exc}")
+        return ProviderError(
+            "PROVIDER_FAILED", f"Провайдер не ответил: {exc}",
+            reason="Сеть или сам сервис недоступны. Повтори позже либо переключи строку "
+                   "канала на локального провайдера — он работает без сети и ключа.",
+            suggested_tool="media_provider_status")
+
+    def _refusal(self, response) -> ProviderError:
         """Ответ ≥400 → отказ причиной провайдера, а не общим «что-то пошло не так»."""
+        named = self._named_refusal(response)
+        if named is not None:
+            return named
         if response.status_code in (401, 403):
             return ProviderError(
                 "AUTH_FAILED", f"Провайдер отклонил ключ ({response.status_code}).",
@@ -230,6 +326,34 @@ class HttpImageAPI:
             "PROVIDER_FAILED", f"Провайдер ответил {response.status_code}: {response.text[:300]}",
             reason="Это ответ самого сервиса — в нём причина отказа (модерация, исчерпанный "
                    "платный лимит, неподходящий файл).")
+
+    def _named_refusal(self, response) -> ProviderError | None:
+        """Отказ, названный кодом реестра самим адресатом (если он умеет — `error_fields`).
+
+        Чужой платный сервис говорит своими словами, и его отказ честно приходит как
+        PROVIDER_FAILED с цитатой. Раннер — наш же процесс, и он называет причину нашим кодом:
+        свернуть его LOCAL_MODEL_MISSING в общий PROVIDER_FAILED значило бы стереть и причину, и
+        подсказку. Код принимается только если он объявлен И имеет форму кода реестра — иначе
+        ответ на порту решал бы, каким кодом отвечает сервер.
+        """
+        import re
+
+        fields = (next(iter(self._decl_cache.values()), {}) or {}).get("error_fields") or {}
+        if not fields:
+            return None
+        try:
+            body = response.json()
+        except Exception:                                   # noqa: BLE001 — не JSON в теле
+            return None
+        code = str(self.dig(body, str(fields.get("code") or "")) or "")
+        if not re.fullmatch(r"[A-Z][A-Z_]{2,48}", code):
+            return None
+        # Текст приходит от того, кто ответил на порту, — а это не обязательно наш раннер: порт мог
+        # занять посторонний процесс. Режем так же, как режем ответ платного провайдера: чужой
+        # текст доезжает до ИИ как цитата, а не как простыня произвольной длины.
+        return ProviderError(
+            code, str(self.dig(body, str(fields.get("message") or "")) or code)[:300],
+            reason=str(self.dig(body, str(fields.get("reason") or "")) or "")[:300])
 
     @staticmethod
     def _json(response) -> dict:

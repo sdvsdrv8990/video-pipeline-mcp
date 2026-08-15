@@ -274,6 +274,14 @@ PROVIDER_ADAPTER_MISSING:
     suggested_tool: media_provider_status
     reason: "Имя провайдера — данные канала, а код по этому имени — серверный конфиг. Либо поставь в строке провайдера, которого сервер умеет исполнять, либо объяви адаптер в config/providers.yaml → adapters.by_provider."
 
+RUNNER_NOT_RUNNING:
+  class: ai_recoverable
+  message_template: "Раннер локальных моделей не отвечает."
+  recovery:
+    suggested_tool: media_runner
+    suggested_params: {action: start}
+    reason: "Раннер поднимается явной командой и сам не стартует (демона на сервере нет). Подними его — media_runner(action='start') — либо переключи строку канала на провайдера, который считает в самом сервере (table_update). Молчаливого отката в процесс нет намеренно: он скрыл бы, что изоляции больше нет."
+
 LOCAL_MODEL_MISSING:
   class: human_required
   message_template: "Веса локальной модели не найдены."

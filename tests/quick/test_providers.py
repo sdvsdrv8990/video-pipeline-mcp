@@ -1550,6 +1550,175 @@ if _bg_model:
     ok((_ws / _p16).is_file(),
        "файл лежит по этому пути сразу — без промежуточного места и последующего переноса")
 
+print("== 17. Раннер: инференс в отдельном процессе (S24) ==")
+import socket as _sock17                                      # noqa: E402
+import subprocess as _sp17                                    # noqa: E402
+import httpx as _hx17                                         # noqa: E402
+from core.providers.img.http_image import HttpImageAPI as _HTTP17  # noqa: E402
+from core.runner import RunnerSupervisor as _Sup17            # noqa: E402
+
+# Послабление на петлю объявлено ДАННЫМИ и действует только на объявленный хост: чужой адрес по
+# http обязан остаться отказом, иначе «разрешили раннер» означало бы «разрешили открытый канал».
+_api17 = _HTTP17(_reg)
+_loop17 = {"url": "http://127.0.0.1:8770/run", "allow_insecure_host": "127.0.0.1"}
+ok(_api17._url(_loop17, {}) == "http://127.0.0.1:8770/run", "петлевой http пропускается по объявлению")
+for _case17, _decl17 in (
+        ("чужой хост по http", {"url": "http://example.com/run", "allow_insecure_host": "127.0.0.1"}),
+        ("соседняя петля", {"url": "http://127.0.0.2:8770/run", "allow_insecure_host": "127.0.0.1"}),
+        ("петля без объявления", {"url": "http://127.0.0.1:8770/run"})):
+    try:
+        _api17._url(_decl17, {})
+        ok(False, f"{_case17} должен отбиваться")
+    except ProviderError as e:
+        ok(e.code == "DOWNLOAD_FORBIDDEN", f"{_case17} → DOWNLOAD_FORBIDDEN ({e.code})")
+
+# Занят ≠ не поднят. Долгий расчёт не должен отправлять ИИ поднимать то, что и так работает.
+_runner_decl17 = yaml.safe_load(CFG.read_text(encoding="utf-8"))["online"]["http"]["Local_runner"]
+ok(_api17._unreachable(_runner_decl17, "Local_runner", _hx17.ConnectError("отказано")).code
+   == "RUNNER_NOT_RUNNING", "молчащий порт → «подними раннер», кодом из объявления")
+ok(_api17._unreachable(_runner_decl17, "Local_runner", _hx17.ReadTimeout("долго")).code
+   == "PROVIDER_TIMEOUT", "не успел за отведённое → «не успел», а не «не поднят»")
+ok(float(_runner_decl17["timeout_sec"]) > 120,
+   f"предел ожидания объявлен под локальный расчёт, а не общий ({_runner_decl17['timeout_sec']} с)")
+
+# Запуск в контейнере проверяется по СОБРАННОЙ команде: набор не должен требовать ни Docker, ни
+# образа на 5–10 ГБ, а свойства, ради которых контейнер и заводился, живут именно в этой команде.
+_docker17 = _Sup17(_reg, ROOT)._command("docker", _ws)
+_dstr17 = " ".join(_docker17)
+ok(any(a.startswith("127.0.0.1:") for a in _docker17),
+   f"порт публикуется только на петлю хоста, а не на все интерфейсы ({[a for a in _docker17 if ':' in a and a.count(':') == 2] or '—'})")
+ok("MCP_RUNNER_TOKEN" in _docker17 and not any("MCP_RUNNER_TOKEN=" in a for a in _docker17),
+   "токен передаётся ИМЕНЕМ переменной — в выводе ps его значения нет")
+ok("--device" in _docker17 and "/dev/kfd" in _dstr17,
+   "карта пробрасывается устройствами ядра — системный ROCm внутрь не ставится")
+ok(_dstr17.count("-v ") >= 2 and "vendor/models" in _dstr17 and str(_ws) in _dstr17,
+   "веса и рабочая область приезжают ТОМАМИ, а не слоями образа")
+ok("providers.yaml:ro" in _dstr17 and "tunnel.yaml" not in _dstr17,
+   "декларации монтируются живые и только для чтения, а секреты внутрь не едут")
+
+# Стенд: свободный порт + КОПИЯ конфига, состояние и журнал в темпе. Боевой vendor/ не трогаем —
+# иначе тест поднимал бы раннер поверх настоящего и стирал его запись о запуске.
+_p17 = _sock17.socket(); _p17.bind(("127.0.0.1", 0)); _port17 = _p17.getsockname()[1]; _p17.close()
+_tmp17 = Path(tempfile.mkdtemp(prefix="runner_"))
+_cfg17 = _tmp17 / "config"
+_sh.copytree(ROOT / "config", _cfg17)
+_d17 = yaml.safe_load((_cfg17 / "providers.yaml").read_text(encoding="utf-8"))
+_d17["online"]["http"]["Local_runner"]["url"] = f"http://127.0.0.1:{_port17}/run"
+_d17["local"]["runner"].update({"state_file": str(_tmp17 / "state.json"),
+                                "log_file": str(_tmp17 / "runner.log")})
+_d17["local"]["models_dir"] = str(_reg.models_dir)
+(_cfg17 / "providers.yaml").write_text(yaml.safe_dump(_d17, allow_unicode=True), encoding="utf-8")
+
+_row17 = {**_row_bg, "provider": "Local_runner"}
+(_ws / "pic" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+    "B1": _row17}}}), encoding="utf-8")
+
+_was17 = _srv.CONFIG_PATH
+try:
+    _srv.CONFIG_PATH = _cfg17
+    _eng17 = _Eng(state_manager=_sm)
+    _srv.register_basic_tools(_eng17, _IDG(), _sm)
+
+    def _c17(tool, **params):
+        return _aio.run(_eng17.call(tool, params))
+
+    # Раннера нет — молчаливого отката «посчитаем в сервере» быть не должно: строка канала
+    # просила изоляцию, и подмена её тишиной скрыла бы, что изоляции нет.
+    _cold17 = _c17("media_generate", table="pic", resource_type="bg_removals",
+                   input="pic/frame.png", scene_id="c1")
+    ok(_cold17.status == "error" and _cold17.error.code == "RUNNER_NOT_RUNNING",
+       f"раннер не поднят → честный отказ, а не тихий расчёт в сервере ({_cold17.error.code if _cold17.error else 'успех!'})")
+    ok(_c17("media_runner", action="status").data["phase"] == "stopped",
+       "прозвонка не поднятого раннера отвечает «не поднят», а не молчит")
+
+    _start17 = _c17("media_runner", action="start")
+    ok(_start17.status == "success" and _start17.data["phase"] == "running" and _start17.data["pid"],
+       f"инструмент поднял раннер ({_start17.data.get('phase') if _start17.status == 'success' else _start17.error.code})")
+
+    if _start17.status == "success":
+        _tok17 = _json.loads((_tmp17 / "state.json").read_text(encoding="utf-8"))["token"]
+        _base17 = f"http://127.0.0.1:{_port17}"
+
+        # Токен не украшение: на петле сидит не только сервер.
+        ok(_hx17.post(f"{_base17}/run", json={"kind": "bg_removals"}, timeout=10).status_code == 401,
+           "без токена раннер не исполняет ничего")
+        _alive17 = _hx17.get(f"{_base17}/health", timeout=10).json()
+        ok(_alive17.get("ok") and "pool" not in _alive17,
+           "живость видна без токена, а содержимое пула — нет")
+        ok("pool" in _hx17.get(f"{_base17}/health", headers={"X-Runner-Token": _tok17},
+                               timeout=10).json(), "с токеном /health показывает, что держится поднятым")
+
+        # Раннер доверяет вызывающему не больше, чем сервер клиенту — даже на своей машине.
+        _esc17 = _hx17.post(f"{_base17}/run", headers={"X-Runner-Token": _tok17}, timeout=10,
+                            json={"kind": "bg_removals", "source": "pic/frame.png",
+                                  "target": "../../../tmp/утёк.png", "params": {}})
+        ok(_esc17.status_code == 403 and _esc17.json().get("code") == "PATH_ESCAPE",
+           f"путь наружу рабочей области раннер не принимает ({_esc17.json().get('code')})")
+        _sh17 = _hx17.post(f"{_base17}/run", headers={"X-Runner-Token": _tok17}, timeout=10,
+                           json={"kind": "bg_removals", "source": "pic/frame.png",
+                                 "target": "pic/assets/img/своё.sh", "params": {}})
+        ok(_sh17.status_code == 403 and _sh17.json().get("code") == "FILE_TYPE_FORBIDDEN",
+           f"тип файла раннер проверяет тем же allowlist, что сервер ({_sh17.json().get('code')})")
+        _unknown17 = _hx17.post(f"{_base17}/run", headers={"X-Runner-Token": _tok17}, timeout=10,
+                                json={"kind": "нет-такого", "target": "pic/x.png", "params": {}})
+        ok(_unknown17.json().get("code") == "PROVIDER_NOT_CONFIGURED",
+           "неизвестный вид ресурса → код реестра, а не пятисотка")
+
+    if _start17.status == "success" and _bg_model:
+        _gen17 = _c17("media_generate", table="pic", resource_type="bg_removals",
+                      input="pic/frame.png", scene_id="r1")
+        ok(_gen17.status == "success",
+           f"тот же вызов посчитан РАННЕРОМ и дошёл до файла ({_gen17.error.code if _gen17.error else 'ok'})")
+        if _gen17.status == "success":
+            ok((_ws / _gen17.data["files"][0]).is_file(),
+               f"файл лёг туда же, куда клал расчёт в сервере ({_gen17.data['files'][0]})")
+            # Обмен ПУТЯМИ, а не байтами: раннер сообщает, чем считал он, а не «remote».
+            ok(_gen17.data["compute"].get("device") and _gen17.data["compute"]["device"] != "remote",
+               f"видно, чем считал раннер, а не общее «удалённо» ({_gen17.data['compute'].get('device')})")
+            ok(_c17("media_runner", action="status").data["calls"] == 1,
+               "раннер отчитывается, что вызов прошёл именно через него")
+
+        # Отказ раннера приходит ЕГО кодом: «нет весов» не должно превращаться в «сервис недоступен».
+        (_ws / "pic" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+            "B1": {**_row17, "model": "нет-такой-модели"}}}}), encoding="utf-8")
+        _lost17 = _c17("media_generate", table="pic", resource_type="bg_removals",
+                       input="pic/frame.png", scene_id="r2")
+        ok(_lost17.status == "error" and _lost17.error.code == "LOCAL_MODEL_MISSING",
+           f"причина отказа раннера доезжает своим кодом ({_lost17.error.code if _lost17.error else 'успех!'})")
+        (_ws / "pic" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+            "B1": _row17}}}), encoding="utf-8")
+
+    # Падение раннера обязано быть ВИДНО: авто-подъёма нет намеренно — он спрятал бы причину.
+    if _start17.status == "success":
+        _pid17 = _start17.data["pid"]
+        _sp17.run(["kill", "-9", str(_pid17)], check=False)
+        for _ in range(50):
+            if not _Sup17._alive(_pid17):
+                break
+            _time.sleep(0.1)
+        _dead17 = _c17("media_runner", action="status")
+        ok(_dead17.data["phase"] == "exited",
+           f"убитый раннер виден как exited, а не как молчание ({_dead17.data['phase']})")
+        ok(_dead17.data["log_tail"], "вместе с фазой приходит хвост журнала — причина переживает процесс")
+        _after17 = _c17("media_generate", table="pic", resource_type="bg_removals",
+                        input="pic/frame.png", scene_id="r3")
+        ok(_after17.status == "error" and _after17.error.code == "RUNNER_NOT_RUNNING",
+           f"вызов после падения отказывает подсказкой поднять, а не считает молча в сервере ({_after17.error.code if _after17.error else 'успех!'})")
+        ok(_c17("media_runner", action="stop").data["phase"] == "stopped",
+           "остановка убирает за собой и не спотыкается о мёртвый процесс")
+
+    # И обратно: строка канала переключает расчёт в сервер тем же table_update, без рестарта.
+    if _bg_model:
+        (_ws / "pic" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+            "B1": _row_bg}}}), encoding="utf-8")
+        _back17 = _c17("media_generate", table="pic", resource_type="bg_removals",
+                       input="pic/frame.png", scene_id="r4")
+        ok(_back17.status == "success" and _back17.data["provider"] == "Local_onnx_bg",
+           f"та же работа считается в сервере после правки одной строки ({_back17.data.get('provider') if _back17.status == 'success' else _back17.error.code})")
+finally:
+    _srv.CONFIG_PATH = _was17
+    _aio.run(_eng17.call("media_runner", {"action": "stop"}))
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:
