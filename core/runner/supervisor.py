@@ -239,12 +239,32 @@ class RunnerSupervisor:
                    "-e", TOKEN_ENV]
         for device in docker.get("devices") or []:
             command += ["--device", str(device)]
-        for group in docker.get("groups") or []:
-            command += ["--group-add", str(group)]
+        for gid in self._device_gids(docker.get("devices") or []):
+            command += ["--group-add", gid]
         for host_path, inner in (docker.get("mounts") or {}).items():
             source = workspace if str(host_path) == "workspace" else self.root / str(host_path)
             command += ["-v", f"{Path(source).resolve()}:{inner}"]
         return command + [str(docker.get("image") or "video-pipeline-runner")]
+
+    @staticmethod
+    def _device_gids(devices) -> list[str]:
+        """Группа берётся у САМОГО устройства, а не по имени.
+
+        Имя не переносится: в `python:3.14-slim` есть `video`, но нет `render` — а карту на этой
+        машине держит именно `render`, и `--group-add render` уронил бы контейнер ровно там, где
+        доступ к карте и нужен. Числовой GID работает независимо от базы групп образа.
+        """
+        gids: list[str] = []
+        for path in devices:
+            node = Path(str(path))
+            for item in (sorted(node.iterdir()) if node.is_dir() else [node]):
+                try:
+                    gid = str(item.stat().st_gid)
+                except OSError:
+                    continue                    # устройства нет — про это скажет сам docker
+                if gid != "0" and gid not in gids:
+                    gids.append(gid)
+        return gids
 
     # ═══ Остановка ═══
 

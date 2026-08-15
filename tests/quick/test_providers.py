@@ -1591,6 +1591,9 @@ ok("MCP_RUNNER_TOKEN" in _docker17 and not any("MCP_RUNNER_TOKEN=" in a for a in
    "токен передаётся ИМЕНЕМ переменной — в выводе ps его значения нет")
 ok("--device" in _docker17 and "/dev/kfd" in _dstr17,
    "карта пробрасывается устройствами ядра — системный ROCm внутрь не ставится")
+_gid17 = _docker17[_docker17.index("--group-add") + 1] if "--group-add" in _docker17 else ""
+ok(_gid17.isdigit(),
+   f"группа доступа к карте взята у устройства ЧИСЛОМ, а не именем, которого в образе нет ({_gid17 or 'её нет'})")
 ok(_dstr17.count("-v ") >= 2 and "vendor/models" in _dstr17 and str(_ws) in _dstr17,
    "веса и рабочая область приезжают ТОМАМИ, а не слоями образа")
 ok("providers.yaml:ro" in _dstr17 and "tunnel.yaml" not in _dstr17,
