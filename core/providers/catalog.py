@@ -38,6 +38,7 @@ class ModelCatalog:
         self._decl = Declaration(
             config_file, ProviderError, "провайдеров",
             "Заведи config/providers.yaml — где искать модели, объявлено там.")
+        self._revisions: dict[str, str] = {}   # repo → ревизия (спрашиваем один раз)
 
     @property
     def config(self) -> dict:
@@ -128,6 +129,35 @@ class ModelCatalog:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         return {"cache_dir": str(self.cache_dir)}
 
+    def revision(self, repo: str) -> str:
+        """Состояние репозитория, к которому привязана загрузка.
+
+        Без привязки веса тянутся «из того, что там сейчас»: файлы ОДНОЙ модели могут приехать
+        из разных состояний репозитория, а переустановка через месяц — дать другие веса под тем
+        же именем и молча. Ревизия спрашивается один раз на репозиторий и уходит в опись, чтобы
+        поставленное можно было повторить и сверить.
+
+        Объявленная ревизия сильнее вычисленной: `local.install.revisions.<repo>` в
+        `config/providers.yaml` — это настоящий пин, который делает владелец.
+        """
+        if repo in self._revisions:
+            return self._revisions[repo]
+        declared = ((self.local.get("install") or {}).get("revisions") or {}).get(repo)
+        if declared:
+            self._revisions[repo] = str(declared)
+            return self._revisions[repo]
+        from huggingface_hub import HfApi
+        try:
+            sha = HfApi().repo_info(repo_id=repo, repo_type="model").sha
+        except Exception as exc:                    # noqa: BLE001 — причина уедет клиенту кодом
+            raise ProviderError(
+                "DOWNLOAD_FORBIDDEN", f"Не удалось узнать состояние репозитория '{repo}'.",
+                reason="Веса не тянутся вслепую: без привязки к ревизии повторная установка "
+                       "может дать другие файлы. Проверь сеть или объяви ревизию в "
+                       "config/providers.yaml → local.install.revisions.") from exc
+        self._revisions[repo] = str(sha or "")
+        return self._revisions[repo]
+
     def available(self, kind: str, limit: int = 20, describe: bool = False, **overrides) -> list[dict]:
         """Свежий список моделей вида `kind` по объявленным фильтрам."""
         src = self.source(kind)
@@ -146,7 +176,8 @@ class ModelCatalog:
         """Индекс голосов piper: одна запись = голос со своими файлами и размерами."""
         from huggingface_hub import hf_hub_download
 
-        path = hf_hub_download(src["repo"], src.get("index", "voices.json"), **self._hf)
+        path = hf_hub_download(src["repo"], src.get("index", "voices.json"),
+                               revision=self.revision(src["repo"]), **self._hf)
         index = json.loads(Path(path).read_text(encoding="utf-8"))
         language = str(filters.get("language") or "")
         max_mb = float(filters.get("max_mb") or 0)
@@ -280,7 +311,8 @@ class ModelCatalog:
         from huggingface_hub import hf_hub_download
 
         try:
-            path = hf_hub_download(repo, str(rules.get("from") or "README.md"), **self._hf)
+            path = hf_hub_download(repo, str(rules.get("from") or "README.md"),
+                                   revision=self.revision(repo), **self._hf)
             text = Path(path).read_text(encoding="utf-8")
         except Exception:                                   # noqa: BLE001 — карточки может не быть
             return ""
@@ -455,22 +487,25 @@ class ModelCatalog:
         voice = candidates[0]
         keep, refused = self.allowed_files(voice["files"])
         self.check_size(voice["mb"])
+        rev = self.revision(src["repo"])
         dest = Path(str(src.get("dest") or "tts"))
         target_dir = self.models_dir / dest
         target_dir.mkdir(parents=True, exist_ok=True)
         import shutil
         for remote in keep:
             progress(f"тяну {Path(remote).name}")
-            got = hf_hub_download(src["repo"], remote, **self._hf)
+            got = hf_hub_download(src["repo"], remote, revision=rev, **self._hf)
             shutil.copyfile(got, target_dir / Path(remote).name)
         model_file = next((f for f in keep if f.endswith(".onnx")), keep[0] if keep else "")
-        return {"id": model_id, "kind": "tts", "repo": src["repo"],
+        return {"id": model_id, "kind": "tts", "repo": src["repo"], "revision": rev,
                 "path": str(dest / Path(model_file).name), "mb": voice["mb"], "refused": refused}
 
     def _install_hf(self, model_id: str, src: dict, progress, kind: str = "image") -> dict:
         from huggingface_hub import model_info, snapshot_download
 
-        info = model_info(model_id, files_metadata=True)
+        rev = self.revision(model_id)
+        # Список файлов и сами файлы обязаны быть из ОДНОГО состояния репозитория.
+        info = model_info(model_id, revision=rev, files_metadata=True)
         if getattr(info, "gated", False):
             raise ProviderError(
                 "LOCAL_MODEL_MISSING", f"Модель '{model_id}' закрыта (gated) — нужен доступ автора.",
@@ -488,9 +523,9 @@ class ModelCatalog:
         dest = Path(str(src.get("dest") or "img")) / model_id.split("/")[-1]
         progress(f"тяну {len(chosen)} файлов, ~{round(total_mb)} МБ")
         snapshot_download(repo_id=model_id, local_dir=str(self.models_dir / dest),
-                          allow_patterns=chosen or None, **self._hf)
+                          allow_patterns=chosen or None, revision=rev, **self._hf)
         st = getattr(info, "safetensors", None)
-        return {"id": model_id.split("/")[-1], "kind": kind, "repo": model_id,
+        return {"id": model_id.split("/")[-1], "kind": kind, "repo": model_id, "revision": rev,
                 "path": str(dest), "mb": total_mb, "refused": refused,
                 "variant": "fp16" if variant else "",
                 # Число параметров кладём в опись сразу: потом оно понадобится, чтобы судить
@@ -508,6 +543,7 @@ class ModelCatalog:
         """
         from huggingface_hub import hf_hub_download
 
+        rev = self.revision(model_id)
         want = tuple(str(f).lower() for f in (src.get("require_formats") or []))
         graphs = [n for n in keep if n.lower().endswith(want)]
         chosen = self.prefer(graphs) or (graphs[0] if graphs else "")
@@ -529,7 +565,7 @@ class ModelCatalog:
             progress(f"тяну {Path(remote).name}")
             # Сразу в целевой каталог, а не через кэш: иначе те же байты лежат дважды — блобом
             # в кэше и копией здесь (проверено: 33 МБ кэша на 33 МБ моделей).
-            got = Path(hf_hub_download(model_id, remote, local_dir=str(target_dir)))
+            got = Path(hf_hub_download(model_id, remote, local_dir=str(target_dir), revision=rev))
             # Плоско по имени: адаптеру важен файл графа рядом с его описаниями, а не раскладка
             # репозитория (в ней граф лежит в подкаталоге onnx/).
             if got.parent != target_dir:
@@ -538,7 +574,7 @@ class ModelCatalog:
                     got.parent.rmdir()                      # опустевший каталог репозитория
                 except OSError:
                     pass
-        return {"id": model_id.split("/")[-1], "kind": kind, "repo": model_id,
+        return {"id": model_id.split("/")[-1], "kind": kind, "repo": model_id, "revision": rev,
                 "path": str(dest / Path(chosen).name), "mb": total_mb, "refused": refused,
                 "file": Path(chosen).name}
 
@@ -553,24 +589,27 @@ class ModelCatalog:
         from huggingface_hub import hf_hub_download, snapshot_download
 
         self.check_repo(str(entry.get("repo") or ""))
+        # Объявленная ревизия сильнее вычисленной: это настоящий пин, сделанный владельцем.
+        rev = str(entry.get("revision") or self.revision(str(entry["repo"])))
         dest = self.models_dir / str(entry.get("dest") or "")
         dest.parent.mkdir(parents=True, exist_ok=True)
         if entry.get("snapshot"):
             progress(f"тяну снимок {entry.get('repo')}")
             snapshot_download(repo_id=str(entry["repo"]), local_dir=str(dest),
-                              allow_patterns=entry.get("allow") or None, **self._hf)
+                              allow_patterns=entry.get("allow") or None, revision=rev, **self._hf)
         else:
             dest.mkdir(parents=True, exist_ok=True)
             keep, _ = self.allowed_files(list(entry.get("files") or []))
             for remote in keep:
                 progress(f"тяну {Path(remote).name}")
-                got = hf_hub_download(str(entry["repo"]), remote, **self._hf)
+                got = hf_hub_download(str(entry["repo"]), remote, revision=rev, **self._hf)
                 # Плоско по имени: piper ждёт .onnx и .onnx.json рядом, без вложенности репозитория.
                 shutil.copyfile(got, dest / Path(remote).name)
         path = self.models_dir / str(entry.get("path") or entry.get("dest") or "")
         files = [f for f in path.rglob("*") if f.is_file()] if path.is_dir() else (
             [path] if path.is_file() else [])
         return {"id": entry.get("id"), "kind": entry.get("kind"), "repo": entry.get("repo"),
+                "revision": rev,
                 "path": str(entry.get("path") or entry.get("dest") or ""),
                 "mb": round(sum(f.stat().st_size for f in files) / 1e6, 1)}
 
