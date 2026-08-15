@@ -12,15 +12,18 @@
 | **Симуляции (adversarial)** | `virus_injection`, `cache_injection`, `cache_overflow`, `bot_army` против `core/firewall` | скрипты-симуляторы | 🟠 замысел в скиле, покрытие не подтверждено (F18) |
 | **Регрессия D#** | каждый закрытый дефект = тест, который краснеет при откате (D1,D2,D4,D5,D6,D8,D9,D13 — есть в `test_audit_fixes`) | pytest | ✅ есть, расширять |
 | **Reactions/errors** | все 5 классов / 13 кодов реакций мапятся; recovery присутствует; D27/D4 закрыты | pytest | 🔴 gap (F5) |
-| **Security (inbound)** | path-traversal (D1/D29), injection, rate-limit-bypass, fail-open | симуляции + bandit | 🟠 D29 открыт (F15) |
-| **Security (outbound)** | сервер-как-атака: prompt-injection через вывод инструмента, tool-poisoning, rug-pull, weaponized fs_delete/write/move | сценарные тесты | 🔴 gap |
+| **Security (inbound)** | path-traversal (D1/D29), injection, rate-limit-bypass, fail-open | симуляции + bandit | 🟠 D29 ЗАКРЫТ (мутация M7, containment на всех entity-путях); остаток — F14: auth fail-open по умолчанию |
+| **Security (outbound)** | сервер-как-атака: prompt-injection через вывод инструмента, tool-poisoning, rug-pull, weaponized fs_delete/write/move | сценарные тесты | 🟢 закрыто роем S24 (`agent_swarm`): провенанс на чтении, описания не из области, контракт неизменен, деструктив упирается в границу. Остаток — F87 (провенанс поиска) |
 | **Capability-aware / honest-stub** | стаб обязан КРИЧАТЬ (`NotImplementedError`), не фейкать success; xfail spec-тесты для P#-инструментов | pytest xfail | 🟠 провайдеры честны, spec-тестов нет |
 | **Property / metamorphic** | инварианты по семействам (fs_*, table_*): напр. read∘write=identity | hypothesis | ⚪ будущее |
-| **Эмуляция структуры (E-матрица)** | реальная работа ИИ с `structure_*`: конфиг-матрица ниши, 4 точки входа × depth-control, 3-/2-проходные режимы, циклы рекомендаций (ORPHAN/childless) | pytest против живого сервера | 🔴 нет — **проектируется ниже** (→ F25) |
+| **Эмуляция структуры (E-матрица)** | реальная работа ИИ с `structure_*`: конфиг-матрица ниши, 4 точки входа × depth-control, 3-/2-проходные режимы, циклы рекомендаций (ORPHAN/childless) | pytest против живого сервера | 🔴 нет — **проектируется ниже** (→ F25); писать теперь ЕСТЬ чем (харнесс T2) |
 | **E2E (video pipeline)** | сквозной сценарий сборки видео | по мере P5–P7 | 🔴 продукта нет |
-| **CI-gate** | всё выше на каждом PR + coverage-порог | GitHub Actions | 🔴 нет (F13) |
+| **CI-gate** | всё выше на каждом PR + coverage-порог | GitHub Actions | ✅ есть с S16 (`.github/workflows/ci.yml`): ruff, mypy, pytest+coverage, bandit, gitleaks, pip-audit |
 
-## Baseline (Сессия 1, 2026-07-05)
+## Baseline (Сессия 1, 2026-07-05) — ИСТОРИЧЕСКИЙ СНИМОК
+
+> Оставлено как отметка старта. Сегодня читать так: «нужен живой сервер :8080» больше не про нас —
+> с S24 харнесс `tests/harness` поднимает сервер сам, и firewall-набор идёт в общем гейте.
 
 `tests/quick/` как скрипты: audit **30/30** · search **24/24** · structure **35/35** · tables **33/33** ·
 firewall **1/4** (env: нужен живой сервер :8080) · tunnel **19/20** (env: cloudflared quick). Держать при рефакторах.
