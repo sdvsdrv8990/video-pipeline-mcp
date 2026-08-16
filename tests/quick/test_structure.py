@@ -1008,6 +1008,79 @@ ok(not any(p.endswith("competitors/chA") for p in _seen40),
 ok(not [c for c in _tx40.containers if c.startswith("{")],
    f"токен не утекает в список контейнеров ({[c for c in _tx40.containers if c.startswith('{')]})")
 
+print("== 42. Reconcile одним шагом: адрес из объявления, якорь по role, откат при помехе (F27) ==")
+_ws42 = Path(tempfile.mkdtemp(prefix="vpm_rec_"))
+try:
+    _sm42 = StateManager(_ws42)
+    _ids42 = IDGenerator()
+    _eng42 = Engine(reactions=Reactions(CFG / "server_reactions.yaml"), state_manager=_sm42)
+    _tpl42 = TemplateEngine(_ws42, _ids42, TPL_DIR)
+    _reg42 = LinkRegistry(_ws42)
+    _ctx42 = ToolContext(_eng42, _ids42, _sm42, None, ExcelEngine(_ws42), _tpl42, _reg42, _ws42, CFG)
+    _structure_group.register(_eng42, _ctx42)
+
+    ok(_tpl42.taxonomy.anchor_type("competitor_channel") == "channel",
+       "якорь группировки взят из role: owner_channel, а не из строки в коде")
+
+    # Конкурент создаётся ОТДЕЛЬНО от канала: назови их в одном вызове — имя канала известно
+    # сразу, сегмент группировки подставится, и висящего просто не возникнет.
+    _made42 = asyncio.run(_eng42.call("structure_create", {
+        "type": "niche", "name": "n42",
+        "children": {"network": ["net42"], "competitor_channel": ["rival"]}}))
+    _by_type42 = {e["type"]: e for e in _made42.data["entities"]}
+    _comp42 = _by_type42["competitor_channel"]
+    for _nm42 in ("ourch", "second"):
+        _r42 = asyncio.run(_eng42.call("structure_create", {
+            "type": "channel", "name": _nm42,
+            "parent_path": "niches/n42/networks/net42/channels/"}))
+        ok(_r42.status == "success", f"наш канал {_nm42} создан и зарегистрирован")
+    ok([o["id"] for o in _reg42.find_orphans()] == [_comp42["id"]],
+       "конкурент создан без канала и висит (сегмент группировки опущен)")
+    _dec42 = asyncio.run(_eng42.call("structure_reconcile", {}))
+    _need42 = _dec42.data["needs_decision"]
+    ok(_dec42.data["entities_moved"] == 0 and len(_need42) == 1,
+       f"два кандидата в якоря — не двинуто ничего ({_dec42.data['entities_moved']})")
+    ok(sorted(c["name"] for c in _need42[0]["candidates"]) == ["ourch", "second"],
+       "кандидаты возвращены клиенту, выбор за ним")
+    ok((_ws42 / _comp42["path"]).exists(), "каталог конкурента остался на месте")
+
+    _old42 = _comp42["path"]
+    _done42 = asyncio.run(_eng42.call("structure_reconcile", {"anchor_name": "ourch"}))
+    _new42 = _done42.data["reconciled"][0]["new_path"]
+    ok(_done42.status == "success" and _done42.data["entities_moved"] == 1,
+       f"с названным якорем reconcile прошёл ({_done42.data['entities_moved']})")
+    ok(_new42.endswith("competitors/ourch/rival"),
+       f"адрес собран по объявлению competitors/{{parent:channel}}/ ({_new42})")
+    ok((_ws42 / _new42).exists() and not (_ws42 / _old42).exists(), "каталог реально переехал")
+    ok(_reg42.get(_comp42["id"])["path"] == _new42, "реестр знает новый путь")
+    ok(_reg42.find_orphans() == [], "после reconcile висящих нет")
+
+    # Падение на ВТОРОЙ сущности: первая переезжает успешно, у второй путь занят.
+    # Проверяем именно это — если помеха срабатывает до первого переноса, откатывать нечего
+    # и ассерт на компенсацию зелёный при вырезанном откате (мутация M113 это и вскрыла).
+    _base42 = "niches/n42/networks/net42/competitors"
+    for _n42, _busy42 in (("alpha", False), ("third", True)):
+        _reg42.register({"id": f"CMP42_{_n42}", "type": "competitor_channel", "name": _n42,
+                         "path": f"{_base42}/{_n42}", "parent_ids": [_by_type42["network"]["id"]]})
+        (_ws42 / f"{_base42}/{_n42}").mkdir(parents=True, exist_ok=True)
+        if _busy42:
+            (_ws42 / f"{_base42}/ourch/{_n42}").mkdir(parents=True, exist_ok=True)
+    _fail42 = asyncio.run(_eng42.call("structure_reconcile", {"anchor_name": "ourch"}))
+    _anchor42 = _done42.data["reconciled"][0]["anchor_id"]
+    ok(_fail42.error and _fail42.error.code == "RECONCILE_ROLLED_BACK",
+       f"занятый путь отдаёт объявленный код ({_fail42.error.code if _fail42.error else 'success'})")
+    ok(_fail42.error.reaction_class == "ai_recoverable",
+       f"класс реакции из реестра, не «нужен человек» ({_fail42.error.reaction_class})")
+    ok((_ws42 / f"{_base42}/alpha").exists() and not (_ws42 / f"{_base42}/ourch/alpha").exists(),
+       "успевшая переехать сущность возвращена на место — половина reconcile не осталась")
+    ok(_reg42.get("CMP42_alpha")["path"] == f"{_base42}/alpha",
+       "реестр тоже откачен: путь первой сущности прежний")
+    ok(all(_anchor42 not in _reg42.get(f"CMP42_{n}")["parent_ids"] for n in ("alpha", "third")),
+       "связи сняты компенсацией: без переноса связи быть не должно")
+    ok(_reg42.get(_comp42["id"])["path"] == _new42, "уже сведённая сущность откатом не задета")
+finally:
+    _shutil.rmtree(_ws42, ignore_errors=True)
+
 print("== 41. Висящим считается только конкурент без канала — это решение, а не забывчивость (F99) ==")
 # Объявление предков шире: channel требует нишу, video — нишу и канал. Переход ORPHAN на него
 # сделал бы висящей почти всю книгу, поэтому политика уже объявления; молчаливый переход красит §41.

@@ -87,7 +87,7 @@ class TemplateEngine:
         return bool(name) and ("/" not in name) and name.strip() == name
 
     @staticmethod
-    def _fill_container(container: str, ancestors: dict) -> tuple[str, list]:
+    def fill_container(container: str, ancestors: dict) -> tuple[str, list]:
         """Подставить `{parent:<тип>}` из имён предков (§4: конкурент лежит под НАШИМ каналом).
 
         Неизвестный предок → сегмент опускается (не заглушка), его тип возвращается вторым
@@ -107,6 +107,18 @@ class TemplateEngine:
             if seg:
                 out.append(seg)
         return ("/".join(out) + "/" if out else ""), missing
+
+    def address_for(self, node_type: str, parent_type: str, parent_path: str,
+                    ancestors: dict) -> tuple[str, list]:
+        """Где узел ОБЯЗАН лежать под этим родителем: (каталог, типы неизвестных предков).
+
+        Одно правило §4 на всех: создание, связывание и reconcile спрашивают адрес здесь,
+        а не считают его каждый по-своему.
+        """
+        container, missing = self.fill_container(
+            self.taxonomy.child_container(parent_type, node_type), ancestors)
+        base = parent_path.strip("/")
+        return (f"{base}/{container}" if base else container), missing
 
     def create_node(self, node_type: str, name: str, parent_path: str = "",
                     parent_ids: list | None = None, children: dict | None = None,
@@ -240,7 +252,7 @@ class TemplateEngine:
                 known[ctype] = sibling_names[0]
         for cref in (body.get("children") or []):
             ctype = cref.get("type")
-            container, missing = self._fill_container(cref.get("container", ""), known)
+            container, missing = self.fill_container(cref.get("container", ""), known)
             child_parent = f"{node_rel}/{container}"
             names = named.get(ctype) or []
             if not names:

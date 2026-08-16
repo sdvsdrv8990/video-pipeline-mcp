@@ -436,6 +436,105 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "id": entity_id, "old_path": old_path, "new_path": new_path,
             "parent_ids": entity.get("parent_ids", []), "entities_moved": moved}, facts=facts)
 
+    def _container_parent(entity: dict) -> dict | None:
+        """Родитель, ЧЕЙ шаблон объявляет контейнер для этого типа (конкурента объявляет сетка)."""
+        for pid in entity.get("parent_ids", []):
+            p = ctx.link_registry.get(pid)
+            if p and ctx.taxonomy.child_container(p["type"], entity["type"]):
+                return p
+        return None
+
+    def _reconcile_plan(entity: dict, anchor_name: str) -> dict:
+        """План до действия: куда переносить, либо почему нельзя. Ничего не меняет."""
+        etype = entity["type"]
+        anchor_t = ctx.taxonomy.anchor_type(etype)
+        if not anchor_t:
+            return {"id": entity["id"], "type": etype,
+                    "reason": f"для типа {etype} не объявлен предок-якорь (role: owner_channel)"}
+        cands = [c for c in ctx.link_registry.find(type=anchor_t)
+                 if not anchor_name or c["name"] == anchor_name]
+        if len(cands) != 1:
+            return {"id": entity["id"], "type": etype, "anchor_type": anchor_t,
+                    "candidates": [{"id": c["id"], "name": c["name"], "path": c["path"]} for c in cands],
+                    "reason": ("нет ни одного кандидата в якоря" if not cands
+                               else "кандидатов больше одного — сервер не гадает, назови anchor_name")}
+        anchor = cands[0]
+        holder = _container_parent(entity)
+        if not holder:
+            return {"id": entity["id"], "type": etype, "anchor_type": anchor_t,
+                    "reason": f"нет родителя, чей шаблон объявляет контейнер для {etype}"}
+        target_dir, missing = ctx.template_engine.address_for(
+            etype, holder["type"], holder["path"], {anchor_t: anchor["name"]})
+        if missing:
+            return {"id": entity["id"], "type": etype, "anchor_type": anchor_t,
+                    "reason": f"адрес не собирается: неизвестны предки {missing}"}
+        return {"id": entity["id"], "type": etype, "anchor_id": anchor["id"],
+                "anchor_name": anchor["name"], "anchor_type": anchor_t,
+                "old_path": entity["path"], "new_path": f"{target_dir.rstrip('/')}/{entity['name']}"}
+
+    def _move_entity(old_path: str, new_path: str) -> None:
+        """Физический перенос + переписывание поддерева в реестре. Бросает при любой помехе."""
+        import shutil
+        old_full, new_full = ctx.resolve(old_path), ctx.resolve(new_path)
+        if not old_full.exists():
+            raise FileNotFoundError(f"нет каталога {old_path}")
+        if new_full.exists():
+            raise FileExistsError(f"путь занят: {new_path}")
+        new_full.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(old_full), str(new_full))
+        ctx.link_registry.migrate_subtree(old_path, new_path)
+
+    async def structure_reconcile(entity_id: str = "", anchor_name: str = "") -> "ToolResult":
+        """Довести висящие сущности до объявленного адреса ОДНИМ шагом: связать + перенести.
+
+        Без `entity_id` берёт всех висящих. Неоднозначный якорь ничего не двигает и
+        возвращается в `needs_decision` с кандидатами. Падение на любом шаге откатывает
+        весь пакет: половина reconcile хуже, чем его отсутствие.
+        """
+        if entity_id:
+            ent = ctx.link_registry.get(entity_id)
+            if not ent:
+                return ctx.err("ENTITY_NOT_FOUND", f"Сущность {entity_id} не найдена в реестре.",
+                               "Проверь ID через structure_status.", "structure_status")
+            targets = [ent]
+        else:
+            targets = [e for e in (ctx.link_registry.get(o["id"])
+                                   for o in ctx.link_registry.find_orphans()) if e]
+
+        plans = [_reconcile_plan(e, anchor_name) for e in targets]
+        ready = [p for p in plans if "new_path" in p]
+        needs = [p for p in plans if "new_path" not in p]
+
+        linked: list[tuple[str, str]] = []
+        moved: list[tuple[str, str]] = []
+        try:
+            for p in ready:
+                if ctx.link_registry.link(child_id=p["id"], parent_id=p["anchor_id"]):
+                    linked.append((p["id"], p["anchor_id"]))
+                if p["old_path"] != p["new_path"]:
+                    _move_entity(p["old_path"], p["new_path"])
+                    moved.append((p["old_path"], p["new_path"]))
+        except Exception as e:
+            # Компенсация в обратном порядке: сначала вернуть каталоги, потом снять связи.
+            for old_path, new_path in reversed(moved):
+                _move_entity(new_path, old_path)
+            for child_id, parent_id in linked:
+                ctx.link_registry.unlink(child_id, parent_id)
+            return ctx.err("RECONCILE_ROLLED_BACK", f"Reconcile откачен: {e}",
+                           "Ни одна сущность не сдвинута — устрани помеху и повтори.",
+                           "structure_status")
+
+        facts = [Fact(type="EntityLinked", data={
+            "child_id": p["id"], "child_type": p["type"], "child_name": "",
+            "parent_id": p["anchor_id"], "parent_type": p["anchor_type"],
+            "parent_name": p["anchor_name"]}) for p in ready]
+        facts += [Fact(type="EntityMigrated", data={
+            "id": p["id"], "old_path": p["old_path"], "new_path": p["new_path"]})
+            for p in ready if p["old_path"] != p["new_path"]]
+        return ToolResult(status="success", data={
+            "reconciled": ready, "needs_decision": needs,
+            "entities_moved": len(moved)}, facts=facts)
+
     async def structure_status() -> "ToolResult":
         """Сводка связей: висящие (ORPHAN) + наши каналы без конкурента (мягко).
 
@@ -606,6 +705,21 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "new_path": {"type": "string", "description": "Новый путь относительно workspace"},
         }, "required": ["entity_id", "new_path"]},
         handler=structure_migrate, group="structure", annotations=ANNOTATIONS_MODIFY)
+    engine.register(
+        name="structure_reconcile",
+        title="Структура: довести висящих до места",
+        description=(
+            "Доводит висящие сущности до ОБЪЯВЛЕННОГО адреса одним шагом: связывает с якорем "
+            "и переносит папку туда, где по шаблону положено (конкурент → competitors/{наш_канал}/). "
+            "Без entity_id обрабатывает всех висящих из structure_status. "
+            "Якорь неоднозначен (кандидатов ноль или больше одного) — сервер НЕ гадает: ничего "
+            "не двигает и возвращает кандидатов в needs_decision, выбор делается через anchor_name. "
+            "Падение на любом переносе откатывает весь пакет целиком."),
+        input_schema={"type": "object", "properties": {
+            "entity_id": {"type": "string", "description": "ID одной сущности; пусто — все висящие"},
+            "anchor_name": {"type": "string", "description": "Имя якоря (нашего канала), когда кандидатов несколько"},
+        }},
+        handler=structure_reconcile, group="structure", annotations=ANNOTATIONS_MODIFY)
     def _materialize_pending(pending: list[dict], mode: str) -> dict:
         """Каждая книга материализуется шаблонами СВОЕГО адреса.
 

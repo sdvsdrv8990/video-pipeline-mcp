@@ -316,6 +316,14 @@ ENTITY_NOT_FOUND:
     suggested_tool: "structure_status"
     reason: "Проверь имя/тип через structure_status; при необходимости создай через structure_create."
 
+RECONCILE_ROLLED_BACK:
+  class: ai_recoverable
+  message_template: "Reconcile откачен целиком: ни одна сущность не сдвинута."
+  recovery:
+    suggested_tool: "structure_status"
+    reason: "Помеха на одном из переносов (путь занят, каталога нет) откатывает весь пакет —
+      половина reconcile хуже отсутствия. Устрани помеху из сообщения и повтори."
+
 # ═══ Поиск (core/search) ═══
 
 QUERY_NOT_FOUND:

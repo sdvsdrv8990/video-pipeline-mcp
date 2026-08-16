@@ -1928,6 +1928,29 @@
   },
   "title": "Структура: миграция (перенос папки)"
  },
+ "structure_reconcile": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Доводит висящие сущности до ОБЪЯВЛЕННОГО адреса одним шагом: связывает с якорем и переносит папку туда, где по шаблону положено (конкурент → competitors/{наш_канал}/). Без entity_id обрабатывает всех висящих из structure_status. Якорь неоднозначен (кандидатов ноль или больше одного) — сервер НЕ гадает: ничего не двигает и возвращает кандидатов в needs_decision, выбор делается через anchor_name. Падение на любом переносе откатывает весь пакет целиком.",
+  "group": "structure",
+  "input_schema": {
+   "properties": {
+    "anchor_name": {
+     "description": "Имя якоря (нашего канала), когда кандидатов несколько",
+     "type": "string"
+    },
+    "entity_id": {
+     "description": "ID одной сущности; пусто — все висящие",
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "title": "Структура: довести висящих до места"
+ },
  "structure_remember": {
   "annotations": {
    "destructiveHint": false,

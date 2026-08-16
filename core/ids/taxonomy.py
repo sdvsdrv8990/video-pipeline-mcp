@@ -197,6 +197,19 @@ class Taxonomy:
         # он утекать не должен (иначе читатель сверяет имена с литералом '{parent:channel}').
         return {c for c in out if not (c.startswith("{parent:") and c.endswith("}"))}
 
+    def child_container(self, parent_type: str, child_type: str) -> str:
+        """Объявленный контейнер ребёнка под этим родителем — с токеном, как в шаблоне."""
+        return next((c["container"] for c in self._get(parent_type)["children"]
+                     if c["type"] == child_type), "")
+
+    def anchor_type(self, node_type: str, role: str = "owner_channel") -> str:
+        """Тип предка с этой ролью: по чьему имени группируется узел (§4).
+
+        Якорь берётся из декларации, а не строкой в коде: иначе `role` в шаблоне —
+        мёртвая запись, а правило живёт в двух местах и расходится молча.
+        """
+        return next((a["type"] for a in self.ancestors(node_type) if a.get("role") == role), "")
+
     def children_of(self, parent_type: str) -> list[dict]:
         """Объявленные дети: [{type, container}] — контейнер как в шаблоне, вместе с токеном."""
         return list(self._get(parent_type)["children"])

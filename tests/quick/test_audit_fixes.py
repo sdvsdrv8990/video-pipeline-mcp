@@ -368,6 +368,17 @@ async def main():
           _sp.run(["git", "ls-files", "--error-unmatch", ".env"], cwd=ROOT,
                   capture_output=True).returncode != 0)
 
+    # F100: реестр кодов существует в двух местах (yaml + статический набор). Пока их два,
+    # инвариант держит тест: код, объявленный в yaml, но выпавший из набора, заставляет
+    # ErrorDetail предупреждать «нет в реестре» на штатном отказе — а под strict-warning
+    # это INTERNAL_ERROR вместо объявленной реакции.
+    import yaml as _yml
+    from core.contracts.error_detail import KNOWN_ERROR_CODES as _codes
+    _declared = set(_yml.safe_load(open(ROOT / "config" / "server_reactions.yaml"))) - {"DEFAULT"}
+    _lost = sorted(_declared - _codes)
+    check(f"F100 каждый код из server_reactions.yaml есть в KNOWN_ERROR_CODES (выпали: {_lost or '—'})",
+          not _lost)
+
     print()
     passed = sum(results)
     total = len(results)

@@ -376,6 +376,18 @@ class LinkRegistry:
             return {"child": rec, "parent_id": parent["id"],
                     "parent_type": parent["type"], "parent_name": parent["name"]}
 
+    def unlink(self, child_id: str, parent_id: str) -> bool:
+        """Снять связь. Нужна компенсации: reconcile не имеет права оставить связь без переноса."""
+        with self._lock:
+            data = self._load()
+            self._guard_write(data)
+            rec = data["entities"].get(child_id)
+            if not rec or parent_id not in rec.get("parent_ids", []):
+                return False
+            rec["parent_ids"].remove(parent_id)
+            self._save(data)
+            return True
+
     # РЕСУРСНЫЕ границы (не защита): реестр — единый JSON, и чужой текст не должен его раздувать.
     # Защита от инъекций делается конвертом провенанса на выводе (core/contracts/untrusted.py, S3):
     # обрезать «ignore previous instructions» до 200 символов бессмысленно — оно короче.

@@ -39,6 +39,11 @@ KNOWN_ERROR_CODES = {
     "PROVIDER_NOT_CONFIGURED", "PROVIDER_EXHAUSTED",
     "PROVIDER_TIMEOUT", "DOWNLOAD_INCOMPLETE", "DOWNLOAD_FORBIDDEN",
     "PROVIDER_ADAPTER_MISSING", "LOCAL_MODEL_MISSING", "USAGE_UNIT_UNKNOWN",
+    # F100: объявлены в server_reactions.yaml и реально бросаются, но выпали отсюда —
+    # ErrorDetail предупреждал «код не в реестре» на штатных отказах поиска и пересчёта
+    "PATH_NOT_FOUND", "QUERY_NOT_FOUND", "RECALC_UNAVAILABLE",
+    # Reconcile (S24): пакет откачен целиком — половина сведения хуже отсутствия
+    "RECONCILE_ROLLED_BACK",
     # Раннер (S24): строка канала просит считать вне сервера, а он не поднят
     "RUNNER_NOT_RUNNING",
     # Ключи провайдеров (S23): значение не выдаётся никогда, только отпечаток
