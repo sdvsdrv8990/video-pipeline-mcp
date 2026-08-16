@@ -109,28 +109,28 @@ class Transport:
 
         # D30: конвертируем ToolResult в MCP формат с structuredContent.
         # facts и error details → structuredContent (спек-совместимо).
+        # По схеме спеки structuredContent — объект; отсутствие структурированной части
+        # выражается ОТСУТСТВИЕМ поля, а не `null` (иначе валидатор провода красит ответ).
         if result.status == "success":
-            content = [{"type": "text", "text": json.dumps(result.data or {})}]
-            structured = {}
+            payload: dict[str, Any] = {
+                "content": [{"type": "text", "text": json.dumps(result.data or {})}]}
             if result.facts:
-                structured["facts"] = [f.model_dump() for f in result.facts]
-            return self._success_response(request_id, {
-                "content": content,
-                "structuredContent": structured if structured else None
-            })
+                payload["structuredContent"] = {"facts": [f.model_dump() for f in result.facts]}
+            return self._success_response(request_id, payload)
         else:
-            content = [{"type": "text", "text": result.error.message if result.error else "Unknown error"}]
-            structured = {}
+            payload = {
+                "content": [{"type": "text",
+                             "text": result.error.message if result.error else "Unknown error"}],
+                "isError": True,
+            }
             if result.error:
                 err_dump = result.error.model_dump()
-                structured["code"] = err_dump.get("code")
-                structured["reaction_class"] = err_dump.get("reaction_class")
-                structured["recovery"] = err_dump.get("recovery")
-            return self._success_response(request_id, {
-                "content": content,
-                "isError": True,
-                "structuredContent": structured if structured else None
-            })
+                payload["structuredContent"] = {
+                    "code": err_dump.get("code"),
+                    "reaction_class": err_dump.get("reaction_class"),
+                    "recovery": err_dump.get("recovery"),
+                }
+            return self._success_response(request_id, payload)
 
     # D13: версии протокола, которые сервер понимает (по убыванию новизны).
     SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
