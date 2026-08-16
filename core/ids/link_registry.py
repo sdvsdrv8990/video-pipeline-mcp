@@ -8,9 +8,10 @@ core/ids/link_registry.py — Реестр связей сущностей (ан
 ## Границы
 - Связь односторонняя: `link(child, parent)` пишет parent_id ребёнку. Оба дерева не правим —
   источник истины один, рассинхрону неоткуда взяться.
-- Персист: `workspace/_id_registry.json`, атомарно (D9, переиспользуем _atomic_write_json).
-- Не материализует файлы (это TemplateEngine). Здесь только связи.
-- Правило «нужного родителя» — в REQUIRED_PARENT_TYPE, без `if type == ...` по коду.
+- Персист: `workspace/_id_registry.json`, атомарно (D9). Файлы не материализует (это TemplateEngine).
+- 🟠 F99: REQUIRED_PARENT_TYPE — ХАРДКОД, дублирующий `required` в шаблонах; читалка
+  декларации (`Taxonomy.required_parent_types`) не вызывается никем. Перевод меняет продукт
+  (висящих станет на порядок больше) и ждёт решения владельца.
 """
 
 import json
