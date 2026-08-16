@@ -107,9 +107,6 @@ class Taxonomy:
         """Объявленные предки сверху вниз: [{type, required, role}]."""
         return list(self._get(node_type)["ancestors"])
 
-    def required_parent_types(self, node_type: str) -> list[str]:
-        return [a["type"] for a in self.ancestors(node_type) if a["required"]]
-
     def child_type_for(self, parent_type: str, container: str) -> str:
         """Тип ребёнка, который живёт в контейнере родителя (`videos/` → video)."""
         want = container.strip("/")

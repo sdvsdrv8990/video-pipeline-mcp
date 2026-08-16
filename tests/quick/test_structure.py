@@ -1008,6 +1008,16 @@ ok(not any(p.endswith("competitors/chA") for p in _seen40),
 ok(not [c for c in _tx40.containers if c.startswith("{")],
    f"токен не утекает в список контейнеров ({[c for c in _tx40.containers if c.startswith('{')]})")
 
+print("== 41. Висящим считается только конкурент без канала — это решение, а не забывчивость (F99) ==")
+# Объявление предков шире: channel требует нишу, video — нишу и канал. Переход ORPHAN на него
+# сделал бы висящей почти всю книгу, поэтому политика уже объявления; молчаливый переход красит §41.
+_ws41 = Path(tempfile.mkdtemp(prefix="vpm_orph41_"))
+_reg41 = LinkRegistry(_ws41)
+for _i, _t in enumerate(("channel", "video", "competitor_video", "competitor_channel")):
+    _reg41.register({"id": f"E41_{_i}", "type": _t, "name": f"n{_i}", "path": f"p{_i}", "parent_ids": []})
+_types41 = sorted({o["type"] for o in _reg41.find_orphans()})
+ok(_types41 == ["competitor_channel"], f"без родителей висит только конкурент (получено: {_types41})")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

@@ -146,6 +146,7 @@
 
 | # | Что сломано | Файл | Тест-хозяин | Результат |
 |---|---|---|---|---|
+| M112 | ORPHAN-политика расширена до объявления предков (`channel`→ниша, `video`→канал) | `core/ids/link_registry.py` | `test_structure` §41 | 🔴 ловит 2 ассерта (S24) |
 | M111 | в описание инструмента вписан `U+200B` — невидимая правка манифеста | `tools/tables/__init__.py` | `test_tools_inventory` | 🔴 ловит (S24) |
 | M111a | описание несёт `<!-- … -->` — текст, скрытый от ревью, но видимый модели | `tools/tables/__init__.py` | `test_tools_inventory` | 🔴 ловит (S24) |
 | M111b | описание несёт `SYSTEM: ignore previous instructions` | `tools/tables/__init__.py` | `test_tools_inventory` | 🔴 ловит (S24) |
