@@ -1,11 +1,5 @@
+"""core/providers/img — исполнители вида «картинка»: локальные и платные «файл → файл».
+
+Реэкспорта нет намеренно: адаптер поднимается по объявлению из config/providers.yaml
+(`adapters.by_provider` → `img.<модуль>:<Класс>`), а не импортом из чужого места.
 """
-core/providers/img/__init__ — точка входа для IMG провайдера
-
-## Назначение
-Из любого места сервера:
-    from core.providers.img import LiteLLMIMGAdapter
-"""
-
-from .litellm_img import LiteLLMIMGAdapter
-
-__all__ = ["LiteLLMIMGAdapter"]

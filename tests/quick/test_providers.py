@@ -314,6 +314,21 @@ except ProviderError as e:
     ok(e.code == "PROVIDER_ADAPTER_MISSING",
        f"имя провайдера из данных не поднимает произвольный модуль ({e.code})")
 
+# F3/F10: облачные провайдеры ОБЪЯВЛЕНЫ, но исполнителя у них нет. Честность держит этот отказ,
+# а не файл-заглушка: мёртвый адаптер снят, значит отказ обязан остаться слышным и называть выход.
+for _cloud, _rt in (("ElevenLabs", "tts_characters"), ("OpenAI", "images"), ("Fal", "images")):
+    try:
+        _reg.load(_cloud, _rt)
+        ok(False, f"{_cloud} без адаптера обязан отказать, а не сделать вид, что исполнил")
+    except ProviderError as _ec:
+        ok(_ec.code == "PROVIDER_ADAPTER_MISSING" and "media_provider_status" in (_ec.suggested_tool or ""),
+           f"{_cloud}: отказ назван и есть чем разбираться ({_ec.code})")
+        # F105: рецепт называет ТОЛЬКО имена с исполнителем — иначе он ведёт на тот же отказ.
+        # Сверка по элементам, а не подстрокой: пара «Fal:bg_removals» исполнима, голый «Fal» — нет.
+        _named = [s.strip() for s in (_ec.reason or "").split("исполнять:")[-1].split(".")[0].split(",")]
+        ok("Local_piper" in _named and _cloud not in _named,
+           f"{_cloud}: в рецепте только исполнимое, без безадаптерных ({', '.join(_named[:4])})")
+
 # Раскладка каталога весов — ОПИСЬ, а не знание адаптера: правка `path` меняет, куда он смотрит.
 _lroot = Path(tempfile.mkdtemp(prefix="local_"))
 _lmodels = _lroot / "иной_каталог"

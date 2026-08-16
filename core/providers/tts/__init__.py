@@ -1,11 +1,5 @@
+"""core/providers/tts — исполнители вида «речь».
+
+Реэкспорта нет намеренно: адаптер поднимается по объявлению из config/providers.yaml
+(`adapters.by_provider` → `tts.<модуль>:<Класс>`), а не импортом из чужого места.
 """
-core/providers/tts/__init__ — точка входа для TTS провайдера
-
-## Назначение
-Из любого места сервера:
-    from core.providers.tts import LiteLLMTTSAdapter
-"""
-
-from .litellm_tts import LiteLLMTTSAdapter
-
-__all__ = ["LiteLLMTTSAdapter"]

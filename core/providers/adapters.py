@@ -174,9 +174,13 @@ class AdapterRegistry:
         entry = self._entry(provider, resource_type)
         if entry and entry.get("adapter"):
             return str(entry["adapter"])
+        # F105: в рецепт идут только имена С исполнителем. Перечень всех объявленных советовал бы
+        # ровно тех, у кого адаптера нет, — то есть вёл бы ИИ на тот же отказ по кругу.
+        runnable = sorted(n for n, v in table.items()
+                          if (v if isinstance(v, str) else (v or {}).get("adapter")))
         raise ProviderError(
             "PROVIDER_ADAPTER_MISSING", f"Для провайдера '{provider}' не объявлен адаптер.",
-            reason=(f"Сервер знает, чем исполнять: {', '.join(sorted(table)) or '(ничего)'}. "
+            reason=(f"Сервер знает, чем исполнять: {', '.join(runnable) or '(ничего)'}. "
                     "Либо поставь в строке канала одного из них (table_update), либо объяви "
                     "новый адаптер в config/providers.yaml → adapters.by_provider."),
             suggested_tool="media_provider_status")
