@@ -406,12 +406,17 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         # Физический перенос
         new_full.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(old_full), str(new_full))
-        # Обновляем реестр
-        ok, res = ctx.safe(lambda: ctx.link_registry.migrate(entity_id, new_path))
+        # shutil.move уносит ВСЁ поддерево, поэтому и в реестре переписывается поддерево:
+        # иначе записи потомков указывают на каталоги, которых больше нет (как в fs_move).
+        ok, moved = ctx.safe(lambda: ctx.link_registry.migrate_subtree(old_path, new_path))
         if not ok:
-            return res
-        return ToolResult(status="success", data=res, facts=[Fact(type="EntityMigrated", data={
-            "id": entity_id, "old_path": old_path, "new_path": new_path})])
+            return moved
+        facts = [Fact(type="EntityMigrated", data={
+            "id": entity_id, "old_path": old_path, "new_path": new_path})]
+        facts += [Fact(type="EntityMigrated", data=m) for m in moved if m["id"] != entity_id]
+        return ToolResult(status="success", data={
+            "id": entity_id, "old_path": old_path, "new_path": new_path,
+            "parent_ids": entity.get("parent_ids", []), "entities_moved": moved}, facts=facts)
 
     async def structure_status() -> "ToolResult":
         """Сводка связей: висящие (ORPHAN) + наши каналы без конкурента (мягко).

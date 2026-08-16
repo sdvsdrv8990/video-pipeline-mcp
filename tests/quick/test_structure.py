@@ -340,7 +340,7 @@ vid_id = call("structure_create", type="video", name="clip",
 manual = call("fs_create_file",
               path="niches/gaming/networks/net1/channels/chA/videos/clip/assets/notes.md", content="x")
 ok(manual.data["owner_id"] == vid_id and manual.data["owner_type"] == "video",
-   "файл, созданный вручную, получает владельца по вместимости (было: ничего)")
+   "файл, созданный вручную, получает владельца по вместимости")
 ok(manual.data["chain"].count("/") == 3 and manual.data["chain"].endswith(vid_id),
    "и цепочку владельцев сверху вниз, заканчивающуюся самим видео")
 ok(any(f.type == "FileCreated" and f.data.get("owner_id") for f in manual.facts),
@@ -355,7 +355,7 @@ ok(mv.data["new_chain"] and mv.data["new_owner_id"],
 # С появлением схем книг у видео едет и его материализованный video_data.xlsx — переезжает
 # всё поддерево, а не только сам узел.
 ok(vid_id in [m["id"] for m in mv.data["entities_moved"]],
-   "запись реестра переехала вместе с диском (было: путь протухал молча)")
+   "запись реестра переехала вместе с диском")
 ok(all("/clip_v2" in m["new_path"] for m in mv.data["entities_moved"]),
    "все переехавшие записи указывают на новый путь")
 ok(_ctx.link_registry.get(vid_id)["path"].endswith("clip_v2") and
@@ -621,7 +621,7 @@ ok(call("fs_read_file", path=f"{V2}/plain.md").data["content"]["flags"] == [],
 
 _d = call("fs_delete", path=f"{V2}/plain.md")
 ok(_d.status == "error" and _d.error.code == "CONFIRM_REQUIRED",
-   "удаление без подтверждения отклонено (было: молча удалялся файл)")
+   "удаление без подтверждения отклонено")
 ok(_d.error.recovery.suggested_params == {"force": True}, "recovery говорит, чем подтвердить")
 ok((ws18 / V2 / "plain.md").exists(), "файл на месте после отказа")
 ok(call("fs_delete", path=f"{V2}/plain.md", force=True).status == "success", "с force=true удаление проходит")
@@ -873,6 +873,54 @@ ok({p.name for p in _base35.iterdir()} == {"ok.md"} if _base35.exists() else Fal
    "custom: на диске только легитимный файл — периметр не ослаб от смены шаблона")
 ok(_srv35_dir.read_text(encoding="utf-8") == _before35,
    "серверные шаблоны не тронуты кастомизацией проекта")
+
+print("== 36. Перенос сущности уносит поддерево — и на диске, и в реестре (F27, Н1) ==")
+_ws36 = Path(tempfile.mkdtemp(prefix="vpm_migr_"))
+try:
+    _sm36 = StateManager(_ws36)
+    _ids36 = IDGenerator()
+    _eng36 = Engine(reactions=Reactions(CFG / "server_reactions.yaml"), state_manager=_sm36)
+    _reg36 = LinkRegistry(_ws36)
+    _ctx36 = ToolContext(_eng36, _ids36, _sm36, None, ExcelEngine(_ws36),
+                         TemplateEngine(_ws36, _ids36, TPL_DIR), _reg36, _ws36, CFG)
+    _structure_group.register(_eng36, _ctx36)
+
+    def _call36(tool, **kw):
+        return asyncio.run(_eng36.tools[tool].handler(**kw))
+
+    # Конкурент без нашего канала: лёг мимо сегмента группировки (§4) и ждёт переезда.
+    _made36 = _call36("structure_create", type="network", name="net1",
+                      parent_path="niches/g/networks/",
+                      children={"channel": ["chA"], "competitor_channel": ["compX"],
+                                "competitor_video": ["cv1"]})
+    _by_type36 = {}
+    for _e36 in _made36.data["entities"]:
+        _by_type36.setdefault(_e36["type"], []).append(_e36)
+    _comp36 = _by_type36["competitor_channel"][0]
+    _cvid36 = _by_type36["competitor_video"][0]
+    ok(_comp36["path"].endswith("competitors/chA/compX"),
+       f"исходная раскладка конкурента взята из объявления ({_comp36['path']})")
+
+    _dest36 = "niches/g/networks/net1/competitors/chA/compX_moved"
+    _mig36 = _call36("structure_migrate", entity_id=_comp36["id"], new_path=_dest36)
+    ok(_mig36.status == "success", "перенос прошёл")
+    ok((_ws36 / _dest36 / "videos" / "cv1").exists() and not (_ws36 / _comp36["path"]).exists(),
+       "на диске переехало ВСЁ поддерево, старого каталога нет")
+
+    _cv_path36 = _reg36.get(_cvid36["id"])["path"]
+    ok(_cv_path36.startswith(_dest36 + "/"),
+       f"запись потомка в реестре переехала следом ({_cv_path36})")
+    ok({m["id"] for m in _mig36.data["entities_moved"]} >= {_comp36["id"], _cvid36["id"]},
+       "ответ перечисляет всё, что переехало, — переезд потомков не молчаливый")
+    ok(any(f.type == "EntityMigrated" and f.data.get("id") == _cvid36["id"] for f in _mig36.facts),
+       "переезд потомка доехал фактом до контракта (D25)")
+
+    _int36 = _call36("structure_check_integrity")
+    _codes36 = sorted({i["type"] for i in _int36.data["issues"]})
+    ok("missing_path" not in _codes36,
+       f"целостность после переноса чистая: реестр не показывает на пустоту ({_codes36})")
+finally:
+    _shutil.rmtree(_ws36, ignore_errors=True)
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

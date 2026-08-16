@@ -2,23 +2,15 @@
 core/ids/link_registry.py — Реестр связей сущностей (анонимные → ORPHAN)
 
 ## Назначение
-Спека предусматривает в core/ids «реестр связей: анонимные → ORPHAN»
-(ИНСТРУКЦИЯ_структура_и_ядро.md). Здесь он и живёт.
-
-Хранит созданные узлы структуры (niche/network/channel/video/competitor_*) с их
-`parent_ids` и отвечает на вопросы:
-- **Кто висит (ORPHAN)?** Сущность, которой по типу НУЖЕН родитель определённого типа,
-  но его нет среди parent_ids. Пример: конкурент без нашего канала (§4 — конкуренты
-  группируются по нашему каналу). → уведомление `UNLINKED_ENTITY`.
-- **У кого нет ребёнка (мягко)?** Наш канал, на который не ссылается ни один конкурент.
-- **Связать (в ОДНОМ месте).** `link(child, parent)` добавляет parent_id ребёнку. Один
-  вызов — источник истины реестр; сервер сам выводит группировку. Не правим оба дерева
-  (экономит токены, исключает рассинхрон).
+Хранит узлы структуры с их `parent_ids`: кто висит без нужного родителя (ORPHAN,
+`UNLINKED_ENTITY`), у кого нет ребёнка, кто с кем связан.
 
 ## Границы
+- Связь односторонняя: `link(child, parent)` пишет parent_id ребёнку. Оба дерева не правим —
+  источник истины один, рассинхрону неоткуда взяться.
 - Персист: `workspace/_id_registry.json`, атомарно (D9, переиспользуем _atomic_write_json).
-- Не материализует файлы (это TemplateEngine, Ф1). Здесь только связи.
-- Правило «нужного родителя» декларативно в REQUIRED_PARENT_TYPE — без `if type == ...` по коду.
+- Не материализует файлы (это TemplateEngine). Здесь только связи.
+- Правило «нужного родителя» — в REQUIRED_PARENT_TYPE, без `if type == ...` по коду.
 """
 
 import json
@@ -478,19 +470,3 @@ class LinkRegistry:
                 self._save(data)
         return dropped
 
-    def migrate(self, entity_id: str, new_path: str, new_parent_ids: list[str] | None = None) -> dict:
-        """Миграция сущности: физический перенос + обновление реестра.
-        Используется когда родитель появился позже (напр. конкурент без канала → привязка к каналу)."""
-        with self._lock:
-            data = self._load()
-            if entity_id not in data["entities"]:
-                raise LinkError("ENTITY_NOT_FOUND", f"Сущность {entity_id} не найдена в реестре.",
-                                "Сначала создай её через structure_create.", "structure_status")
-            rec = data["entities"][entity_id]
-            old_path = rec.get("path", "")
-            rec["path"] = new_path
-            if new_parent_ids is not None:
-                rec["parent_ids"] = list(dict.fromkeys(rec.get("parent_ids", []) + new_parent_ids))
-            self._save(data)
-            return {"id": entity_id, "old_path": old_path, "new_path": new_path,
-                    "parent_ids": rec["parent_ids"]}
