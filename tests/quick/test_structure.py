@@ -935,6 +935,28 @@ ok(not (_ws37 / "niches/g/networksnoslash").exists(),
 ok({p.name for p in (_ws37 / "niches/g/networks").iterdir()} == {"withslash", "noslash"},
    "оба узла — соседи в одном контейнере")
 
+print("== 38. Повтор создания даёт рецепт, а не «нужна диагностика человеком» (F95) ==")
+_ws38 = Path(tempfile.mkdtemp(prefix="vpm_dup_"))
+try:
+    _sm38 = StateManager(_ws38)
+    _ids38 = IDGenerator()
+    _eng38 = Engine(reactions=Reactions(CFG / "server_reactions.yaml"), state_manager=_sm38)
+    _ctx38 = ToolContext(_eng38, _ids38, _sm38, None, ExcelEngine(_ws38),
+                         TemplateEngine(_ws38, _ids38, TPL_DIR), LinkRegistry(_ws38), _ws38, CFG)
+    _structure_group.register(_eng38, _ctx38)
+    # Через engine.call, а не мимо: обезличивание в INTERNAL_ERROR происходит именно в диспетчере.
+    _first38 = asyncio.run(_eng38.call("structure_create", {"type": "niche", "name": "dup"}))
+    _again38 = asyncio.run(_eng38.call("structure_create", {"type": "niche", "name": "dup"}))
+    ok(_first38.status == "success", "первое создание прошло")
+    ok(_again38.error and _again38.error.code == "DUPLICATE_PATH",
+       f"повтор отдаёт объявленный код ({_again38.error.code if _again38.error else 'success'})")
+    ok(_again38.error.reaction_class == "ai_recoverable",
+       f"класс реакции не подменён на human_required ({_again38.error.reaction_class})")
+    ok(_again38.error.recovery and _again38.error.recovery.suggested_tool == "structure_resolve",
+       "в ответе рецепт из реестра, а не «нужна диагностика человеком»")
+finally:
+    _shutil.rmtree(_ws38, ignore_errors=True)
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

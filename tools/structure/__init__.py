@@ -143,7 +143,11 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             for sub in node["children"]:
                 _walk(sub)
 
-        _walk(res)
+        # Через ctx.safe: LinkError несёт готовый код (DUPLICATE_PATH и т.п.), а голое
+        # исключение из хендлера движок обезличивает в INTERNAL_ERROR/«нужен человек».
+        ok, walked = ctx.safe(lambda: _walk(res))
+        if not ok:
+            return walked
 
         # Фаза ТАБЛИЦЫ идёт сразу и целиком на сервере (решение владельца S17): клиент передаёт
         # ИМЕНА, книги материализует движок. Создаются книги ТОЛЬКО созданных сущностей — тот же
@@ -154,9 +158,12 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             # Книга существует на диске → теперь её можно регистрировать (владелец из pending).
             owner = next((p.get("owner_id", "") for p in pending if p["path"] == m["path"]), "")
             if m.get("file_id"):
-                ctx.link_registry.register({
-                    "id": m["file_id"], "type": "table_file", "name": m["path"].split("/")[-1],
-                    "path": m["path"], "parent_ids": [owner] if owner else [], "kind": "file"})
+                book = {"id": m["file_id"], "type": "table_file",
+                        "name": m["path"].split("/")[-1], "path": m["path"],
+                        "parent_ids": [owner] if owner else [], "kind": "file"}
+                ok, reg = ctx.safe(lambda: ctx.link_registry.register(book))
+                if not ok:
+                    return reg
             facts.append(Fact(type="TableMaterialized", data={
                 "path": m["path"], "book": m["book"], "file_id": m.get("file_id", ""),
                 "sheets": [s["sheet"] for s in m["sheets"]], "columns": m["columns_total"]}))
