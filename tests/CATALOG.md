@@ -146,6 +146,11 @@
 
 | # | Что сломано | Файл | Тест-хозяин | Результат |
 |---|---|---|---|---|
+| M111 | в описание инструмента вписан `U+200B` — невидимая правка манифеста | `tools/tables/__init__.py` | `test_tools_inventory` | 🔴 ловит (S24) |
+| M111a | описание несёт `<!-- … -->` — текст, скрытый от ревью, но видимый модели | `tools/tables/__init__.py` | `test_tools_inventory` | 🔴 ловит (S24) |
+| M111b | описание несёт `SYSTEM: ignore previous instructions` | `tools/tables/__init__.py` | `test_tools_inventory` | 🔴 ловит (S24) |
+| M111c | описание несёт внешний URL и `curl` — эксфильтрация подсказана манифестом | `tools/tables/__init__.py` | `test_tools_inventory` | 🔴 ловит (S24) |
+| M111d | латинская `c` внутри русского слова — confusable-подмена имени/термина | `tools/tables/__init__.py` | `test_tools_inventory` | 🔴 ловит (S24) |
 | M110 | токен `{parent:<тип>}` не раскрывается — сгруппированная ветка снова невидима (откат F93) | `core/ids/link_registry.py` | `test_structure` | 🔴 ловит (S24) |
 | M110a | спуск только по прямым детям — пропущенный уровень иерархии снова невидим | `core/ids/link_registry.py` | `test_structure` | 🔴 ловит (S24) |
 | M109 | снять описание у свойства схемы — контракт для клиента-LLM теряется (откат F98) | `tools/search/__init__.py` | `test_tools_inventory` | 🔴 ловит 2 ассерта (S24) |

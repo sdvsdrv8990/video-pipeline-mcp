@@ -10,7 +10,9 @@ Standalone-прогон:  python tests/quick/test_tools_inventory.py
 изменении контракта (тогда diff эталона обязан быть виден в ревью коммита).
 """
 import json
+import re
 import sys
+import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -79,7 +81,7 @@ for field in ("title", "description", "annotations", "input_schema"):
 print("== Инвентарь: схемы годны САМИ ПО СЕБЕ, а не только совпадают с эталоном (F98) ==")
 # Сверка с эталоном ловит ИЗМЕНЕНИЕ контракта, но не его качество: эталон из кривых схем
 # зелёный. Инварианты ниже — про «как должно», и считаются из самих схем, не из числа.
-NAME_RE = __import__("re").compile(r"^[A-Za-z0-9_.-]{1,64}$")
+NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 ANNOTATION_KEYS = {"title", "readOnlyHint", "idempotentHint", "destructiveHint", "openWorldHint"}
 SCHEMA_KEYS = {"type", "properties", "required"}
 TYPE_DECLARED = {"type", "enum", "anyOf", "oneOf"}
@@ -119,6 +121,45 @@ undocumented = sorted({f"{n}.{p}" for n, t in current.items()
                        for p, spec in ((t["input_schema"] or {}).get("properties") or {}).items()
                        if not (isinstance(spec, dict) and (spec.get("description") or "").strip())})
 ok(not undocumented, f"у каждого свойства есть описание (без: {undocumented or '—'})")
+
+print("== Инвентарь: манифест не отравлен (T2) ==")
+# Клиент кладёт манифест в контекст модели с полным доверием, поэтому текст описаний —
+# управляющий слой, а не документация: правка здесь исполняется, а не читается.
+INVISIBLE_RE = re.compile("[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
+HIDDEN_RE = re.compile(r"<!--|\[//\]:\s*#\s*\(")
+INSTR_RE = re.compile(r"SYSTEM:|<system>|\[INST\]|<\|im_start\|>|ignore\s+previous"
+                      r"|disregard\s+(?:all|any)\s+instructions|override\s+safety|you\s+are\s+now",
+                      re.IGNORECASE)
+# Внешний URL/шелл опаснее всего как default: модель подставит значение не задумываясь.
+OUTBOUND_RE = re.compile(r"https?://(?!(?:localhost|127\.0\.0\.1)(?:[:/?#]|$))\S+"
+                         r"|\bcurl\b|\bwget\b|bash\s+-c|sh\s+-c", re.IGNORECASE)
+WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
+_SCRIPTS = ("CYRILLIC", "GREEK", "LATIN", "ARMENIAN", "HEBREW")
+_script_cache: dict[str, str | None] = {}
+
+
+def _script(ch: str) -> str | None:
+    if ch not in _script_cache:
+        name = unicodedata.name(ch, "")
+        _script_cache[ch] = next((s for s in _SCRIPTS if s in name), None)
+    return _script_cache[ch]
+
+
+def _confusable_words(text: str) -> list[str]:
+    """Смешение алфавитов ВНУТРИ слова: описания русские, документная проверка ловила бы все."""
+    return [w for w in WORD_RE.findall(text)
+            if len({s for s in map(_script, w) if s}) > 1]
+
+
+manifest = {n: json.dumps(t, ensure_ascii=False) for n, t in current.items()}
+
+for label, rx in (("невидимых кодпоинтов", INVISIBLE_RE), ("скрытого текста", HIDDEN_RE),
+                  ("токенов перехвата", INSTR_RE), ("внешних URL/шелл-команд", OUTBOUND_RE)):
+    hit = sorted(n for n, text in manifest.items() if rx.search(text))
+    ok(not hit, f"в манифесте нет {label} (несут: {hit or '—'})")
+
+confusable = sorted({f"{n}:{w}" for n, text in manifest.items() for w in _confusable_words(text)})
+ok(not confusable, f"нет слов со смешением алфавитов (несут: {confusable or '—'})")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
