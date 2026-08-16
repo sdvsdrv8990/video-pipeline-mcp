@@ -55,6 +55,9 @@ with live_server() as srv:
                                                          "Origin": "http://evil.example.com"})
     ok(_evil.status_code == 403, f"запрос с чужим Host отклонён 403 ({_evil.status_code})")
     ok("Forbidden host" in _evil.text, f"причина названа явно ({_evil.text[:80]})")
+    # 0.0.0.0 маршрутизируется в localhost («0.0.0.0 Day») — потому в списке разрешённых его нет.
+    _zero = rpc.request("tools/list", {}, extra_headers={"Host": "0.0.0.0:8000"})
+    ok(_zero.status_code == 403, f"Host 0.0.0.0 отклонён 403 ({_zero.status_code})")
     ok(rpc.request("tools/list", {}).status_code == 200,
        "свой (петлевой) Host по-прежнему проходит — защита не задела честный путь")
 

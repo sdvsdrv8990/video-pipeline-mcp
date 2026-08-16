@@ -71,11 +71,9 @@ CONFIG_PATH = Path(os.environ.get("MCP_CONFIG") or (BASE_PATH / "config")).resol
 # D12: если задан — валидируем заголовок Origin (анти-DNS-rebinding).
 ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("MCP_ALLOWED_ORIGINS", "").split(",") if o.strip()]
 
-# F103: Host валидируется ВСЕГДА. DNS-rebinding работает так: страница атакующего резолвит свой
-# домен в 127.0.0.1, и браузер жертвы обращается к локальному серверу как доверенный посредник —
-# в запросе при этом стоит ЧУЖОЕ имя хоста. Список по умолчанию: петля + hostname туннеля из
-# config/tunnel.yaml (боевой путь), расширяется MCP_ALLOWED_HOSTS.
-_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]", "0.0.0.0"}
+# F103: Host валидируется ВСЕГДА (анти-DNS-rebinding) — петля + hostname туннеля + MCP_ALLOWED_HOSTS.
+# 0.0.0.0 не входит намеренно: это имя браузерного обхода localhost («0.0.0.0 Day»), не bind раннера.
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
 
 def _allowed_hosts() -> set:

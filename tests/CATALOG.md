@@ -151,6 +151,7 @@
 |---|---|---|---|---|
 | M117 | проверка `Host` снята — сервер снова отвечает чужому имени хоста (откат F103) | `server.py` | `conformance` + `test_firewall` §2b | 🔴 ловит 4 ассерта (S24) |
 | M117a | набор пропускается вместо прогона при отсутствии node | `tests/conformance/test_conformance.py` | `conformance` (с `VPM_CONFORMANCE_REQUIRED=1`) | 🔴 ловит (S24) — иначе сломанная установка node дала бы зелёную джобу |
+| M118 | `0.0.0.0` возвращён в список разрешённых хостов (имя браузерного обхода localhost) | `server.py` | `test_firewall` §2b | 🔴 ловит 1 ассерт (S24) |
 | M116 | сведение связывает, но НЕ переносит — маршруты 1/2/3 прохода расходятся | `tools/structure/__init__.py` | `structure_emulation` E-C | 🔴 ловит 2 ассерта (S24) |
 | M116a | сведение переносит, но НЕ связывает — путь верный, реестр врёт | `tools/structure/__init__.py` | `structure_emulation` E-C | 🔴 ловит 2 ассерта (S24) |
 | M115 | отложенные дети не сообщаются клиенту | `core/engine/template_engine.py` | `structure_emulation` E-B | 🔴 ловит 12 ассертов (S24) |
