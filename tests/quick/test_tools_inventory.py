@@ -76,6 +76,50 @@ for field in ("title", "description", "annotations", "input_schema"):
     diverged = [n for n in sorted(set(current) & set(golden)) if current[n][field] != golden[n][field]]
     ok(not diverged, f"{field} идентичен эталону (разошлись: {diverged or '—'})")
 
+print("== Инвентарь: схемы годны САМИ ПО СЕБЕ, а не только совпадают с эталоном (F98) ==")
+# Сверка с эталоном ловит ИЗМЕНЕНИЕ контракта, но не его качество: эталон из кривых схем
+# зелёный. Инварианты ниже — про «как должно», и считаются из самих схем, не из числа.
+NAME_RE = __import__("re").compile(r"^[A-Za-z0-9_.-]{1,64}$")
+ANNOTATION_KEYS = {"title", "readOnlyHint", "idempotentHint", "destructiveHint", "openWorldHint"}
+SCHEMA_KEYS = {"type", "properties", "required"}
+TYPE_DECLARED = {"type", "enum", "anyOf", "oneOf"}
+
+bad_names = [n for n in current if not NAME_RE.match(n)]
+ok(not bad_names, f"имена инструментов пригодны для клиента (нарушают: {bad_names or '—'})")
+
+no_desc = [n for n, t in current.items() if not (t["description"] or "").strip()]
+ok(not no_desc, f"у каждого инструмента есть описание (без: {no_desc or '—'})")
+
+alien_ann = sorted({f"{n}.{k}" for n, t in current.items()
+                    for k in (t["annotations"] or {}) if k not in ANNOTATION_KEYS})
+ok(not alien_ann, f"annotations только объявленные MCP-подсказки (чужие: {alien_ann or '—'})")
+
+alien_schema = sorted({f"{n}.{k}" for n, t in current.items()
+                       for k in (t["input_schema"] or {}) if k not in SCHEMA_KEYS})
+ok(not alien_schema, f"в схеме нет неизвестных ключей верхнего уровня (чужие: {alien_schema or '—'})")
+
+not_object = [n for n, t in current.items()
+              if (t["input_schema"] or {}).get("type") != "object"
+              or not isinstance((t["input_schema"] or {}).get("properties"), dict)]
+ok(not not_object, f"схема — объект со словарём свойств (нарушают: {not_object or '—'})")
+
+# required, ссылающийся на несуществующее свойство, — рассинхрон, который иначе пройдёт молча.
+req_orphan = sorted({f"{n}.{r}" for n, t in current.items()
+                     for r in ((t["input_schema"] or {}).get("required") or [])
+                     if r not in ((t["input_schema"] or {}).get("properties") or {})})
+ok(not req_orphan, f"required ⊆ properties (висят: {req_orphan or '—'})")
+
+untyped = sorted({f"{n}.{p}" for n, t in current.items()
+                  for p, spec in ((t["input_schema"] or {}).get("properties") or {}).items()
+                  if not (isinstance(spec, dict) and TYPE_DECLARED & set(spec))})
+ok(not untyped, f"у каждого свойства объявлен тип (без типа: {untyped or '—'})")
+
+# Свойство без описания — потеря контракта именно для клиента-LLM: он не знает, что класть.
+undocumented = sorted({f"{n}.{p}" for n, t in current.items()
+                       for p, spec in ((t["input_schema"] or {}).get("properties") or {}).items()
+                       if not (isinstance(spec, dict) and (spec.get("description") or "").strip())})
+ok(not undocumented, f"у каждого свойства есть описание (без: {undocumented or '—'})")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

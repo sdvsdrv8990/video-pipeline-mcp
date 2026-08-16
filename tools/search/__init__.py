@@ -127,8 +127,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
              "join_key": {"type": "string", "description": "Ключ для объединения (JOIN)"},
              "filter_after": {"type": "object", "description": "Фильтр после объединения"},
              "sort_col": {"type": "string", "description": "Столбец сортировки"},
-             "sort_order": {"type": "string", "enum": ["asc", "desc"], "default": "asc"},
-             "limit": {"type": "integer", "default": 100},
+             "sort_order": {"type": "string", "enum": ["asc", "desc"], "default": "asc",
+                            "description": "Направление сортировки: asc — по возрастанию, desc — по убыванию"},
+             "limit": {"type": "integer", "default": 100,
+                       "description": "Сколько строк вернуть максимум"},
          }, "required": ["tables"]},
          search_multi, ANNOTATIONS_READONLY),
     ]

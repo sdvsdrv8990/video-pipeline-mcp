@@ -1501,6 +1501,7 @@
     },
     "limit": {
      "default": 100,
+     "description": "Сколько строк вернуть максимум",
      "type": "integer"
     },
     "sort_col": {
@@ -1509,6 +1510,7 @@
     },
     "sort_order": {
      "default": "asc",
+     "description": "Направление сортировки: asc — по возрастанию, desc — по убыванию",
      "enum": [
       "asc",
       "desc"
@@ -2193,7 +2195,15 @@
      "type": "string"
     },
     "value": {
-     "description": "Новое значение (любой JSON-тип)"
+     "description": "Новое значение (любой JSON-тип)",
+     "type": [
+      "string",
+      "number",
+      "boolean",
+      "object",
+      "array",
+      "null"
+     ]
     }
    },
    "required": [

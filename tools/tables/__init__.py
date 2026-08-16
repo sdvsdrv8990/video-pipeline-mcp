@@ -144,7 +144,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
          {"type": "object", "properties": {"table": TABLE, "sheet": SHEET, "row_id": {"type": "string", "description": "ID строки"}}, "required": ["table", "sheet", "row_id"]},
          table_get_row, ANNOTATIONS_READONLY),
         ("table_set", "Таблицы: изменить поле", "Изменить поле строки (RMW через очередь). Защита формул + enum.",
-         {"type": "object", "properties": {"table": TABLE, "sheet": SHEET, "row_id": {"type": "string", "description": "ID строки"}, "column": {"type": "string", "description": "Имя столбца"}, "value": {"description": "Новое значение (любой JSON-тип)"}}, "required": ["table", "sheet", "row_id", "column", "value"]},
+         {"type": "object", "properties": {"table": TABLE, "sheet": SHEET, "row_id": {"type": "string", "description": "ID строки"}, "column": {"type": "string", "description": "Имя столбца"}, "value": {"type": ["string", "number", "boolean", "object", "array", "null"], "description": "Новое значение (любой JSON-тип)"}}, "required": ["table", "sheet", "row_id", "column", "value"]},
          table_set, ANNOTATIONS_MODIFY),
         ("table_update", "Таблицы: изменить строку", "Изменить НЕСКОЛЬКО полей строки ОДНОЙ операцией: применяется целиком или не применяется вовсе. Для одного поля дешевле table_set.",
          {"type": "object", "properties": {"table": TABLE, "sheet": SHEET, "row_id": {"type": "string", "description": "ID строки (найти по значению — table_find_row)"}, "data": {"type": "object", "description": "Изменяемые поля {column: value}"}}, "required": ["table", "sheet", "row_id", "data"]},
