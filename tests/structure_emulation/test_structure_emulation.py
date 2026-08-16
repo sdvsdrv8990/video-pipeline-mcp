@@ -115,6 +115,42 @@ with live_server() as srv:
        f"сведению в этом сценарии нечего делать — состояние уже целостно ({rec4})")
     ok(ch4["path"] == "niches/ea4/networks/net/channels/ourch", "наш канал лежит в своей ветке")
 
+    print("== E-B. Четыре точки входа × контроль глубины: спуск ровно на ОДИН уровень ==")
+    # ИИ начинает работу не всегда с ниши: он приходит на любой уровень существующего дерева.
+    # Инвариант один на все входы — названный ребёнок материализуется, ЕГО дети откладываются.
+    base_b = "niches/eb/networks/net"
+    create(type="niche", name="eb", children={"network": ["net"]})
+    CASES = [
+        ("niche",              "niches/",               "b1", ["network"],                   "network",          ["channel", "competitor_channel"]),
+        ("network",            "niches/eb/networks/",   "b2", ["channel", "competitor_channel"], "channel",      ["video"]),
+        ("channel",            f"{base_b}/channels/",   "b3", ["video"],                     "video",            []),
+        ("competitor_channel", f"{base_b}/competitors/", "b4", ["competitor_video"],         "competitor_video", []),
+    ]
+    for etype, parent, tag, deferred, named, grandchildren in CASES:
+        bare, fb, _ = create(type=etype, name=f"{tag}bare", parent_path=parent)
+        ok([c["type"] for c in bare["deferred_children"]] == deferred,
+           f"{etype} без детей: отложены {deferred} ({[c['type'] for c in bare['deferred_children']]})")
+        ok(bare["children"] == [],
+           f"{etype}: ни один ребёнок не развёрнут сам собой ({[c['type'] for c in bare['children']]})")
+        ok(fb.count("ChildDeferred") == len(deferred),
+           f"{etype}: каждый отложенный объявлен фактом ({fb.count('ChildDeferred')} против {len(deferred)})")
+
+        full, _, _ = create(type=etype, name=f"{tag}full", parent_path=parent,
+                            children={named: [f"{tag}kid"]} if named else {})
+        got = [c["type"] for c in full["children"]]
+        ok(got == [named], f"{etype}: названный ребёнок {named} материализован ({got})")
+        deep = [c["type"] for c in full["children"][0]["deferred_children"]] if full["children"] else []
+        ok(deep == grandchildren,
+           f"{etype}: внуки отложены, а не созданы — глубина ровно 1 ({deep})")
+
+    print("== E-B. Книги: материализуются книги СОЗДАННЫХ сущностей, не объявленных вглубь ==")
+    ch_b, _, _ = create(type="channel", name="bbooks", parent_path=f"{base_b}/channels/")
+    mat_b = {m["path"].split("/")[-1] for m in ch_b["tables_materialized"]}
+    ok(mat_b == {"channel_data.xlsx"},
+       f"у канала без видео создана только его книга ({sorted(mat_b)})")
+    ok(ch_b["tables_deferred"] == [],
+       f"честно отложенных книг нет — все объявленные созданы ({ch_b['tables_deferred']})")
+
     print(f"\n{'='*50}")
     print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
     if _fails:
