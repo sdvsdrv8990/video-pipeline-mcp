@@ -1,5 +1,5 @@
-# I3: CI-гейт под фазу фиксов. Хард-гейты: ruff, mypy, тесты (in-process), bandit, gitleaks.
-# Advisory: pip-audit (уязвимости зависимостей — требуют dep-bump с регрессией на живом сервере).
+# I3: CI-гейт под фазу фиксов. Хард-гейты: ruff, mypy, тесты (in-process), bandit, pip-audit,
+# gitleaks, conformance, comment-guard (храповик текста в коде: вниз можно, вверх нет).
 # Тесты — через pytest-раннер (T0): наборы находятся автоматически. Отсечения «живых» больше НЕТ
 # (S24, T2): харнесс `tests/harness` поднимает сервер сам — свой порт, своя временная рабочая
 # область, настоящий ключ, — поэтому периметр проверяется в CI, а не «когда-нибудь руками».
@@ -106,6 +106,19 @@ jobs:
       # то есть красил бы гейт всегда. Обычный pip-audit = exit 1 только на реальной уязвимости.
       - name: pip-audit (hard gate)
         run: pip-audit
+
+  comment-guard:
+    name: comment-guard (мусор ИИ в коде, храповик)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # Без установки пакета: сторож на stdlib. Потолок — scripts/comment_guard_baseline.txt,
+      # снижается только через --bless, поэтому падение долга видно в diff ревью.
+      - name: comment guard (ratchet)
+        run: python scripts/comment_guard.py --check
 
   gitleaks:
     name: gitleaks (secrets)
