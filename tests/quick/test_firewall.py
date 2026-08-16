@@ -48,6 +48,16 @@ with live_server() as srv:
         ok(env["is_error"] and env["code"] == "PATH_ESCAPE",
            f"{case} → PATH_ESCAPE ({env['code'] or 'успех!'})")
 
+    print("== 2b. DNS-rebinding: чужое имя хоста отбивается до всего остального (F103) ==")
+    # Страница атакующего резолвит свой домен в 127.0.0.1 — браузер жертвы становится посредником
+    # и приходит к локальному серверу с ЧУЖИМ Host. Проверку требует спека транспорта MCP.
+    _evil = rpc.request("tools/list", {}, extra_headers={"Host": "evil.example.com",
+                                                         "Origin": "http://evil.example.com"})
+    ok(_evil.status_code == 403, f"запрос с чужим Host отклонён 403 ({_evil.status_code})")
+    ok("Forbidden host" in _evil.text, f"причина названа явно ({_evil.text[:80]})")
+    ok(rpc.request("tools/list", {}).status_code == 200,
+       "свой (петлевой) Host по-прежнему проходит — защита не задела честный путь")
+
     print("== 3. Контракт отказа доезжает до клиента целиком (G14/D30) ==")
     env = rpc.call_tool("fs_read_file", {"path": "нет-такого.txt"})
     structured = rpc.structured(env["envelope"])

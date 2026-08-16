@@ -67,6 +67,27 @@ jobs:
           path: coverage.xml
           if-no-files-found: ignore
 
+  conformance:
+    name: conformance (спека MCP, сторонний клиент)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # T7: сверка с эталонным набором спеки. Набор поднимает сервер сам (харнесс T2) и ходит
+      # через прокси, добавляющий ключ, — auth при этом остаётся включённым.
+      # VPM_CONFORMANCE_REQUIRED=1: без node набор обязан УПАСТЬ, а не пропуститься — иначе
+      # сломавшаяся установка node дала бы зелёную джобу, ничего не проверив.
+      - name: conformance (@modelcontextprotocol/conformance)
+        env:
+          VPM_CONFORMANCE_REQUIRED: "1"
+        run: python tests/conformance/test_conformance.py
+
   security:
     name: security (bandit + pip-audit)
     runs-on: ubuntu-latest

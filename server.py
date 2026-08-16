@@ -63,10 +63,38 @@ BASE_PATH = Path(__file__).parent
 # поднять сервер рядом с боевым нечем, и тест против ЖИВОГО сервера правил бы настоящие данные
 # канала. Значение резолвится и создаётся — «указал и не создал» иначе падало бы позже и глуше.
 WORKSPACE_PATH = Path(os.environ.get("MCP_WORKSPACE") or (BASE_PATH / "workspace")).resolve()
-CONFIG_PATH = BASE_PATH / "config"
+# Каталог деклараций переопределяется по той же причине, что и рабочая область: конформанс-прогон
+# обязан идти по БОЕВОМУ конфигу, но со своим порогом частоты — иначе сторонний клиент, честно
+# долбящий 30 сценариев подряд, банит сам себя, и «несоответствие спеке» оказывается блокировкой.
+CONFIG_PATH = Path(os.environ.get("MCP_CONFIG") or (BASE_PATH / "config")).resolve()
 
 # D12: если задан — валидируем заголовок Origin (анти-DNS-rebinding).
 ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("MCP_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+
+# F103: Host валидируется ВСЕГДА. DNS-rebinding работает так: страница атакующего резолвит свой
+# домен в 127.0.0.1, и браузер жертвы обращается к локальному серверу как доверенный посредник —
+# в запросе при этом стоит ЧУЖОЕ имя хоста. Список по умолчанию: петля + hostname туннеля из
+# config/tunnel.yaml (боевой путь), расширяется MCP_ALLOWED_HOSTS.
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]", "0.0.0.0"}
+
+
+def _allowed_hosts() -> set:
+    """Кому разрешено называться нашим хостом: петля + объявленный туннель + явный список."""
+    hosts = set(_LOOPBACK_HOSTS)
+    hosts |= {h.strip().lower() for h in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",") if h.strip()}
+    tunnel_cfg = CONFIG_PATH / "tunnel.yaml"
+    if tunnel_cfg.exists():
+        try:
+            import yaml as _yaml
+            declared = (_yaml.safe_load(tunnel_cfg.read_text(encoding="utf-8")) or {}).get("hostname", "")
+            if declared:
+                hosts.add(str(declared).strip().lower())
+        except Exception:
+            pass          # битый конфиг туннеля не должен ронять сервер: петля остаётся разрешена
+    return hosts
+
+
+ALLOWED_HOSTS = _allowed_hosts()
 
 # S1/F14: ключ сервер выдаёт себе сам (см. core/auth). Пустой токен больше НЕ означает
 # «auth отключена» — это fail-closed: без ключа сервер не стартует, если явно не разрешено.
@@ -196,6 +224,13 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
 
     async def handle_jsonrpc(request: "web.Request") -> "web.Response":
         """Обработка JSON-RPC запросов: Origin → Auth → Firewall → Transport."""
+        # F103: Host — первым, до всего остального. Чужое имя хоста означает, что до нас
+        # достучались через браузер жертвы (DNS-rebinding), и разбирать такой запрос незачем.
+        host = (request.headers.get("Host") or "").split(",")[0].strip().lower()
+        if host.rsplit(":", 1)[0].strip("[]") not in {h.strip("[]") for h in ALLOWED_HOSTS} \
+                and host not in ALLOWED_HOSTS:
+            return web.json_response(_jsonrpc_error(None, -32002, "Forbidden host"), status=403)
+
         # D12: валидация Origin (если сконфигурирован allowlist).
         # D12: fail-closed — запрос БЕЗ Origin при заданном allowlist = блок.
         origin = request.headers.get("Origin")
