@@ -151,6 +151,64 @@ with live_server() as srv:
     ok(ch_b["tables_deferred"] == [],
        f"честно отложенных книг нет — все объявленные созданы ({ch_b['tables_deferred']})")
 
+    print("== E-C. Метаморфный инвариант: 3 прохода ≡ 2 ≡ 1 (конечное состояние одно) ==")
+    # Клиент приходит к одной и той же структуре разными маршрутами: всё одним вызовом, в два
+    # захода, в три. Сервер обязан прийти в ОДНО состояние — иначе «правильность» зависит от
+    # того, в каком порядке ИИ додумался звать инструменты.
+    TYPES_C = ["niche", "network", "channel", "competitor_channel", "table_file"]
+
+    def end_state(niche):
+        """Канонический снимок ветки: что где лежит + что сервер о ней говорит."""
+        ents = []
+        for t in TYPES_C:
+            found = (rpc.call_tool("structure_find", {"type": t})["data"] or {}).get("found", [])
+            ents += [(t, e["path"].replace(f"niches/{niche}", "<N>", 1))
+                     for e in found
+                     if e["path"] == f"niches/{niche}" or e["path"].startswith(f"niches/{niche}/")]
+        orph, childless, _ = status()
+        return {
+            "entities": sorted(ents),
+            "orphans": sorted(o["name"] for o in under(orph, niche)),
+            "childless": sorted(c["name"] for c in under(childless, niche)),
+        }
+
+    # 1 проход: всё названо сразу.
+    create(type="niche", name="ec1",
+           children={"network": ["net"], "channel": ["ch"], "competitor_channel": ["rv"]})
+
+    # 2 прохода: ниша с нашим каналом, конкурент отдельным вызовом → сведение.
+    create(type="niche", name="ec2", children={"network": ["net"], "channel": ["ch"]})
+    create(type="competitor_channel", name="rv", parent_path="niches/ec2/networks/net/competitors/")
+    orph_mid, _, _ = status()
+    ok([o["name"] for o in under(orph_mid, "ec2")] == ["rv"],
+       f"после второго прохода конкурент ВИСИТ — это промежуточное состояние ({[o['name'] for o in under(orph_mid, 'ec2')]})")
+    rec2 = rpc.call_tool("structure_reconcile", {"anchor_name": "ch"})["data"]
+    ok(rec2["entities_moved"] == 1,
+       f"сведение перенесло конкурента под наш канал ({rec2['entities_moved']})")
+
+    # 3 прохода: ниша, потом канал, потом конкурент → сведение.
+    create(type="niche", name="ec3", children={"network": ["net"]})
+    create(type="channel", name="ch", parent_path="niches/ec3/networks/net/channels/")
+    create(type="competitor_channel", name="rv", parent_path="niches/ec3/networks/net/competitors/")
+    rpc.call_tool("structure_reconcile", {"anchor_name": "ch"})
+
+    s1, s2, s3 = end_state("ec1"), end_state("ec2"), end_state("ec3")
+    ok(s1 == s2, f"состояние после 2 проходов совпало с состоянием после 1\n    1: {s1}\n    2: {s2}")
+    ok(s2 == s3, f"состояние после 3 проходов совпало с состоянием после 2\n    2: {s2}\n    3: {s3}")
+    ok(s1["orphans"] == [] and s1["childless"] == [],
+       f"итог любого маршрута — связано полностью ({s1['orphans']}, {s1['childless']})")
+    ok(("competitor_channel", "<N>/networks/net/competitors/ch/rv") in s1["entities"],
+       f"конкурент лежит под нашим каналом во всех маршрутах ({[e for e in s1['entities'] if e[0] == 'competitor_channel']})")
+
+    integ = rpc.call_tool("structure_check_integrity", {})["data"]
+    kinds = sorted({i["type"] for i in integ["issues"]})
+    # Висящие ЕСТЬ и это правильно: в E-A3 и E-B конкуренты заводились там, где канала нет.
+    # Дефектом была бы расходимость реестра с диском — её быть не должно ни одной.
+    ok(kinds in ([], ["orphan"]),
+       f"единственные замечания целостности — намеренные висящие ({kinds})")
+    ok(not [i for i in integ["issues"] if i.get("name") == "rv"],
+       f"ни один участник E-C не остался висящим ({[i for i in integ['issues'] if i.get('name') == 'rv']})")
+
     print(f"\n{'='*50}")
     print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
     if _fails:
