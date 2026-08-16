@@ -38,6 +38,10 @@ def under(items, niche):
 
 with live_server() as srv:
     rpc = srv.rpc
+    # Сценарии создают деревья с книгами: под coverage на слабом раннере CI один вызов
+    # выходил за клиентские 30 с и ронял набор по ReadTimeout. Это предел КЛИЕНТА,
+    # а не свойство сервера — поднимаем его здесь, а не ускоряем тест урезанием сценария.
+    rpc.timeout = 180.0
 
     def create(**args):
         env = rpc.call_tool("structure_create", args)
