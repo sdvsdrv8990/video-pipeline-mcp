@@ -277,7 +277,7 @@ class LinkRegistry:
         for o in orphans:
             issues.append({"type": "orphan", "id": o["id"], "entity_type": o["type"],
                            "name": o["name"], "needs": o["needs_parent_type"]})
-        disk = self._scan_disk(taxonomy, set(paths_seen))
+        disk = self._scan_disk(taxonomy, set(paths_seen), entities)
         issues.extend(disk["issues"])
         return {
             "total_entities": len(entities),
@@ -287,38 +287,73 @@ class LinkRegistry:
             "disk_scan": disk["state"],
         }
 
-    def _scan_disk(self, taxonomy, registered: set) -> dict:
-        """Обратный проход: каталоги-сущности на диске, которых нет в реестре (F25)."""
+    def _scan_disk(self, taxonomy, registered: set, entities: dict) -> dict:
+        """Обратный проход: каталоги-сущности на диске, которых нет в реестре (F25).
+
+        Спуск идёт ПО ОБЪЯВЛЕНИЮ, а не по имени родительского каталога: контейнер может
+        нести токен `{parent:<тип>}` (`competitors/{parent:channel}/`), подставленный именем
+        предка или опущенный (§4). Сравнение имён с литералом пропускало сгруппированную
+        ветку целиком и принимало сегмент группировки за сущность (F93).
+        """
         if taxonomy is None:
             return {"issues": [], "state": "не выполнен: таксономия не передана"}
-        containers = taxonomy.containers
-        issues, checked = [], 0
-        for node in sorted(self.ws.rglob("*")):
-            if not node.is_dir():
-                continue
-            rel = node.relative_to(self.ws)
-            # Служебное (`.secrets`, `_шаблоны`) и сами контейнеры сущностями не являются.
-            if any(part[:1] in (".", "_") for part in rel.parts) or rel.name in containers:
-                continue
-            if rel.parent == Path(".") or rel.parent.name not in containers:
-                continue
-            checked += 1
-            if self._norm(str(rel)) not in registered:
-                issues.append({"type": "unregistered_path", "path": str(rel),
-                               "container": rel.parent.name,
-                               "entity_type": self._type_by_container(taxonomy, rel.parent.name)})
-        return {"issues": issues, "state": f"выполнен: узлов на диске {checked}"}
+        anchor_names = {(e.get("type", ""), e.get("name", "")) for e in entities.values()}
+        issues: list[dict] = []
+        checked = 0
 
-    @staticmethod
-    def _type_by_container(taxonomy, container: str) -> str:
-        """Какой тип живёт в этом контейнере — по объявлению шаблонов, а не по имени каталога."""
-        guess = taxonomy.type_for_root_container(container)
-        if guess:
-            return guess
+        def _visible(d: Path) -> list[Path]:
+            """Подкаталоги без служебных (`.secrets`, `_шаблоны`)."""
+            if not d.is_dir():
+                return []
+            return sorted(x for x in d.iterdir() if x.is_dir() and x.name[:1] not in (".", "_"))
+
+        def _containers(base: Path, parts: list[str]) -> list[tuple[Path, str]]:
+            """Конкретные каталоги контейнера + тип токена, если он раскрыт именем предка."""
+            cur: list[tuple[Path, str]] = [(base, "")]
+            for p in parts:
+                nxt: list[tuple[Path, str]] = []
+                if p.startswith("{parent:") and p.endswith("}"):
+                    anchor = p[len("{parent:"):-1]
+                    for d, _tok in cur:
+                        nxt += [(sub, anchor) for sub in _visible(d)
+                                if (anchor, sub.name) in anchor_names]
+                    nxt += cur          # вариант «предок неизвестен, сегмент опущен» (§4)
+                else:
+                    nxt = [(d / p, tok) for d, tok in cur if (d / p).is_dir()]
+                cur = nxt
+            return cur
+
+        def _descend(base: Path, node_type: str) -> None:
+            nonlocal checked
+            for cref in taxonomy.descendant_containers(node_type):
+                parts = [p for p in (cref.get("container") or "").split("/") if p]
+                for cdir, anchor in _containers(base, parts):
+                    for ent in _visible(cdir):
+                        # Имя, совпавшее с именем предка-якоря, — сегмент группировки,
+                        # а не сущность: его уже разобрал вариант с раскрытым токеном.
+                        if not anchor and (parts and any(p.startswith("{parent:") for p in parts)) \
+                                and any((a, ent.name) in anchor_names for a in (
+                                    p[len("{parent:"):-1] for p in parts if p.startswith("{parent:"))):
+                            continue
+                        rel = ent.relative_to(self.ws)
+                        checked += 1
+                        if self._norm(str(rel)) not in registered:
+                            issues.append({"type": "unregistered_path", "path": str(rel),
+                                           "container": cdir.name, "entity_type": cref["type"]})
+                        _descend(ent, cref["type"])
+
         for node_type in taxonomy.node_types:
-            child = taxonomy.child_type_for(node_type, container)
-            if child:
-                return child
+            root = taxonomy.root_container(node_type)
+            if not root:
+                continue
+            for ent in _visible(self.ws / root):
+                rel = ent.relative_to(self.ws)
+                checked += 1
+                if self._norm(str(rel)) not in registered:
+                    issues.append({"type": "unregistered_path", "path": str(rel),
+                                   "container": root, "entity_type": node_type})
+                _descend(ent, node_type)
+        return {"issues": issues, "state": f"выполнен: узлов на диске {checked}"}
         return ""
 
     def link(self, child_type: str = "", child_name: str = "", parent_type: str = "",

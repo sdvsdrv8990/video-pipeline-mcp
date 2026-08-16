@@ -984,6 +984,30 @@ try:
 finally:
     _shutil.rmtree(_ws39, ignore_errors=True)
 
+print("== 40. Обратный проход видит и СГРУППИРОВАННУЮ ветку (F93) ==")
+_eng40, _ws40 = new_engine()
+_reg40, _tx40 = LinkRegistry(_ws40), Taxonomy(TPL_DIR)
+_made40 = _eng40.create_node("network", "n1", parent_path="niches/g/networks/",
+                             children={"channel": ["chA"], "competitor_channel": ["compX"]})
+_ch40 = [c for c in _made40["children"] if c["type"] == "channel"][0]
+# Наш канал зарегистрирован — он якорь группировки; конкуренты созданы мимо реестра.
+_reg40.register({"id": "CH_40", "type": "channel", "name": "chA",
+                 "path": _ch40["path"], "parent_ids": []})
+(_ws40 / "niches/g/networks/n1/competitors/compY").mkdir(parents=True, exist_ok=True)
+_int40 = _reg40.check_integrity(_tx40)
+_seen40 = {i["path"]: i for i in _int40["issues"] if i["type"] == "unregistered_path"}
+ok(any(p.endswith("competitors/chA/compX") for p in _seen40),
+   "конкурент ПОД сегментом нашего канала виден (раньше скан его не достигал)")
+ok(any(p.endswith("competitors/compY") for p in _seen40),
+   "несгруппированный конкурент тоже виден")
+ok(all(i["entity_type"] == "competitor_channel"
+       for p, i in _seen40.items() if "competitors/" in p),
+   f"тип берётся из объявления, а не из имени каталога ({[i['entity_type'] for i in _seen40.values()]})")
+ok(not any(p.endswith("competitors/chA") for p in _seen40),
+   "сегмент группировки не принят ЗА сущность")
+ok(not [c for c in _tx40.containers if c.startswith("{")],
+   f"токен не утекает в список контейнеров ({[c for c in _tx40.containers if c.startswith('{')]})")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

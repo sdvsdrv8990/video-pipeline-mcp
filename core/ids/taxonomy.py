@@ -196,4 +196,28 @@ class Taxonomy:
                 out.update(Path(t["root_container"]).parts)
             for f in t["folders"]:
                 out.update(Path(f).parts)
+        # Токен `{parent:<тип>}` — не имя каталога, а место для имени предка: наружу
+        # он утекать не должен (иначе читатель сверяет имена с литералом '{parent:channel}').
+        return {c for c in out if not (c.startswith("{parent:") and c.endswith("}"))}
+
+    def children_of(self, parent_type: str) -> list[dict]:
+        """Объявленные дети: [{type, container}] — контейнер как в шаблоне, вместе с токеном."""
+        return list(self._get(parent_type)["children"])
+
+    def descendant_containers(self, parent_type: str) -> list[dict]:
+        """Где под узлом этого типа МОГУТ лежать сущности: [{type, container}].
+
+        Шире прямых детей: уровень иерархии разрешено пропускать (канал прямо под нишей),
+        и тогда потомок лежит в СВОЁМ контейнере, объявленном его типом-родителем.
+        """
+        by_child: dict[str, str] = {}
+        for body in self._load().values():
+            for c in body["children"]:
+                by_child.setdefault(c["type"], c["container"])
+        out = []
+        for node_type in self.node_types:
+            if node_type == parent_type or node_type not in by_child:
+                continue
+            if parent_type in (a["type"] for a in self.ancestors(node_type)):
+                out.append({"type": node_type, "container": by_child[node_type]})
         return out
