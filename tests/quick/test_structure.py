@@ -957,6 +957,33 @@ try:
 finally:
     _shutil.rmtree(_ws38, ignore_errors=True)
 
+print("== 39. Запрошенный ребёнок чужого уровня не исчезает молча (F96) ==")
+_ws39 = Path(tempfile.mkdtemp(prefix="vpm_child_"))
+try:
+    _sm39 = StateManager(_ws39)
+    _ids39 = IDGenerator()
+    _eng39 = Engine(reactions=Reactions(CFG / "server_reactions.yaml"), state_manager=_sm39)
+    _ctx39 = ToolContext(_eng39, _ids39, _sm39, None, ExcelEngine(_ws39),
+                         TemplateEngine(_ws39, _ids39, TPL_DIR), LinkRegistry(_ws39), _ws39, CFG)
+    _structure_group.register(_eng39, _ctx39)
+    _bogus39 = asyncio.run(_eng39.call("structure_create", {
+        "type": "niche", "name": "n39", "children": {"bogus_type": ["x"], "network": ["net39"]}}))
+    _unf39 = {u["type"]: u for u in _bogus39.data["children_unfulfilled"]}
+    ok(_bogus39.status == "success" and len(_bogus39.data["entities"]) >= 2,
+       "легитимная часть дерева создана — частичный результат не откатывается")
+    ok(list(_unf39) == ["bogus_type"],
+       f"невыполненным помечен ровно неизвестный тип ({list(_unf39)})")
+    ok(_unf39["bogus_type"]["names"] == ["x"] and _unf39["bogus_type"]["reason"],
+       "в пометке видно, что именно не создано и почему")
+    ok(any(f.type == "ChildUnfulfilled" for f in _bogus39.facts),
+       "пометка доехала фактом до контракта (D25)")
+    _deep39 = asyncio.run(_eng39.call("structure_create", {
+        "type": "niche", "name": "n39b", "children": {"channel": ["ch39"]}}))
+    ok([u["type"] for u in _deep39.data["children_unfulfilled"]] == ["channel"],
+       "пропущенный уровень иерархии помечен так же, а не выдан за созданный")
+finally:
+    _shutil.rmtree(_ws39, ignore_errors=True)
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

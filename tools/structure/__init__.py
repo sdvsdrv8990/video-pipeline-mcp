@@ -185,6 +185,17 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                       if dirs["source"] == "server_fallback" else "structure_create.modes")
         res["recommendations"] = ctx.advice.get(advice_key, path=f"{parent_path}{name}")
 
+        # Названный ребёнок, которого нет среди объявленных детей ЭТОЙ ветки, раньше
+        # просто исчезал: ИИ считал, что создал дерево, а создал корень. Дерево не
+        # откатываем — частичный результат помечаем (F96).
+        made_types = {f.data["type"] for f in facts if f.type == "NodeCreated"}
+        unfulfilled = [{"type": t, "names": list(names),
+                        "reason": f"тип не объявлен ребёнком ни на одном уровне под {type}"}
+                       for t, names in (children or {}).items() if t not in made_types]
+        res["children_unfulfilled"] = unfulfilled
+        for u in unfulfilled:
+            facts.append(Fact(type="ChildUnfulfilled", data=u))
+
         # S18-g: единый блок «имя + адрес + ID + цепочка» на КАЖДЫЙ созданный объект.
         res["entities"] = [_entity_block(nid) for nid in created_ids]
         res["adopted"] = adopted

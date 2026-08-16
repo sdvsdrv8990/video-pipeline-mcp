@@ -42,7 +42,7 @@ KNOWN_FACT_TYPES = {
     "FileInspected", "SheetInfoRead", "ColumnNamesRead",
     "UniqueValuesRead", "ValueCountsRead", "DuplicatesFound", "NullsFound",
     # Шаблоны структуры (TemplateEngine): создание узлов с контролем глубины
-    "NodeCreated", "FolderCreated", "ChildDeferred", "TableDeferred",
+    "NodeCreated", "FolderCreated", "ChildDeferred", "ChildUnfulfilled", "TableDeferred",
     # Фаза ТАБЛИЦЫ (A1′): книга материализована по декларации *.schema.yaml
     "TableMaterialized",
     # Реестр связей / ORPHAN (Ф2), верификация и здоровье (Ф4)
