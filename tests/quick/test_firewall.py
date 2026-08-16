@@ -61,6 +61,83 @@ with live_server() as srv:
     ok(rpc.request("tools/list", {}).status_code == 200,
        "свой (петлевой) Host по-прежнему проходит — защита не задела честный путь")
 
+    print("== 2c. Браузерный класс: чужая вкладка не достаёт до инструментов (F106–F109) ==")
+    import httpx as _httpx
+
+    # Preflight. Ответ без Access-Control-* = браузер не даст странице ни послать запрос с
+    # ключом, ни прочитать ответ. Появление CORS-заголовков здесь = раздача доступа всем сайтам.
+    _pre = _httpx.request("OPTIONS", srv.url, timeout=10, headers={
+        "Origin": "https://evil.example.com", "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "authorization,content-type"})
+    ok(_pre.status_code == 405, f"preflight не одобряется ({_pre.status_code})")
+    _cors = [k for k in _pre.headers if k.lower().startswith("access-control-")]
+    ok(not _cors, f"в ответе на preflight нет CORS-заголовков ({_cors})")
+
+    # F106: Origin проверяется ВСЕГДА (спека транспорта MCP: MUST), а не только при заданном
+    # allowlist. Даже с настоящим ключом чужая вкладка не проходит.
+    for _case, _origin in (("чужой сайт", "https://evil.example.com"),
+                           ("песочница/iframe", "null"),
+                           ("похожее имя", "https://127.0.0.1.evil.com"),
+                           ("подставленный домен туннеля", "https://mcp.videopipelinemcp.ru")):
+        _r = rpc.request("tools/list", {}, extra_headers={"Origin": _origin})
+        ok(_r.status_code == 403 and "Forbidden origin" in _r.text,
+           f"{_case} → 403 ({_r.status_code})")
+    # Петлю принимаем — того же требует спека («MUST accept valid localhost Host/Origin»), и
+    # подделать её удалённый сайт не может: браузер ставит Origin по адресу самой страницы.
+    for _case, _origin in (("своя петля", f"http://127.0.0.1:{srv.port}"),
+                           ("другой локальный клиент", "http://localhost:6274")):
+        ok(rpc.request("tools/list", {}, extra_headers={"Origin": _origin}).status_code == 200,
+           f"{_case} проходит")
+    ok(rpc.request("tools/list", {}).status_code == 200,
+       "запрос БЕЗ Origin (server-to-server, наш клиент) проходит — честный путь не задет")
+    ok(srv.console.contains(r"\[origin\] запрос из браузера отклонён"),
+       "отказ по Origin виден в консоли — иначе отрезанный клиент молчит")
+    ok(srv.console.contains(r"Браузер: Origin только петлевой"),
+       "и политика объявлена при старте — иначе владелец узнаёт о ней от сломавшегося клиента")
+
+    # F107: три «простых» типа браузер шлёт БЕЗ preflight — на них и держится CSRF из вкладки.
+    # Ключ здесь настоящий: проверяется именно слой типа, а не то, что запрос отбила auth.
+    _body = '{"jsonrpc":"2.0","id":"c1","method":"tools/call","params":' \
+            '{"name":"fs_write_file","arguments":{"path":"csrf.txt","content":"из чужой вкладки"}}}'
+    for _ct in ("text/plain;charset=UTF-8", "application/x-www-form-urlencoded",
+                "multipart/form-data; boundary=x", "text/plain; a=application/json"):
+        _r = _httpx.post(srv.url, content=_body, timeout=10,
+                         headers={"Content-Type": _ct, **rpc.headers()})
+        ok(_r.status_code == 415, f"тип «{_ct}» → 415 ({_r.status_code})")
+    ok(not (srv.workspace / "csrf.txt").exists(), "запись из простого запроса не состоялась")
+
+    # SSE у сервера нет: спека транспорта разрешает ответить 405 — тогда и EventSource не к чему
+    # подключаться. Появится GET-поток — этот ассерт заставит заново пройти браузерный разбор.
+    _get = _httpx.get(srv.url, timeout=10, headers={"Accept": "text/event-stream", **rpc.headers()})
+    ok(_get.status_code == 405 and "event-stream" not in _get.headers.get("content-type", ""),
+       f"GET/SSE не обслуживается ({_get.status_code}, {_get.headers.get('content-type')})")
+
+    # Владение хэндлом ≠ аутентификация: сессии сервер не выдаёт, чужой идентификатор не удостоверяет.
+    _init = rpc.request("initialize", {"protocolVersion": "2025-06-18",
+                                       "clientInfo": {"name": "t", "version": "1"}})
+    ok(_init.headers.get("mcp-session-id") is None,
+       f"сервер не выдаёт Mcp-Session-Id ({_init.headers.get('mcp-session-id')})")
+    ok(rpc.request("tools/list", {}, token="",
+                   extra_headers={"Mcp-Session-Id": "stolen-1", "Cookie": "session=stolen"}
+                   ).status_code == 401,
+       "чужая сессия и cookie не заменяют ключ")
+    ok(_init.headers.get("set-cookie") is None,
+       "сервер не заводит cookie — credentials:include нечего приложить")
+
+    # F109: заголовки ответа не-UI сервера + версия сервера наружу не объявляется.
+    _hdr = rpc.request("tools/list", {}).headers
+    ok(_hdr.get("x-content-type-options") == "nosniff", f"nosniff ({_hdr.get('x-content-type-options')})")
+    ok("frame-ancestors 'none'" in _hdr.get("content-security-policy", ""),
+       f"CSP запрещает встраивание ({_hdr.get('content-security-policy')})")
+    ok(_hdr.get("cache-control") == "no-store", f"ответ не кэшируется ({_hdr.get('cache-control')})")
+    ok("aiohttp" not in _hdr.get("server", "").lower() and "python" not in _hdr.get("server", "").lower(),
+       f"версия сервера не объявляется ({_hdr.get('server')})")
+
+    # F108: запятая в Host = склейка двух заголовков посредником; выбирать первое значение —
+    # значит доверить отправителю решение, каким именем нас звать.
+    _split = rpc.request("tools/list", {}, extra_headers={"Host": f"127.0.0.1:{srv.port}, evil.com"})
+    ok(_split.status_code == 403, f"склеенный Host отклонён ({_split.status_code})")
+
     print("== 3. Контракт отказа доезжает до клиента целиком (G14/D30) ==")
     env = rpc.call_tool("fs_read_file", {"path": "нет-такого.txt"})
     structured = rpc.structured(env["envelope"])

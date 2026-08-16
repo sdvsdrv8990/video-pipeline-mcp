@@ -131,7 +131,7 @@ attackers_inbound:
     expect: строгая проверка Host/Origin; bind 127.0.0.1
     mitigation: валидировать Host/Origin + app-auth (D3)
     extends: quick/test_firewall
-    status: xfail-spec   # Origin off-by-default (D12)
+    status: implemented   # D12 закрыт: Origin проверяется всегда (F106)
   - id: atk_secret_steal
     ref: IN10
     surface: tunnel.yaml (D31), env

@@ -71,9 +71,10 @@ def blocked(env, *codes) -> bool:
 
 
 def raw_request(token: str, headers: bytes, body: bytes) -> bytes:
-    """Сырой HTTP с настоящим ключом: без него транспорт отвечает 401 ДО разбора пакета,
-    и «защита» оказалась бы заслугой auth, а не строгого парсинга."""
+    """Сырой HTTP с настоящим ключом и объявленным типом тела: иначе транспорт отвечает 401/415
+    ДО разбора пакета, и «защита» оказалась бы заслугой auth или проверки типа, а не парсинга."""
     return (b"POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            b"Content-Type: application/json\r\n"
             b"Authorization: Bearer " + token.encode() + b"\r\n" + headers + b"\r\n" + body)
 
 
