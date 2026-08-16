@@ -922,6 +922,19 @@ try:
 finally:
     _shutil.rmtree(_ws36, ignore_errors=True)
 
+print("== 37. Контейнер без разделителя не превращается в каталог-двойник (F94) ==")
+_eng37, _ws37 = new_engine()
+_slash37 = _eng37.create_node("network", "withslash", parent_path="niches/g/networks/")
+_bare37 = _eng37.create_node("network", "noslash", parent_path="niches/g/networks")
+ok(_slash37["path"] == "niches/g/networks/withslash",
+   "путь со слэшем как был")
+ok(_bare37["path"] == "niches/g/networks/noslash",
+   f"путь без слэша ведёт ВНУТРЬ контейнера, а не рядом с ним ({_bare37['path']})")
+ok(not (_ws37 / "niches/g/networksnoslash").exists(),
+   "склеенного каталога-двойника на диске нет")
+ok({p.name for p in (_ws37 / "niches/g/networks").iterdir()} == {"withslash", "noslash"},
+   "оба узла — соседи в одном контейнере")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:
