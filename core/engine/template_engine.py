@@ -14,6 +14,7 @@ core/engine/template_engine.py — Движок шаблонов структу�
 - Движок generic (без `if type == ...`); связывание/ORPHAN — не здесь, это `core/ids`.
 """
 
+import re
 from pathlib import Path
 
 import yaml
@@ -21,6 +22,8 @@ import yaml
 from core.ids.taxonomy import Taxonomy
 from core.paths import safe_resolve
 from core.write_policy import WritePolicy, WritePolicyError
+
+_TOKEN_RE = re.compile(r"\{parent:([^}]+)\}")
 
 
 class TemplateError(Exception):
@@ -261,12 +264,18 @@ class TemplateEngine:
                     entry["ungrouped_by"] = missing
                 result["deferred_children"].append(entry)
                 continue
+            # Чьим именем сгруппирован путь — то же имя обязано стать связью, иначе ФС и реестр
+            # рассказывают о паре разное: каталог внутри канала, а сущность «висит без канала».
+            grouped = {t: known[t] for t in _TOKEN_RE.findall(cref.get("container", ""))
+                       if known.get(t)}
             for cname in names:
                 sub = self.create_node(
                     ctype, cname, parent_path=child_parent,
                     parent_ids=(parent_ids or []) + [node_id], children=named, ancestors=known)
                 if missing:
                     sub["ungrouped_by"] = missing
+                if grouped:
+                    sub["grouped_by"] = grouped
                 result["children"].append(sub)
 
         return result

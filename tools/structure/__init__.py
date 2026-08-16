@@ -120,7 +120,16 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         for a in adopted:
             facts.append(Fact(type="EntityAdopted", data=a))
 
+        made: dict[tuple, str] = {}
+
         def _walk(node: dict) -> None:
+            # Имя, которым сгруппирован путь, становится и связью: иначе сервер сообщает клиенту
+            # два противоречащих факта — «конкурент висит без канала» при каталоге ВНУТРИ канала.
+            made[(node["type"], node["name"])] = node["node_id"]
+            for atype, aname in (node.get("grouped_by") or {}).items():
+                anchor = made.get((atype, aname))
+                if anchor and anchor not in node["parent_ids"]:
+                    node["parent_ids"].append(anchor)
             # Ф2: регистрируем узел в реестре связей (для ORPHAN/link).
             ctx.link_registry.register({
                 "id": node["node_id"], "type": node["type"], "name": node["name"],
@@ -451,18 +460,22 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         if not anchor_t:
             return {"id": entity["id"], "type": etype,
                     "reason": f"для типа {etype} не объявлен предок-якорь (role: owner_channel)"}
-        cands = [c for c in ctx.link_registry.find(type=anchor_t)
-                 if not anchor_name or c["name"] == anchor_name]
-        if len(cands) != 1:
-            return {"id": entity["id"], "type": etype, "anchor_type": anchor_t,
-                    "candidates": [{"id": c["id"], "name": c["name"], "path": c["path"]} for c in cands],
-                    "reason": ("нет ни одного кандидата в якоря" if not cands
-                               else "кандидатов больше одного — сервер не гадает, назови anchor_name")}
-        anchor = cands[0]
         holder = _container_parent(entity)
         if not holder:
             return {"id": entity["id"], "type": etype, "anchor_type": anchor_t,
                     "reason": f"нет родителя, чей шаблон объявляет контейнер для {etype}"}
+        # Якорь ищется в СВОЕЙ ветке: канал из чужой ниши — не кандидат, а предложение
+        # связать сущности разных проектов. Имена в иерархии повторяются, поэтому одного
+        # совпадения по имени мало.
+        cands = [c for c in ctx.link_registry.find(type=anchor_t)
+                 if c["path"].startswith(f"{holder['path']}/")
+                 and (not anchor_name or c["name"] == anchor_name)]
+        if len(cands) != 1:
+            return {"id": entity["id"], "type": etype, "anchor_type": anchor_t,
+                    "candidates": [{"id": c["id"], "name": c["name"], "path": c["path"]} for c in cands],
+                    "reason": (f"в ветке {holder['path']} нет ни одного кандидата в якоря" if not cands
+                               else "кандидатов больше одного — сервер не гадает, назови anchor_name")}
+        anchor = cands[0]
         target_dir, missing = ctx.template_engine.address_for(
             etype, holder["type"], holder["path"], {anchor_t: anchor["name"]})
         if missing:
