@@ -15,15 +15,7 @@ from core.contracts import ToolResult, ErrorDetail, Recovery
 class ToolDefinition:
     """Определение инструмента.
 
-    Attributes:
-        name: Имя инструмента (техническое, для вызова)
-        description: Описание (для Claude)
-        input_schema: JSON Schema входных параметров
-        handler: Функция-обработчик
-        title: Человекочитаемая подпись для UI (приоритет отображения в MCP:
-            title → annotations.title → name). Пусто = показывать name.
-        group: Группа инструмента (filesystem, tables, и т.д.)
-        annotations: Аннотации MCP (readOnlyHint, destructiveHint, и т.д.)
+    Порядок отображения подписи в MCP: `title` → `annotations.title` → `name`.
     """
     name: str
     description: str
@@ -75,17 +67,7 @@ class Engine:
         group: str = "general",
         annotations: dict | None = None
     ):
-        """Регистрация инструмента.
-
-        Args:
-            name: Имя инструмента (уникальное)
-            description: Описание для Claude
-            input_schema: JSON Schema входных параметров
-            handler: Функция-обработчик
-            title: Человекочитаемая подпись для UI (см. ToolDefinition.title)
-            group: Группа инструмента (filesystem, tables, и т.д.)
-            annotations: Аннотации MCP (readOnlyHint, destructiveHint, и т.д.)
-        """
+        """Регистрация инструмента; смысл полей — в `ToolDefinition`."""
         self.tools[name] = ToolDefinition(
             name=name,
             description=description,

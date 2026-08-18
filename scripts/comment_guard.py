@@ -8,25 +8,30 @@
 
 ## Границы
 Единственная копия правила; хук `~/.claude/hooks/vpm-comment-guard.py` — шим сюда.
-Режимы: `--hook` (PostToolUse: предупреждает, не блокирует), `--scan` (отчёт),
-`--check` (храповик против baseline: превышение = exit 1), `--bless` (переписать baseline
-после прополки — потолок хранится ровно в одном файле).
+Режимы: `--hook` (PostToolUse: предупреждает), `--scan` (отчёт), `--check` (храповик:
+превышение = exit 1), `--bless` (переписать потолок после прополки).
+Границы текста даёт `ast`+`tokenize`, цели — `git ls-files`: свой построчный разбор путал
+кавычки константы с докстрингом, а фиксированный список целей не видел новый пакет.
 """
 
 import argparse
+import ast
+import io
 import json
 import re
+import subprocess
 import sys
+import tokenize
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parent.parent
 BASELINE = Path(__file__).with_name("comment_guard_baseline.txt")
-TARGETS = ["core", "tools", "server.py", "tests", "scripts"]
 
 MODULE_DOC_MAX = 15          # шапка модуля: роль + неочевидное, а не пересказ подсистемы
 FUNC_DOC_MAX = 12            # докстринг функции: что делает + почему так, без эссе
 COMMENT_RUN_MAX = 5          # подряд идущих строк `#`
 SECTIONS_MAX = 2             # терсовый `## Назначение` — конвенция; три раздела — уже документ
+DECL_LINES_MAX = 3           # `ключ: значение` прозой — это пересказ декларации, а не пояснение
 
 NARRATIVE = [
     (r"(?i)^\s*#{2,}\s*(4\s+уровня|уровни\s+анализа|поток\s+данных|долгосрочный|порядок\s+полей|"
@@ -42,28 +47,30 @@ DUPLICATION = [
     (r"^\s*```", "блок кода в докстринге (формат/пример) — дубль декларации"),
     (r"[├└│]──", "дерево каталогов в докстринге — источник правды `config/templates/`"),
 ]
+DECL_LINE = re.compile(r"^\s*[-*•]?\s*`?[\w.\[\]]+`?\s*:\s+\S")
 
 
-def _module_and_func_docs(text: str) -> list[tuple[int, int, bool]]:
-    """Докстринги файла: (первая_строка, длина, это_шапка_модуля)."""
-    out, lines = [], text.split("\n")
-    i, first_code_seen = 0, False
-    while i < len(lines):
-        s = lines[i].strip()
-        # Префикс `r`/`f`/`b` перед кавычками — обычный докстринг: без него одна буква снимала правило.
-        opener = re.match(r"[rRbBuUfF]{0,2}(\"\"\"|''')", s)
-        quote = opener.group(1) if opener else ""
-        if quote and not (len(s) - opener.start(1) > 3 and s.endswith(quote)):
-            start, length = i + 1, 1
-            i += 1
-            while i < len(lines) and not lines[i].strip().endswith(quote):
-                length += 1
-                i += 1
-            out.append((start, length + 1, not first_code_seen))
-        elif s and not s.startswith("#") and not quote:
-            first_code_seen = True
-        i += 1
-    return out
+def _spans(text: str) -> tuple[list[tuple[int, int, bool]], list[tuple[int, str, bool]]]:
+    """Границы текста: докстринги (строка, длина, это_шапка) и комментарии (строка, текст, отдельный)."""
+    tree = ast.parse(text)
+    head = tree.body[0] if tree.body else None
+    docs = {}
+    for node in ast.walk(tree):
+        for field in ("body", "orelse", "finalbody"):
+            # У `IfExp`/`Lambda` те же имена полей несут ОДИН узел, а не список.
+            for stmt in [x for x in [getattr(node, field, None)] if isinstance(x, list) for x in x]:
+                # Текст — ЛЮБАЯ голая строка-выражение, а не только докстринг по версии Python:
+                # `f"""…"""` первой строкой тела докстрингом не считается и прошло бы насквозь.
+                if not isinstance(stmt, ast.Expr) or not isinstance(stmt.value, (ast.Constant, ast.JoinedStr)):
+                    continue
+                if isinstance(stmt.value, ast.Constant) and not isinstance(stmt.value.value, (str, bytes)):
+                    continue
+                docs[stmt.lineno] = ((stmt.end_lineno or stmt.lineno) - stmt.lineno + 1, stmt is head)
+    docs = [(n, length, is_head) for n, (length, is_head) in docs.items()]
+    comments = [(t.start[0], t.string, t.line.strip().startswith("#"))
+                for t in tokenize.generate_tokens(io.StringIO(text).readline)
+                if t.type == tokenize.COMMENT]
+    return sorted(docs), comments
 
 
 def review(path: Path | str, text: str) -> list[str]:
@@ -71,35 +78,45 @@ def review(path: Path | str, text: str) -> list[str]:
     notes: list[str] = []
     seen: set[str] = set()
     lines = text.split("\n")
-    for start, length, is_module in _module_and_func_docs(text):
+    try:
+        docs, comments = _spans(text)
+    except (SyntaxError, ValueError, tokenize.TokenError) as e:
+        # Неразбираемый файл = слепое пятно: молчание тут читалось бы как «чисто».
+        return [f"{path}:1 — файл не разбирается ({type(e).__name__}): сторож на нём слеп"]
+
+    prose: dict[int, str] = {}
+    for start, length, is_module in docs:
+        body = lines[start - 1:start - 1 + length]
+        prose.update({start + k: ln for k, ln in enumerate(body)})
         limit = MODULE_DOC_MAX if is_module else FUNC_DOC_MAX
         if length > limit:
             kind = "шапка модуля" if is_module else "докстринг"
             notes.append(f"{path}:{start} — {kind} на {length} строк (предел {limit}): "
                          f"оставь роль и неочевидное, остальное — в журнал и commit")
-        sections = sum(1 for ln in lines[start - 1:start - 1 + length]
-                       if re.match(r"\s*#{2,}\s\S", ln))
+        sections = sum(1 for ln in body if re.match(r"\s*#{2,}\s\S", ln))
         if sections > SECTIONS_MAX:
             notes.append(f"{path}:{start} — {sections} разделов в одном докстринге: это документ, "
                          f"а не пояснение к коду (предел {SECTIONS_MAX})")
-    prose = {n for start, length, _ in _module_and_func_docs(text)
-             for n in range(start, start + length)}
-    run = 0
-    for n, line in enumerate(lines, 1):
-        if line.strip().startswith("#"):
-            run += 1
-            if run == COMMENT_RUN_MAX + 1:
-                notes.append(f"{path}:{n - run + 1} — {COMMENT_RUN_MAX}+ строк комментария подряд: "
-                             f"это абзац рассуждения, а не пояснение к строке кода")
-        else:
-            run = 0
-        # Правило про ТЕКСТ: маркеры ищем в комментариях и докстрингах, не в коде — иначе
-        # таблица шаблонов этого же сторожа ловит сама себя.
-        if not (line.strip().startswith("#") or n in prose):
-            continue
+        decl = sum(1 for ln in body if DECL_LINE.match(ln))
+        if decl > DECL_LINES_MAX:
+            notes.append(f"{path}:{start} — {decl} строк вида «ключ: значение»: пересказ декларации "
+                         f"прозой (предел {DECL_LINES_MAX}) — источник правды в `config/`, не здесь")
+
+    alone = sorted(n for n, _, standalone in comments if standalone)
+    run_start = None
+    for i, n in enumerate(alone):
+        if run_start is None or n != alone[i - 1] + 1:
+            run_start = n
+        if n - run_start + 1 == COMMENT_RUN_MAX + 1:
+            notes.append(f"{path}:{run_start} — {COMMENT_RUN_MAX}+ строк комментария подряд: "
+                         f"это абзац рассуждения, а не пояснение к строке кода")
+
+    # Маркеры ищем ТОЛЬКО в тексте (докстринг/комментарий): таблица шаблонов этого же сторожа —
+    # код, и построчный разбор ловил её как замечание (F120).
+    for n, line in sorted(list(prose.items()) + [(n, s) for n, s, _ in comments]):
         for pattern, why in NARRATIVE + DUPLICATION:
             if re.search(pattern, line) and why not in seen:
-                # Одно дерево каталогов — одно замечание, а не 29 одинаковых строк: сторож,
+                # Одно дерево каталогов — одно замечание, а не 29 одинаковых: сторож,
                 # который повторяется, читается как шум и его перестают читать.
                 seen.add(why)
                 notes.append(f"{path}:{n} — {why}")
@@ -107,19 +124,40 @@ def review(path: Path | str, text: str) -> list[str]:
     return notes
 
 
-def collect(targets: list[str]) -> dict[str, list[str]]:
-    """{путь относительно корня: замечания} по целям. Недостижимая цель = отказ, не тишина."""
-    out: dict[str, list[str]] = {}
-    for t in targets:
-        p = (PROJECT / t) if not Path(t).is_absolute() else Path(t)
-        if not p.exists():
-            raise SystemExit(f"comment_guard: цель не найдена — {p}")
-        files = [p] if p.is_file() else [f for f in p.rglob("*.py") if "__pycache__" not in str(f)]
-        for f in sorted(files):
-            rel = str(f.relative_to(PROJECT))
-            out[rel] = review(rel, f.read_text(encoding="utf-8", errors="replace"))
+def _tracked() -> list[Path]:
+    """Цели = все `.py` под контролем git: новый пакет попадает в замер сам, без правки списка."""
+    try:
+        out = subprocess.run(["git", "-C", str(PROJECT), "ls-files", "-z", "*.py"],
+                             capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError) as e:
+        raise SystemExit(f"comment_guard: git не ответил ({type(e).__name__}) — замер не состоялся")
+    return [PROJECT / p for p in out.split("\0") if p]
+
+
+def _rel(p: Path) -> str:
+    """Путь для отчёта: вне репозитория relative_to падал сырым ValueError (F127)."""
+    try:
+        return str(p.relative_to(PROJECT))
+    except ValueError:
+        return str(p)
+
+
+def collect(targets: list[str] | None = None) -> dict[str, list[str]]:
+    """{путь: замечания}. Недостижимая цель и пустой замер = отказ, не тишина."""
+    if targets:
+        files = []
+        for t in targets:
+            p = Path(t) if Path(t).is_absolute() else (PROJECT / t)
+            if not p.exists():
+                raise SystemExit(f"comment_guard: цель не найдена — {p}")
+            files += [p] if p.is_file() else [f for f in p.rglob("*.py") if "__pycache__" not in str(f)]
+    else:
+        files = _tracked()
+    out = {_rel(f): review(_rel(f), f.read_text(encoding="utf-8", errors="replace"))
+           for f in sorted(set(files))}
     if not out:
-        raise SystemExit(f"comment_guard: не найдено ни одного .py в {targets} — проверка не состоялась")
+        raise SystemExit(f"comment_guard: не найдено ни одного .py в {targets or 'git ls-files'} — "
+                         f"проверка не состоялась")
     return out
 
 
@@ -135,7 +173,7 @@ def _load_baseline() -> dict[str, int]:
 
 
 def cmd_scan(targets: list[str]) -> int:
-    found = collect(targets or TARGETS)
+    found = collect(targets)
     total = 0
     for notes in found.values():
         total += len(notes)
@@ -146,7 +184,7 @@ def cmd_scan(targets: list[str]) -> int:
 
 
 def cmd_bless() -> int:
-    found = collect(TARGETS)
+    found = collect()
     total = sum(len(n) for n in found.values())
     body = "".join(f"{p} {len(n)}\n" for p, n in sorted(found.items()) if n)
     BASELINE.write_text(
@@ -159,7 +197,7 @@ def cmd_bless() -> int:
 
 
 def cmd_check() -> int:
-    found = collect(TARGETS)
+    found = collect()
     ceiling = _load_baseline()
     total, cap = sum(len(n) for n in found.values()), sum(ceiling.values())
     grown = [(p, ceiling.get(p, 0), n) for p, n in sorted(found.items()) if len(n) > ceiling.get(p, 0)]
@@ -194,7 +232,7 @@ def cmd_hook() -> int:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return 0
-    notes = review(path, text)
+    notes = review(_rel(path), text)
     if not notes:
         return 0
     head = "\n".join(f"  • {n}" for n in notes[:6])

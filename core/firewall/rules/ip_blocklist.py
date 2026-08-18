@@ -10,14 +10,7 @@ from typing import Optional
 
 
 class BlockedIP:
-    """Заблокированный IP.
-
-    Attributes:
-        ip: IP адрес
-        reason: Причина блокировки
-        blocked_at: Время блокировки
-        expires_at: Время разблокировки (None = навсегда)
-    """
+    """Заблокированный IP; `expires_at=None` — блокировка навсегда."""
 
     def __init__(self, ip: str, reason: str = "", blocked_at: float = 0, expires_at: Optional[float] = None):
         self.ip = ip

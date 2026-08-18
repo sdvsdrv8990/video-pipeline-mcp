@@ -61,11 +61,7 @@ class TunnelError(RuntimeError):
 class CloudflaredTunnel:
     """Управление туннелем cloudflared: запуск, ожидание URL, keepalive, стоп.
 
-    Attributes:
-        port: Локальный порт сервера (форвардим на него).
-        mode: 'quick' | 'named'.
-        hostname: Постоянный hostname для named-режима.
-        binary: Путь/имя бинаря cloudflared.
+    Режима два: `quick` (эфемерный URL) и `named` (постоянный `hostname`).
     """
 
     def __init__(self, port: int = 8080, config_path: str | Path | None = None):

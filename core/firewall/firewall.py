@@ -14,17 +14,9 @@ from .rules.anomaly_detector import AnomalyDetector
 
 
 class Firewall:
-    """Файрвол MCP-сервера.
+    """Файрвол MCP-сервера: фильтрует ВСЕ входящие запросы ДО ядра модульными правилами.
 
-    Фильтрует ВСЕ входящие запросы ДО ядра.
-    Использует модульные правила для проверки.
-
-    Attributes:
-        rate_limiter: Ограничитель частоты
-        injection_detector: Детектор prompt injection
-        ip_blocklist: Блок-лист IP
-        anomaly_detector: Детектор аномалий
-        enabled: Флаги включения правил из конфига (F54: `enabled: false` реально выключает)
+    F54: `enabled: false` в конфиге правило реально выключает, а не игнорируется.
     """
 
     def __init__(self, config: dict | None = None):

@@ -14,14 +14,8 @@ from .fact import Fact
 
 
 class ToolResult(BaseModel):
-    """Единый ответ от любого инструмента сервера.
+    """Единый ответ от любого инструмента сервера."""
 
-    Attributes:
-        status: success (выполнено) или error (ошибка)
-        data: Полезные данные (при успехе)
-        error: Детали ошибки (при ошибке)
-        facts: Факты о сделанном (для памяти Claude)
-    """
     status: Literal["success", "error"]
     data: dict | None = None
     error: ErrorDetail | None = None

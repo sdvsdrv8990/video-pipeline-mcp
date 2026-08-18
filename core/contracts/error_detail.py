@@ -76,20 +76,13 @@ KNOWN_ERROR_CODES = {
 
 
 class ErrorDetail(BaseModel):
-    """Детали ошибки для Claude.
+    """Детали ошибки для Claude."""
 
-    Attributes:
-        code: Код ошибки из server_reactions.yaml (D4: валидируется)
-        reaction_class: Класс реакции (ai_recoverable/server_recoverable/human_required/integrity/unknown)
-        message: ПОЛНЫЙ текст ошибки от провайдера/сервера
-        recovery: Подсказка что делать дальше
-        raw_response: Оригинальный ответ API (для анализа, D23: секреты маскируются)
-    """
-    code: str
-    reaction_class: str = "unknown"
+    code: str  # D4: валидируется против `config/server_reactions.yaml`
+    reaction_class: str = "unknown"  # класс задаёт реестр, не эмитент
     message: str
     recovery: Recovery
-    raw_response: dict | None = None
+    raw_response: dict | None = None  # D23: секреты маскируются до попадания сюда
 
     @field_validator("code")
     @classmethod

@@ -13,15 +13,8 @@ from .error_detail import ErrorDetail
 
 
 class TaskStatus(BaseModel):
-    """Статус async задачи для поллинга.
+    """Статус async задачи для поллинга."""
 
-    Attributes:
-        task_id: Уникальный ID задачи
-        status: pending → processing → completed/failed
-        progress: Прогресс выполнения (опционально)
-        result: Результат при completed (опционально)
-        error: Ошибка при failed (опционально)
-    """
     task_id: str
     status: Literal["pending", "processing", "completed", "failed"]
     progress: dict | None = None
