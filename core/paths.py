@@ -2,26 +2,13 @@
 core/paths.py — Единая точка containment для workspace/ + запрет секретных путей
 
 ## Назначение
-Проверка путей: любой путь к данным ОБЯЗАН оставаться внутри workspace/. Одна реализация
-safe-join для server.py, state_manager.py и tools/.
+Любой путь к данным обязан остаться внутри `workspace/`. Одна реализация safe-join на весь
+сервер: containment — choke-point, а не проверка в каждом хендлере (G17).
 
-## Архитектура (G17)
-- Containment = choke-point, а не проверка в каждом хендлере
-- Нарушение → ValueError → вызывающий код маппит в PATH_ESCAPE (G15)
-- Стыкуется с D1 (fs_*) и D29 (state_manager)
-
-## Секретные пути (S23): внутри рабочей области есть то, чего не читает НИКТО
-Ключи провайдеров лежат на уровне канала — там же, где его данные, потому что они и есть
-свойство канала. Но ни один инструмент до них не дотягивается: имя каталога объявлено закрытым,
-и запрет стоит здесь, в той же точке, что и containment, — иначе его пришлось бы помнить в
-каждом хендлере, и первый забывший открыл бы дверь. Сервер читает секрет единственным путём —
-`core/secrets.py` с явным `allow_secrets=True`.
-
-**Fail-closed:** список закрытых имён приходит из `config/firewall.yaml`, но встроенный минимум
-живёт здесь. Не загрузился конфиг — запрет остаётся, а не исчезает.
-
-## Паттерн
-Path.resolve() → is_relative_to(root) — как в MCP servers filesystem (path-validation.ts)
+## Границы
+- Запрет закрытых каталогов стоит здесь же, в точке containment: иначе его пришлось бы помнить
+  в каждом хендлере, и первый забывший открыл бы дверь к ключам провайдеров.
+- Единственный, кто ходит в закрытый каталог, — `core/secrets.py` с явным `allow_secrets=True`.
 """
 
 from pathlib import Path
@@ -71,17 +58,9 @@ def safe_resolve(path: str, workspace: Path, allow_secrets: bool = False) -> Pat
     workspace/. Дополнительно закрывает каталоги секретов: `allow_secrets=True` передаёт
     ТОЛЬКО `core/secrets.py` — тот единственный, кому положено туда ходить.
 
-    Args:
-        path: Путь относительно workspace/
-        workspace: Абсолютный путь к workspace/
-        allow_secrets: Разрешить закрытый каталог (служебный доступ сервера)
-
-    Returns:
-        Абсолютный Path внутри workspace/
-
     Raises:
-        PathEscapeError: если путь выходит за пределы workspace/ (подтип ValueError)
-        SecretAccessError: если путь ведёт в закрытый каталог (подтип ValueError)
+        PathEscapeError: путь выходит за пределы workspace/ (подтип ValueError)
+        SecretAccessError: путь ведёт в закрытый каталог (подтип ValueError)
     """
     root = workspace.resolve()
     target = (root / path).resolve()

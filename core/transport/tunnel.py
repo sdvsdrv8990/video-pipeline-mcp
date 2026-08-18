@@ -2,21 +2,13 @@
 core/transport/tunnel.py — Туннель к Claude AI Web через Cloudflare
 
 ## Назначение
-Даёт облачному Claude AI Web публичный HTTPS-доступ к локальному серверу,
-поднимаясь ВМЕСТЕ с сервером (одна команда). Поставщик — cloudflared.
+Даёт облачному Claude AI Web публичный HTTPS-доступ к локальному серверу, поднимаясь ВМЕСТЕ с
+сервером. Поставщик — cloudflared, он идёт дочерним процессом; ядро о туннеле не знает.
 
-## Режимы
-- quick  — эфемерный URL *.trycloudflare.com. Работает БЕЗ домена и аккаунта.
-           URL меняется при каждом запуске (для теста/разработки).
-- named  — постоянный hostname (нужен аккаунт Cloudflare + домен + credentials).
-           URL стабилен — коннектор Claude настраивается один раз.
-
-## Изоляция
-Ядро о туннеле не знает. cloudflared запускается как дочерний процесс;
-keepalive-поток перезапускает его при падении. Секреты — вне git (.gitignore).
-
-## Запуск отдельно (диагностика)
-    python -m core.transport.tunnel --port 8080
+## Границы
+- `quick` — эфемерный URL, он МЕНЯЕТСЯ при каждом запуске, и настроенный коннектор Claude
+  после перезапуска смотрит в никуда; `named` — постоянный hostname.
+- Keepalive-поток перезапускает cloudflared при падении; секреты туннеля — вне git.
 """
 
 import os
@@ -82,11 +74,7 @@ class CloudflaredTunnel:
         self.port = int(cfg.get("local_port", port) or port)
         self.mode = cfg.get("mode", "quick")
         self.hostname = cfg.get("hostname") or ""
-        # named-режим, два пути подключения:
-        #  1) connector-ТОКЕН из дашборда (Zero Trust → Networks → Tunnels) —
-        #     токен кодирует ID туннеля + секрет; ingress настраивается в дашборде.
-        #  2) локальные credentials: UUID туннеля (tunnel_id) или имя + credentials_file
-        #     (создаётся `cloudflared tunnel create <name>`), маршрут DNS привязан к домену.
+        # named-режим подключается либо connector-токеном, либо локальными credentials.
         # Токен — секрет: приоритет у env MCP_TUNNEL_TOKEN, чтобы не держать его
         # в коммитимом config/tunnel.yaml.
         self.tunnel_token = os.environ.get("MCP_TUNNEL_TOKEN") or cfg.get("tunnel_token") or ""

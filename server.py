@@ -54,7 +54,8 @@ CONFIG_PATH = Path(os.environ.get("MCP_CONFIG") or (BASE_PATH / "config")).resol
 
 # D12/F106: спека транспорта MCP требует валидировать Origin на ВСЕХ соединениях. Пустой список
 # больше не значит «не проверять»: браузер прикладывает Origin к любому кросс-доменному запросу,
-# поэтому запрос С чужим Origin — чужая вкладка. Клиент-бэкенд Origin не шлёт вовсе.
+# поэтому запрос С чужим Origin — чужая вкладка. Список РАСШИРЯЕТ разрешённые браузерные источники
+# сверх петли, но не отключает клиента-бэкенда: тот Origin не шлёт вовсе (решение владельца).
 ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("MCP_ALLOWED_ORIGINS", "").split(",") if o.strip()]
 
 # F107: тело принимаем только этим типом. Три «простых» типа (text/plain, form-urlencoded,
@@ -115,12 +116,8 @@ def _load_yaml(path: Path) -> dict:
     return {}
 
 
-def create_server():
-    """Создание и настройка сервера.
-
-    Returns:
-        Tuple[Engine, Transport, Firewall]
-    """
+def create_server() -> tuple[Engine, Transport, Firewall]:
+    """Создание и настройка сервера."""
     # D2: реально загружаем конфиг файрвола (раньше игнорировался).
     firewall_config = _load_yaml(CONFIG_PATH / "firewall.yaml")
 
@@ -147,16 +144,7 @@ def create_server():
 
 
 def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manager: StateManager):
-    """Регистрация базовых инструментов: контекст + шесть групп (A2).
-
-    Сами хендлеры живут в tools/<group>/; здесь только сборка общих зависимостей
-    и порядок регистрации (он же порядок инструментов в tools/list).
-
-    Args:
-        engine: Движок инструментов
-        id_generator: Генератор ID
-        state_manager: Менеджер состояния
-    """
+    """Сборка общих зависимостей групп; сами хендлеры — в tools/<group>/."""
     ctx = build_context(engine, id_generator, state_manager, CONFIG_PATH)
 
     # Порядок = порядок инструментов в tools/list у клиента; менять без нужды не стоит.
@@ -171,13 +159,13 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
 
 
 def _origin_allowed(origin: str) -> bool:
-    """Источник страницы: явный allowlist, иначе только петля.
+    """Источник страницы: петля всегда, объявленный список — вдобавок к ней.
 
     Петлевой Origin удалённый сайт подделать не может — браузер ставит его по адресу самой
     страницы, и DNS-rebinding оставляет там имя атакующего. Спека требует петлю принимать.
     """
-    if ALLOWED_ORIGINS:
-        return origin in ALLOWED_ORIGINS
+    if origin in ALLOWED_ORIGINS:
+        return True
     return (urlsplit(origin).hostname or "\x00") in {h.strip("[]") for h in _LOOPBACK_HOSTS}
 
 
@@ -233,8 +221,8 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
     print(f"Workspace: {WORKSPACE_PATH}")
     print(f"Инструментов: {len(engine.tools)}")
     print(f"Файрвол: активен (config: {'загружен' if (CONFIG_PATH / 'firewall.yaml').exists() else 'дефолт'})")
-    print(f"Браузер: Origin {'по списку ' + ', '.join(ALLOWED_ORIGINS) if ALLOWED_ORIGINS else 'только петлевой'}"
-          f" (MCP_ALLOWED_ORIGINS), тело только {JSON_CONTENT_TYPE}")
+    print(f"Браузер: Origin петлевой{' + ' + ', '.join(ALLOWED_ORIGINS) if ALLOWED_ORIGINS else ''}"
+          f" (MCP_ALLOWED_ORIGINS), без Origin — пускаем, тело только {JSON_CONTENT_TYPE}")
     if ALLOW_NO_AUTH:
         print("Аутентификация: ⚠ ОТКЛЮЧЕНА (MCP_ALLOW_NO_AUTH=1) — только локальная разработка")
     else:
@@ -255,12 +243,12 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
                            and host not in ALLOWED_HOSTS):
             return web.json_response(_jsonrpc_error(None, -32002, "Forbidden host"), status=403)
 
-        # D12/F106: Origin проверяется всегда. Заданный allowlist вдобавок ТРЕБУЕТ заголовок —
-        # это осознанный строгий режим владельца, наш штатный клиент ходит без Origin.
+        # D12/F106: Origin проверяется всегда, когда он есть. Отсутствие заголовка = не браузер:
+        # кросс-доменный запрос без Origin браузер отправить не может, а CSRF простым запросом
+        # отбивает требование application/json ниже (F107).
         origin = request.headers.get("Origin")
-        if (origin is None and ALLOWED_ORIGINS) or (origin is not None and not _origin_allowed(origin)):
-            if origin is not None:
-                _report_origin(origin)
+        if origin is not None and not _origin_allowed(origin):
+            _report_origin(origin)
             return web.json_response(_jsonrpc_error(None, -32002, "Forbidden origin"), status=403)
 
         # F107: чужой тип тела = запрос, который браузер отправляет без preflight.
@@ -304,9 +292,12 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
                 fw_result = firewall.check(fw_request)
             except Exception as e:
                 # D10: любой сбой firewall = блокировка (fail-closed), не пропуск.
+                # F129: причина сбоя — в консоль владельца; наружу только факт отказа, иначе
+                # клиент получает текст внутреннего исключения (имена типов, значения полей).
+                print(f"⛔ [firewall] сбой проверки, запрос отклонён: {e!r}")
                 return web.json_response(
                     _jsonrpc_error(req_data.get("id") if isinstance(req_data, dict) else None,
-                                   -32000, f"Firewall error (blocked): {e}"),
+                                   -32000, "Firewall error (blocked)"),
                     status=403
                 )
 

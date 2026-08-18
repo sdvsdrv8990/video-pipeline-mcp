@@ -36,20 +36,29 @@ class Firewall:
         self._assign(self._make_rules(config))
 
     @staticmethod
+    def _num(config: dict, section: str, key: str, default: int) -> int:
+        """F128: число из конфига обязано быть целым числом ЗДЕСЬ.
+
+        Иначе сравнение падает уже на запросе: reload объявляет успех, а сервер отвечает
+        отказом на всё подряд — прежние правила при этом снесены.
+        """
+        raw = config.get(section, {}).get(key, default)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw != int(raw):
+            raise ValueError(f"{section}.{key}: ожидалось целое число, получено {raw!r}")
+        return int(raw)
+
+    @staticmethod
     def _make_rules(config: dict | None):
         """Собрать набор правил из конфига (без сайд-эффектов на self).
 
-        Вынесено из __init__, чтобы reload() мог собрать правила во ВРЕМЕННЫЕ
-        объекты и подменить их атомарно только при успехе (fail-closed).
-        Может бросить исключение (напр. top-level YAML не словарь → .get() падает,
-        либо несовместимый тип значения в конструкторе правила) — это сигнал
-        «конфиг битый», который ловит reload(). Injection-паттерны трактуются как
-        литеральные подстроки (re.escape), кривой regex тут невозможен.
+        Вынесено из __init__, чтобы reload() собирал правила во ВРЕМЕННЫЕ объекты и подменял
+        их атомарно только при успехе. Битый конфиг проявляется исключением отсюда — его ловит
+        reload(); кривой regex в паттернах невозможен, они экранируются как литералы.
         """
         config = config or {}
         rate_limiter = RateLimiter(
-            max_requests=config.get("rate_limit", {}).get("max_requests_per_minute", 60),
-            ban_after=config.get("rate_limit", {}).get("ban_after_violations", 3)
+            max_requests=Firewall._num(config, "rate_limit", "max_requests_per_minute", 60),
+            ban_after=Firewall._num(config, "rate_limit", "ban_after_violations", 3)
         )
         # patterns=None → refined DEFAULT_PATTERNS; [] = выключить детекцию.
         injection_detector = InjectionDetector(
@@ -57,7 +66,7 @@ class Firewall:
         )
         ip_blocklist = IPBlocklist(
             auto_ban=config.get("ip_blocklist", {}).get("auto_ban", True),
-            ban_duration_hours=config.get("ip_blocklist", {}).get("ban_duration_hours", 24)
+            ban_duration_hours=Firewall._num(config, "ip_blocklist", "ban_duration_hours", 24)
         )
         # dangerous_tools из конфига (None → дефолт); детекция event-based.
         anomaly_detector = AnomalyDetector(
@@ -83,17 +92,9 @@ class Firewall:
     def reload(self, config: dict | None) -> bool:
         """Горячая перезагрузка правил из нового config БЕЗ пересоздания файрвола.
 
-        Fail-closed (D10): правила собираются во временные объекты; если конфиг
-        битый (исключение при сборке) — self НЕ трогаем, остаются ПРЕЖНИЕ рабочие
-        правила, файрвол не выключается. Ссылка на объект Firewall сохраняется,
-        поэтому все держатели (в т.ч. Transport) сразу видят новые правила.
-
-        ПРИМЕЧАНИЕ: рантайм-счётчики (rate-limit) и баны IP сбрасываются — reload
-        это редкое админ-действие, а за туннелем один клиентский IP (G18), потеря
-        банов пренебрежима. Смысл именно в подхвате новых порогов/паттернов на лету.
-
-        Returns:
-            True — новый конфиг применён; False — битый, оставлены прежние правила.
+        Fail-closed (D10): битый конфиг — не выключенный файрвол, а прежние рабочие правила
+        и False на выходе. Объект Firewall тот же, поэтому все держатели (в т.ч. Transport)
+        сразу видят новые правила; рантайм-счётчики rate-limit и баны IP при этом сбрасываются.
         """
         try:
             rules = self._make_rules(config)
@@ -103,20 +104,7 @@ class Firewall:
         return True
 
     def check(self, request: FirewallRequest) -> FirewallResult:
-        """Проверка запроса через все правила.
-
-        Порядок проверок:
-        1. IP blocklist (быстро)
-        2. Rate limit
-        3. Injection detection
-        4. Anomaly detection
-
-        Args:
-            request: Запрос для проверки
-
-        Returns:
-            FirewallResult с решением
-        """
+        """Проверка запроса через все правила: первое сработавшее и решает исход."""
         # 1. Проверка IP blocklist
         if self.enabled["ip_blocklist"] and self.ip_blocklist.is_blocked(request.ip):
             return FirewallResult(

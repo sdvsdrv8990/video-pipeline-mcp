@@ -164,19 +164,10 @@ class StateManager:
         return queue
 
     def clear_queue(self, entity_path: str) -> int:
-        """Очистка очереди без выполнения (отладка/сброс).
+        """Очистка очереди без выполнения: в отличие от execute_queue операции НЕ применяются
+        к read.json, а выбрасываются.
 
-        Возвращает число отброшенных операций. В отличие от execute_queue,
-        операции НЕ применяются к read.json — просто выбрасываются.
-
-        Args:
-            entity_path: Путь к сущности
-
-        Returns:
-            Сколько операций было в очереди до очистки
-
-        Raises:
-            ValueError: если путь выходит за пределы workspace (D29)
+        Возвращает число отброшенных операций; ValueError — путь вне workspace (D29).
         """
         safe_resolve(entity_path, self.workspace_path)  # D29: containment
         queue_file = self.workspace_path / entity_path / "write.json"

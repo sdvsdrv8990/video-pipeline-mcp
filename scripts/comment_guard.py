@@ -50,8 +50,10 @@ def _module_and_func_docs(text: str) -> list[tuple[int, int, bool]]:
     i, first_code_seen = 0, False
     while i < len(lines):
         s = lines[i].strip()
-        quote = '"""' if s.startswith('"""') else ("'''" if s.startswith("'''") else "")
-        if quote and not (len(s) > 3 and s.endswith(quote)):
+        # Префикс `r`/`f`/`b` перед кавычками — обычный докстринг: без него одна буква снимала правило.
+        opener = re.match(r"[rRbBuUfF]{0,2}(\"\"\"|''')", s)
+        quote = opener.group(1) if opener else ""
+        if quote and not (len(s) - opener.start(1) > 3 and s.endswith(quote)):
             start, length = i + 1, 1
             i += 1
             while i < len(lines) and not lines[i].strip().endswith(quote):

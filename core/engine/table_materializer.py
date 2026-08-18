@@ -1,19 +1,12 @@
-"""
-core/engine/table_materializer.py — материализация книг .xlsx по декларации (A1′, фаза ТАБЛИЦЫ).
+"""core/engine/table_materializer.py — материализация книг .xlsx по декларации.
 
-## Зачем
-`structure_create` для файла с `kind: table` только ОТКЛАДЫВАЕТ книгу: присваивает `file_id`
-и кладёт запись в `tables_pending` (`template_engine.py:155`), сам `.xlsx` не создаёт.
-Этот модуль достраивает фазу: `table_template` → `config/templates/tables/<book>.schema.yaml`
-→ форма книги через `core/excel` (листы, столбцы, формулы, дропдауны enum).
+## Назначение
+Достраивает отложенную фазу: `structure_create` для `kind: table` только заводит `file_id`
+и запись в `tables_pending`, а саму книгу по `config/templates/tables/<book>.schema.yaml`
+(формат — `docs/roadmap/spec/TABLE_SCHEMA_FORMAT.md`) строит этот модуль через `core/excel`.
 
-## Декларативность
-Что материализуется — целиком в `.schema.yaml` (формат: `docs/roadmap/spec/TABLE_SCHEMA_FORMAT.md`).
-Здесь нет ни имён книг, ни имён листов/столбцов: добавить книгу = добавить YAML, не код.
-
-## Флаги колонок
-`id` (ключ) · `W` (writable) · `F` (вычисляемая: `formula:` если спека её задала, иначе
-плейсхолдер-заголовок) · `fk` (внешний ключ). Тип `enum` несёт `enum: [...]` → `set_validation`.
+## Границы
+Имён книг, листов и столбцов здесь нет: добавить книгу = добавить YAML, не код.
 """
 
 from pathlib import Path

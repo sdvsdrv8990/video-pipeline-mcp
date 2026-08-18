@@ -1,32 +1,29 @@
 """
-tests/config_change/test_config_change.py — Тест: Изменение конфигурации
+tests/config_change/test_config_change.py — сборка сервера на объявленной конфигурации.
 
-## Что тестируем
-Адаптация сервера к изменению конфигурации оборудования.
-
-## Зачем нужен
-Сервер должен подстраиваться к новым ресурсам.
-
-## Что хотим увидеть
-- Сервер адаптируется
-- Claude получает уведомление
-- Работа продолжается
-
-## Как отражает реальное поведение
-Эмулирует изменение конфигурации сервера в процессе работы.
-
-## Тип теста
-System / Integration (тест поведения сервера)
+## Назначение
+`create_server()` отдаёт движок, транспорт и файрвол; инструменты зарегистрированы,
+пороги файрвола пришли из конфига, а не остались нулями.
 """
 
 import asyncio
+import os
+import re
+import shutil
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+# Область задаётся ДО импорта server: он резолвит её на импорте, и без этого набор
+# создавал бы каталоги в боевой рабочей области владельца.
+os.environ.setdefault("MCP_WORKSPACE", tempfile.mkdtemp(prefix="cfgchange_ws_"))
+
 from server import create_server
+from tests.harness import live_server
 
 results = []
 
@@ -71,10 +68,42 @@ async def test_firewall_config():
           f"max_requests={firewall.rate_limiter.max_requests}")
 
 
+async def test_hot_reload_rejects_broken_config():
+    """F128: смена конфига на живом сервере — битый тип не должен уезжать в правила."""
+    print("\n=== Hot-reload: битый конфиг ===")
+
+    tmp = Path(tempfile.mkdtemp(prefix="cfgchange_"))
+    shutil.copytree(ROOT / "config", tmp / "config")
+    cfg = tmp / "config" / "firewall.yaml"
+
+    with live_server(env={"MCP_CONFIG": str(tmp / "config")}) as srv:
+        check("до правки сервер отвечает", srv.rpc.request("tools/list", {}).status_code == 200)
+
+        text = cfg.read_text(encoding="utf-8")
+        broken = re.sub(r"max_requests_per_minute:\s*\d+", 'max_requests_per_minute: "60 "', text, count=1)
+        check("якорь порога найден", broken != text)
+        cfg.write_text(broken, encoding="utf-8")
+
+        for _ in range(20):
+            time.sleep(2)
+            if "[config]" in srv.console.text:
+                break
+        said = [ln for ln in srv.console.text.splitlines() if "[config]" in ln]
+        # Успех перезагрузки здесь = битые правила приняты: дальше падает сравнение int со строкой,
+        # и сервер отвечает отказом на КАЖДЫЙ запрос, объявив «перезагружен без рестарта».
+        check("сервер объявил отказ применить, а не успех", any("НЕ применён" in ln for ln in said), said)
+
+        resp = srv.rpc.request("tools/list", {})
+        check("после битого конфига сервер продолжает обслуживать", resp.status_code == 200,
+              resp.text[:120])
+        check("текст исключения не уезжает клиенту", "not supported between" not in resp.text)
+
+
 async def main():
     await test_server_initialization()
     await test_tool_availability()
     await test_firewall_config()
+    await test_hot_reload_rejects_broken_config()
 
     print()
     passed = sum(results)

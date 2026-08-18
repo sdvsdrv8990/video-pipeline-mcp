@@ -1,19 +1,14 @@
 """
-tests/cache_injection/test_cache_injection.py — Adversarial: отравление данных через инструменты
+tests/cache_injection/test_cache_injection.py — adversarial: отравление данных через инструменты.
 
-## Что тестируем (модель угроз 06_threat_catalog + решения D33/D34)
-«Отравление кеша/данных» строками shell/SQL/XSS — ИНЕРТНО: сервер хранит контент, не
-исполняет его и не имеет SQL-поверхности. Поэтому такие строки НЕ блокируются (D33/D34:
-`drop table`/`rm -rf`/XSS-театр снят — это был false-positive для видео/файлового домена).
-Реальная защита = детектор PROMPT-INJECTION + containment путей (D1/D36), не грепа контента.
+## Назначение
+Граница защиты по модели угроз 06_threat_catalog: shell/SQL/XSS-строки в КОНТЕНТЕ инертны
+(сервер хранит, а не исполняет, SQL-поверхности нет) и обязаны получить ALLOW; блокируется
+prompt-injection — инструкция модели, плюс containment путей (D1/D36).
 
-## Что хотим увидеть
-- Инертные shell/SQL строки как контент → ALLOW (не исполняются, не угроза здесь).
-- РЕАЛЬНАЯ prompt-injection → BLOCK.
-- Легитимный контент → ALLOW.
-
-## Тип теста
-Security / Integration (in-process Firewall; C2-адверсариал под текущую модель угроз).
+## Границы
+ALLOW на `drop table` — не дыра, а решение D33/D34: греп контента давал false-positive для
+файлового домена. In-process `Firewall`, сервер не поднимается.
 """
 
 import sys
