@@ -72,8 +72,7 @@ def main():
               bool(fr.name) and fr.size > 0 and fr.entity_type and fr.parent_path is not None)
 
         print("== FsSearcher: личность файла из РЕЕСТРА, не из имени (F60) ==")
-        # Было: _extract_id разбирал имя файла регуляркой → entity_id пустой у всех,
-        # id_pattern с реальным ID давал 0. Теперь источник — реестр по вместимости.
+        # F60: личность файла даёт реестр по вместимости, поэтому разбор имени запрещён насовсем.
         check("метод разбора имени удалён (имя больше не источник ID)", not hasattr(fs, "_extract_id"))
         vid_id = "VID_" + "a" * 32
         vpath = "niches/gaming/networks/n1/channels/ch/videos/v"

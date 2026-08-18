@@ -92,7 +92,7 @@ with live_server() as srv:
        "запрос БЕЗ Origin (server-to-server, наш клиент) проходит — честный путь не задет")
     ok(srv.console.contains(r"\[origin\] запрос из браузера отклонён"),
        "отказ по Origin виден в консоли — иначе отрезанный клиент молчит")
-    ok(srv.console.contains(r"Браузер: Origin только петлевой"),
+    ok(srv.console.contains(r"Браузер: Origin петлевой"),
        "и политика объявлена при старте — иначе владелец узнаёт о ней от сломавшегося клиента")
 
     # F107: три «простых» типа браузер шлёт БЕЗ preflight — на них и держится CSRF из вкладки.
@@ -191,6 +191,23 @@ with live_server() as srv:
     ok(all(c == 200 for c in codes),
        f"30 честных запросов подряд прошли ({sorted(set(codes))})")
     ok(len(rpc.tools_list()) >= 60, "после потока сервер по-прежнему отвечает")
+
+print("== 8. MCP_ALLOWED_ORIGINS расширяет, а не заменяет (решение владельца S24) ==")
+# Прежде заданный список ТРЕБОВАЛ заголовок, и одна настройка обслуживала либо браузерный
+# источник, либо клиента-бэкенда, но не обоих. Проверяем именно совместимость этих двух ролей.
+with live_server(env={"MCP_ALLOWED_ORIGINS": "https://studio.example.com"}) as srv2:
+    rpc2 = srv2.rpc
+    ok(rpc2.request("tools/list", {}).status_code == 200,
+       "без Origin проходит и при заданном списке — server-to-server клиент не отрезан")
+    ok(rpc2.request("tools/list", {}, extra_headers={"Origin": "https://studio.example.com"}
+                    ).status_code == 200, "объявленный источник проходит")
+    ok(rpc2.request("tools/list", {}, extra_headers={"Origin": f"http://127.0.0.1:{srv2.port}"}
+                    ).status_code == 200, "петля продолжает проходить — спека требует её принимать")
+    for _case, _origin in (("чужой сайт", "https://evil.example.com"),
+                           ("похожее имя", "https://studio.example.com.evil.com"),
+                           ("песочница/iframe", "null")):
+        ok(rpc2.request("tools/list", {}, extra_headers={"Origin": _origin}).status_code == 403,
+           f"{_case} отбит и при заданном списке")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

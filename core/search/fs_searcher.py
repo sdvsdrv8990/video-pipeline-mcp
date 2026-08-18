@@ -1,92 +1,14 @@
-"""
-core/search/fs_searcher.py — Умный поиск по файловой системе
+"""core/search/fs_searcher.py — умный поиск по файловой системе.
 
 ## Назначение
-Поиск файлов по типам сущностей (video, channel, competitor, niche, network, scene, asset),
-ID, датам, содержимому. Работает через YAML-запросы с очередью задач и многопоточностью.
+Обход `workspace/` по задаче `FsSearchTask` (её же собирает `load_query` из YAML) с фильтрами
+по типу сущности, ID/владельцу, имени, расширению, содержимому, размеру и дате модификации.
 
-## Формат YAML-запроса
-```yaml
-name: "Поиск видео канала"
-description: "Найти все видео в канале my_channel"
-
-# Корневой каталог (относительно workspace)
-root: "channels/my_channel"
-
-# Фильтры по типу сущности
-entity_types:
-  - "video"
-  - "competitor_video"
-
-# Фильтры по ID (regex)
-id_pattern: "VID_*"
-
-# Фильтры по имени (regex)
-name_pattern: ".*intro.*"
-
-# Фильтры по расширению
-extensions:
-  - ".xlsx"
-  - ".json"
-  - ".md"
-
-# Фильтр по содержимому (ключевые слова)
-content_keywords:
-  - "UNIQUENESS"
-  - "status"
-
-# Фильтр по размеру файла
-size:
-  min: 100
-  max: 1000000
-
-# Фильтр по дате модификации
-modified:
-  after: "2026-07-01"
-  before: "2026-07-05"
-
-# Максимум результатов
-limit: 100
-
-# Сортировка
-sort:
-  field: "modified"
-  order: "desc"
-```
-
-## Структура workspace
-```
-workspace/
-├── niches/
-│   └── {niche_name}/
-│       ├── networks/
-│       │   └── {network_name}/
-│       │       ├── channels/
-│       │       │   └── {channel_name}/
-│       │       │       ├── videos/
-│       │       │       │   └── {video_name}/
-│       │       │       │       ├── assets/
-│       │       │       │       │   ├── svg/
-│       │       │       │       │   ├── scenes/
-│       │       │       │       │   ├── audio/
-│       │       │       │       │   └── transitions/
-│       │       │       │       ├── renders/
-│       │       │       │       ├── video_data.xlsx
-│       │       │       │       ├── read.json
-│       │       │       │       └── project_memory.md
-│       │       │       ├── competitors/
-│       │       │       │   └── {competitor_name}/
-│       │       │       │       ├── videos/
-│       │       │       │       │   └── {comp_video_name}/
-│       │       │       │       ├── competitor_channel_data.xlsx
-│       │       │       │       └── read.json
-│       │       │       ├── channel_data.xlsx
-│       │       │       └── project_memory.md
-│       │       ├── network_config.xlsx
-│       │       └── _NETWORK_INDEX.md
-│       ├── niche_read.json
-│       └── _NICHE_INDEX.md
-```
+## Границы
+Типы сущностей и раскладка каталогов не зашиты — их даёт инжектируемая таксономия
+(`core/ids/taxonomy.py` поверх `config/templates/workspace/*.tpl.yaml`); без неё тип "unknown".
+Личность файла берётся из реестра, а не из имени (F60). Закрытые каталоги отсекаются
+до чтения содержимого (S23).
 """
 
 import re
