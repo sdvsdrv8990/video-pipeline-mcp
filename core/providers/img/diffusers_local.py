@@ -25,7 +25,6 @@ class DiffusersLocalIMG:
 
     def __init__(self, registry):
         self.registry = registry
-        self.models_dir = Path(registry.models_dir)
 
     @property
     def _gpu_rules(self) -> dict:

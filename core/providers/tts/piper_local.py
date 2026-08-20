@@ -26,7 +26,6 @@ class PiperLocalTTS:
 
     def __init__(self, registry):
         self.registry = registry
-        self.models_dir = Path(registry.models_dir)
 
     def _voice(self, model_path: Path):
         """Модель живёт в пуле процесса: адаптер создаётся на каждый вызов, а голос — нет."""
