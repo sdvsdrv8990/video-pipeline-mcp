@@ -137,7 +137,7 @@ class ModelPool:
                 import torch
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-            except Exception:                               # noqa: BLE001 — torch не обязателен
+            except Exception:  # torch не обязателен
                 pass
 
     @staticmethod
@@ -148,5 +148,5 @@ class ModelPool:
         try:
             import torch
             return int(torch.cuda.memory_allocated()) if torch.cuda.is_available() else 0
-        except Exception:                                   # noqa: BLE001 — torch не обязателен
+        except Exception:  # torch не обязателен
             return 0

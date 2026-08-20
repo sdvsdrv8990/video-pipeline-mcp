@@ -305,7 +305,7 @@ class ExcelEngine:
                             break                          # одна ячейка — одна запись
         return found
 
-    def _guard_column(self, wb, path: str, sheet: str, column: str, col_idx: int,
+    def _guard_column(self, wb, sheet: str, column: str, col_idx: int,
                       action: str, force: bool) -> list[dict]:
         """Пред-проверка деструктива над столбцом: молчаливый коррапт формул запрещён (F28)."""
         deps = self._dependents(wb, sheet, col_idx)
@@ -325,7 +325,7 @@ class ExcelEngine:
         if column not in headers:
             raise ExcelError("COLUMN_NOT_FOUND", f"Столбец '{column}' не найден в листе '{sheet}'.",
                              reason="Сверь имя заголовка (excel_read_range) или уже удалён.")
-        broken = self._guard_column(wb, path, sheet, column, headers[column], "Удаление", force)
+        broken = self._guard_column(wb, sheet, column, headers[column], "Удаление", force)
         ws.delete_cols(headers[column], 1)
         self._save(wb, path)
         return {"path": path, "sheet": sheet, "deleted": column,
@@ -348,7 +348,7 @@ class ExcelEngine:
             return {"path": path, "sheet": sheet, "column": column, "index": to_index,
                     "broken_formulas": []}
         # Перенос меняет БУКВУ столбца: формулы продолжат указывать на старую позицию.
-        broken = self._guard_column(wb, path, sheet, column, from_index, "Перенос", force)
+        broken = self._guard_column(wb, sheet, column, from_index, "Перенос", force)
         # снять значения столбца, удалить, вставить на новое место
         col_values = [ws.cell(row=r, column=from_index).value for r in range(1, ws.max_row + 1)]
         ws.delete_cols(from_index, 1)

@@ -265,7 +265,7 @@ class HttpImageAPI:
             try:
                 response = httpx.request(method, url, headers=headers, timeout=timeout,
                                          follow_redirects=False, **(body or {}))
-            except Exception as e:                          # noqa: BLE001 — сеть/таймаут
+            except Exception as e:  # сеть/таймаут
                 last = self._unreachable(decl, request.provider, e)
             else:
                 if response.status_code < 400:
@@ -342,7 +342,7 @@ class HttpImageAPI:
             return None
         try:
             body = response.json()
-        except Exception:                                   # noqa: BLE001 — не JSON в теле
+        except Exception:  # не JSON в теле
             return None
         code = str(self.dig(body, str(fields.get("code") or "")) or "")
         if not re.fullmatch(r"[A-Z][A-Z_]{2,48}", code):
@@ -358,7 +358,7 @@ class HttpImageAPI:
     def _json(response) -> dict:
         try:
             return response.json()
-        except Exception as e:                              # noqa: BLE001 — не JSON в теле
+        except Exception as e:  # не JSON в теле
             raise ProviderError(
                 "PROVIDER_FAILED", f"Ответ провайдера не разобрать как JSON: {e}",
                 reason="Возможно, он отдаёт файл телом — тогда в декларации нужно "
@@ -373,7 +373,7 @@ class HttpImageAPI:
         try:
             response = httpx.get(self._status_url, headers=self._poll_headers(), timeout=60,
                                  follow_redirects=False)
-        except Exception as e:                              # noqa: BLE001 — сеть/таймаут
+        except Exception as e:  # сеть/таймаут
             raise ProviderError(
                 "PROVIDER_FAILED", f"Не удалось прозвонить задачу '{task_id}': {e}",
                 reason="Задача осталась на стороне провайдера — прозвони её повторным вызовом.") from e
@@ -418,7 +418,7 @@ class HttpImageAPI:
 
         try:
             response = httpx.get(url, headers=self._poll_headers(), timeout=60, follow_redirects=False)
-        except Exception as e:                              # noqa: BLE001 — сеть/таймаут
+        except Exception as e:  # сеть/таймаут
             raise ProviderError(
                 "PROVIDER_FAILED", f"Результат задачи не забрать: {e}",
                 reason="Задача готова, но её результат недоступен — повтори прозвонку.") from e

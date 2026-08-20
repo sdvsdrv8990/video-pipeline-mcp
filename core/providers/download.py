@@ -119,7 +119,7 @@ class ResultDownloader:
         except TaskCycleError:
             target.unlink(missing_ok=True)                  # недописанный файл не выдаём за результат
             raise
-        except Exception as e:                              # noqa: BLE001 — сеть/таймаут/обрыв
+        except Exception as e:  # сеть/таймаут/обрыв
             target.unlink(missing_ok=True)
             raise TaskCycleError(
                 "PROVIDER_FAILED", f"Загрузка результата не удалась: {e}",

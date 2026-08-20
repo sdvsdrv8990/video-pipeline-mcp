@@ -74,7 +74,7 @@ class DiffusersLocalIMG:
                 pipe = AutoPipelineForText2Image.from_pretrained(
                     str(model_path), local_files_only=True, safety_checker=None, **load,
                     **({"torch_dtype": dtype} if dtype else {}))
-            except Exception as e:                          # noqa: BLE001 — битые/неполные веса
+            except Exception as e:  # битые/неполные веса
                 raise ProviderError(
                     "LOCAL_MODEL_MISSING", f"Веса модели не поднимаются: {e}",
                     reason="Каталог есть, но модель из него не читается — перекачай: "
@@ -99,7 +99,7 @@ class DiffusersLocalIMG:
                                "показывает вердикт по каждой.")
                 try:
                     mover(where["device"])
-                except Exception as e:                      # noqa: BLE001 — нет устройства/памяти
+                except Exception as e:  # нет устройства/памяти
                     # Молча посчитать на процессоре нельзя: разница во времени — десятки раз, и
                     # тот, кто ждал карту, обязан узнать, что её не дали, вместе с причиной.
                     raise ProviderError(
@@ -135,7 +135,7 @@ class DiffusersLocalIMG:
         request.target.parent.mkdir(parents=True, exist_ok=True)
         try:
             images = pipe(prompt=request.input, **self._call_kwargs(params)).images
-        except Exception as e:                              # noqa: BLE001 — среда/память/веса
+        except Exception as e:  # среда/память/веса
             raise ProviderError(
                 "LOCAL_INFERENCE_FAILED", f"Локальная генерация не выполнена: {e}",
                 reason="Проверь ресурсы машины (память) и веса модели; при повторе того же "

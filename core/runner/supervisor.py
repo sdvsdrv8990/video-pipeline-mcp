@@ -101,13 +101,13 @@ class RunnerSupervisor:
             headers[scheme.split(":", 1)[1]] = token
         try:
             response = httpx.get(f"{self.base_url}/health", headers=headers, timeout=timeout)
-        except Exception:                                   # noqa: BLE001 — не поднят/не отвечает
+        except Exception:  # не поднят/не отвечает
             return {}
         if response.status_code >= 400:
             return {}
         try:
             return response.json()
-        except Exception:                                   # noqa: BLE001 — не наш ответ на порту
+        except Exception:  # не наш ответ на порту
             return {}
 
     @staticmethod

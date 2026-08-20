@@ -36,7 +36,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """Строки листа провайдеров из данных канала (с ID строки — расход пишется именно ей)."""
         try:
             snapshot = ctx.state_manager.read_snapshot(table) or {}
-        except Exception:                                  # noqa: BLE001 — нет данных = нет строк
+        except Exception:  # нет данных = нет строк
             return []
         rows = ((snapshot.get(sheet) or {}).get("rows") or {})
         # Служебное поле с «_» не уходит в параметры вызова: фильтр резолвера его отбрасывает.

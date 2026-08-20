@@ -105,13 +105,13 @@ class ModelSpec:
             import httpx
             headers = {"Authorization": f"Bearer {api_key}"} if auth == "bearer" else {}
             response = httpx.get(url, headers=headers, timeout=30, follow_redirects=False)
-        except Exception:                                   # noqa: BLE001 — сеть/таймаут
+        except Exception:  # сеть/таймаут
             return {}                                       # спека необязательна: молча падать назад
         if response.status_code >= 400:
             return {}
         try:
             data = response.json()
-        except Exception:                                   # noqa: BLE001 — не JSON
+        except Exception:  # не JSON
             return {}
         schema = self._dig_schema(data, str(decl.get("schema_path") or ""))
         if not schema:
@@ -217,7 +217,7 @@ class ModelSpec:
             import onnxruntime as ort
             session = ort.InferenceSession(str(graph), providers=["CPUExecutionProvider"])
             return list(session.get_inputs()[0].shape)
-        except Exception:                                   # noqa: BLE001 — граф не читается
+        except Exception:  # граф не читается
             return []
 
     @staticmethod

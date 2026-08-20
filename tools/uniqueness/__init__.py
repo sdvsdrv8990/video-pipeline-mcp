@@ -23,7 +23,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         это факт расчёта (`readiness`), а не ошибка вызова."""
         try:
             snapshot = ctx.state_manager.read_snapshot(table) or {}
-        except Exception:                                  # noqa: BLE001 — нет данных = нет входа
+        except Exception:  # нет данных = нет входа
             return {}
         sheet_obj = snapshot.get(sheet) or {}
         return sheet_obj.get("rows") or {}

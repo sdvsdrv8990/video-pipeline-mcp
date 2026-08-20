@@ -40,7 +40,7 @@ class OnnxImage:
                     reason="Поставь зависимости группы local (onnxruntime) в окружение сервера.") from e
             try:
                 return ort.InferenceSession(str(model_path), providers=providers)
-            except Exception as e:                          # noqa: BLE001 — битый или чужой граф
+            except Exception as e:  # битый или чужой граф
                 raise ProviderError(
                     "LOCAL_MODEL_MISSING", f"Граф модели не читается: {e}",
                     reason="Файл есть, но onnxruntime его не поднимает — перекачай модель: "
@@ -77,7 +77,7 @@ class OnnxImage:
         try:
             image = Image.open(path)
             image.load()
-        except Exception as e:                              # noqa: BLE001 — не картинка/битый файл
+        except Exception as e:  # не картинка/битый файл
             raise ProviderError(
                 "CONTENT_REJECTED", f"Файл не читается как изображение: {e}",
                 reason="Передай путь к картинке внутри рабочей области — повтор того же файла "
@@ -104,7 +104,7 @@ class OnnxImage:
         """Один проход графа. Имена входа и выхода спрашиваются у графа, а не пишутся здесь."""
         try:
             return session.run(None, {session.get_inputs()[0].name: tensor})[0]
-        except Exception as e:                              # noqa: BLE001 — память/размер/битый граф
+        except Exception as e:  # память/размер/битый граф
             raise ProviderError(
                 "LOCAL_INFERENCE_FAILED", f"Локальный инференс не выполнен: {e}",
                 reason="Проверь память машины и размер картинки; при повторе того же входа "

@@ -94,7 +94,7 @@ class LiveServer:
             try:
                 if self.rpc.tools_list():
                     return
-            except Exception:                       # noqa: BLE001 — порт ещё не слушает
+            except Exception:  # порт ещё не слушает
                 pass
             time.sleep(0.1)
         self.stop()

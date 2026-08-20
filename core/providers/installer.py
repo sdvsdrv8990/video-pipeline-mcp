@@ -94,7 +94,7 @@ class ModelInstaller:
         except ProviderError as e:
             state = self._read(install_id)
             state.update({"phase": "failed", "code": e.code, "error": e.message, "reason": e.reason})
-        except Exception as e:                              # noqa: BLE001 — сеть/диск/среда
+        except Exception as e:  # сеть/диск/среда
             state = self._read(install_id)
             state.update({"phase": "failed", "code": "LOCAL_MODEL_MISSING", "error": str(e),
                           "reason": "Загрузка оборвалась. Повтор продолжит с места обрыва — "
@@ -115,7 +115,7 @@ class ModelInstaller:
                 state["bytes"] = max(0, self._bytes_on_disk() - int(state.get("baseline", 0)))
                 state["heartbeat"] = time.time()
                 self._write(state)
-            except Exception:                               # noqa: BLE001 — наблюдение не должно ронять установку
+            except Exception:  # наблюдение не должно ронять установку
                 return
 
     def _bytes_on_disk(self) -> int:
@@ -135,7 +135,7 @@ class ModelInstaller:
         try:
             from huggingface_hub.constants import HF_HUB_CACHE
             dirs.append(Path(HF_HUB_CACHE))
-        except Exception:                                   # noqa: BLE001 — кэш не обязателен
+        except Exception:  # кэш не обязателен
             pass
         return dirs
 

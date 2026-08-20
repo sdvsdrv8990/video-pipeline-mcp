@@ -760,7 +760,7 @@ try:
     _srv.CONFIG_PATH = _kcfg_dir
     _eng_k = _Eng(state_manager=_sm)
     _srv.register_basic_tools(_eng_k, _IDG(), _sm)
-    _kcall = lambda tool, **p: _aio.run(_eng_k.call(tool, p))       # noqa: E731 — локальный хелпер
+    _kcall = lambda tool, **p: _aio.run(_eng_k.call(tool, p))  # локальный хелпер
 
     _nokey = _kcall("media_generate", table="k", resource_type="tts_characters",
                     input="текст", scene_id="s1", video_slug="demo")
@@ -1036,7 +1036,7 @@ try:
                        headers={"Authorization": "Bearer RIGHT-KEY"}, timeout=10)
     _rows_live = [{"id": m["id"], "provider": "Двойник", "kind": _oc2._kind_of(m["id"]),
                    "source": "provider"} for m in _resp.json()["data"]]
-except Exception as e:                                        # noqa: BLE001
+except Exception as e:
     print(f"  ⚠ двойник не поднялся ({e}) — разбор ответа не проверен")
 
 if _rows_live:
@@ -1195,9 +1195,9 @@ for _kind in ("bg_removal", "upscale"):
     ok(".onnx" in (_src.get("require_formats") or []),
        f"{_kind}: показываем только то, что установщик вправе поставить (формат объявлен)")
 
-from PIL import Image as _PILImage                              # noqa: E402
+from PIL import Image as _PILImage
 
-from core.providers.catalog import ModelCatalog as _MC          # noqa: E402
+from core.providers.catalog import ModelCatalog as _MC
 
 _cat12 = _MC(CFG, _reg.models_dir)
 ok(_cat12.prefer(["onnx/model_fp16.onnx", "onnx/model.onnx"]) == "onnx/model.onnx",
@@ -1283,7 +1283,7 @@ print("== 13. Платные агрегаторы: стенд по их конт
 # Живой платный вызов упирается в аккаунт, а не в код, поэтому проверяется НАШ путь против
 # стенда, отвечающего ровно так, как описано у самих провайдеров (эндпоинты, поля и статусы взяты
 # из официального клиента Replicate и fal_client). Мок здесь законен: это истинно внешний сервис.
-import httpx as _httpx                                       # noqa: E402
+import httpx as _httpx
 
 _seen = {"requests": [], "polls": 0}
 _PNG = (_ws / "pic" / "frame.png").read_bytes()
@@ -1433,7 +1433,7 @@ except ProviderError as _ebig:
     ok(_ebig.code == "CONTENT_REJECTED", f"файл сверх предела отклонён до сети ({_ebig.code})")
 
 print("== 14. Что модель умеет: спека параметров и отказ ДО вызова (S24) ==")
-from core.providers import ModelSpec                          # noqa: E402
+from core.providers import ModelSpec
 
 _ms = ModelSpec(_reg)
 
@@ -1494,10 +1494,10 @@ else:
     print("  ⚠ веса sdxl-turbo не поставлены — спека сквозь инструмент и отказ ДО вызова не проверены")
 
 print("== 15. Поднятая модель переживает вызов: пул с бюджетом (S24) ==")
-import time as _time                                          # noqa: E402
+import time as _time
 
-from core.providers.pool import ModelPool as _Pool            # noqa: E402
-import core.providers.pool as _pool_mod                       # noqa: E402
+from core.providers.pool import ModelPool as _Pool
+import core.providers.pool as _pool_mod
 
 _pool_mod._ENTRIES.clear()
 _hw15 = {"ram_available_mb": 1000, "gpu": []}
@@ -1565,7 +1565,7 @@ if _bg_model:
        f"модель осталась поднятой между вызовами инструмента ({_first:.2f} с → {_second:.2f} с)")
 
 print("== 16. Кто формирует задачу и куда кладёт результат (инварианты под раннер, S24) ==")
-import re as _re16                                            # noqa: E402
+import re as _re16
 
 # Задачу провайдеру (а завтра — раннеру) собирает СЕРВЕР из строки канала. Клиент не может
 # передать ни адрес вызова, ни путь сохранения: иначе Claude выбирал бы, куда ходить и куда писать.
@@ -1590,11 +1590,11 @@ if _bg_model:
        "файл лежит по этому пути сразу — без промежуточного места и последующего переноса")
 
 print("== 17. Раннер: инференс в отдельном процессе (S24) ==")
-import socket as _sock17                                      # noqa: E402
-import subprocess as _sp17                                    # noqa: E402
-import httpx as _hx17                                         # noqa: E402
-from core.providers.img.http_image import HttpImageAPI as _HTTP17  # noqa: E402
-from core.runner import RunnerSupervisor as _Sup17            # noqa: E402
+import socket as _sock17
+import subprocess as _sp17
+import httpx as _hx17
+from core.providers.img.http_image import HttpImageAPI as _HTTP17
+from core.runner import RunnerSupervisor as _Sup17
 
 # Послабление на петлю объявлено ДАННЫМИ и действует только на объявленный хост: чужой адрес по
 # http обязан остаться отказом, иначе «разрешили раннер» означало бы «разрешили открытый канал».

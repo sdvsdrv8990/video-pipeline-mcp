@@ -104,7 +104,7 @@ class RunnerService:
                 "исполнял бы что угодно по просьбе любого процесса пользователя.", status=401)
         try:
             body = await request.json()
-        except Exception:                                   # noqa: BLE001 — тело не разобрать
+        except Exception:  # тело не разобрать
             return self._refuse("VALIDATION_ERROR", "Тело запроса не разобрать как JSON.",
                                 "Раннер ждёт {kind, input, source, target, params}.")
         if not isinstance(body, dict):
@@ -145,7 +145,7 @@ class RunnerService:
         except ProviderError as e:
             self.last_error = f"{e.code}: {e.message}"
             return self._refuse(e.code, e.message, e.reason, status=502)
-        except Exception as e:                              # noqa: BLE001 — чужой код инференса
+        except Exception as e:  # чужой код инференса
             self.last_error = f"LOCAL_INFERENCE_FAILED: {e}"
             return self._refuse(
                 "LOCAL_INFERENCE_FAILED", f"Расчёт оборвался: {e}",

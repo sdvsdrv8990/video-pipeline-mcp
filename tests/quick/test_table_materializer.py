@@ -319,12 +319,12 @@ ok(any("проверить полноту" in w for w in r["warnings"]),
 
 
 print("== 9. Инструмент фазы ТАБЛИЦЫ (F76: падал NameError при ЛЮБОМ вызове) ==")
-import asyncio as _aio                                        # noqa: E402
-import yaml as _yaml                                          # noqa: E402
-from core.engine import Engine as _Eng                        # noqa: E402
-from core.ids import IDGenerator as _IDG                      # noqa: E402
-from core.state import StateManager as _SM                    # noqa: E402
-import server as _srv                                         # noqa: E402
+import asyncio as _aio
+import yaml as _yaml
+from core.engine import Engine as _Eng
+from core.ids import IDGenerator as _IDG
+from core.state import StateManager as _SM
+import server as _srv
 
 _ws9 = Path(tempfile.mkdtemp(prefix="tm9_")) / "workspace"
 _ws9.mkdir(parents=True)

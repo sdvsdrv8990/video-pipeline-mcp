@@ -53,7 +53,7 @@ class PiperLocalTTS:
         try:
             with wave.open(str(request.target), "wb") as wav:
                 voice.synthesize_wav(request.input, wav, syn_config=syn)
-        except Exception as e:                              # noqa: BLE001 — среда/веса/ресурсы
+        except Exception as e:  # среда/веса/ресурсы
             raise ProviderError(
                 "LOCAL_INFERENCE_FAILED", f"Локальная озвучка не выполнена: {e}",
                 reason="Проверь веса модели и ресурсы машины; при повторе того же входа "

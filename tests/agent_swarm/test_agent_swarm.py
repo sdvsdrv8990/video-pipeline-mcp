@@ -475,7 +475,7 @@ def run_pattern(fn, ctx: Ctx, status: str) -> None:
     pid = fn.__name__
     try:
         defended, detail = fn(ctx)
-    except Exception as exc:                                # noqa: BLE001 — падение = вердикт
+    except Exception as exc:  # падение = вердикт
         _results.append(("СЛОМАН", pid, f"{type(exc).__name__}: {exc}"))
         print(f"  💥 {pid}: исполнитель упал — {type(exc).__name__}: {exc}")
         return

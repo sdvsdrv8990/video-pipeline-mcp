@@ -18,7 +18,7 @@ from aiohttp import web
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from core.runner.service import RunnerService                # noqa: E402
+from core.runner.service import RunnerService  # noqa: E402 — импорт после правки sys.path: раннер запускается файлом
 
 TOKEN_ENV = "MCP_RUNNER_TOKEN"
 
@@ -44,7 +44,7 @@ def main() -> int:
     # Внутри контейнера петля бесполезна: опубликованный порт приходит на интерфейс контейнера, а
     # не на его loopback. Границу там держит САМА публикация — супервизор публикует порт только на
     # петлю хоста (`127.0.0.1:порт:порт`), и наружу машины раннер по-прежнему не выходит.
-    host = args.host or ("0.0.0.0" if args.container else (declared.hostname or "127.0.0.1"))  # noqa: S104  # nosec B104 — граница здесь у публикации порта (см. комментарий выше), не у bind
+    host = args.host or ("0.0.0.0" if args.container else (declared.hostname or "127.0.0.1"))  # nosec B104 — граница здесь у публикации порта (см. комментарий выше), не у bind
     port = args.port or declared.port or 8770
     if not args.container and host not in ("127.0.0.1", "::1", "localhost"):
         # Раннер исполняет модели по запросу и пишет файлы. За пределы машины он не выставляется

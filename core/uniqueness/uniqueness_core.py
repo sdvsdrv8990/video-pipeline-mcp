@@ -11,6 +11,7 @@ n-gram-шинглы по словам, локально, без внешнего
 `enabled=false` гасит поведение, а не структуру. Добавить тип фрагмента = строка в данных.
 """
 
+from typing import ClassVar
 import re
 from pathlib import Path
 
@@ -174,7 +175,7 @@ class UniquenessEngine:
         }
 
     # Тяжесть уровней: сравниваем сигналы, чтобы выбрать худший.
-    _SEVERITY = {None: 0, "alert": 1, "critical": 2}
+    _SEVERITY: ClassVar[dict[str | None, int]] = {None: 0, "alert": 1, "critical": 2}
 
     @staticmethod
     def _level(value: float, th: dict) -> str | None:

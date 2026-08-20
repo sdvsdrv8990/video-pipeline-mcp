@@ -12,6 +12,7 @@ core/providers/catalog.py — какие модели вообще бывают 
   ВЫПОЛНЯЕТ код из файла, поэтому ставится только то, что кодом не является.
 """
 
+from typing import ClassVar
 import json
 import re
 from pathlib import Path
@@ -141,7 +142,7 @@ class ModelCatalog:
         from huggingface_hub import HfApi
         try:
             sha = HfApi().repo_info(repo_id=repo, repo_type="model").sha
-        except Exception as exc:                    # noqa: BLE001 — причина уедет клиенту кодом
+        except Exception as exc:  # причина уедет клиенту кодом
             raise ProviderError(
                 "DOWNLOAD_FORBIDDEN", f"Не удалось узнать состояние репозитория '{repo}'.",
                 reason="Веса не тянутся вслепую: без привязки к ревизии повторная установка "
@@ -269,7 +270,7 @@ class ModelCatalog:
 
         try:
             info = model_info(model_id, files_metadata=True)
-        except Exception as e:                              # noqa: BLE001 — сеть/закрытый репозиторий
+        except Exception as e:  # сеть/закрытый репозиторий
             # Не знаем — так и говорим: молча выкинуть модель значило бы соврать, что её нет.
             return {"detail_error": str(e)[:120]}
         sizes = {s.rfilename: int(s.size or 0) for s in (info.siblings or [])}
@@ -306,7 +307,7 @@ class ModelCatalog:
             path = hf_hub_download(repo, str(rules.get("from") or "README.md"),
                                    revision=self.revision(repo), **self._hf)
             text = Path(path).read_text(encoding="utf-8")
-        except Exception:                                   # noqa: BLE001 — карточки может не быть
+        except Exception:  # карточки может не быть
             return ""
         text = re.sub(r"^---.*?---", "", text, flags=re.S)  # фронт-маттер — не проза
         limit = int(rules.get("max_chars") or 240)
@@ -623,7 +624,8 @@ class OnlineCatalog:
     провайдер говорит, ЧТО ему доступно сегодня, реестр добавляет к именам смысл (режим, цену).
     """
 
-    MODES = {"image": "image_generation", "tts": "audio_speech", "stt": "audio_transcription"}
+    MODES: ClassVar[dict[str, str]] = {
+        "image": "image_generation", "tts": "audio_speech", "stt": "audio_transcription"}
 
     def __init__(self, config_file: str | Path | None = None):
         self.config_file = Path(config_file) if config_file else None
@@ -662,7 +664,7 @@ class OnlineCatalog:
             import httpx
             headers = self._auth_headers(str(decl.get("auth") or "bearer"), api_key)
             response = httpx.get(url, headers=headers, timeout=30, follow_redirects=False)
-        except Exception as e:                              # noqa: BLE001 — сеть/таймаут
+        except Exception as e:  # сеть/таймаут
             raise ProviderError(
                 "PROVIDER_FAILED", f"Провайдер не ответил на запрос списка моделей: {e}",
                 reason="Сеть или сам провайдер недоступны. Список из реестра шлюза остаётся "
