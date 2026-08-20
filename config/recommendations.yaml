@@ -22,6 +22,11 @@ media_provider_status.choice:
     tool: table_update
     params: { table: "{table}", sheet: RESOURCE_LIMITS, row_id: "<строка image_generations>", data: { provider: OpenAI, model: gpt-image-2 } }
 
+  - id: stt_local_whisper
+    text: "Транскрибация локально: Local_whisper — рекомендуемое решение по умолчанию. Считает на этой машине, ключей и счёта не требует, отдаёт текст и границы слов (по ним считаются паузы и раскладка сцен). Веса ставятся отдельно (media_models(kind='stt'), затем media_model_install) и в зависимости сервера не входят. Берём только репозитории с safetensors: веса .pt/.bin — это pickle, их загрузка исполняет код из файла."
+    tool: table_update
+    params: { table: "{table}", sheet: RESOURCE_LIMITS, row_id: "<строка transcriptions>", data: { provider: Local_whisper, model: "<id поставленной модели>", response_format: json } }
+
   - id: audio_elevenlabs
     text: "Озвучка онлайн: ElevenLabs eleven_v3 — их актуальная модель, считается по символам (это и есть usage_unit=character). Берётся, когда нужен живой голос и многоязычность."
     tool: table_update

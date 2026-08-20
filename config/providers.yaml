@@ -41,6 +41,7 @@ resources:
   by_resource:
     bg_removals: {input: file}
     upscales: {input: file}
+    transcriptions: {input: file}
 
 # ═══ Учёт расхода ═══
 # Без него лимиты и fallback выше остаются теорией: `current_usage` никто не двигает, и
@@ -66,6 +67,7 @@ adapters:
   # несколько видов ресурса разным кодом. Точное совпадение по паре ищется первым.
   by_provider:
     Local_piper: tts.piper_local:PiperLocalTTS
+    Local_whisper: stt.whisper_local:WhisperLocalSTT
     Local_diffusers: img.diffusers_local:DiffusersLocalIMG
     # Фон и апскейл исполняются графом ONNX: у ходовых моделей этих видов архитектуры нет в
     # transformers, и путь через неё требует исполнить `.py` из репозитория модели.
@@ -239,6 +241,24 @@ online:
 local:
   models_dir: vendor/models
 
+  # ═══ ТРАНСКРИБАЦИЯ ═══
+  # Рычаги вызова объявлены здесь, а не ветками в адаптере. Форматы результата НЕ дублируются
+  # сюда: их сериализаторы живут в коде (`WRITERS`), а совпадение с write_allowlist держит тест.
+  stt:
+    # Параметры ПОДЪЁМА пайплайна. Окно 30 с — родное окно whisper: длиннее модель не слышит,
+    # длинная запись режется на куски именно им.
+    pipeline:
+      chunk_length_s: 30
+    # Параметры ВЫЗОВА. Границы слов — то, ради чего локальное распознавание вообще берётся:
+    # по ним считаются паузы и раскладка сцен.
+    call:
+      return_timestamps: word
+    # Столбец строки провайдера → параметр генерации. Пустой столбец не передаётся вовсе,
+    # и работает дефолт модели.
+    generate_from_row:
+      language: language              # пусто → модель определяет язык сама
+      task: task                      # transcribe | translate
+
   # ОТКУДА БЕРЁТСЯ СПИСОК доступных моделей. Каталоги живые (сеть), а не снимок документации:
   # список моделей меняется чаще, чем что-либо в этом файле. Здесь объявлено, где смотреть и
   # что считать лишним, — отсев данными, а не правкой скрипта.
@@ -287,6 +307,24 @@ local:
         min_downloads: 300            # апскейлеров в ONNX мало: тот же порог оставил бы пусто
         gated: false
 
+    # Распознавание речи. `require_formats` здесь — не придирчивость к качеству, а граница
+    # безопасности: у vanilla-whisper веса лежат в `.pt`, это pickle, и его загрузка исполняет
+    # код из файла — install.deny_suffixes такие форматы отклоняет. Репозитории с safetensors
+    # (путь transformers) дают ту же модель без исполнения чужого кода, поэтому модель без
+    # safetensors не показываем вовсе: список не должен предлагать то, что установщик обязан
+    # отклонить.
+    stt:
+      kind: hf_hub
+      pipeline_tag: automatic-speech-recognition
+      library: transformers
+      dest: stt
+      require_formats: [".safetensors"]
+      filters:
+        max_mb: 4000                  # large-v3 в fp32 — около трёх гигабайт
+        min_mb: 20                    # мельче — не модель, а посторонний файл в репозитории
+        min_downloads: 10000
+        gated: false
+
   # ПОДНЯТАЯ МОДЕЛЬ МЕЖДУ ВЫЗОВАМИ. Замер S24 (sd-turbo): 10.9 с на холодную, 1.4 с при тёплом
   # кэше ядра, 0.2 с — если модель уже поднята. Страницы весов кэширует само ядро, а вот разбор в
   # структуры и перенос на карту повторяются каждый раз — их и снимает пул.
@@ -320,6 +358,7 @@ local:
       upscales: Local_onnx_upscale
       tts_characters: Local_piper
       image_generations: Local_diffusers
+      transcriptions: Local_whisper
     # Состояние жизненного цикла — на диске, как у установок моделей: сервер перезапустили, а
     # поднятый раннер остался, и «не знаю про него» было бы враньём. Пути от корня проекта, вне
     # workspace: это состояние СЕРВЕРА, а не данные канала.
@@ -459,3 +498,6 @@ assets:
     # одной сцены легли бы в один файл и второй затёр бы первый.
     bg_removals: {dir: assets/img, name: "{source_stem}_nobg", ext: png}
     upscales: {dir: assets/img, name: "{source_stem}_upscaled", ext: png}
+    # Имя от ИСХОДНИКА по той же причине, что у фона: две записи одной сцены иначе легли бы
+    # в один файл. `json` — единственный богатый формат, разрешённый write_allowlist.
+    transcriptions: {dir: assets/text, name: "{source_stem}_transcript", ext: json}

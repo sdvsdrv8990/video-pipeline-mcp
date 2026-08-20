@@ -139,8 +139,16 @@ def cmd_install(args) -> int:
     return 0
 
 
+def _kinds() -> str:
+    """Виды моделей — из декларации, а не списком здесь: копия разошлась бы (и разошлась)."""
+    import yaml
+    local = (yaml.safe_load(CFG.read_text(encoding="utf-8")) or {}).get("local") or {}
+    return " | ".join(local.get("sources") or {}) or "нет объявленных источников"
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Каталог моделей: онлайн, локальные, установка")
+    kinds = _kinds()
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("online", help="какие модели умеет вызвать шлюз (ключ не нужен)")
@@ -150,7 +158,7 @@ def main(argv: list[str]) -> int:
     p.set_defaults(func=cmd_online)
 
     p = sub.add_parser("local", help="какие локальные модели доступны к установке")
-    p.add_argument("--kind", default="tts", help="tts | image | bg_removal | upscale")
+    p.add_argument("--kind", default="tts", help=kinds)
     p.add_argument("--language", default="", help="язык (для голосов)")
     p.add_argument("--limit", type=int, default=20)
     p.set_defaults(func=cmd_local)
@@ -168,7 +176,7 @@ def main(argv: list[str]) -> int:
 
     p = sub.add_parser("install", help="поставить модель по имени")
     p.add_argument("id")
-    p.add_argument("--kind", required=True, help="tts | image | bg_removal | upscale")
+    p.add_argument("--kind", required=True, help=kinds)
     p.set_defaults(func=cmd_install)
 
     args = ap.parse_args(argv[1:])

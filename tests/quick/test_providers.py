@@ -350,7 +350,8 @@ try:
     ok(False, "путь наружу должен падать")
 except ProviderError as e:
     ok(e.code == "LOCAL_MODEL_MISSING", f"имя модели из данных не выводит за корень весов ({e.code})")
-for _mod in ("core/providers/tts/piper_local.py", "core/providers/img/diffusers_local.py"):
+for _mod in ("core/providers/tts/piper_local.py", "core/providers/img/diffusers_local.py",
+             "core/providers/stt/whisper_local.py"):
     _msrc = (ROOT / _mod).read_text(encoding="utf-8")
     _code = "\n".join(_line for _line in _msrc.splitlines() if not _line.lstrip().startswith("#"))
     _code = _code.split('"""', 2)[-1]                     # шапку модуля не считаем кодом
@@ -1759,6 +1760,83 @@ try:
 finally:
     _srv.CONFIG_PATH = _was17
     _aio.run(_eng17.call("media_runner", {"action": "stop"}))
+
+# ═══ §13 Транскрибация: локальный STT по умолчанию (stable-ts) ═══
+# Провайдер объявлен, а не импортирован: проверяем, что декларация доводит до класса и что
+# каждый отказ назван кодом. Веса вне git — живой прогон пропускается с причиной (как F91).
+_stt = _reg.load("Local_whisper", "transcriptions")
+ok(type(_stt).__name__ == "WhisperLocalSTT", f"декларация ведёт к адаптеру ({type(_stt).__name__})")
+
+_stt_dir = Path(tempfile.mkdtemp(prefix="stt_"))
+_fake_audio = _stt_dir / "sample.wav"
+_fake_audio.write_bytes(b"RIFF")
+
+
+def _stt_req(target_name, source, model="whisper-tiny", **params):
+    return MediaRequest(input=str(source or ""), params={"model": model, **params},
+                        target=_stt_dir / target_name, models_dir=_reg.models_dir,
+                        source=source, resource_type="transcriptions")
+
+
+for _case, _req, _code in (
+        ("исходника нет", _stt_req("a.json", None), "CONTENT_REJECTED"),
+        ("формат не объявлен", _stt_req("a.srt", _fake_audio), "CONTENT_REJECTED"),
+        ("весов нет", _stt_req("a.json", _fake_audio, model="нет-такой-модели"), "LOCAL_MODEL_MISSING")):
+    try:
+        _stt.generate(_req)
+        ok(False, f"транскрибация ({_case}) обязана отказать, а не молчать")
+    except ProviderError as _e13:
+        ok(_e13.code == _code, f"транскрибация, {_case}: {_e13.code}")
+
+# Форматы транскрипта и write_allowlist — два списка, обязанных совпадать. Держим инвариантом,
+# а не дисциплиной: формат, который сервер напишет, но файрвол не пропустит, — тихий отказ.
+from core.providers.stt.whisper_local import WRITERS as _WRITERS
+_allowed_ext = set(yaml.safe_load((ROOT / "config" / "firewall.yaml").read_text(
+    encoding="utf-8"))["write_allowlist"]["extensions"])
+ok(all(f".{_f}" in _allowed_ext for _f in _WRITERS),
+   f"каждый формат транскрипта пропускает write_allowlist ({', '.join(sorted(_WRITERS))})")
+try:
+    _stt.generate(_stt_req("a.srt", _fake_audio))
+except ProviderError as _e13f:
+    ok(all(_f in (_e13f.reason or "") for _f in _WRITERS),
+       f"отказ по формату называет поддержанные: {', '.join(sorted(_WRITERS))}")
+
+# Директива владельца 2026-08-20: транскрибация НЕ приезжает с зависимостями сервера.
+# Это инвариант, а не дисциплина: строка в base сломает тест, а не всплывёт на чужой машине.
+import tomllib as _toml
+from core.advice import Advice as _Advice
+_manifest = _toml.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+ok(not any(_k in _d for _d in _manifest["dependencies"] for _k in ("whisper", "stable", "torch")),
+   "распознавание вне базовых зависимостей: сервер его рекомендует, но не тянет")
+ok(any("transformers" in _d for _d in _manifest["optional-dependencies"]["local"]),
+   "распознавание исполняет transformers из группы local — новых пакетов не потребовалось")
+
+# Сервер РЕКОМЕНДУЕТ его — совет обязан доехать до клиента с готовой командой.
+_advice_stt = [_a for _a in _Advice(ROOT / "config" / "recommendations.yaml")
+               .get("media_provider_status.choice", table="канал") if "whisper" in _a.get("id", "")]
+ok(_advice_stt and _advice_stt[0]["tool"] == "table_update",
+   "рекомендация локальной транскрибации доезжает готовой командой")
+
+_installed_stt = [_m["id"] for _m in _MCat(CFG, _reg.models_dir).installed()
+                  if _m.get("kind") == "stt"]
+if _installed_stt and _have_tts:
+    ok(True, f"опись знает поставленные модели распознавания ({', '.join(_installed_stt)})")
+    # Вход берём своей же озвучкой: набор не зависит от постороннего файла на машине.
+    _probe_wav = _stt_dir / "probe.wav"
+    _reg.load("Local_piper", "tts_characters").generate(MediaRequest(
+        input="Проверка распознавания речи.", params={"model": "ru_RU-dmitri-medium"},
+        target=_probe_wav, models_dir=_reg.models_dir, resource_type="tts_characters"))
+    _live = _stt.generate(_stt_req("live.json", _probe_wav, model=_installed_stt[0], language="ru"))
+    ok(_live.files and _live.files[0].exists(), "транскрипт лёг файлом на диск")
+    ok(not any(_k in _live.meta for _k in ("text", "transcript", "segments")),
+       "текста в meta нет: чужая речь не обходит конверт провенанса (S3)")
+    _live_doc = _json.loads(_live.files[0].read_text(encoding="utf-8"))
+    _live_words = _live_doc.get("words") or []
+    ok(_live_words and all(_w.get("start") is not None for _w in _live_words),
+       f"границы слов на месте ({len(_live_words)} шт) — по ним считаются паузы и сцены")
+    ok((_live_doc.get("text") or "").strip(), "текст распознан, а не пустая строка")
+else:
+    print("  ⚠ веса распознавания или озвучки не поставлены — живой прогон пропущен")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
