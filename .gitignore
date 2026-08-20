@@ -37,7 +37,7 @@ htmlcov/
 
 # ═══ Веса локальных моделей — зависимость, не исходник ═══
 # Каталог объявлен в config/providers.yaml → local.models_dir и наполняется
-# scripts/fetch_local_models.py. Гигабайты весов в git не кладут.
+# scripts/models.py. Гигабайты весов в git не кладут.
 /vendor/
 
 # ═══ Секреты ═══

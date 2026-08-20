@@ -448,7 +448,7 @@ sheets:
         daily_limit: -1
         current_usage: 0
         warning_threshold: -1
-        model: sd-turbo
+        model: sdxl-turbo
         img_size: 512x512
         img_n: 1
         steps: 1

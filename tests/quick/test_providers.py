@@ -1439,14 +1439,14 @@ _ms = ModelSpec(_reg)
 # Локальная модель описывает себя сама — сетью для этого ходить незачем.
 # Веса вне git: на машине без них проверять нечего, и это ПРОПУСК с причиной, а не провал —
 # иначе набор зелёный только там, где модель уже поставлена (в CI он падал именно так).
-_sp_local = _ms.of("Local_diffusers", "sd-turbo")
+_sp_local = _ms.of("Local_diffusers", "sdxl-turbo")
 if _sp_local["source"] == "model_files":
     ok(_sp_local["known"], f"локальная модель описана своими файлами, без сети ({_sp_local['source']})")
     _props = _sp_local["schema"].get("properties") or {}
     ok("512x512" in str(_props.get("img_size", {}).get("default")),
        f"нативное разрешение прочитано из модели ({_props.get('img_size', {}).get('default')})")
 else:
-    print("  ⚠ веса sd-turbo не поставлены (media_model_install) — спека из файлов не проверена")
+    print("  ⚠ веса sdxl-turbo не поставлены (media_model_install) — спека из файлов не проверена")
 
 # Неизвестное НЕ выдаётся за «ограничений нет» — иначе пустота выглядела бы как разрешение.
 _sp_none = _ms.of("Local_piper", "нет-такой-модели")
@@ -1469,7 +1469,7 @@ ok(not any(g["param"] == "tile" for g in _gaps14),
 
 # Сквозь инструмент: спека приходит ИИ с источником и параметрами. Спека читается ИЗ ФАЙЛОВ
 # модели, поэтому без поставленных весов проверять нечего — пропуск с причиной (F91).
-_spec_tool = _call("media_models", scope="spec", provider="Local_diffusers", model="sd-turbo")
+_spec_tool = _call("media_models", scope="spec", provider="Local_diffusers", model="sdxl-turbo")
 if _spec_tool.status == "success" and _spec_tool.data.get("source") == "model_files":
     ok(bool(_spec_tool.data["parameters"]),
        f"инструмент отдаёт спеку с источником ({_spec_tool.data.get('source')})")
@@ -1482,7 +1482,7 @@ if _spec_tool.status == "success" and _spec_tool.data.get("source") == "model_fi
     (_ws / "spec14" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
         "S1": {"resource_type": "image_generations", "provider": "Local_diffusers",
                "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
-               "warning_threshold": -1, "model": "sd-turbo", "img_size": 4096}}}}), encoding="utf-8")
+               "warning_threshold": -1, "model": "sdxl-turbo", "img_size": 4096}}}}), encoding="utf-8")
     _deny14 = _call("media_generate", table="spec14", resource_type="image_generations",
                     input="кадр", scene_id="s1")
     ok(_deny14.status == "error" and _deny14.error.code == "VALIDATION_ERROR",
@@ -1490,7 +1490,7 @@ if _spec_tool.status == "success" and _spec_tool.data.get("source") == "model_fi
     ok("4096" in (_deny14.error.message if _deny14.error else ""),
        "в отказе названо, ЧТО именно не подошло")
 else:
-    print("  ⚠ веса sd-turbo не поставлены — спека сквозь инструмент и отказ ДО вызова не проверены")
+    print("  ⚠ веса sdxl-turbo не поставлены — спека сквозь инструмент и отказ ДО вызова не проверены")
 
 print("== 15. Поднятая модель переживает вызов: пул с бюджетом (S24) ==")
 import time as _time                                          # noqa: E402
