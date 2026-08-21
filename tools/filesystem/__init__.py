@@ -252,7 +252,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
 
     async def fs_smart_search(directory: str = ".", extension: str = "", keyword: str = "",
                               entity_type: str = "", id_pattern: str = "",
-                              name_pattern: str = "", owner_id: str = "", chain_prefix: str = "", limit: int = 100) -> "ToolResult":
+                              name_pattern: str = "", owner_id: str = "", chain_prefix: str = "",
+                              size_min: int = 0, size_max: int = 0,
+                              modified_after: str = "", modified_before: str = "",
+                              limit: int = 100) -> "ToolResult":
         """Умный поиск по файловой системе с фильтрами по типу сущности, ID, имени."""
         try:
             task = FsSearchTask(
@@ -265,6 +268,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 content_keywords=[keyword] if keyword else [],
                 owner_id=owner_id,
                 chain_prefix=chain_prefix,
+                size_min=size_min,
+                size_max=size_max,
+                modified_after=modified_after,
+                modified_before=modified_before,
                 limit=limit,
             )
             results = fs_searcher.search(task)
@@ -406,6 +413,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
              "name_pattern": {"type": "string", "description": "Regex паттерн имени файла"},
              "owner_id": {"type": "string", "description": "Всё, что принадлежит сущности: её файлы и файлы её потомков"},
              "chain_prefix": {"type": "string", "description": "Всё поддерево по префиксу цепочки владельцев (напр. NICHE_…/NET_… = вся сетка)"},
+             "size_min": {"type": "integer", "description": "Минимальный размер файла в байтах (0 = без ограничения)"},
+             "size_max": {"type": "integer", "description": "Максимальный размер файла в байтах (0 = без ограничения)"},
+             "modified_after": {"type": "string", "description": "Изменён позже даты, ISO 8601 (напр. 2026-08-01)"},
+             "modified_before": {"type": "string", "description": "Изменён раньше даты, ISO 8601"},
              "limit": {"type": "integer", "description": "Максимум результатов", "default": 100},
          }},
          fs_smart_search, ANNOTATIONS_READONLY),

@@ -66,6 +66,19 @@ def main():
         r_sub = fs.search(FsSearchTask(id="t", root="docs", extensions=[".txt"]))
         check("root='docs' сужает область → 1 (a.txt, не c.txt)", len(r_sub) == 1)
 
+        # Эти четыре фильтра модель умела всегда, но обёртка `fs_smart_search` их не отдавала —
+        # объявленная возможность, недоступная клиенту. Проверяем саму способность фильтровать.
+        r_big = fs.search(FsSearchTask(id="t", root="docs", size_min=15))
+        check("size_min отсекает мелкие файлы", [x.name for x in r_big] == ["a.txt"],
+              [(x.name, x.size) for x in r_big])
+        r_small = fs.search(FsSearchTask(id="t", root="docs", size_max=14))
+        check("size_max отсекает крупные", [x.name for x in r_small] == ["b.md"],
+              [(x.name, x.size) for x in r_small])
+        r_after = fs.search(FsSearchTask(id="t", root="docs", modified_after="2000-01-01"))
+        check("modified_after пропускает свежие файлы", len(r_after) == 2, len(r_after))
+        r_before = fs.search(FsSearchTask(id="t", root="docs", modified_before="2000-01-01"))
+        check("modified_before отсекает их же", r_before == [], [x.name for x in r_before])
+
         print("== FsSearcher: контракт результата (FileResult) ==")
         fr = r_cont[0]
         check("FileResult.path относителен workspace (не абсолютный)", not fr.path.startswith("/"))
@@ -199,6 +212,36 @@ def main():
         got = _rows({"filter": {"tag": {"in": ["музыка"]}}})
         check("фильтр in сужает по списку", [r["_row_id"] for r in got] == ["R2"],
               [r["_row_id"] for r in got])
+        got = _rows({"filter": {"_row_id": {"eq": "R2"}}})
+        check("поиск по идентификатору строки находит её, а не отдаёт ноль (F57)",
+              [r["_row_id"] for r in got] == ["R2"], [r["_row_id"] for r in got])
+        got = _rows({"filter": {"_row_id": {"in": ["R1", "R3"]}}})
+        check("идентификатор работает во всех операциях фильтра, не только eq",
+              sorted(r["_row_id"] for r in got) == ["R1", "R3"], [r["_row_id"] for r in got])
+        got = _rows({"filter": {"_row_id": {"in": ["R1", "R3"]}, "tag": "игры"}})
+        check("идентификатор комбинируется с другими фильтрами в один набор",
+              sorted(r["_row_id"] for r in got) == ["R1", "R3"], [r["_row_id"] for r in got])
+        got = _rows({"filter": {"_row_id": {"eq": "НЕТ_ТАКОЙ"}}})
+        check("несуществующий идентификатор по-прежнему даёт пусто, а не всё подряд",
+              got == [], got)
+        # Снапшот у движка ОДИН объект и переиспользуется, поэтому фикстура обязана отдавать
+        # его по ссылке: с фикстурой, собирающей словарь заново, запись в строку не видна вовсе.
+        class _SharedSnapshot:
+            """Тот же лист, но всегда та же память — как отдаёт движок таблиц."""
+
+            data = {"META": {"rows": {"R1": {"name": "альфа", "views": 100, "tag": "игры"}}}}
+
+            @classmethod
+            def load_snapshot(cls, _table):
+                return cls.data
+
+        qp3 = QueryPlanner(table_engine=_SharedSnapshot(), workspace=ws)
+        qp3.execute_plan(qp3.load_query_from_dict(
+            {"name": "q", "reads": [{"table": "t", "sheet": "META"}]}))
+        check("чтение не пишет в строку снапшота: идентификатор попадает в копию",
+              "_row_id" not in _SharedSnapshot.data["META"]["rows"]["R1"],
+              sorted(_SharedSnapshot.data["META"]["rows"]["R1"]))
+
         got = _rows(sort={"column": "views", "order": "desc"})
         check("сортировка убыванием: наибольшее первым, чужеродное в хвосте (F90)",
               [r["_row_id"] for r in got] == ["R1", "R2", "R3"], [r["_row_id"] for r in got])

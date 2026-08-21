@@ -914,6 +914,14 @@
      "description": "Максимум результатов",
      "type": "integer"
     },
+    "modified_after": {
+     "description": "Изменён позже даты, ISO 8601 (напр. 2026-08-01)",
+     "type": "string"
+    },
+    "modified_before": {
+     "description": "Изменён раньше даты, ISO 8601",
+     "type": "string"
+    },
     "name_pattern": {
      "description": "Regex паттерн имени файла",
      "type": "string"
@@ -921,6 +929,14 @@
     "owner_id": {
      "description": "Всё, что принадлежит сущности: её файлы и файлы её потомков",
      "type": "string"
+    },
+    "size_max": {
+     "description": "Максимальный размер файла в байтах (0 = без ограничения)",
+     "type": "integer"
+    },
+    "size_min": {
+     "description": "Минимальный размер файла в байтах (0 = без ограничения)",
+     "type": "integer"
     }
    },
    "type": "object"

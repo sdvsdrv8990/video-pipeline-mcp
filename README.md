@@ -84,5 +84,17 @@ cloudflared — бинарь (не pip), ставится `install.sh`.
 
 ## Разработка
 
+```bash
+pip install -e ".[dev]"          # линт, типы, тесты, bandit, pip-audit
+./scripts/install_dev_tools.sh   # gitleaks в .venv/bin — бинарь, в PyPI его нет
+```
+
+Второй шаг нужен только для гейта: серверу `gitleaks` не требуется, поэтому в `install.sh` его нет.
+Версию скрипт берёт из `.github/workflows/ci.yml`, чтобы локально гонялся ровно тот бинарь, что и в CI.
+
+Гейт — шесть джоб `ci.yml`, и «зелёно» считается по exit-коду каждой, а не по одному `pytest`:
+`lint` · `test` · `conformance` · `security` · `comment-guard` · `gitleaks`. Локально гоняются все,
+кроме `pip-audit` в среде без доступа к PyPI.
+
 План развития, находки и канон спек: [`docs/roadmap/`](docs/roadmap/README.md).
 Предложения по улучшению функций: `docs/roadmap/spec/IMPROVEMENTS.md`.

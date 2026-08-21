@@ -187,7 +187,10 @@ class QueryPlanner:
 
             result = []
             for rid, row in rows.items():
-                # Фильтрация
+                # Идентификатор строки кладётся ДО фильтрации: он такое же поле фильтра, как
+                # остальные, а иначе виден только на выходе и поиск по нему молча отдаёт ноль.
+                # Копия, а не запись в строку снапшота: снапшот переиспользуется другими чтениями.
+                row = {**row, "_row_id": rid}
                 if not self._match_filter(row, task.filter):
                     continue
 
@@ -197,8 +200,7 @@ class QueryPlanner:
                     selected["_row_id"] = rid
                     result.append(selected)
                 else:
-                    row["_row_id"] = rid
-                    result.append(dict(row))
+                    result.append(row)
 
             task.status = "done"
             task.result = result
