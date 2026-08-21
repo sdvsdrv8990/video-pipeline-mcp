@@ -9,12 +9,13 @@
 
 | IMP# | Функция | Улучшение | Зачем | Связь | Статус |
 |---|---|---|---|---|---|
-| IMP1 | `core/reactions/reactions.py:get_error` (DEFAULT-ветка) | Резолвить DEFAULT единообразно с обычной веткой: тянуть `class`/`message_template`/`recovery` из записи `DEFAULT` реестра, а не хардкодить `UNKNOWN_ERROR` без класса | Класс управляет поведением Claude (сам чинит vs зовёт человека); сейчас молчаливая деградация до «unknown», `DEFAULT.message_template` мёртв | F5 · скил `reactions-errors` | 💡 |
-| IMP2 | `core/providers/stt/stable_ts_adapter.py` (device) | Брать `device` (cuda/cpu) из `resource_limits`, не хардкодить `cuda` | Падение на машине без GPU; спека media_tools_deployment: «все параметры из RESOURCE_LIMITS» | F10 · `media_tools_deployment.md` · `anti-hardcode` | 💡 |
-| IMP3 | `core/providers/ffmpeg/ffmpeg_adapter.py:render_full_pipeline` | Убрать busy-loop поллинга без сна → добавить `await asyncio.sleep` между опросами | Жжёт CPU впустую (I/O-bound сервер) | F10 · `code-quality` ось-8 | 💡 |
+| IMP1 | `core/reactions/reactions.py:get_error` (DEFAULT-ветка) | Резолвить DEFAULT единообразно с обычной веткой: тянуть `class`/`message_template`/`recovery` из записи `DEFAULT` реестра, а не хардкодить `UNKNOWN_ERROR` без класса | Класс управляет поведением Claude (сам чинит vs зовёт человека); сейчас молчаливая деградация до «unknown», `DEFAULT.message_template` мёртв | F5 · скил `reactions-errors` | ✅ сделано S16 (`F5` закрыт: DEFAULT тянет class/template/recovery из записи реестра) |
+| IMP2 | `core/providers/stt/stable_ts_adapter.py` (device) | Брать `device` (cuda/cpu) из `resource_limits`, не хардкодить `cuda` | Падение на машине без GPU; спека media_tools_deployment: «все параметры из RESOURCE_LIMITS» | F10 · `media_tools_deployment.md` · `anti-hardcode` | ⛔ снято S24: файл-цель удалён вместе с мёртвым пакетом `core/providers/stt/`; выбор устройства живёт в `hardware.compute_device()` |
+| IMP3 | ~~`core/providers/ffmpeg/ffmpeg_adapter.py:render_full_pipeline`~~ (символа нет на диске) | Убрать busy-loop поллинга без сна | Жжёт CPU впустую (I/O-bound сервер) | F10 · `code-quality` ось-8 | ⛔ снято S24: адаптер удалён целиком (`F88`), улучшать нечего. Ожидание провайдера объявлено в `config/media_tasks.yaml` (`poll.interval_sec`+backoff), движок монтажа строится планом `19` |
 
 ## Как добавлять
 
 Новую строку — с уникальным `IMP#`, ссылкой на конкретный символ кода и на спеку/находку. Реализация:
 взять `IMP#` → домен-скил (`reactions-errors`/`mcp-developer`/`anti-hardcode`/…) → правка без смены контракта →
-тесты зелёные до/после → статус ✅ + запись решение→факт в `docs/dev/history_*.md`.
+тесты зелёные до/после → статус ✅ + запись решение→факт в commit и `../_sessions.md`
+(`docs/dev/` удалён владельцем 2026-07-05 — история живёт в git и журнале, туда не возвращаемся).

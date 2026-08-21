@@ -120,6 +120,10 @@ jobs:
       - name: comment guard (ratchet)
         run: python scripts/comment_guard.py --check
 
+      # Тот же класс: документ, который называет число, обязан сходиться со своим перечнем.
+      - name: findings registry count
+        run: python scripts/findings_count.py --check
+
   gitleaks:
     name: gitleaks (secrets)
     runs-on: ubuntu-latest

@@ -7,6 +7,11 @@
 >
 > **Оригиналы** остались в `/home/admin/projects/`. Отныне канон — эта папка; правки вносим здесь.
 > Предложения по улучшению функций — в [`IMPROVEMENTS.md`](IMPROVEMENTS.md).
+>
+> **Устаревшее в теле спек, не переоткрывать:** ссылки на `docs/dev/history_*.md` (каталог удалён
+> владельцем 2026-07-05 — история живёт в git и `../_sessions.md`) и на `config/channel_config.yaml`
+> (конфиг канала переехал в листы книги `channel_data`, S22). Спека фиксирует ЗАМЫСЕЛ той даты;
+> состояние диска — [`../00_reality_check.md`](../00_reality_check.md).
 
 ## Инструкции (`instructions/`) — как устроено и как делать
 
@@ -15,8 +20,8 @@
 | `ИНСТРУКЦИЯ_структура_и_ядро.md` | «карта и закон»: структура проекта + ядро сервера | `core/*`, `server.py` |
 | `ИНСТРУКЦИЯ_инструменты.md` | спека интерфейса инструментов (row-by-id, RMW, статусы) | `tools/*`, `core/tables`, `core/excel` |
 | `ИНСТРУКЦИЯ_шаблоны.md` | шаблоны рабочего пространства + таблиц; трёхфазное создание; интроспектор | `config/templates/*`, `core/engine`, `structure_*` |
-| `ИНСТРУКЦИЯ_media_инструменты.md` | категория `media`: TTS/STT/картинки | `core/providers/*`, `tools/media` (нет) |
-| `ИНСТРУКЦИЯ_видеомонтаж.md` | сборка готовой сцены из исходников | `tools/video` (нет), ffmpeg |
+| `ИНСТРУКЦИЯ_media_инструменты.md` | категория `media`: TTS/STT/картинки | `core/providers/*`, `tools/media` ✅ |
+| `ИНСТРУКЦИЯ_видеомонтаж.md` | сборка готовой сцены из исходников | не начато; план — [`../19_montage_subsystem_plan.md`](../19_montage_subsystem_plan.md), группа `tools/montage` |
 | `media_tools_deployment.md` | план развёртывания media (10 инструментов, порядок, контракты) | `core/providers/*`, `tools/media` |
 
 ## Схемы данных (`schemas/`) — колонки Excel-книг (источник для `config/templates/tables/`)

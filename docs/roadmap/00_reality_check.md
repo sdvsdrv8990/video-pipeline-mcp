@@ -6,19 +6,23 @@
 >
 > Правило файла: если строка здесь расходится с диском — прав диск, файл чинится в ту же сессию.
 
-## 1. Состояние на S24 (замер 2026-08-15, сплошной проход)
+## 1. Состояние на S25 (замер 2026-08-21)
+
+**Это единственный хозяин замера.** Числа не копируются в другие файлы — там ссылка сюда.
+Прошлый замер (S24, 2026-08-15) разошёлся с диском по шести строкам из десяти за одну сессию;
+поэтому строка живёт вместе с командой, которой её перемеряют.
 
 | Измерение | Значение | Проверка |
 |---|---|---|
-| Точка входа `server.py` | **472 строк** (монолит распилен, A2 закрыт) | `wc -l server.py` |
-| Инструментов в `tools/list` | **68** | `tests/quick/tools_inventory.golden.json` |
-| Групп инструментов | **8 непустых** (`excel`, `filesystem`, `media`, `memory`, `search`, `structure`, `tables`, `uniqueness`) | `ls tools/*/` |
-| Модулей `core/` | **76** `.py` в 13 подсистемах (13-я — `core/runner/`: инференс вынесен из процесса сервера, S24) | `find core -name '*.py'` |
-| Кодов реакций | **59** (58 + `DEFAULT`), 5 классов | `config/server_reactions.yaml` |
-| Деклараций `config/` | 8 YAML + `config/templates/` (8-я — `model_specs.yaml`: что принимает модель, спрашивается ДО вызова) | `ls config/` |
-| Тестов в git | **36 файлов** (в т.ч. `tests/harness/` — живой сервер под тестом, T2) | `git ls-files tests` |
-| Коммитов | 159 | `git rev-list --count HEAD` |
-| CI | `.github/workflows/ci.yml` — ruff, mypy, pytest, bandit, gitleaks (хард), pip-audit (advisory) | файл на диске |
+| Точка входа `server.py` | **546 строк** (монолит распилен, A2 закрыт) | `wc -l server.py` |
+| Инструментов в `tools/list` | **69** | `python3 -c "import json;print(len(json.load(open('tests/quick/tools_inventory.golden.json'))))"` |
+| Групп инструментов | **8 непустых** (`excel`, `filesystem`, `media`, `memory`, `search`, `structure`, `tables`, `uniqueness`) | `ls -d tools/*/ \| grep -v __pycache__` |
+| Модулей `core/` | **73** `.py` в 13 подсистемах | `find core -name '*.py' \| wc -l` |
+| Кодов реакций | **61** (60 + `DEFAULT`), 5 классов | `python3 -c "import yaml;print(len(yaml.safe_load(open('config/server_reactions.yaml'))))"` |
+| Деклараций `config/` | **8** YAML + `config/templates/` (6 схем таблиц) | `ls config/*.yaml \| wc -l` |
+| Тестов в git | **40** файлов под `tests/` (в т.ч. `tests/harness/` — живой сервер под тестом) | `git ls-files tests \| wc -l` |
+| Коммитов | **205** | `git rev-list --count HEAD` |
+| CI | **6 джоб**: `lint` · `test` · `conformance` · `security` · `comment-guard` · `gitleaks` | `python3 -c "import yaml;print(list(yaml.safe_load(open('.github/workflows/ci.yml'))['jobs']))"` |
 | Packaging | `pyproject.toml` + `requirements.lock` (пины), extra `dev`, extra `gpu-amd` | файл на диске |
 | Локальные модели | 4 каталога весов (`img/sd-turbo`, `img/sdxl-turbo`, `bg/modnet`, `upscale/swin2SR`) + 4 голоса piper; подъём **на видеокарте** (ROCm, без root) | `ls vendor/models/*` |
 
@@ -41,8 +45,8 @@
 
 | Разрыв | Реальность на диске | Тип |
 |---|---|---|
-| **Видео-пайплайн** — суть названия проекта | `tools/video/` и `pipeline/` — **пустые каталоги** (в git их нет вовсе); оркестрации рендера нет | 🔴 продукт: сервер сегодня = данные + медиа-генерация, но не сборка видео |
-| **Облачные провайдеры** | 12 честных `NotImplementedError` в `ffmpeg`, `litellm_img`, `litellm_tts`, `stable_ts` — стабы КРИЧАТ (G16), но функции нет | 🟠 |
+| **Видео-пайплайн** — суть названия проекта | Каталогов `tools/video/`, `pipeline/`, `core/providers/ffmpeg/` на диске нет (снесены как призраки); оркестрации рендера нет. **Дизайн закрыт S25** — план сборки в [`19_montage_subsystem_plan.md`](19_montage_subsystem_plan.md), этап M0 = декларации | 🔴 продукт: сервер сегодня = данные + медиа-генерация, но не сборка видео |
+| **Облачные провайдеры** | Реализации нет, и **стабов тоже нет**: четыре легаси-адаптера снесены в S24 (`F3`, волна 2.6), `NotImplementedError` в `core/` сегодня **ноль** (`grep -rn NotImplementedError --include=*.py core/`). Честность держит живой отказ `PROVIDER_ADAPTER_MISSING` на объявленных `ElevenLabs`/`OpenAI`/`Fal`, а не файл-заглушка | 🟠 |
 | **Декларативный ops-слой** | `config/ops/` пуст (0 файлов), `core/engine` generic и почти не зовётся; логика инструментов живёт в `tools/<группа>/` | ℹ️ **осознанно**: ops/`model_routing` упразднены (см. `05_data_template_media_system.md` §0). Пока реестра нет — «толстая обёртка» здесь норма; дефект качества — только **недокументированное** дублирование между группами |
 | **`tools/excel_engine/`** | снесён (F83, S24); логика была и осталась в `core/excel/` | ✅ |
 | **Observability** | structlog / metrics / health / tracing нет | 🟠 |
@@ -57,11 +61,11 @@
 | `server.py` = 1521 строка, монолит; `tools/` подпапки пусты | ✅ закрыто (A2): 465 строк, 8 групп |
 | `tests/` в `.gitignore` — тесты не в git | ✅ закрыто (I1): 36 файлов в git; игнорится только `.pytest_cache`/`__pycache__`/`.coverage` |
 | `docs/dev/` в `.gitignore` | ✅ снято: `docs/dev/` удалён, документация = `docs/roadmap/` в git |
-| Нет `.github/workflows/` | ✅ закрыто (I3): CI с 5 хард-гейтами |
+| Нет `.github/workflows/` | ✅ закрыто (I3): CI, сегодня 6 джоб — состав в §1 |
 | Нет `pyproject.toml`, зависимости не запинены | ✅ закрыто: `pyproject.toml` + `requirements.lock` |
 | Нет `mypy`/`ruff` | ✅ закрыто: оба в `[dev]` и в CI |
 | `scripts/` пусто | ✅ закрыто: `config_to_schema.py`, `spec_to_schema.py`, `models.py`, `set_provider_key.py` |
-| Провайдеры = сплошной `NotImplementedError` | 🟠 частично: локальные подняты и измерены, облачные — честные стабы |
+| Провайдеры = сплошной `NotImplementedError` | 🟠 частично: локальные подняты и измерены; облачных нет, и заглушек под них тоже нет — см. §2 |
 | App-level auth отсутствует | ✅ есть `core/auth.py` (токен + отпечаток); за туннелем один клиент, IP-гранулярность по-прежнему бесполезна (G18) |
 | `config/ops/` пуст → «ops-слой не существует» | ℹ️ переквалифицировано: слой **упразднён намеренно**, не сломан |
 

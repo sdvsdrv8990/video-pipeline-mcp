@@ -23,3 +23,11 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      # Шапка реестра находок обязана сходиться с его же строками: последние находки попадали
+      # в таблицы и не попадали в счёт, и расхождение жило до следующей сверки вручную.
+      - id: findings-count
+        name: findings_count (счёт реестра сходится с перечнем)
+        entry: python scripts/findings_count.py --check
+        language: system
+        pass_filenames: false
+        always_run: true

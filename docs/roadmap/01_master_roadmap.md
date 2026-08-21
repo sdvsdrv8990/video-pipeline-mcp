@@ -38,9 +38,9 @@
 ### Ось I — Инфра / инженерная обвязка (с нуля)
 | # | Воркстрим | Статус (S23) | Зависит от | Сессий |
 |---|---|---|---|---|
-| I1 | VCS-гигиена: разгитигнорить `tests/`; стратегия `docs/dev` | ✅ закрыто: **36 тест-файлов в git** (S24: +`tests/harness/`, +раннер роя); `docs/dev/` удалён владельцем, история = git | — | 1 |
+| I1 | VCS-гигиена: разгитигнорить `tests/`; стратегия `docs/dev` | ✅ закрыто: тесты в git (число — [`00` §1](00_reality_check.md); S24: +`tests/harness/`, +раннер роя); `docs/dev/` удалён владельцем, история = git | — | 1 |
 | I2 | Packaging: `pyproject.toml`, пиннинг зависимостей, `install.sh` truth-up | ✅ закрыто: `pyproject.toml` + `requirements.lock`; extra `dev`, extra `gpu-amd` (машинно-зависимый, вне лока) | I1 | 1 |
-| I3 | CI/CD: `.github/workflows` — линт+типы+тесты+security-scan | ✅ закрыто S16: `ci.yml` — ruff, mypy, pytest, bandit, gitleaks (хард) + pip-audit (advisory) | I1, I2, I4 | 1–2 |
+| I3 | CI/CD: `.github/workflows` — линт+типы+тесты+security-scan | ✅ закрыто S16: `ci.yml`; состав джоб — [`00` §1](00_reality_check.md) | I1, I2, I4 | 1–2 |
 | I4 | Типизация+линт: `mypy`, `ruff`, `pre-commit` | ✅ закрыто S16 (доп. 1) | I2 | 1 |
 | I5 | Логирование+observability: `structlog`, метрики, `/health`, tracing + **audit-trail** (DIM-7) + **экон-контейнмент** (quotas/budgets на media — DIM-11) | 🔲 не начато — **последний крупный долг оси I**. Частично снят учёт расхода: `current_usage` по провайдерам (S22) | — | 1–2 |
 | I6 | **Программа безопасности — [`15_security_system_plan.md`](15_security_system_plan.md)** (этапы S0–S8): OAuth 2.1+PKCE (DIM-2), secrets-mgmt, P0-митигации `06 §D` — провенанс вывода (F33), containment write/move/delete (OUT5), write-type allowlist (F34), deploy-hardening, identity-rate/slowloris (F36) | 🔨 S0/S1/S2/S3/S8 ✅ (S18–S20); ключи провайдеров в канале под Fernet ✅ (S23); осталось S4/S5 (edge+deploy-hardening), S6, S7 (рой), OAuth `S1′` | security-прогон | 3–4 |
@@ -58,9 +58,9 @@
 
 | Целевой каталог (закон §2/§5) | Правило | Статус | Воркстрим |
 |---|---|---|---|
-| `tools/<group>/` — тонкие обёртки, свой каталог на группу | инструменты только здесь; наружу тонкий контракт | ✅ **8 непустых групп**, 68 инструментов (`excel`, `filesystem`, `media`, `memory`, `search`, `structure`, `tables`, `uniqueness`) | **A2** ✅ |
-| `core/providers/<provider>/` — каталог на провайдера (`stt`, `tts`, `img`, `ffmpeg`) | способность = адаптер за единым интерфейсом | 🔨 реестр адаптеров + опись моделей + проба железа готовы; локальные адаптеры исполняют, облачные = честные стабы | **P1–P4** |
-| `tools/media/` (`media_*`) · `tools/video/` (монтаж) | тонкие обёртки над `core/providers` | 🔨 `media` ✅ · `tools/video/` — пустой каталог | **P7** (video) |
+| `tools/<group>/` — тонкие обёртки, свой каталог на группу | инструменты только здесь; наружу тонкий контракт | ✅ **8 непустых групп** (`excel`, `filesystem`, `media`, `memory`, `search`, `structure`, `tables`, `uniqueness`); число инструментов — [`00` §1](00_reality_check.md) | **A2** ✅ |
+| `core/providers/<provider>/` — каталог на провайдера (`stt`, `tts`, `img`, `ffmpeg`) | способность = адаптер за единым интерфейсом | 🔨 реестр адаптеров + опись моделей + проба железа готовы; локальные адаптеры исполняют. Облачных нет, и заглушек под них тоже — снесены S24 (`F3`), отказ даёт живой `PROVIDER_ADAPTER_MISSING`. Каталог `ffmpeg` снят как призрак: движок заводится планом [`19`](19_montage_subsystem_plan.md) | **P1–P4** |
+| `tools/media/` (`media_*`) · `tools/video/` (монтаж) | тонкие обёртки над `core/providers` | 🔨 `media` ✅ · монтаж поедет в `tools/montage/` по плану [`19`](19_montage_subsystem_plan.md) (`tools/video/` снесён как призрак) | **P7** (video) |
 | `pipeline/entry_points/` + `pipeline/steps/` | входы не копируют воркфлоу; шаги переиспользуются | 🔲 в git каталога нет вовсе | **P5**, **P6** |
 | `scripts/` — утилиты вне рантайма | только `scripts/`, не `core`/`pipeline` | ✅ `spec_to_schema.py`, `config_to_schema.py`, `models.py`, `set_provider_key.py` | **A1′** ✅ |
 | Публикуемые architecture/API-доки | доки рядом-параллельно коду | 🔲 (`docs/dev/` удалён; документация проекта = `docs/roadmap/`) | **I8** |
