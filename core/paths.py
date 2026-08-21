@@ -3,7 +3,7 @@ core/paths.py — Единая точка containment для workspace/ + зап
 
 ## Назначение
 Любой путь к данным обязан остаться внутри `workspace/`. Одна реализация safe-join на весь
-сервер: containment — choke-point, а не проверка в каждом хендлере (G17).
+сервер: containment — choke-point, а не проверка в каждом хендлере.
 
 ## Границы
 - Запрет закрытых каталогов стоит здесь же, в точке containment: иначе его пришлось бы помнить
@@ -22,7 +22,7 @@ _secret_dirs: set[str] = set(BUILTIN_SECRET_DIRS)
 
 class PathEscapeError(ValueError):
     """Путь выходит за пределы workspace/ (traversal). Подтип ValueError — back-compat
-    с `except ValueError` у вызывающих; позволяет отличать escape от прочих ValueError (F37)."""
+    с `except ValueError` у вызывающих; позволяет отличать escape от прочих ValueError."""
 
 
 class SecretAccessError(ValueError):
@@ -38,10 +38,6 @@ def configure_secret_dirs(names) -> set[str]:
     global _secret_dirs
     extra = {str(n).strip() for n in (names or []) if str(n).strip()}
     _secret_dirs = set(BUILTIN_SECRET_DIRS) | extra
-    return set(_secret_dirs)
-
-
-def secret_dirs() -> set[str]:
     return set(_secret_dirs)
 
 

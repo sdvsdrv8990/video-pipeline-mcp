@@ -7,8 +7,8 @@
 ## Границы
 Типы сущностей и раскладка каталогов не зашиты — их даёт инжектируемая таксономия
 (`core/ids/taxonomy.py` поверх `config/templates/workspace/*.tpl.yaml`); без неё тип "unknown".
-Личность файла берётся из реестра, а не из имени (F60). Закрытые каталоги отсекаются
-до чтения содержимого (S23).
+Личность файла берётся из реестра, а не из имени. Закрытые каталоги отсекаются
+до чтения содержимого.
 """
 
 import re
@@ -17,7 +17,8 @@ from dataclasses import dataclass, field
 import concurrent.futures
 from datetime import datetime
 
-from core.paths import is_secret_path, safe_resolve  # D1/G17 + S23: секреты вне выдачи
+from core.paths import is_secret_path, safe_resolve  # секреты вне выдачи
+from core.contracts import ContractError
 
 
 @dataclass
@@ -28,10 +29,10 @@ class FileResult:
     size: int
     modified: str
     entity_type: str = ""
-    entity_id: str = ""      # собственный ID файла (если ему присвоен), F60
+    entity_id: str = ""      # собственный ID файла (если ему присвоен)
     parent_path: str = ""
     owner_id: str = ""       # ближайшая зарегистрированная сущность-владелец
-    chain: str = ""          # цепочка владельцев сверху вниз (S18-g)
+    chain: str = "" # цепочка владельцев сверху вниз
 
 
 @dataclass
@@ -54,15 +55,13 @@ class FsSearchTask:
     status: str = "pending"
     result: list = field(default_factory=list)
     error: str | None = None
+    # Файлы, которые не удалось прочитать при фильтре по содержимому. Молчаливый пропуск
+    # неотличим от «не совпало», и клиент считает поиск полным, а он неполный.
+    unreadable: list[str] = field(default_factory=list)
 
 
-class FsSearchError(Exception):
+class FsSearchError(ContractError):
     """Ошибка поиска файловой системы."""
-    def __init__(self, code: str, message: str, reason: str = ""):
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.reason = reason
 
 
 # Маппинг расширений на типы файлов
@@ -84,7 +83,7 @@ class FsSearcher:
 
     def __init__(self, workspace: str | Path, registry=None, taxonomy=None):
         self.workspace = Path(workspace)
-        # F60: личность файлов живёт в реестре, а не в их именах. Без реестра поиск
+        # Личность файлов живёт в реестре, а не в их именах. Без реестра поиск
         # продолжает работать, но ID/владельца отдать неоткуда.
         self.registry = registry
         self.taxonomy = taxonomy
@@ -118,8 +117,8 @@ class FsSearcher:
             # task.root под контролем клиента → containment внутри workspace/ (анти-traversal).
             try:
                 root = safe_resolve(str(task.root), self.workspace) if task.root else self.workspace.resolve()
-            except ValueError:
-                raise FsSearchError("PATH_ESCAPE", f"root вне workspace: {task.root}")
+            except ValueError as e:
+                raise FsSearchError("PATH_ESCAPE", f"root вне workspace: {task.root}") from e
             if not root.exists():
                 raise FsSearchError("PATH_NOT_FOUND", f"Каталог не найден: {task.root}")
 
@@ -128,7 +127,7 @@ class FsSearcher:
             for item in root.rglob("*"):
                 if not item.is_file():
                     continue
-                # S23: обход идёт по диску, а не через резолвер — закрытый каталог не попадает
+                # Обход идёт по диску, а не через резолвер — закрытый каталог не попадает
                 # ни в имена, ни в поиск по содержимому.
                 if is_secret_path(item.relative_to(self.workspace.resolve())):
                     continue
@@ -171,12 +170,14 @@ class FsSearcher:
                 if task.content_keywords:
                     try:
                         content = item.read_text(encoding="utf-8", errors="ignore")
-                        if not all(kw.lower() in content.lower() for kw in task.content_keywords):
-                            continue
-                    except Exception:
+                    except OSError as e:
+                        # Не прочитали ≠ не совпало: считаем потерю поимённо и отдаём наверх.
+                        task.unreadable.append(f"{item.relative_to(self.workspace)}: {e.strerror or e}")
+                        continue
+                    if not all(kw.lower() in content.lower() for kw in task.content_keywords):
                         continue
 
-                # F60: личность берётся из РЕЕСТРА по вместимости, а не из имени файла.
+                # Личность берётся из РЕЕСТРА по вместимости, а не из имени файла.
                 rel = str(item.relative_to(self.workspace))
                 entity_id, lineage = self._lineage(rel, index)
                 owner_id = lineage[-1]["id"] if lineage else ""

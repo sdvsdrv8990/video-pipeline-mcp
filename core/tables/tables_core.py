@@ -2,7 +2,7 @@
 
 ## Назначение
 Слой ДАННЫХ таблиц (не структуры) поверх StateManager: `read.json` (снапшот по листам)
-и `write.json` (очередь). Книгу `.xlsx` не трогает — синк в неё честно помечен `note` (G16).
+и `write.json` (очередь). Книгу `.xlsx` не трогает — синк в неё честно помечен `note`.
 
 ## Границы
 Единица хранения — строка по ID, столбец лишь проекция поверх строк. Запись идёт ТОЛЬКО
@@ -13,24 +13,18 @@
 """
 
 from __future__ import annotations
+from core.contracts import ContractError
 
 # Действия, которые можно класть в очередь (пишущие примитивы).
 # get_column/get_row — чтения, в очередь НЕ кладутся (ИНСТРУКЦИЯ §4).
 QUEUEABLE_ACTIONS = {"set", "update", "append", "delete"}
 
 
-class TableError(Exception):
+class TableError(ContractError):
     """Ошибка слоя данных. Несёт код из server_reactions.yaml + подсказку.
 
     Обёртка в server.py ловит и собирает ErrorDetail(code, message, recovery).
     """
-
-    def __init__(self, code: str, message: str, reason: str = "", suggested_tool: str | None = None):
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.reason = reason
-        self.suggested_tool = suggested_tool
 
 
 class TableEngine:
@@ -65,7 +59,7 @@ class TableEngine:
         return snapshot
 
     def load_snapshot(self, table: str) -> dict:
-        """Публичный read снапшота таблицы (для кросс-модульных читателей, напр. поиск — F39)."""
+        """Публичный read снапшота таблицы (для кросс-модульных читателей, напр. поиск)."""
         return self._load(table)
 
     def _sheet(self, snapshot: dict, sheet: str) -> dict:
@@ -113,7 +107,7 @@ class TableEngine:
         return dict(rows[row_id])
 
     def find_row(self, table: str, sheet: str, where: dict, limit: int = 20) -> dict:
-        """ID строк по ЗНАЧЕНИЯМ столбцов (F56): {столбец: значение} → [row_id].
+        """ID строк по ЗНАЧЕНИЯМ столбцов: {столбец: значение} → [row_id].
 
         Закрывает разрыв «ИИ знает значение, а писать надо по ID»: без этого единственным
         путём был скан всего листа. Условия соединяются И; сравнение строгое по значению.
@@ -266,7 +260,7 @@ class TableEngine:
         return op
 
     def update(self, table: str, sheet: str, row_id: str, data: dict) -> dict:
-        """Изменить НЕСКОЛЬКО полей строки ОДНОЙ операцией очереди (F56).
+        """Изменить НЕСКОЛЬКО полей строки ОДНОЙ операцией очереди.
 
         Отличие от пяти вызовов `set`: пять операций применяются по одной, и отказ на
         третьей оставляет строку наполовину изменённой. Здесь операция одна и применяется
@@ -351,7 +345,7 @@ class TableEngine:
         """Применить очередь к read.json (RMW). Забирает и очищает write.json.
 
         .xlsx-материализация ОТЛОЖЕНА (следующий блок) — применяем к снапшоту
-        read.json, а факт синка в книгу честно помечаем xlsx_synced=False (G16).
+        read.json, а факт синка в книгу честно помечаем xlsx_synced=False.
         Защита формул перепроверяется на применении (schema мог измениться).
         """
         queued = self.state.execute_queue(table)  # [{timestamp, operation}, ...], очередь очищена
@@ -382,7 +376,7 @@ class TableEngine:
                     if rid not in rows:
                         raise TableError("ROW_NOT_FOUND", f"Строка '{rid}' исчезла до применения.")
                     # Сперва проверяем ВСЕ поля, и только потом пишем хоть одно: иначе отказ
-                    # на третьем поле оставил бы строку наполовину изменённой (F56).
+                    # на третьем поле оставил бы строку наполовину изменённой.
                     for col, value in data.items():
                         self._validate_write(sheet_obj, sheet, col, value)
                     rows[rid].update(data)

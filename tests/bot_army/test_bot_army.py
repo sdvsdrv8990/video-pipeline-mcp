@@ -81,9 +81,9 @@ def test_ban_after_violations():
 
 
 def test_anomaly_detection():
-    """Anomaly = EVENT-based (опасные инструменты), НЕ time-based «много разных» (D17 снят, D35 knob мёртв).
+    """Anomaly = EVENT-based (опасные инструменты), НЕ time-based «много разных».
 
-    Текущая модель (D8/D17/D32): множество РАЗНЫХ безопасных инструментов НЕ блокируется;
+    Текущая модель: множество РАЗНЫХ безопасных инструментов НЕ блокируется;
     деструктивный инструмент ПРОПУСКается (log-only), но СЧИТАется сигналом в get_stats.
     """
     print("\n=== Anomaly Detection (event-based) ===")
@@ -91,7 +91,7 @@ def test_anomaly_detection():
     fw = Firewall({})
     ip = "198.51.100.5"
 
-    # Много разных БЕЗОПАСНЫХ инструментов — НЕ блок (D8/D17).
+    # Много разных БЕЗОПАСНЫХ инструментов — НЕ блок.
     for i in range(5):
         res = fw.check(FirewallRequest(
             ip=ip, method="tools/call",
@@ -100,7 +100,7 @@ def test_anomaly_detection():
         check(f"Разный безопасный инструмент {i+1}: allow (не time-based anomaly)",
               res.decision.value == "allow", f"decision={res.decision.value}")
 
-    # Деструктивный инструмент: ПРОПУЩЕН (log-only, D32), но ПОСЧИТАН.
+    # Деструктивный инструмент: ПРОПУЩЕН (log-only), но ПОСЧИТАН.
     fw2 = Firewall({})
     resd = fw2.check(FirewallRequest(
         ip="198.51.100.6", method="tools/call",
@@ -129,7 +129,7 @@ def test_legitimate_after_ban():
 
 
 def test_shipped_config_is_enforced():
-    """F55(1): боевые пороги из `config/firewall.yaml` реально исполняются, а не только объявлены.
+    """Боевые пороги из `config/firewall.yaml` реально исполняются, а не только объявлены.
 
     Ожидаемое считается ИЗ конфига: осознанная правка порога тест не красит, а разрыв
     проводки (порог объявлен, но не читается) красит сразу.

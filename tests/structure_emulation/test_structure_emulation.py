@@ -87,7 +87,7 @@ with live_server() as srv:
     comp3 = next(e for e in d3["entities"] if e["type"] == "competitor_channel")
     ok(comp3["path"] == "niches/ea3/networks/net/competitors/rival",
        f"без якоря сегмент группировки ОПУЩЕН, а не подставлен заглушкой ({comp3['path']})")
-    # F102: канал из соседней ниши — не кандидат. Имена в иерархии повторяются, и предложение
+    # Канал из соседней ниши — не кандидат. Имена в иерархии повторяются, и предложение
     # связать сущности разных проектов хуже честного «в твоей ветке якоря нет».
     plan3 = rpc.call_tool("structure_reconcile", {"entity_id": comp3["id"]})["data"]
     ok(len(plan3["needs_decision"]) == 1 and not plan3["reconciled"],

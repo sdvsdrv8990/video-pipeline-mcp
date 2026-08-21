@@ -2,10 +2,11 @@
 """tests/quick/test_search.py — покрытие core/search (FsSearcher + QueryPlanner).
 
 Постоянный набор (регрессия+coverage, НЕ удалять). Реальное поведение на временном
-workspace: поиск (ext/name/content/limit), контракт FileResult, личность из реестра (F60),
-_detect_entity_type по объявленной раскладке, D36 traversal-containment, QueryPlanner.
+workspace: поиск (ext/name/content/limit), контракт FileResult, личность из реестра,
+_detect_entity_type по объявленной раскладке, traversal-containment, QueryPlanner.
 Тесты 6 SERVER-инструментов против живого сервера (L2) — долг (DNS pending).
 """
+import os
 import sys
 import tempfile
 import shutil
@@ -72,7 +73,7 @@ def main():
               bool(fr.name) and fr.size > 0 and fr.entity_type and fr.parent_path is not None)
 
         print("== FsSearcher: личность файла из РЕЕСТРА, не из имени (F60) ==")
-        # F60: личность файла даёт реестр по вместимости, поэтому разбор имени запрещён насовсем.
+        # Личность файла даёт реестр по вместимости, поэтому разбор имени запрещён насовсем.
         check("метод разбора имени удалён (имя больше не источник ID)", not hasattr(fs, "_extract_id"))
         vid_id = "VID_" + "a" * 32
         vpath = "niches/gaming/networks/n1/channels/ch/videos/v"
@@ -124,6 +125,27 @@ def main():
         except FsSearchError as e:
             check("несуществующий root → PATH_NOT_FOUND", getattr(e, "code", "") == "PATH_NOT_FOUND")
 
+        print("== FsSearcher: нечитаемое считается, а не исчезает ==")
+        # Файл без прав на чтение при фильтре по содержимому: молчаливый пропуск неотличим
+        # от «не совпало», и ИИ решает, что искомого в проекте нет.
+        _locked = ws / "docs" / "закрытый.txt"
+        _locked.write_text("root секрет", encoding="utf-8")
+        _locked.chmod(0o000)
+        try:
+            _task = FsSearchTask(id="t", root="docs", content_keywords=["root"])
+            _hits = fs.search(_task)
+            _readable = os.access(_locked, os.R_OK)   # под root права не мешают — тогда пропуск
+            if _readable:
+                check("нечитаемое: пропущено (запуск от root, права не действуют)", True, "skip")
+            else:
+                check("нечитаемый файл не попал в результаты",
+                      all(h.name != "закрытый.txt" for h in _hits), [h.name for h in _hits])
+                check("нечитаемый файл ПОИМЕНОВАН в потерях, а не исчез",
+                      any("закрытый.txt" in u for u in _task.unreadable), _task.unreadable)
+        finally:
+            _locked.chmod(0o644)
+            _locked.unlink()
+
         print("== FsSearcher: load_query (YAML-строка, не путь) ==")
         task = fs.load_query("root: docs\nextensions: ['.txt']\nname_pattern: 'a'\nlimit: 5")
         check("load_query парсит YAML-контент в FsSearchTask",
@@ -143,8 +165,8 @@ def main():
                   getattr(e, "code", "") == "PATH_ESCAPE")
 
         print("== QueryPlanner: фильтры и сортировка в СВОЕЙ зоне (F55, слепая зона 3) ==")
-        # Мутации M-F55 показали: регрессия F42 живёт только в `test_audit_fixes`, а хозяин зоны
-        # поиска фильтрацию/сортировку не проверял вовсе — снятие фильтра его не красило.
+        # Фильтрацию и сортировку проверяет ХОЗЯИН зоны: регрессия на разнотипных значениях
+        # живёт в `test_audit_fixes`, и снятие фильтра здесь не покраснело бы вовсе.
         class _Snapshot:
             """Источник данных планировщика: лист как его отдаёт движок таблиц."""
 

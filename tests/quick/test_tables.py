@@ -106,7 +106,7 @@ async def main():
     r = await call("json_execute_queue", table=T)
     check("execute empty after clear", r.data["applied"]==0)
 
-    # ── F56: table_find_row — ID по ЗНАЧЕНИЮ (ИИ знает значение, писать надо по ID) ──
+    # ── table_find_row — ID по ЗНАЧЕНИЮ (ИИ знает значение, писать надо по ID) ──
     r = await call("table_find_row", table=T, sheet="META", where={"title": "Hook"})
     check("find_row по значению нашёл ID", r.status=="success" and r.data["row_ids"]==["VID_1"])
     r = await call("table_find_row", table=T, sheet="META", where={"title": "Hook", "status": "ready"})
@@ -119,7 +119,7 @@ async def main():
     r = await call("table_find_row", table=T, sheet="META", where={})
     check("find_row без условий → INVALID_ACTION", r.status=="error" and r.error.code=="INVALID_ACTION")
 
-    # ── F56: table_update — несколько полей ОДНОЙ операцией, без частичного применения ──
+    # ── table_update — несколько полей ОДНОЙ операцией, без частичного применения ──
     r = await call("table_update", table=T, sheet="META", row_id="VID_1",
                    data={"title": "Hook v2", "status": "published"})
     check("update: 2 поля = ОДНА операция в очереди",
@@ -129,7 +129,7 @@ async def main():
     r = await call("table_get_row", table=T, sheet="META", row_id="VID_1")
     check("update: оба поля изменились",
           r.data["row"]["title"]=="Hook v2" and r.data["row"]["status"]=="published")
-    # Главное свойство F56: плохое поле отменяет ВСЮ правку, а не половину.
+    # Главное свойство: плохое поле отменяет ВСЮ правку, а не половину.
     r = await call("table_update", table=T, sheet="META", row_id="VID_1",
                    data={"title": "не должно примениться", "status": "bogus"})
     check("update: enum-нарушение отвергает всю правку до очереди",
@@ -199,7 +199,7 @@ async def main():
     r = await call("excel_add_sheet", path="videos/v1/nope.xlsx", sheet="X")
     check("WORKBOOK_NOT_FOUND", r.status=="error" and r.error.code=="WORKBOOK_NOT_FOUND")
 
-    # ── F28: деструктив над столбцом не ломает формулы молча ──
+    # ── Деструктив над столбцом не ломает формулы молча ──
     P = "videos/v1/deps.xlsx"
     await call("excel_create_workbook", path=P, sheet="META")
     for c in ("views", "likes", "comments"):
@@ -228,7 +228,7 @@ async def main():
           r.status=="error" and r.error.code=="COLUMN_HAS_DEPENDENTS")
     check("в отказе названы конкретные формулы", "CALC!B2" in r.error.message)
     # Движок этого набора создан БЕЗ реестра реакций, поэтому recovery здесь не наблюдаем —
-    # проверяем саму запись реестра: именно из неё ctx.err берёт class/recovery (B2/F43).
+    # проверяем саму запись реестра: именно из неё ctx.err берёт class/recovery.
     from core.reactions import Reactions
     _reg28 = Reactions(ROOT / "config" / "server_reactions.yaml").get_error("COLUMN_HAS_DEPENDENTS")
     check("реестр даёт actionable recovery с инструментом",

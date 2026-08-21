@@ -23,7 +23,7 @@ class TaskStatus(BaseModel):
 
     @model_validator(mode="after")
     def _check_invariant(self) -> "TaskStatus":
-        """D22: инвариант status ↔ error/result."""
+        """Инвариант status ↔ error/result."""
         if self.status == "failed" and self.error is None:
             raise ValueError("status='failed' requires error to be set")
         if self.status == "completed" and self.result is None:

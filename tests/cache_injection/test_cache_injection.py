@@ -4,10 +4,10 @@ tests/cache_injection/test_cache_injection.py — adversarial: отравлен�
 ## Назначение
 Граница защиты по модели угроз 06_threat_catalog: shell/SQL/XSS-строки в КОНТЕНТЕ инертны
 (сервер хранит, а не исполняет, SQL-поверхности нет) и обязаны получить ALLOW; блокируется
-prompt-injection — инструкция модели, плюс containment путей (D1/D36).
+prompt-injection — инструкция модели, плюс containment путей.
 
 ## Границы
-ALLOW на `drop table` — не дыра, а решение D33/D34: греп контента давал false-positive для
+ALLOW на `drop table` — не дыра, а осознанное решение: греп контента давал false-positive для
 файлового домена. In-process `Firewall`, сервер не поднимается.
 """
 
@@ -38,7 +38,7 @@ def _decision(content: str, ip: str) -> str:
 
 
 def test_inert_payloads_allowed():
-    """Инертные shell/SQL/XSS строки как контент → ALLOW (нечего исполнять/нет SQL, D33/D34)."""
+    """Инертные shell/SQL/XSS строки как контент → ALLOW (нечего исполнять/нет SQL)."""
     print("=== Инертные payload-строки (не исполняются) ===")
     check("rm -rf как контент → allow (инертно)",
           _decision("rm -rf /", "198.51.100.10") == "allow")

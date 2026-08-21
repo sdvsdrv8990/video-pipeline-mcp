@@ -14,17 +14,11 @@ from pathlib import Path
 import yaml
 
 from core.excel import ExcelEngine, ExcelError
+from core.contracts import ContractError
 
 
-class TableMaterializerError(Exception):
+class TableMaterializerError(ContractError):
     """Ошибка материализации в формате контракта (код из server_reactions.yaml)."""
-
-    def __init__(self, code: str, message: str, reason: str = "", suggested_tool: str | None = None):
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.reason = reason
-        self.suggested_tool = suggested_tool
 
 
 class TableMaterializer:
@@ -35,7 +29,7 @@ class TableMaterializer:
         self.schemas_dir = Path(schemas_dir)
         self._defaults: dict | None = None
 
-    # ═══ Деградация формул (F30) — правила ЧИТАЮТСЯ, не зашиты ═══
+    # ═══ Деградация формул — правила ЧИТАЮТСЯ, не зашиты ═══
 
     def _degrade_rules(self, schema: dict) -> dict:
         """Запасные значения по типу столбца: книга перекрывает общий `_defaults.yaml`."""
@@ -55,7 +49,7 @@ class TableMaterializer:
         return '"' + str(value).replace('"', '""') + '"'
 
     def _guarded(self, formula: str, col: dict, rules: dict) -> str:
-        """Формула, которая не ломается на неполных данных (F30).
+        """Формула, которая не ломается на неполных данных.
 
         Оборачиваем в IFERROR: любая ошибка вычисления (#DIV/0!, #REF!, #VALUE!, #NAME?)
         превращается в объявленное запасное значение. Что подставить — решает декларация,

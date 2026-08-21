@@ -1,4 +1,4 @@
-"""tests/harness — живой сервер под тестом (T2): процесс, протокол, консоль."""
+"""tests/harness — живой сервер под тестом: процесс, протокол, консоль."""
 
 from .auth_proxy import AuthProxy
 from .console import Console

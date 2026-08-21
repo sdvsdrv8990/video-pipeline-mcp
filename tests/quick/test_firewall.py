@@ -2,7 +2,7 @@
 tests/quick/test_firewall.py — периметр против ЖИВОГО сервера: auth, containment, файрвол, консоль.
 
 Standalone-прогон:  python tests/quick/test_firewall.py
-Сервер поднимает себе сам (T2/F51): свой порт, своя временная рабочая область, настоящий ключ.
+Сервер поднимает себе сам: свой порт, своя временная рабочая область, настоящий ключ.
 Прежняя версия требовала заранее запущенного сервера на 8080 и потому жила вне гейта, а её
 проверки утверждали лишь «ответ пришёл» — блокировку они бы не заметили.
 """
@@ -73,7 +73,7 @@ with live_server() as srv:
     _cors = [k for k in _pre.headers if k.lower().startswith("access-control-")]
     ok(not _cors, f"в ответе на preflight нет CORS-заголовков ({_cors})")
 
-    # F106: Origin проверяется ВСЕГДА (спека транспорта MCP: MUST), а не только при заданном
+    # Origin проверяется ВСЕГДА (спека транспорта MCP: MUST), а не только при заданном
     # allowlist. Даже с настоящим ключом чужая вкладка не проходит.
     for _case, _origin in (("чужой сайт", "https://evil.example.com"),
                            ("песочница/iframe", "null"),
@@ -95,7 +95,7 @@ with live_server() as srv:
     ok(srv.console.contains(r"Браузер: Origin петлевой"),
        "и политика объявлена при старте — иначе владелец узнаёт о ней от сломавшегося клиента")
 
-    # F107: три «простых» типа браузер шлёт БЕЗ preflight — на них и держится CSRF из вкладки.
+    # Три «простых» типа браузер шлёт БЕЗ preflight — на них и держится CSRF из вкладки.
     # Ключ здесь настоящий: проверяется именно слой типа, а не то, что запрос отбила auth.
     _body = '{"jsonrpc":"2.0","id":"c1","method":"tools/call","params":' \
             '{"name":"fs_write_file","arguments":{"path":"csrf.txt","content":"из чужой вкладки"}}}'
@@ -124,7 +124,7 @@ with live_server() as srv:
     ok(_init.headers.get("set-cookie") is None,
        "сервер не заводит cookie — credentials:include нечего приложить")
 
-    # F109: заголовки ответа не-UI сервера + версия сервера наружу не объявляется.
+    # Заголовки ответа не-UI сервера + версия сервера наружу не объявляется.
     _hdr = rpc.request("tools/list", {}).headers
     ok(_hdr.get("x-content-type-options") == "nosniff", f"nosniff ({_hdr.get('x-content-type-options')})")
     ok("frame-ancestors 'none'" in _hdr.get("content-security-policy", ""),
@@ -133,7 +133,7 @@ with live_server() as srv:
     ok("aiohttp" not in _hdr.get("server", "").lower() and "python" not in _hdr.get("server", "").lower(),
        f"версия сервера не объявляется ({_hdr.get('server')})")
 
-    # F108: запятая в Host = склейка двух заголовков посредником; выбирать первое значение —
+    # Запятая в Host = склейка двух заголовков посредником; выбирать первое значение —
     # значит доверить отправителю решение, каким именем нас звать.
     _split = rpc.request("tools/list", {}, extra_headers={"Host": f"127.0.0.1:{srv.port}, evil.com"})
     ok(_split.status_code == 403, f"склеенный Host отклонён ({_split.status_code})")
@@ -159,7 +159,7 @@ with live_server() as srv:
     ok(env["data"].get("content", {}).get("trust") == "untrusted",
        "чужой текст помечен как ДАННЫЕ, а не инструкции (S3/OUT1)")
 
-    # F97: по схеме спеки structuredContent — объект. Пустоту выражаем отсутствием поля,
+    # По схеме спеки structuredContent — объект. Пустоту выражаем отсутствием поля,
     # а не null, иначе валидатор провода красит самый обычный успешный ответ.
     _quiet = rpc.call_tool("structure_status", {})["envelope"]["result"]
     ok("structuredContent" not in _quiet,

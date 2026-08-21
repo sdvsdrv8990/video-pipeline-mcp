@@ -92,11 +92,3 @@ class Reactions:
             Словарь реакции или None
         """
         return self.reactions.get(code)
-
-    def list_codes(self) -> list[str]:
-        """Получение списка всех кодов ошибок.
-
-        Returns:
-            Список кодов
-        """
-        return [code for code in self.reactions.keys() if code != "DEFAULT"]

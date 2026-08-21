@@ -23,7 +23,7 @@ class ToolResult(BaseModel):
 
     @model_validator(mode="after")
     def _check_invariant(self) -> "ToolResult":
-        """D22: инвариант status ↔ error/data."""
+        """Инвариант status ↔ error/data."""
         if self.status == "error" and self.error is None:
             raise ValueError("status='error' requires error to be set")
         if self.status == "success" and self.error is not None:

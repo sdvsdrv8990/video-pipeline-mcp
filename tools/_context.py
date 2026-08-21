@@ -7,7 +7,7 @@
 
 ## Границы
 Логики продукта здесь нет: контекст только раздаёт зависимости и маппит исключения ядра
-в контракт `ToolResult`/`ErrorDetail` единым путём через реестр реакций (B2/F43).
+в контракт `ToolResult`/`ErrorDetail` единым путём через реестр реакций.
 """
 
 from dataclasses import dataclass
@@ -17,19 +17,17 @@ from typing import Any, Callable
 import yaml
 
 from core.advice import Advice
-from core.contracts import ErrorDetail, Recovery, ToolResult
+from core.contracts import ContractError, ErrorDetail, Recovery, ToolResult
 from core.firewall.rules.injection_detector import InjectionDetector
-from core.engine import Engine, TableMaterializerError, TemplateEngine, TemplateError, TemplateResolver
-from core.excel import ExcelEngine, ExcelError
-from core.ids import ChainResolver, IDGenerator, LinkError, LinkRegistry, Taxonomy, TaxonomyError
+from core.engine import Engine, TemplateEngine, TemplateResolver
+from core.excel import ExcelEngine
+from core.ids import ChainResolver, IDGenerator, LinkRegistry, Taxonomy
 from core.integrity import InstanceIdentity
-from core.write_policy import WritePolicy, WritePolicyError
+from core.write_policy import WritePolicy
 from core.paths import PathEscapeError, SecretAccessError, configure_secret_dirs, safe_resolve
-from core.secrets import ChannelSecrets, SecretError
-from core.providers import ProviderError, TaskCycleError
-from core.uniqueness import UniquenessError
+from core.secrets import ChannelSecrets
 from core.state import StateManager
-from core.tables import TableEngine, TableError
+from core.tables import TableEngine
 
 # Аннотации MCP для инструментов (помогают клиенту определить уровень доступа)
 ANNOTATIONS_READONLY = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
@@ -53,7 +51,7 @@ class ToolContext:
     config_path: Path
 
     def resolve(self, path: str) -> Path:
-        """D1+D29: путь с containment внутри workspace/ (единая точка — core/paths, G17)."""
+        """Путь с containment внутри workspace/ (единая точка — core/paths)."""
         return safe_resolve(path, self.workspace_path)
 
     @property
@@ -63,23 +61,23 @@ class ToolContext:
 
     @property
     def advice(self) -> Advice:
-        """F59: советы в успешном ответе — тексты из config/recommendations.yaml, не из кода."""
+        """Советы в успешном ответе — тексты из config/recommendations.yaml, не из кода."""
         return Advice(self.config_path / "recommendations.yaml")
 
     @property
     def secrets(self) -> ChannelSecrets:
-        """S23: ключи провайдеров канала. Единственная дверь в закрытый каталог — и она серверная:
+        """Ключи провайдеров канала. Единственная дверь в закрытый каталог — и она серверная:
         значение уходит только в исходящий вызов провайдера, клиенту — отпечаток."""
         return ChannelSecrets(self.workspace_path, self.config_path.parent)
 
     @property
     def write_policy(self) -> WritePolicy:
-        """S2: какие типы файлов сервер вправе материализовать (список в firewall.yaml)."""
+        """Какие типы файлов сервер вправе материализовать (список в firewall.yaml)."""
         return WritePolicy(self.config_path)
 
     @property
     def injection_flagger(self) -> InjectionDetector:
-        """Детектор для ПОМЕТКИ чужого текста в выводе (S3). Паттерны — боевые, из firewall.yaml:
+        """Детектор для ПОМЕТКИ чужого текста в выводе. Паттерны — боевые, из firewall.yaml:
         второй копии в коде быть не должно. Это подсказка клиенту, а не барьер — барьер — конверт."""
         patterns = None
         cfg = self.config_path / "firewall.yaml"
@@ -95,12 +93,12 @@ class ToolContext:
 
     @property
     def chain_resolver(self) -> ChainResolver:
-        """Резолвер цепочки по каталогу назначения (S18-h) — собран из уже имеющихся частей."""
+        """Резолвер цепочки по каталогу назначения — собран из уже имеющихся частей."""
         return ChainResolver(self.workspace_path, self.link_registry, self.taxonomy)
 
     def err(self, code: str, message: str = "", reason: str = "",
             suggested_tool: str | None = None) -> ToolResult:
-        """Ошибочный ToolResult через реестр реакций (yaml = источник class/recovery, B2/F43).
+        """Ошибочный ToolResult через реестр реакций (yaml = источник class/recovery).
 
         Для кода из реестра class/message_template/recovery берутся из server_reactions.yaml
         (raw message сохраняет специфику). reason/suggested_tool — fallback лишь для кодов вне реестра.
@@ -135,17 +133,15 @@ class ToolContext:
                 "SECRET_ACCESS_DENIED", "Каталог секретов закрыт для инструментов.",
                 "Ключи канала не читаются и не пишутся инструментами по построению. "
                 "Вносит их владелец вручную: python scripts/set_provider_key.py.")
-        except SecretError as e:
-            return False, self.err(e.code, e.message, e.reason, e.suggested_tool)
         except PathEscapeError:
             return False, self.err("PATH_ESCAPE", "Путь выходит за пределы workspace/.",
                                    "Используй путь ВНУТРИ workspace, без '..' и абсолютных путей.")
-        except (TableError, ExcelError, TemplateError, TableMaterializerError, LinkError,
-                TaxonomyError, WritePolicyError, ProviderError, TaskCycleError,
-                UniquenessError) as e:
+        except ContractError as e:
+            # Ловим БАЗУ, а не перечень зон: перечень — второй список, обязанный совпадать с
+            # иерархией, и новая зона молча приезжала бы клиенту как INTERNAL_ERROR.
             return False, self.err(e.code, e.message, e.reason, e.suggested_tool)
         except ValueError as e:
-            # F37: не-путёвый ValueError из глубины core — честно INTERNAL_ERROR, не мислейбл PATH_ESCAPE.
+            # Не-путёвый ValueError из глубины core — честно INTERNAL_ERROR, не мислейбл PATH_ESCAPE.
             return False, self.err("INTERNAL_ERROR", f"Внутренняя ошибка: {e}")
 
 
@@ -153,7 +149,7 @@ def build_context(engine: Engine, id_generator: IDGenerator, state_manager: Stat
                   config_path: Path) -> ToolContext:
     """Собрать контекст: движки поднимаются здесь, группы их только используют."""
     workspace_path = state_manager.workspace_path
-    # S23: какие каталоги внутри рабочей области закрыты — объявлено в firewall.yaml. Конфиг
+    # Какие каталоги внутри рабочей области закрыты — объявлено в firewall.yaml. Конфиг
     # только РАСШИРЯЕТ встроенный минимум: не загрузился — запрет остаётся (fail-closed).
     _fw = config_path / "firewall.yaml"
     _declared: list[str] = []
@@ -164,7 +160,7 @@ def build_context(engine: Engine, id_generator: IDGenerator, state_manager: Stat
         except yaml.YAMLError:
             _declared = []
     configure_secret_dirs(_declared)
-    # S9: личность инстанса — ключ подписи выпускается рядом с .env (вне workspace/).
+    # Личность инстанса — ключ подписи выпускается рядом с .env (вне workspace/).
     identity = InstanceIdentity(config_path.parent, workspace_path)
     identity.ensure_key()
     return ToolContext(
@@ -175,9 +171,9 @@ def build_context(engine: Engine, id_generator: IDGenerator, state_manager: Stat
         table_engine=TableEngine(state_manager, id_generator),
         # Категория 2 (структура) — ExcelEngine поверх .xlsx (openpyxl).
         excel_engine=ExcelEngine(workspace_path),
-        # Ф1: композиция по ссылке + контроль глубины.
+        # Композиция по ссылке + контроль глубины.
         template_engine=TemplateEngine(workspace_path, id_generator, config_path / "templates" / "workspace", config_path),
-        # Ф2 + S9: анонимные → ORPHAN, link() в одном месте; записи подписаны личностью
+        # Анонимные → ORPHAN, link() в одном месте; записи подписаны личностью
         # инстанса (ключ лежит рядом с .env, вне workspace) — чужие правки отклоняются.
         link_registry=LinkRegistry(workspace_path, identity=identity),
         workspace_path=workspace_path,

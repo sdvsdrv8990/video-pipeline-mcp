@@ -14,21 +14,15 @@ core/ids/taxonomy.py — Таксономия узлов workspace: префик
 from pathlib import Path
 
 import yaml
+from core.contracts import ContractError
 
 
-class TaxonomyError(Exception):
+class TaxonomyError(ContractError):
     """Ошибка объявления таксономии в формате контракта (маппится обёрткой в ErrorDetail)."""
 
-    def __init__(self, code: str, message: str, reason: str = "", suggested_tool: str | None = None):
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.reason = reason
-        self.suggested_tool = suggested_tool
 
-
-# Стратегии генерации собственного сегмента ID. `hex` = полный uuid4 (D9).
-# Укороченный `scoped8` требует проверки уникальности в реестре и пока не подключён (G16).
+# Стратегии генерации собственного сегмента ID. `hex` = полный uuid4.
+# Укороченный `scoped8` требует проверки уникальности в реестре и пока не подключён.
 SUPPORTED_STRATEGIES = {"hex"}
 
 # Классы файлов (префиксы ID) объявлены рядом с шаблонами, но отдельным файлом:
@@ -209,10 +203,6 @@ class Taxonomy:
         мёртвая запись, а правило живёт в двух местах и расходится молча.
         """
         return next((a["type"] for a in self.ancestors(node_type) if a.get("role") == role), "")
-
-    def children_of(self, parent_type: str) -> list[dict]:
-        """Объявленные дети: [{type, container}] — контейнер как в шаблоне, вместе с токеном."""
-        return list(self._get(parent_type)["children"])
 
     def descendant_containers(self, parent_type: str) -> list[dict]:
         """Где под узлом этого типа МОГУТ лежать сущности: [{type, container}].

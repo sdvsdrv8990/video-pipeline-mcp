@@ -26,7 +26,7 @@ class Recovery(BaseModel):
 
 # ═══ ОСНОВНЫЕ (используют Recovery выше) ═══
 
-# D4: реестр кодов ошибок (единый источник).
+# Реестр кодов ошибок (единый источник).
 # Генерируется из server_reactions.yaml при старте; здесь — статический список
 # для валидации. При добавлении нового кода — добавить сюда И в yaml.
 KNOWN_ERROR_CODES = {
@@ -39,14 +39,14 @@ KNOWN_ERROR_CODES = {
     "PROVIDER_NOT_CONFIGURED", "PROVIDER_EXHAUSTED",
     "PROVIDER_TIMEOUT", "DOWNLOAD_INCOMPLETE", "DOWNLOAD_FORBIDDEN",
     "PROVIDER_ADAPTER_MISSING", "LOCAL_MODEL_MISSING", "USAGE_UNIT_UNKNOWN",
-    # F100: объявлены в server_reactions.yaml и реально бросаются, но выпали отсюда —
+    # Объявлены в server_reactions.yaml и реально бросаются, но выпали отсюда —
     # ErrorDetail предупреждал «код не в реестре» на штатных отказах поиска и пересчёта
     "PATH_NOT_FOUND", "QUERY_NOT_FOUND", "RECALC_UNAVAILABLE",
-    # Reconcile (S24): пакет откачен целиком — половина сведения хуже отсутствия
+    # Reconcile: пакет откачен целиком — половина сведения хуже отсутствия
     "RECONCILE_ROLLED_BACK",
-    # Раннер (S24): строка канала просит считать вне сервера, а он не поднят
+    # Раннер: строка канала просит считать вне сервера, а он не поднят
     "RUNNER_NOT_RUNNING",
-    # Ключи провайдеров (S23): значение не выдаётся никогда, только отпечаток
+    # Ключи провайдеров: значение не выдаётся никогда, только отпечаток
     "SECRET_ACCESS_DENIED", "PROVIDER_KEY_MISSING", "SECRET_UNREADABLE",
     "SECRET_ENCRYPTION_UNAVAILABLE",
     "AUTH_REQUIRED", "AUTH_FAILED", "DEFAULT", "UNKNOWN_ERROR",
@@ -56,21 +56,23 @@ KNOWN_ERROR_CODES = {
     # Таблицы: структура (Категория 2, excel_*)
     "WORKBOOK_NOT_FOUND", "SHEET_EXISTS", "LAST_SHEET",
     "COLUMN_EXISTS", "FORMULA_PROTECTED", "COLUMN_HAS_DEPENDENTS",
-    # Структура: реестр связей / ORPHAN (Ф2)
+    # Структура: реестр связей / ORPHAN
     "UNLINKED_ENTITY", "ENTITY_NOT_FOUND",
     # Анализ данных
     "SHEET_COPY_ERROR",
     # Проверка целостности
     "DUPLICATE_ID",
-    # Таблицы: материализация книг по декларации (A1′, фаза ТАБЛИЦЫ)
+    # Таблицы: материализация книг по декларации
     "SCHEMA_INVALID",
-    # Иерархия ID: цепочка по каталогу назначения (S18-g/S18-h)
+    # Советы в успешном ответе: битая декларация не должна приезжать INTERNAL_ERROR
+    "ADVICE_INVALID",
+    # Иерархия ID: цепочка по каталогу назначения
     "DUPLICATE_PATH", "CHAIN_UNRESOLVED", "TEMPLATE_INVALID",
-    # Целостность артефактов: подпись инстанса и отпечаток машины (S9)
+    # Целостность артефактов: подпись инстанса и отпечаток машины
     "FOREIGN_WRITE", "MACHINE_MISMATCH",
-    # Тип файла запрещён к записи (S2)
+    # Тип файла запрещён к записи
     "FILE_TYPE_FORBIDDEN",
-    # Подтверждение необратимой операции (S3)
+    # Подтверждение необратимой операции
     "CONFIRM_REQUIRED",
 }
 
@@ -78,16 +80,16 @@ KNOWN_ERROR_CODES = {
 class ErrorDetail(BaseModel):
     """Детали ошибки для Claude."""
 
-    code: str  # D4: валидируется против `config/server_reactions.yaml`
+    code: str  # валидируется против `config/server_reactions.yaml`
     reaction_class: str = "unknown"  # класс задаёт реестр, не эмитент
     message: str
     recovery: Recovery
-    raw_response: dict | None = None  # D23: секреты маскируются до попадания сюда
+    raw_response: dict | None = None  # секреты маскируются до попадания сюда
 
     @field_validator("code")
     @classmethod
     def _validate_code(cls, v: str) -> str:
-        """D4: предупреждаем если код не в реестре (но не блокируем)."""
+        """Предупреждаем если код не в реестре (но не блокируем)."""
         if v not in KNOWN_ERROR_CODES:
             import warnings
             warnings.warn(f"ErrorDetail.code='{v}' не в реестре KNOWN_ERROR_CODES", stacklevel=2)
@@ -96,7 +98,7 @@ class ErrorDetail(BaseModel):
     @field_validator("raw_response", mode="before")
     @classmethod
     def _sanitize_raw_response(cls, v: dict | None) -> dict | None:
-        """D23: маскируем секреты в raw_response перед передачей Claude."""
+        """Маскируем секреты в raw_response перед передачей Claude."""
         if v is None:
             return None
         SENSITIVE_KEYS = {"authorization", "api_key", "token", "set-cookie", "cookie", "secret", "password"}

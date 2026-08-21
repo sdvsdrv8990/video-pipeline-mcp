@@ -1,5 +1,5 @@
 """
-core/integrity.py — Подпись артефактов и идентичность инстанса (S9)
+core/integrity.py — Подпись артефактов и идентичность инстанса
 
 ## Назначение
 Всё, что сервер пишет в `workspace/`, помечается подписью этого инстанса (авторство) и отпечатком
@@ -10,7 +10,7 @@ core/integrity.py — Подпись артефактов и идентично�
 - Ключи лежат рядом с токеном, вне `workspace/`, с правами `0600`.
 - Модуль ничего не решает о доступе: он даёт `sign`/`verify`, а политику применяет вызывающий.
 - Подпись — Ed25519 из `cryptography`; без библиотеки она честно недоступна, а не подменяется
-  самодельным хешем, который выглядел бы как защита (G16).
+  самодельным хешем, который выглядел бы как защита.
 """
 
 import hashlib
@@ -36,14 +36,6 @@ MACHINE_ID_FILE = "/etc/machine-id"
 SECRET_MODE = stat.S_IRUSR | stat.S_IWUSR  # 0600
 
 
-class IntegrityError(Exception):
-    """Отказ проверки целостности (маппится вызывающим в код реестра реакций)."""
-
-    def __init__(self, code: str, message: str, reason: str = ""):
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.reason = reason
 
 
 def machine_fingerprint(workspace: Path) -> str:

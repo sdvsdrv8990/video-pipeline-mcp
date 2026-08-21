@@ -79,7 +79,7 @@ class RateLimiter:
     def _cleanup(self, ip: str, current_time: float):
         """Очистка старых запросов и violations.
 
-        D16: violations сбрасываются когда окно запросов полностью протухло
+        Violations сбрасываются когда окно запросов полностью протухло
         (нет ни одного запроса за window_sec). Это делает unblock полезным
         и восстанавливает мягкий порог ban_after после стабильного периода.
 
@@ -92,7 +92,7 @@ class RateLimiter:
             t for t in self._requests[ip]
             if t > cutoff
         ]
-        # D16: сброс violations если окно пустое (все запросы протухли).
+        # Сброс violations если окно пустое (все запросы протухли).
         if not self._requests[ip] and ip in self._violations:
             del self._violations[ip]
 
@@ -103,17 +103,6 @@ class RateLimiter:
             Количество нарушений
         """
         return self._total_violations
-
-    def get_ip_violations(self, ip: str) -> int:
-        """Получение количества нарушений по IP.
-
-        Args:
-            ip: IP адрес
-
-        Returns:
-            Количество нарушений
-        """
-        return self._violations.get(ip, 0)
 
     def should_ban(self, ip: str) -> bool:
         """Проверяет нужно ли забанить IP.

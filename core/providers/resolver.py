@@ -16,17 +16,11 @@ core/providers/resolver.py — кто и какой моделью исполн�
 from pathlib import Path
 
 from .declaration import Declaration
+from core.contracts import ContractError
 
 
-class ProviderError(Exception):
+class ProviderError(ContractError):
     """Ошибка выбора провайдера в формате контракта (код из server_reactions.yaml)."""
-
-    def __init__(self, code: str, message: str, reason: str = "", suggested_tool: str | None = None):
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.reason = reason
-        self.suggested_tool = suggested_tool
 
 
 class ProviderResolver:

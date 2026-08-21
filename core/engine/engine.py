@@ -39,16 +39,17 @@ class Engine:
         """Инициализация движка.
 
         Args:
-            reactions: Реестр реакций (D4) — если задан, ошибки движка
+            reactions: Реестр реакций — если задан, ошибки движка
                 собираются через server_reactions.yaml, а не хардкодом.
-            state_manager: Менеджер состояния (D24) — для логирования facts в _SESSION_LOG.
+            state_manager: Менеджер состояния — для логирования facts в _SESSION_LOG.
         """
         self.tools: dict[str, ToolDefinition] = {}
         self.reactions = reactions
-        self._state_manager = state_manager  # D24
+        self._state_manager = state_manager
+        self._log_broken = False   # об отказе журнала говорим ОДИН раз за процесс
 
     def _error(self, code: str, message: str, recovery: "Recovery") -> ToolResult:
-        """Сборка ошибки: через реестр реакций, если он подключён (D4).
+        """Сборка ошибки: через реестр реакций, если он подключён.
 
         Реестр даёт единый message_template/recovery по коду. Если кода нет
         в реестре или реестр не задан — используем переданный fallback.
@@ -97,7 +98,7 @@ class Engine:
 
         tool = self.tools[name]
 
-        # D5: валидация params против input_schema ДО вызова хендлера.
+        # Валидация params против input_schema ДО вызова хендлера.
         # Раньше схема была декоративной (только витрина в tools/list).
         error = self._validate(tool, params)
         if error is not None:
@@ -105,16 +106,21 @@ class Engine:
 
         try:
             result = await tool.handler(**params)
-            # D24: логируем facts в _SESSION_LOG (если state_manager подключён).
+            # Логируем facts в _SESSION_LOG (если state_manager подключён).
             if self._state_manager and isinstance(result, ToolResult) and result.facts:
                 for fact in result.facts:
                     try:
                         self._state_manager.log_event(fact.type, fact.data)
-                    except Exception:
-                        pass  # логирование не должно ломать основной поток
+                    except (OSError, ValueError, TypeError) as e:
+                        # Основной поток не роняем, но и не молчим: иначе журнал перестаёт
+                        # писаться незаметно, и понимаешь это, когда он уже понадобился.
+                        if not self._log_broken:
+                            self._log_broken = True
+                            print(f"⚠️  [journal] запись факта не удалась ({e!r}) — "
+                                  f"_SESSION_LOG неполон; дальше молчим, чтобы не залить консоль")
             return result
         except TypeError as e:
-            # D26: лишние/неизвестные params → VALIDATION_ERROR (клиентская ошибка),
+            # Лишние/неизвестные params → VALIDATION_ERROR (клиентская ошибка),
             # а не INTERNAL_ERROR (серверная). Claude должен исправить params и повторить.
             return self._error(
                 "VALIDATION_ERROR",
@@ -129,7 +135,7 @@ class Engine:
             )
 
     def _validate(self, tool: ToolDefinition, params: dict) -> ToolResult | None:
-        """D5: проверка params по JSON Schema инструмента.
+        """Проверка params по JSON Schema инструмента.
 
         Возвращает ToolResult(error) при несоответствии, иначе None.
         Использует jsonschema, если доступен; при его отсутствии —

@@ -12,6 +12,7 @@
 превышение = exit 1), `--bless` (переписать потолок после прополки).
 Границы текста даёт `ast`+`tokenize`, цели — `git ls-files`: свой построчный разбор путал
 кавычки константы с докстрингом, а фиксированный список целей не видел новый пакет.
+В не-Python цели (декларации, CI, ignore) комментарием считается только строка целиком.
 """
 
 import argparse
@@ -49,6 +50,22 @@ DUPLICATION = [
 ]
 DECL_LINE = re.compile(r"^\s*[-*•]?\s*`?[\w.\[\]]+`?\s*:\s+\S")
 
+# Координата задачи: указатель в реестр находок, сессию прохода, фазу плана или мутацию.
+# Ловим по форме, а не по словарю: реестр растёт, а форма постоянна. Отсечки слева отбивают
+# хвост адреса ячейки книги, справа — букву внутри слова (имя директивы линтера, формулы, цвета).
+TASK_TAG = re.compile(r"(?<![\w:!.$])(?:[DFGM]\d{1,3}|S1\d(?:-[a-z])?|S2\d|Ф\d)(?![\w])")
+# Имя правила линтера выглядит координатой ровно так же; отличает его только то, чьё оно.
+LINTERS = ("ruff", "pydocstyle", "flake8", "pylint", "bandit", "mypy", "pytest", "semgrep")
+
+
+def _task_tag(line: str) -> str | None:
+    """Координата задачи в строке текста, либо None. Имя правила чужого линтера — не она."""
+    for m in TASK_TAG.finditer(line):
+        before = line[:m.start()].rstrip().rsplit(" ", 1)[-1].strip("`(«\"'").lower()
+        if before not in LINTERS:
+            return m.group()
+    return None
+
 
 def _spans(text: str) -> tuple[list[tuple[int, int, bool]], list[tuple[int, str, bool]]]:
     """Границы текста: докстринги (строка, длина, это_шапка) и комментарии (строка, текст, отдельный)."""
@@ -73,8 +90,36 @@ def _spans(text: str) -> tuple[list[tuple[int, int, bool]], list[tuple[int, str,
     return sorted(docs), comments
 
 
+def _tag_note(path: Path | str, n: int, tag: str) -> str:
+    return (f"{path}:{n} — координата задачи `{tag}` в тексте: указывает в реестр находок, "
+            f"а не объясняет код — её место в commit")
+
+
+def _review_text(path: Path | str, text: str) -> list[str]:
+    """Не-Python цель: комментарий = строка, начинающаяся с `#`.
+
+    Хвостовой `#` после значения не разбираем: без парсера языка он неотличим от решётки
+    внутри кавычек, а ложное замечание храповик заморозил бы как принятый долг.
+    """
+    notes: list[str] = []
+    seen: set[str] = set()
+    for n, line in enumerate(text.split("\n"), 1):
+        if not line.lstrip().startswith("#"):
+            continue
+        for pattern, why in NARRATIVE:
+            if re.search(pattern, line) and why not in seen:
+                seen.add(why)
+                notes.append(f"{path}:{n} — {why}")
+                break
+        if (tag := _task_tag(line)) is not None:
+            notes.append(_tag_note(path, n, tag))
+    return notes
+
+
 def review(path: Path | str, text: str) -> list[str]:
     """Замечания по одному файлу. Пусто = чисто."""
+    if not str(path).endswith(".py"):
+        return _review_text(path, text)
     notes: list[str] = []
     seen: set[str] = set()
     lines = text.split("\n")
@@ -112,7 +157,7 @@ def review(path: Path | str, text: str) -> list[str]:
                          f"это абзац рассуждения, а не пояснение к строке кода")
 
     # Маркеры ищем ТОЛЬКО в тексте (докстринг/комментарий): таблица шаблонов этого же сторожа —
-    # код, и построчный разбор ловил её как замечание (F120).
+    # код, и построчный разбор принимал её за замечание.
     for n, line in sorted(list(prose.items()) + [(n, s) for n, s, _ in comments]):
         for pattern, why in NARRATIVE + DUPLICATION:
             if re.search(pattern, line) and why not in seen:
@@ -121,21 +166,27 @@ def review(path: Path | str, text: str) -> list[str]:
                 seen.add(why)
                 notes.append(f"{path}:{n} — {why}")
                 break
+        # Координату называем НА КАЖДОМ вхождении, а не один раз на файл: каждая снимается
+        # отдельно, и схлопнутый счётчик перестал бы убывать по мере прополки.
+        if (tag := _task_tag(line)) is not None:
+            notes.append(_tag_note(path, n, tag))
     return notes
 
 
 def _tracked() -> list[Path]:
-    """Цели = все `.py` под контролем git: новый пакет попадает в замер сам, без правки списка."""
+    """Цели под контролем git: новый пакет и новая декларация попадают в замер сами."""
+    globs = ["*.py", "*.yaml", "*.yml", "*.toml", "*.sh", ".gitignore", ".env.example"]
     try:
-        out = subprocess.run(["git", "-C", str(PROJECT), "ls-files", "-z", "*.py"],
+        out = subprocess.run(["git", "-C", str(PROJECT), "ls-files", "-z", *globs],
                              capture_output=True, text=True, check=True).stdout
     except (OSError, subprocess.CalledProcessError) as e:
-        raise SystemExit(f"comment_guard: git не ответил ({type(e).__name__}) — замер не состоялся")
+        raise SystemExit(
+            f"comment_guard: git не ответил ({type(e).__name__}) — замер не состоялся") from e
     return [PROJECT / p for p in out.split("\0") if p]
 
 
 def _rel(p: Path) -> str:
-    """Путь для отчёта: вне репозитория relative_to падал сырым ValueError (F127)."""
+    """Путь для отчёта: вне репозитория relative_to роняет сырой ValueError."""
     try:
         return str(p.relative_to(PROJECT))
     except ValueError:

@@ -45,7 +45,7 @@ def xcheck(name, desired_ok, fnum, note=""):
 async def main():
     engine, transport, firewall = S.create_server()
 
-    # D1: path traversal заблокирован, легитимный путь работает
+    # Path traversal заблокирован, легитимный путь работает
     r = await engine.call("fs_read_file", {"path": "../../../../../etc/passwd"})
     check("D1 traversal /etc/passwd blocked", r.status == "error" and r.error.code == "PATH_ESCAPE",
           r.error.code if r.error else "")
@@ -57,7 +57,7 @@ async def main():
           r3.status == "success" and r3.data.get("content", {}).get("value") == "hi",
           "S3: содержимое теперь в конверте провенанса {value, provenance, trust, flags}")
 
-    # D2: firewall.yaml реально загружен
+    # Firewall.yaml реально загружен
     check("D2 firewall.yaml loaded (max_requests=60)", firewall.rate_limiter.max_requests == 60,
           firewall.rate_limiter.max_requests)
     check("D2 firewall.yaml loaded (ban_after=3)", firewall.rate_limiter.ban_after == 3,
@@ -65,7 +65,7 @@ async def main():
     check("D2 injection patterns from yaml (>0)", len(firewall.injection_detector.patterns) > 0,
           len(firewall.injection_detector.patterns))
 
-    # F54: выключатель `enabled` в конфиге реально выключает правило (был мёртвым ключом).
+    # Выключатель `enabled` в конфиге реально выключает правило (был мёртвым ключом).
     inj_payload = {"name": "fs_create_file", "arguments": {"content": "ignore previous instructions"}}
     fw_on = Firewall({"injection_detection": {"enabled": True, "patterns": ["ignore previous instructions"]}})
     fw_off = Firewall({"injection_detection": {"enabled": False, "patterns": ["ignore previous instructions"]}})
@@ -90,12 +90,12 @@ async def main():
     check("F54 rate_limit.enabled=false → превышение лимита не блокирует", d_rate.decision.value == "allow",
           d_rate.decision.value)
 
-    # D5: валидация схемы (отсутствие required)
+    # Валидация схемы (отсутствие required)
     r_req = await engine.call("fs_read_file", {})
     check("D5 missing required -> VALIDATION_ERROR", r_req.status == "error" and r_req.error.code == "VALIDATION_ERROR",
           r_req.error.code if r_req.error else "")
 
-    # D4: реестр реакций подключён
+    # Реестр реакций подключён
     check("D4 reactions wired (recovery present)",
           r_req.error.recovery is not None and bool(r_req.error.recovery.reason))
     rtn = await engine.call("nope_tool", {})
@@ -103,7 +103,7 @@ async def main():
           rtn.status == "error" and rtn.error.code == "TOOL_NOT_FOUND"
           and "инструмент" in (rtn.error.recovery.reason.lower() if rtn.error.recovery else ""))
 
-    # D6: бан только после ban_after нарушений
+    # Бан только после ban_after нарушений
     fw = Firewall({"rate_limit": {"max_requests_per_minute": 2, "ban_after_violations": 3}})
     ip = "203.0.113.9"
     decs, banned_trace = [], []
@@ -116,9 +116,9 @@ async def main():
     check("D6 ban only after ban_after=3 violations", banned_trace[-1] is True and banned_trace[3] is False,
           banned_trace)
 
-    # D8/D17: anomaly detection теперь ТОЛЬКО event-based (опасные инструменты).
-    # Time-based "много разных имён в окне" удалён намеренно
-    # (history_core_firewall v2.4, D17: таймеры пропускают события → ложные срабатывания).
+    # Anomaly detection теперь ТОЛЬКО event-based (опасные инструменты).
+    # Time-based «много разных имён в окне» не годится намеренно:
+    # таймеры пропускают события и дают ложные срабатывания.
     # Инвариант: множество РАЗНЫХ безопасных инструментов НЕ блокируется.
     fw2 = Firewall({})
     ad_hit = False
@@ -128,14 +128,14 @@ async def main():
         if res.decision.value == "block":
             ad_hit = True
     check("D8/D17 many distinct benign tool names NOT blocked (event-based only)", not ad_hit)
-    # D32: log-only — деструктивный инструмент ПРОПУСКАЕТСЯ (не блок), но СЧИТАЕТСЯ.
+    # Log-only — деструктивный инструмент ПРОПУСКАЕТСЯ (не блок), но СЧИТАЕТСЯ.
     _fwd = Firewall({})
     resd = _fwd.check(FirewallRequest(ip="198.51.100.2", method="tools/call",
                                       params={"name": "fs_delete"}, timestamp=3000.0))
     check("D32 fs_delete ПРОПУЩЕН файрволом (log-only, не глухой блок)", resd.decision.value == "allow", resd.reason)
     check("D32 fs_delete ПОСЧИТАН как сигнал (get_stats)", _fwd.get_stats()["anomalies_detected"] == 1)
 
-    # D36: FsSearcher.root traversal — escape-root должен давать PATH_ESCAPE.
+    # FsSearcher.root traversal — escape-root должен давать PATH_ESCAPE.
     from core.search.fs_searcher import FsSearcher, FsSearchTask, FsSearchError as _FsErr
     from pathlib import Path as _P
     _ws = _P("workspace").resolve(); _ws.mkdir(exist_ok=True)
@@ -153,7 +153,7 @@ async def main():
     check("D36 legit root inside workspace всё ещё работает", isinstance(_okres, list))
     import shutil as _sh; _sh.rmtree(_ws / "_probe36", ignore_errors=True)
 
-    # D33/D34/D35 + D2: injection-паттерны/knob'ы вычищены и грузятся из firewall.yaml.
+    # Injection-паттерны/knob'ы вычищены и грузятся из firewall.yaml.
     import yaml as _yaml
     from pathlib import Path as _Path
     _cfg_path = _Path(__file__).resolve().parents[2] / "config" / "firewall.yaml"
@@ -169,7 +169,7 @@ async def main():
     check("D2 dangerous_tools loaded from firewall.yaml (fs_delete present)", "fs_delete" in _fw.anomaly_detector.dangerous_tools)
     check("D35 dead knob gone (no max_methods_per_window in code path)", not hasattr(_fw.anomaly_detector, "max_methods_per_window"))
 
-    # D9: uuid4 (32 hex), без коллизий
+    # Uuid4 (32 hex), без коллизий
     g = IDGenerator()
     vid = g.generate("video")
     uniq = vid.split("_", 1)[1]
@@ -178,7 +178,7 @@ async def main():
     ids = {g.generate("scene") for _ in range(20000)}
     check("D9 no collisions in 20k ids", len(ids) == 20000, len(ids))
 
-    # D13: lifecycle
+    # Lifecycle
     resp = await transport.handle_request(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}))
     check("D13 notifications/initialized -> no response (202)", resp is None, repr(resp))
     ri = json.loads(await transport.handle_request(json.dumps(
@@ -195,13 +195,13 @@ async def main():
     check("D13 tools/list shape ok (name/description/inputSchema)", ok_shape and len(tools) > 0, f"{len(tools)} tools")
 
     # ═══ ОТКРЫТЫЕ НАХОДКИ ОБМЕРА (strict-xfail: подтверждение, НЕ регрессия) ═══
-    # F43: реестр обходится хендлерами (_safe→_err) → error теряет reaction_class/recovery из server_reactions.yaml.
+    # Реестр обходится хендлерами (_safe→_err) → error теряет reaction_class/recovery из server_reactions.yaml.
     import yaml as _y
     _reg = _y.safe_load((ROOT / "config" / "server_reactions.yaml").read_text(encoding="utf-8"))
     rtf = await engine.call("table_get_row", {"table": "нет/такой/таблицы", "sheet": "META", "row_id": "r1"})
     _code = rtf.error.code if rtf.error else ""
     check("F43-setup table_get_row on missing table → TABLE_NOT_FOUND", _code == "TABLE_NOT_FOUND", _code)
-    # F43 ЗАКРЫТ (A6/B2): _err routes through реестр → error несёт reaction_class И recovery из yaml.
+    # _err ходит ЧЕРЕЗ реестр → error несёт reaction_class И recovery из yaml.
     _reg_class = _reg.get(_code, {}).get("class")
     _reg_reason = _reg.get(_code, {}).get("recovery", {}).get("reason")
     _cls = rtf.error.reaction_class if rtf.error else None
@@ -211,8 +211,8 @@ async def main():
           rtf.error.recovery.reason == _reg_reason and bool(_reg_reason),
           f"got={rtf.error.recovery.reason!r} vs реестр={_reg_reason!r}")
 
-    # F5: DEFAULT-fallback игнорит DEFAULT.message_template (хардкодит свою строку без точки).
-    # NB: reaction_class тут совпадёт ('unknown'==DEFAULT.class) — как suggested_tool у F43, не пруф. Меряем шаблон.
+    # DEFAULT-fallback игнорит DEFAULT.message_template (хардкодит свою строку без точки).
+    # NB: reaction_class тут совпадёт ('unknown'==DEFAULT.class) — сам по себе не пруф. Меряем шаблон.
     from core.reactions import Reactions as _Rx
     _rx = _Rx(ROOT / "config" / "server_reactions.yaml")
     _r5 = _rx.get_error("КОД_КОТОРОГО_НЕТ_В_РЕЕСТРЕ_XYZ")
@@ -220,12 +220,12 @@ async def main():
     check("F5 DEFAULT-fallback берёт message_template из реестра", _r5.message == _def_tmpl and bool(_def_tmpl),
           f"got={_r5.message!r} vs template={_def_tmpl!r}")
 
-    # F40: коды core/search (QUERY_NOT_FOUND/PATH_NOT_FOUND) должны быть в реестре реакций.
+    # Коды core/search (QUERY_NOT_FOUND/PATH_NOT_FOUND) должны быть в реестре реакций.
     _search_codes = {"QUERY_NOT_FOUND", "PATH_NOT_FOUND"}
     check("F40 search-коды в server_reactions.yaml", _search_codes.issubset(set(_reg.keys())),
           f"нет в реестре: {sorted(_search_codes - set(_reg.keys()))}")
 
-    # F42: QueryPlanner._match_filter на разнотипном (str vs num в gt) не должен ронять TypeError.
+    # QueryPlanner._match_filter на разнотипном (str vs num в gt) не должен ронять TypeError.
     from core.search.query_planner import QueryPlanner as _QP
     _qp = _QP(table_engine=None, workspace=str(ROOT / "workspace"))
     try:
@@ -239,7 +239,7 @@ async def main():
     check("F42 разнотипная сортировка не роняет TypeError", _f42_ok and len(_f42_sorted) == 3,
           f"raised? {not _f42_ok}")
 
-    # F37: safe_resolve кидает типизированный PathEscapeError (подтип ValueError = back-compat);
+    # safe_resolve кидает типизированный PathEscapeError (подтип ValueError = back-compat);
     # _safe теперь мапит escape→PATH_ESCAPE, а прочий ValueError→INTERNAL_ERROR (не вводит в заблуждение).
     from core.paths import safe_resolve as _sr, PathEscapeError as _PEE
     from pathlib import Path as _P37
@@ -253,7 +253,7 @@ async def main():
     check("F37 обычный ValueError НЕ PathEscapeError (→ пойдёт в INTERNAL_ERROR)",
           not isinstance(ValueError("bad arg"), _PEE))
 
-    # F29: validate_formulas теперь ПЕРЕСЧИТЫВАЕТ формулы (LibreOffice headless) → ловит =1/0 (был театр).
+    # validate_formulas ПЕРЕСЧИТЫВАЕТ формулы (LibreOffice headless) → ловит =1/0.
     from core.excel import ExcelEngine
     import shutil as _sh2
     _xe = ExcelEngine(str(ROOT / "workspace"))
@@ -268,7 +268,7 @@ async def main():
         print("[SKIP F29] LibreOffice недоступен — recalc-валидацию не проверяем (CI ставит libreoffice-calc)")
     _sh2.rmtree(ROOT / "workspace" / "test_f29_probe", ignore_errors=True)
 
-    # F11: D23-санитайзер маскирует секреты в raw_response (регрессия — должно быть ЗЕЛЁНО).
+    # Санитайзер маскирует секреты в raw_response (регрессия — должно быть ЗЕЛЁНО).
     from core.contracts import ErrorDetail as _ED, Recovery as _Rec
     _ed = _ED(code="INTERNAL_ERROR", message="x", recovery=_Rec(reason="y"),
               raw_response={"api_key": "sk-secret", "nested": {"token": "t0k"}, "safe": "ok"})
@@ -276,7 +276,7 @@ async def main():
     check("F11/D23 вложенный token замаскирован", _ed.raw_response["nested"]["token"] == "***REDACTED***")
     check("F11/D23 несекретное поле не тронуто", _ed.raw_response["safe"] == "ok")
 
-    # ═══ F14/S1: ключ сервер выдаёт себе сам, fail-closed, секрет не утекает ═══
+    # ═══ Ключ сервер выдаёт себе сам, fail-closed, секрет не утекает ═══
     print("== F14/S1: ключ доступа ==")
     import tempfile as _tf
 
@@ -298,7 +298,7 @@ async def main():
     check("F14 переменная окружения имеет приоритет над файлом",
           ensure_digest(_env, env={TOKEN_VAR: "from-env"}) == (token_digest("from-env"), ""))
 
-    # S21: на диске лежит ХЭШ, значения ключа там нет вовсе
+    # На диске лежит ХЭШ, значения ключа там нет вовсе
     _body = _env.read_text(encoding="utf-8")
     check("S21 в .env хранится отпечаток, а не ключ", f"{DIGEST_VAR}=" in _body and _new not in _body)
     check("S21 строки с открытым значением в файле нет",
@@ -337,7 +337,7 @@ async def main():
         _escaped = True
     check("F14 .env вне workspace: путь к секрету не резолвится инструментами", _escaped)
 
-    # S21: секрет не должен оседать в логах — ротация называет отпечаток, не значение
+    # Секрет не должен оседать в логах — ротация называет отпечаток, не значение
     from core.auth import token_fingerprint
     _fp = token_fingerprint(_new)
     check("S21 отпечаток не раскрывает ключ", _fp and _fp not in _new and _new not in _fp, _fp)
@@ -352,7 +352,7 @@ async def main():
     check("S21 --show-key удалён: показывать нечего (static)",
           "--show-key" not in _srv and "show_key" not in _srv)
 
-    # F70-класс: секреты на диске обязаны быть закрыты правилом .gitignore
+    # Секреты на диске обязаны быть закрыты правилом .gitignore
     import subprocess as _sp
     for _secret in (".env", "instance_key.pem"):
         _ign = _sp.run(["git", "check-ignore", "-q", _secret], cwd=ROOT).returncode == 0
@@ -361,7 +361,7 @@ async def main():
           _sp.run(["git", "ls-files", "--error-unmatch", ".env"], cwd=ROOT,
                   capture_output=True).returncode != 0)
 
-    # F100: реестр кодов существует в двух местах (yaml + статический набор). Пока их два,
+    # Реестр кодов существует в двух местах (yaml + статический набор). Пока их два,
     # инвариант держит тест: код, объявленный в yaml, но выпавший из набора, заставляет
     # ErrorDetail предупреждать «нет в реестре» на штатном отказе — а под strict-warning
     # это INTERNAL_ERROR вместо объявленной реакции.
@@ -371,6 +371,32 @@ async def main():
     _lost = sorted(_declared - _codes)
     check(f"F100 каждый код из server_reactions.yaml есть в KNOWN_ERROR_CODES (выпали: {_lost or '—'})",
           not _lost)
+
+    # Зона, отказывающая своим исключением мимо общей базы, не ловится ctx.safe и приезжает
+    # клиенту как INTERNAL_ERROR — без кода, класса реакции и пути восстановления. Перечень
+    # зон в ctx.safe снят, значит держать инвариант обязан тест, а не дисциплина.
+    import ast as _ast
+    from core.contracts import ContractError as _CE
+    _outsiders = []
+    for _f in _sp.run(["git", "ls-files", "core/*.py"], cwd=ROOT, capture_output=True,
+                      text=True, check=True).stdout.split():
+        if _f == "core/contracts/errors.py":
+            continue
+        for _n in _ast.parse((ROOT / _f).read_text(encoding="utf-8")).body:
+            if not isinstance(_n, _ast.ClassDef) or not _n.name.endswith("Error"):
+                continue
+            _bases = [_ast.unparse(_b) for _b in _n.bases]
+            # ValueError-подтипы `core/paths` — намеренно другой канал: старые перехваты не рвём.
+            # TunnelError живёт на подъёме сервера, а не на пути инструмента: до клиента он
+            # не доходит вовсе, и код реестра ему не нужен.
+            if _bases == ["ContractError"] or "ValueError" in _bases or _n.name == "TunnelError":
+                continue
+            _outsiders.append(f"{_f}:{_n.name}({','.join(_bases)})")
+    check(f"каждое исключение зоны наследует ContractError (мимо базы: {_outsiders or '—'})",
+          not _outsiders)
+    check("ctx.safe ловит базу, а не перечень зон",
+          "except ContractError" in (ROOT / "tools" / "_context.py").read_text(encoding="utf-8")
+          and _CE is not None)
 
     print()
     passed = sum(results)

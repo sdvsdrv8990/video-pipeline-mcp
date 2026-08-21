@@ -1,5 +1,5 @@
 """
-tests/quick/test_tunnel.py — оффлайн-тест туннеля Cloudflare (D11).
+tests/quick/test_tunnel.py — оффлайн-тест туннеля Cloudflare.
 
 ## Назначение
 `core/transport/tunnel.py` без живого cloudflared: сборка команд для quick / named-token /

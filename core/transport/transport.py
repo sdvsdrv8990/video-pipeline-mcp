@@ -50,7 +50,7 @@ class Transport:
         params = request.get("params", {})
         request_id = request.get("id")
 
-        # D13: нотификация — сообщение без "id" (или из пространства notifications/).
+        # Нотификация — сообщение без "id" (или из пространства notifications/).
         # На неё НЕЛЬЗЯ отвечать JSON-RPC-ответом (JSON-RPC 2.0 / MCP): возвращаем
         # None, а HTTP-слой отдаёт 202 Accepted без тела.
         is_notification = ("id" not in request) or method.startswith("notifications/")
@@ -107,7 +107,7 @@ class Transport:
 
         result = await self.engine.call(name, arguments)
 
-        # D30: конвертируем ToolResult в MCP формат с structuredContent.
+        # Конвертируем ToolResult в MCP формат с structuredContent.
         # facts и error details → structuredContent (спек-совместимо).
         # По схеме спеки structuredContent — объект; отсутствие структурированной части
         # выражается ОТСУТСТВИЕМ поля, а не `null` (иначе валидатор провода красит ответ).
@@ -132,11 +132,11 @@ class Transport:
                 }
             return self._success_response(request_id, payload)
 
-    # D13: версии протокола, которые сервер понимает (по убыванию новизны).
+    # Версии протокола, которые сервер понимает (по убыванию новизны).
     SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
     def _handle_initialize(self, request_id: Any, params: dict) -> str:
-        """Обработка initialize с согласованием версии (D13).
+        """Обработка initialize с согласованием версии.
 
         Args:
             request_id: ID запроса
@@ -145,7 +145,7 @@ class Transport:
         Returns:
             JSON-RPC ответ с информацией о сервере
         """
-        # D13: согласуем версию — если клиент просит поддерживаемую, отвечаем ею;
+        # Согласуем версию — если клиент просит поддерживаемую, отвечаем ею;
         # иначе отдаём свою новейшую. Раньше версия хардкодилась (устаревшая).
         client_version = (params or {}).get("protocolVersion")
         if client_version in self.SUPPORTED_PROTOCOL_VERSIONS:

@@ -13,6 +13,7 @@ core/providers/catalog.py — какие модели вообще бывают 
 """
 
 from typing import ClassVar
+import contextlib
 import json
 import re
 from pathlib import Path
@@ -247,7 +248,7 @@ class ModelCatalog:
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             details = list(pool.map(lambda r: self._detail(r["id"], want, describe), rows))
         out = []
-        for row, detail in zip(rows, details):
+        for row, detail in zip(rows, details, strict=True):
             if want and not detail.get("file"):
                 # Нужного формата в репозитории нет — установщик обязан её отклонить, значит
                 # и предлагать её нельзя: список из того, что поставить НЕЛЬЗЯ, — обман.
@@ -563,10 +564,8 @@ class ModelCatalog:
             # репозитория (в ней граф лежит в подкаталоге onnx/).
             if got.parent != target_dir:
                 got.replace(target_dir / got.name)
-                try:
+                with contextlib.suppress(OSError):
                     got.parent.rmdir()                      # опустевший каталог репозитория
-                except OSError:
-                    pass
         return {"id": model_id.split("/")[-1], "kind": kind, "repo": model_id, "revision": rev,
                 "path": str(dest / Path(chosen).name), "mb": total_mb, "refused": refused,
                 "file": Path(chosen).name}

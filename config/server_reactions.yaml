@@ -1,4 +1,4 @@
-# server_reactions.yaml — реестр реакций сервера (D4)
+# server_reactions.yaml — реестр реакций сервера
 #
 # Движок (core/engine) при ошибке смотрит сюда по `code` и собирает ErrorDetail.
 # Добавить реакцию = строка здесь, не код. Формат читается core/reactions/reactions.py:
@@ -29,7 +29,7 @@ INTERNAL_ERROR:
   recovery:
     reason: "Непредвиденный сбой в хендлере. Нужна диагностика человеком."
 
-# ═══ Файловая система (safe-join, D1) ═══
+# ═══ Файловая система (safe-join) ═══
 
 PATH_ESCAPE:
   class: ai_recoverable
@@ -44,7 +44,7 @@ MISSING_TARGET_FILE:
     suggested_tool: "fs_create_file"
     reason: "Создай файл перед чтением."
 
-# D4: добавлены коды из fs_*/table_* хендлеров (были хардкодом вне реестра).
+# Добавлены коды из fs_*/table_* хендлеров (были хардкодом вне реестра).
 FILE_NOT_FOUND:
   class: ai_recoverable
   message_template: "Файл не найден."
@@ -116,7 +116,7 @@ LOCAL_INFERENCE_FAILED:
   recovery:
     reason: "Деградация модели (large→medium→base) или проверка ресурсов; при исчерпании — человек."
 
-# ═══ Аутентификация (D3) ═══
+# ═══ Аутентификация ═══
 
 AUTH_REQUIRED:
   class: human_required
@@ -300,7 +300,7 @@ RECALC_UNAVAILABLE:
   recovery:
     reason: "Установи libreoffice-calc в окружении сервера — валидация формул требует реального пересчёта."
 
-# ═══ Структура: реестр связей / ORPHAN (Ф2) ═══
+# ═══ Структура: реестр связей / ORPHAN ═══
 
 UNLINKED_ENTITY:
   class: ai_recoverable
@@ -383,6 +383,12 @@ TEMPLATE_INVALID:
   message_template: "Шаблон объявлен неверно: {reason}"
   recovery:
     reason: "Правится в config/templates/workspace/*.tpl.yaml (блок id: с prefix и ancestors) — это объявление, а не данные клиента."
+
+ADVICE_INVALID:
+  class: human_required
+  message_template: "Декларация советов некорректна: {details}"
+  recovery:
+    reason: "Правится в config/recommendations.yaml (ключ → список советов) — это объявление сервера, а не данные клиента. Пока файл битый, успешные ответы идут без рекомендаций."
 
 FOREIGN_WRITE:
   class: integrity

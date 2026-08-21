@@ -1,5 +1,5 @@
 """
-tools/structure — материализация структуры workspace по шаблонам (Ф1) + реестр связей (Ф2).
+tools/structure — материализация структуры workspace по шаблонам + реестр связей.
 
 Тонкие обёртки: композицию по ссылке и контроль глубины делает core/engine/template_engine,
 связи — core/ids/LinkRegistry; здесь только упаковка результата в ToolResult + facts.
@@ -16,7 +16,7 @@ from core.write_policy import WritePolicyError
 from tools._context import ANNOTATIONS_MODIFY, ANNOTATIONS_READONLY, ToolContext
 
 
-# Режимы создания (директива владельца S20): кто материализует структуру.
+# Режимы создания (директива владельца): кто материализует структуру.
 MODES = {"default", "custom", "manual"}
 
 
@@ -53,14 +53,14 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         return out
 
     def _entity_block(node_id: str) -> dict:
-        """Единый пост-контракт создания (S18-g): имя, адрес, ID и цепочка владельцев."""
+        """Единый пост-контракт создания: имя, адрес, ID и цепочка владельцев."""
         rec = ctx.link_registry.get(node_id) or {}
         ch = ctx.chain_resolver.chain_for_entity(node_id)
         return {"id": node_id, "type": rec.get("type", ""), "name": rec.get("name", ""),
                 "path": rec.get("path", ""), "chain": ch["chain_id"],
                 "qualified_id": ch["qualified_id"], "owner_id": ch["chain"][-1]["id"] if ch["chain"] else ""}
 
-    # ─── Структура: шаблонное создание (Ф1) ───
+    # ─── Структура: шаблонное создание ───
 
     async def structure_create(type: str, name: str, parent_path: str = "",
                                children: dict | None = None, adopt: bool = False,
@@ -70,7 +70,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         Создаёт СВОИ папки/файлы узла + контейнеры детей; в детей спускается ТОЛЬКО
         для явно названных (children={тип:[имена]}). Книги (kind:table) созданных сущностей
         материализуются здесь же — клиент передаёт только имена. ID узла присваивает сервер,
-        предков берёт готовыми из каталога назначения (S18-h).
+        предков берёт готовыми из каталога назначения.
         """
         if mode not in MODES:
             return ctx.err("VALIDATION_ERROR", f"Неизвестный режим создания: {mode}.",
@@ -89,7 +89,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 facts=[Fact(type="CreationSkipped", data={
                     "mode": mode, "type": type, "name": name, "parent_path": parent_path})])
 
-        # S18-h: цепочка предков выводится ИЗ КАТАЛОГА, а не передаётся вызывающим (F63).
+        # Цепочка предков выводится ИЗ КАТАЛОГА, а не передаётся вызывающим.
         ok, chain = ctx.safe(lambda: ctx.chain_resolver.resolve(parent_path, node_type=type))
         if not ok:
             return chain
@@ -130,7 +130,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 anchor = made.get((atype, aname))
                 if anchor and anchor not in node["parent_ids"]:
                     node["parent_ids"].append(anchor)
-            # Ф2: регистрируем узел в реестре связей (для ORPHAN/link).
+            # Регистрируем узел в реестре связей (для ORPHAN/link).
             ctx.link_registry.register({
                 "id": node["node_id"], "type": node["type"], "name": node["name"],
                 "path": node["path"], "parent_ids": node["parent_ids"], "kind": "node"})
@@ -144,7 +144,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                     data={"path": c["path"]}))
             for t in node["tables_pending"]:
                 # ID книге присвоен, но в реестр она попадёт ТОЛЬКО после материализации:
-                # запись о несуществующем файле — ложь, которую ловит check_integrity (F65).
+                # запись о несуществующем файле — ложь, которую ловит check_integrity.
                 t["owner_id"] = node["node_id"]
                 facts.append(Fact(type="TableDeferred", data=t))
             for d in node["deferred_children"]:
@@ -158,7 +158,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         if not ok:
             return walked
 
-        # Фаза ТАБЛИЦЫ идёт сразу и целиком на сервере (решение владельца S17): клиент передаёт
+        # Фаза ТАБЛИЦЫ идёт сразу и целиком на сервере (решение владельца): клиент передаёт
         # ИМЕНА, книги материализует движок. Создаются книги ТОЛЬКО созданных сущностей — тот же
         # принцип, что у файловой структуры: канал создан ≠ видео-проект существует, книг видео нет.
         pending = [f.data for f in facts if f.type == "TableDeferred"]
@@ -177,16 +177,16 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 "path": m["path"], "book": m["book"], "file_id": m.get("file_id", ""),
                 "sheets": [s["sheet"] for s in m["sheets"]], "columns": m["columns_total"]}))
         res["tables_materialized"] = phase["materialized"]
-        # Книги без заведённой декларации остаются честно отложенными (G16), а не «успешно созданными».
+        # Книги без заведённой декларации остаются честно отложенными, а не «успешно созданными».
         res["tables_deferred"] = phase["failed"]
 
-        # Ф2: уведомление о висящих среди только что созданных (напр. конкурент без нашего канала).
+        # Уведомление о висящих среди только что созданных (напр. конкурент без нашего канала).
         orphan_notices = [o for o in ctx.link_registry.find_orphans() if o["id"] in created_ids]
         for o in orphan_notices:
             facts.append(Fact(type="EntityOrphaned", data=o))
         res["orphan_notices"] = orphan_notices
 
-        # F59: сервер сам объясняет, какие режимы создания вообще есть — иначе выбора у ИИ
+        # Сервер сам объясняет, какие режимы создания вообще есть — иначе выбора у ИИ
         # нет не потому, что его нет, а потому что он о нём не знает.
         res["mode"] = mode
         res["templates_source"] = dirs["source"]
@@ -196,7 +196,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
 
         # Названный ребёнок, которого нет среди объявленных детей ЭТОЙ ветки, раньше
         # просто исчезал: ИИ считал, что создал дерево, а создал корень. Дерево не
-        # откатываем — частичный результат помечаем (F96).
+        # откатываем — частичный результат помечаем.
         made_types = {f.data["type"] for f in facts if f.type == "NodeCreated"}
         unfulfilled = [{"type": t, "names": list(names),
                         "reason": f"тип не объявлен ребёнком ни на одном уровне под {type}"}
@@ -205,7 +205,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         for u in unfulfilled:
             facts.append(Fact(type="ChildUnfulfilled", data=u))
 
-        # S18-g: единый блок «имя + адрес + ID + цепочка» на КАЖДЫЙ созданный объект.
+        # Единый блок «имя + адрес + ID + цепочка» на КАЖДЫЙ созданный объект.
         res["entities"] = [_entity_block(nid) for nid in created_ids]
         res["adopted"] = adopted
         res["skipped_levels"] = chain["skipped"]
@@ -252,7 +252,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             for src in sorted(src_dir.glob("*.yaml")):
                 dst = dst_dir / src.name
                 rel = str(dst.relative_to(ctx.workspace_path))
-                # Копия шаблона — обычная запись в workspace: та же дверь, что у fs_* (F68/F72).
+                # Копия шаблона — обычная запись в workspace: та же дверь, что у fs_*.
                 text = src.read_text(encoding="utf-8")
                 try:
                     policy.check(rel)
@@ -312,7 +312,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             ch = resolver.chain_for_entity(e["id"])
             found.append({"id": e["id"], "type": e["type"], "name": e["name"], "path": e["path"],
                           "chain": ch["chain_id"], "qualified_id": ch["qualified_id"],
-                          # S3: ярлык и метки пришли из чата/файлов — отдаём в конверте провенанса,
+                          # Ярлык и метки пришли из чата/файлов — отдаём в конверте провенанса,
                           # а не голой строкой рядом с полями, которые сервер утверждает сам.
                           "label": as_untrusted(e.get("label", ""), e.get("source", ""), flagger).model_dump(),
                           "tags": [as_untrusted(t, e.get("source", ""), flagger).model_dump()
@@ -558,7 +558,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         ours_no_comp = ctx.link_registry.find_childless("channel", "competitor_channel")
         facts = [Fact(type="EntityOrphaned", data=o) for o in orphans]
         data: dict = {"orphans": orphans, "our_channels_without_competitor": ours_no_comp}
-        # F26: на пустом реестре два пустых списка выглядят как «всё в порядке». Это холодный
+        # На пустом реестре два пустых списка выглядят как «всё в порядке». Это холодный
         # старт, и сервер обязан сказать, что данных нет, и с чего начать — советом, не запретом.
         if not ctx.link_registry.check_integrity()["total_entities"]:
             data["cold_start"] = True

@@ -16,7 +16,8 @@ from dataclasses import dataclass, field
 from typing import Any
 import concurrent.futures
 
-from core.paths import safe_resolve  # D1/G17: containment внутри workspace/
+from core.paths import safe_resolve  # containment внутри workspace/
+from core.contracts import ContractError
 
 
 @dataclass
@@ -44,13 +45,8 @@ class QueryPlan:
     limit: int | None = None
 
 
-class SearchError(Exception):
+class SearchError(ContractError):
     """Ошибка поиска."""
-    def __init__(self, code: str, message: str, reason: str = ""):
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.reason = reason
 
 
 class QueryPlanner:
@@ -69,8 +65,8 @@ class QueryPlanner:
         """Загрузка YAML-файла запроса из workspace/ (путь контейнится — анти-traversal)."""
         try:
             p = safe_resolve(str(yaml_path), self.workspace)
-        except ValueError:
-            raise SearchError("PATH_ESCAPE", f"Путь запроса вне workspace: {yaml_path}")
+        except ValueError as e:
+            raise SearchError("PATH_ESCAPE", f"Путь запроса вне workspace: {yaml_path}") from e
         if not p.exists():
             raise SearchError("QUERY_NOT_FOUND", f"Файл запроса не найден: {yaml_path}")
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
@@ -218,7 +214,7 @@ class QueryPlanner:
         for key, condition in filter_dict.items():
             value = row.get(key)
             if isinstance(condition, dict):
-                # gt/lt: несопоставимые типы (str vs num) → строка не проходит фильтр, не TypeError (F42).
+                # gt/lt: несопоставимые типы (str vs num) → строка не проходит фильтр, не TypeError.
                 if "gt" in condition:
                     try:
                         if not (value is not None and value > condition["gt"]):
@@ -283,9 +279,9 @@ class QueryPlanner:
         return [r for r in rows if self._match_filter(r, filter_dict)]
 
     def _apply_sort(self, rows: list[dict], sort_config: dict) -> list[dict]:
-        """Сортировка результатов (разнотипные значения не роняют sorted — F42).
+        """Сортировка результатов (разнотипные значения не роняют sorted).
 
-        Чужеродные для столбца значения всегда в ХВОСТЕ, в обе стороны (F90): раньше группа
+        Чужеродные для столбца значения всегда в ХВОСТЕ, в обе стороны: раньше группа
         участвовала в развороте, и «топ по просмотрам» по убыванию начинался с текстовых
         заглушек и пустых ячеек — то есть ответ на «покажи лучшие» открывался мусором.
         """

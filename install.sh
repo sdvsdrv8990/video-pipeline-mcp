@@ -34,7 +34,7 @@ fi
 echo "Проверка stable-ts..."
 python3 -c "import stable_whisper; print('stable-ts OK')" 2>/dev/null || echo "stable-ts будет доступен после установки PyTorch"
 
-# 7. Установка cloudflared (туннель к Claude AI Web — D11)
+# 7. Установка cloudflared (туннель к Claude AI Web)
 echo "Проверка cloudflared..."
 if command -v cloudflared &> /dev/null; then
     echo "cloudflared найден: $(cloudflared --version 2>/dev/null | head -n 1)"

@@ -123,7 +123,7 @@ class CloudflaredTunnel:
             --credentials-file — локально управляемый туннель, DNS-маршрут привязан
             к домену командой `cloudflared tunnel route dns <name> <hostname>`.
 
-        D31: токен читается из env (MCP_TUNNEL_TOKEN), НЕ из config/tunnel.yaml.
+        Токен читается из env (MCP_TUNNEL_TOKEN), НЕ из config/tunnel.yaml.
         Env-приоритет: env > yaml. yaml используется ТОЛЬКО для не-секретных полей.
         """
         url = f"http://127.0.0.1:{self.port}"

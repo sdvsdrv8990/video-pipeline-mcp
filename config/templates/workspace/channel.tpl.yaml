@@ -13,8 +13,8 @@ channel:
     - { name: "videos", required: true }
   files:
     - { name: "channel_data.xlsx", kind: table, table_template: channel_data, required: true }
-    # Конфиг канала с S22 живёт ЛИСТАМИ в channel_data.xlsx (7 листов со строками-дефолтами),
-    # отдельного YAML у канала больше нет: одна книга на сущность (`13 §S20`).
+    # Конфиг канала живёт ЛИСТАМИ в channel_data.xlsx (7 листов со строками-дефолтами),
+    # отдельного YAML у канала больше нет: одна книга на сущность.
     - { name: "project_memory.md", kind: file, required: true }
   children:
     - { type: video, container: "videos/" }

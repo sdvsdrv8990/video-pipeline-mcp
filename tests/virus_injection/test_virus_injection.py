@@ -7,7 +7,7 @@ tests/virus_injection/test_virus_injection.py — adversarial: вредонос�
 модели ("ignore previous instructions…"), а не строка, похожая на команду.
 
 ## Границы
-ALLOW на `format c:`/`rm -rf` — не дыра, а решение D33/D34: антивирус по строкам был
+ALLOW на `format c:`/`rm -rf` — не дыра, а осознанное решение: антивирус по строкам был
 театром для этого домена. In-process `Firewall`, сервер не поднимается.
 """
 
@@ -38,7 +38,7 @@ def _decision(content: str, ip: str) -> str:
 
 
 def test_inert_shell_code_allowed():
-    """Инертный шелл-код как контент файла — не исполняется → ALLOW (D33/D34, не театр)."""
+    """Инертный шелл-код как контент файла — не исполняется → ALLOW (не театр)."""
     print("=== Инертный вредоносный код (не исполняется) ===")
     check("os.system+rm -rf как контент → allow (инертно)",
           _decision("import os; os.system('rm -rf /')", "198.51.100.20") == "allow")

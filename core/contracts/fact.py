@@ -9,12 +9,12 @@ Facts = память о действиях сервера для оркестр�
 from pydantic import BaseModel
 
 
-# D25: реестр типов фактов (единый источник).
+# Реестр типов фактов (единый источник).
 KNOWN_FACT_TYPES = {
     "DirectoryTree", "Echo", "FileCreated", "FileRead",
     "FileWritten", "FileMoved", "FileRenamed", "FileDeleted",
     "FileSearch", "StructureCreated", "FileAppended",
-    # Режимы создания (S20/F59): сервер объясняет выбор и отчитывается о нём
+    # Режимы создания: сервер объясняет выбор и отчитывается о нём
     "CreationSkipped", "TemplatesCustomized",
     # Уникальность (A7.2): число, неполнота входов и сигнал в петлю решений
     "UniquenessComputed", "UniquenessIncomplete", "UniquenessAlert",
@@ -23,7 +23,7 @@ KNOWN_FACT_TYPES = {
     "ProviderResolved", "MediaGenerated",
     # Каталог моделей: что доступно и что поставлено на машину
     "ModelsListed", "ModelInstalled", "ModelInstallStarted", "ModelInstallStatus", "ModelSpecRead",
-    # Раннер (S24): где именно считаются локальные модели — в сервере или в отдельном процессе
+    # Раннер: где именно считаются локальные модели — в сервере или в отдельном процессе
     "RunnerState",
     "MemoryRead", "MemoryWritten",
     "SearchCompleted", "QuickSearch", "MultiSearch",
@@ -45,11 +45,11 @@ KNOWN_FACT_TYPES = {
     "NodeCreated", "FolderCreated", "ChildDeferred", "ChildUnfulfilled", "TableDeferred",
     # Фаза ТАБЛИЦЫ (A1′): книга материализована по декларации *.schema.yaml
     "TableMaterialized",
-    # Реестр связей / ORPHAN (Ф2), верификация и здоровье (Ф4)
+    # Реестр связей / ORPHAN, верификация и здоровье
     "EntityLinked", "EntityOrphaned", "StructureVerified", "HealthChecked",
-    # Иерархия ID: цепочка по каталогу назначения (S18-g/S18-h)
+    # Иерархия ID: цепочка по каталогу назначения
     "EntityRegistered", "EntityAdopted", "ChainResolved",
-    # Индекс реестра: как ИИ узнаёт, какой ID искать (S19)
+    # Индекс реестра: как ИИ узнаёт, какой ID искать
     "EntitiesFound", "EntityAnnotated", "MemoryIndexed",
     # Проверка целостности реестра
     "IntegrityIssue",
@@ -62,14 +62,14 @@ class Fact(BaseModel):
     """Факт о сделанном действии сервера.
 
     Attributes:
-        type: Тип факта (D25: из реестра KNOWN_FACT_TYPES)
+        type: Тип факта (из реестра KNOWN_FACT_TYPES)
         data: Что именно сделано (произвольный dict)
     """
     type: str
     data: dict
 
     def model_post_init(self, __context) -> None:
-        """D25: предупреждаем если тип не в реестре."""
+        """Предупреждаем если тип не в реестре."""
         if self.type not in KNOWN_FACT_TYPES:
             import warnings
             warnings.warn(f"Fact.type='{self.type}' не в реестре KNOWN_FACT_TYPES", stacklevel=2)

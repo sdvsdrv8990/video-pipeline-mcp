@@ -1,5 +1,5 @@
 """
-core/write_policy.py — Какие типы файлов сервер вправе материализовать (S2)
+core/write_policy.py — Какие типы файлов сервер вправе материализовать
 
 ## Назначение
 Единственная точка решения «можно ли создать/перезаписать файл с таким расширением».
@@ -17,17 +17,11 @@ Default-deny: разрешено только то, что объявлено в
 from pathlib import Path
 
 import yaml
+from core.contracts import ContractError
 
 
-class WritePolicyError(Exception):
+class WritePolicyError(ContractError):
     """Тип файла запрещён к записи (маппится вызывающим в FILE_TYPE_FORBIDDEN)."""
-
-    def __init__(self, code: str, message: str, reason: str = "", suggested_tool: str | None = None):
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.reason = reason
-        self.suggested_tool = suggested_tool
 
 
 class WritePolicy:

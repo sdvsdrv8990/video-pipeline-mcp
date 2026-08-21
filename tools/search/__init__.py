@@ -2,7 +2,7 @@
 tools/search — умный поиск по таблицам (QueryPlanner поверх read.json).
 
 Тонкие обёртки: планирование и исполнение запроса — core/search/query_planner,
-чтение снапшотов — TableEngine.load_snapshot (F39). Здесь только разбор запроса и упаковка.
+чтение снапшотов — TableEngine.load_snapshot. Здесь только разбор запроса и упаковка.
 Контракт зафиксирован эталоном tests/quick/tools_inventory.golden.json.
 """
 
@@ -43,7 +43,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                                   "errors": result["metadata"]["reads_failed"],
                               })])
         except SearchError as e:
-            return ctx.err(e.code, e.message, e.reason)
+            return ctx.err(e.code, e.message, e.reason, e.suggested_tool)
         except Exception as e:
             return ctx.err("INTERNAL_ERROR", f"Ошибка поиска: {e}")
 

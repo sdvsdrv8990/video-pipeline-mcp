@@ -22,19 +22,13 @@ import yaml
 from core.ids.taxonomy import Taxonomy
 from core.paths import safe_resolve
 from core.write_policy import WritePolicy, WritePolicyError
+from core.contracts import ContractError
 
 _TOKEN_RE = re.compile(r"\{parent:([^}]+)\}")
 
 
-class TemplateError(Exception):
+class TemplateError(ContractError):
     """Ошибка движка шаблонов в формате контракта (маппится обёрткой в ErrorDetail)."""
-
-    def __init__(self, code: str, message: str, reason: str = "", suggested_tool: str | None = None):
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.reason = reason
-        self.suggested_tool = suggested_tool
 
 
 class TemplateEngine:
@@ -52,7 +46,7 @@ class TemplateEngine:
         self.tpl_dir = Path(templates_dir)
         # Корень серверных деклараций — источник копий для `kind: config`.
         self.config_dir = Path(config_dir) if config_dir else self.tpl_dir.parents[1]
-        # S2/F72: шаблон — тоже пишущий путь, значит через ту же дверь, что и fs_*.
+        # Шаблон — тоже пишущий путь, значит через ту же дверь, что и fs_*.
         self.policy = WritePolicy(self.config_dir)
         self.taxonomy = Taxonomy(templates_dir)   # префиксы и контейнеры — из шаблонов, не из кода
         self._cache: dict[str, dict] = {}
@@ -170,7 +164,7 @@ class TemplateEngine:
             d.mkdir(parents=True, exist_ok=True)
             created.append({"kind": "folder", "path": f"{node_rel}/{fname}"})
 
-        # --- files (таблицы отложены в фазу таблиц, Ф3/G16) ---
+        # --- files (таблицы отложены в фазу таблиц) ---
         for fr in (body.get("files") or []):
             fname = fr.get("name", "")
             if not fname:
@@ -195,7 +189,7 @@ class TemplateEngine:
                 # Per-project override: копия серверного дефолта в данные проекта (doc 10 §5.0).
                 rel_src = str(fr.get("source", fname))
                 try:
-                    # F73: источник — только внутри config/, иначе шаблон вычерпает .env наружу.
+                    # Источник — только внутри config/, иначе шаблон вычерпает .env наружу.
                     src = safe_resolve(rel_src, self.config_dir)
                 except ValueError:
                     skipped.append({"kind": "config", "name": fname, "reason": "source escape",

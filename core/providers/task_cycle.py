@@ -8,7 +8,7 @@ trigger → poll → download и приёмка того, что файл лёг
 ## Границы
 - цикл нужен не «дождаться готового», а ПОЙМАТЬ ОТКАЗ: модерация, лимит, невалидный вход —
   без прозвонки это молчание, а причину надо отдать ИИ;
-- планировщика нет (решение владельца S15): цикл — часть вызова, отвалившийся клиент задачу
+- планировщика нет (решение владельца): цикл — часть вызова, отвалившийся клиент задачу
   не теряет и не спасает, её статус прозванивается заново;
 - ни одного имени провайдера: опрос передаётся функцией, имена статусов — из декларации;
 - приёмка смотрит на ДИСК, а не на «200 OK»: бывает нулевой размер и обрыв на середине.
@@ -20,17 +20,11 @@ from pathlib import Path
 from core.paths import safe_resolve
 
 from .declaration import Declaration
+from core.contracts import ContractError
 
 
-class TaskCycleError(Exception):
+class TaskCycleError(ContractError):
     """Ошибка ожидания/загрузки в формате контракта (код из server_reactions.yaml)."""
-
-    def __init__(self, code: str, message: str, reason: str = "", suggested_tool: str | None = None):
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.reason = reason
-        self.suggested_tool = suggested_tool
 
 
 class TaskCycle:
@@ -114,7 +108,7 @@ class TaskCycle:
         рабочей области. Каждая проверка объявлена в `download.verify` — выключается декларацией.
         """
         rules = ((self.config.get("download") or {}).get("verify") or {})
-        # Ссылка приходит извне, адресу доверять нельзя: containment обязателен (G17).
+        # Ссылка приходит извне, адресу доверять нельзя: containment обязателен.
         target = safe_resolve(rel_path, Path(workspace))
         checks: dict[str, bool] = {}
 

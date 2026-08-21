@@ -1,5 +1,5 @@
 """
-tests/quick/test_structure.py — Ф1: TemplateEngine (шаблоны структуры + контроль глубины).
+tests/quick/test_structure.py — TemplateEngine (шаблоны структуры + контроль глубины).
 
 Standalone-прогон:  python tests/quick/test_structure.py
 Проверяет: niche-only, channel-минус-видео, названное видео → поддерево, отложенные
@@ -10,7 +10,7 @@ import tempfile
 import warnings
 from pathlib import Path
 
-warnings.simplefilter("error", UserWarning)  # чужой Fact.type (D25) → падение
+warnings.simplefilter("error", UserWarning) # чужой Fact.type → падение
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -234,7 +234,7 @@ integ = reg13.check_integrity()
 ok(any(i["type"] == "missing_path" and i["id"] == "CH_solo" for i in integ["issues"]),
    "перенос мимо реестра → missing_path (раньше 0 issues)")
 
-# F25: обратная сторона — каталог создан мимо сервера, в реестре его нет.
+# Обратная сторона — каталог создан мимо сервера, в реестре его нет.
 _stray = ws13 / "niches/gaming/channels/chStray"
 _stray.mkdir(parents=True, exist_ok=True)
 integ_back = reg13.check_integrity(tx)
@@ -639,7 +639,7 @@ ok(_written.count("\n- **note:**") == 1 and "с переводом" in _written,
    "переводы строк внутри значения не ломают формат журнала")
 
 print("== 32. F68: содержимое важнее имени, обход переименованием закрыт ==")
-# M44: сигнатура исполняемого бьёт независимо от расширения
+# Сигнатура исполняемого бьёт независимо от расширения
 for _name, _body, _what in (
     (f"{V2}/note.md", "#!/bin/sh\nrm -rf /", "shebang под .md"),
     (f"{V2}/dump.json", "\x7fELF\x02\x01\x01", "ELF под .json"),
@@ -671,7 +671,7 @@ _sigs = _fw_cfg.get("forbidden_content") or []
 ok(any(s.get("starts_with") == "#!" for s in _sigs) and any(s.get("starts_with_hex") for s in _sigs),
    "сигнатуры объявлены в firewall.yaml, а не в коде")
 
-# M45: имя меняется задним числом — allowlist обязан проверять цель
+# Имя меняется задним числом — allowlist обязан проверять цель
 call("fs_create_file", path=f"{V2}/data.txt", content="просто данные канала")
 _rn = call("fs_rename", path=f"{V2}/data.txt", new_name="data.sh")
 ok(_rn.status == "error" and _rn.error.code == "FILE_TYPE_FORBIDDEN",
@@ -688,10 +688,10 @@ ok(call("fs_rename", path=f"{V2}/folder", new_name="folder2").status == "success
    "каталог переименовывается: правило про тип файла, а не про папки")
 
 print("== 33. Механизм kind: config — копия дефолта в проект (doc 10 §5.1) ==")
-# Конфиг КАНАЛА с S22 живёт листами в channel_data (см. §33b), но сам механизм остаётся:
+# Конфиг КАНАЛА живёт листами в channel_data (см. §33b), но сам механизм остаётся:
 # doc 10 §5.1 отдаёт его под per-project override конфига умного поиска. Поэтому проверяем
 # механизм на собственной декларации, а не на снятом channel_config — иначе вместе с именем
-# ушёл бы и периметр F72/F73 (containment источника, allowlist фрагмента).
+# ушёл бы и периметр записи (containment источника, allowlist фрагмента).
 _cfgdir33 = Path(tempfile.mkdtemp(prefix="vpm_cfgdir_")) / "config"
 (_cfgdir33 / "templates" / "workspace").mkdir(parents=True)
 (_cfgdir33 / "probe_defaults.yaml").write_text("# СЕРВЕРНЫЙ ДЕФОЛТ\nkey: value\n", encoding="utf-8")
@@ -739,7 +739,7 @@ _want33 = ["WORKFLOW_SEQUENCES", "PUBLISHING_SCHEDULE", "RESOURCE_LIMITS", "META
 ok(all(n in _sheets33 for n in _want33),
    f"7 секций конфига стали листами channel_data: нет {[n for n in _want33 if n not in _sheets33]}")
 _rows33 = {n: len(_sheets33[n].get("rows") or []) for n in _want33 if n in _sheets33}
-# Число строк растёт при каждом новом провайдере (S24: фон и апскейл), поэтому сверяется не оно,
+# Число строк растёт при каждом новом провайдере (фон и апскейл), поэтому сверяется не оно,
 # а само свойство: ни один лист не приехал пустой формой, и суммарно дефолтов не убыло.
 ok(all(_rows33.values()) and sum(_rows33.values()) >= 36,
    f"листы несут строки-дефолты, а не пустую форму (пустые: {[n for n, c in _rows33.items() if not c]}, "
@@ -805,7 +805,7 @@ def _call35(tool, **params):
     return _aio35.run(_eng35.call(tool, params))
 
 
-# F59: из ОДНОГО ответа ИИ обязан увидеть все три режима и чем они отличаются.
+# Из ОДНОГО ответа ИИ обязан увидеть все три режима и чем они отличаются.
 _d35 = _call35("structure_create", type="niche", name="n1", parent_path="niches/")
 _ids35 = [a["id"] for a in _d35.data.get("recommendations", [])]
 ok(_ids35 == ["mode_default", "mode_custom", "mode_manual"],
@@ -853,7 +853,7 @@ ok(not (_ws35 / ".templates").exists() and not (_ws35 / "нет_такой_су�
 _srv35_dir = ROOT / "config" / "templates" / "workspace" / "channel.tpl.yaml"
 _before35 = _srv35_dir.read_text(encoding="utf-8")
 
-# ПЕРИМЕТР: в custom шаблон пишет сам ИИ — F72/F73 обязаны держаться так же, как в default.
+# ПЕРИМЕТР: в custom шаблон пишет сам ИИ — containment и allowlist обязаны держаться так же, как в default.
 (_ws35 / "niches/n1/.templates/workspace/network.tpl.yaml").write_text(
     'network:\n  id:\n    prefix: NW\n    strategy: hex\n'
     '    ancestors:\n      - { type: niche, required: true }\n  files:\n'
@@ -1057,7 +1057,7 @@ try:
 
     # Падение на ВТОРОЙ сущности: первая переезжает успешно, у второй путь занят.
     # Проверяем именно это — если помеха срабатывает до первого переноса, откатывать нечего
-    # и ассерт на компенсацию зелёный при вырезанном откате (мутация M113 это и вскрыла).
+    # и ассерт на компенсацию зелёный при вырезанном откате.
     _base42 = "niches/n42/networks/net42/competitors"
     for _n42, _busy42 in (("alpha", False), ("third", True)):
         _reg42.register({"id": f"CMP42_{_n42}", "type": "competitor_channel", "name": _n42,

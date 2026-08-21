@@ -16,17 +16,11 @@ import re
 from pathlib import Path
 
 import yaml
+from core.contracts import ContractError
 
 
-class UniquenessError(Exception):
+class UniquenessError(ContractError):
     """Ошибка расчёта в формате контракта (код из server_reactions.yaml)."""
-
-    def __init__(self, code: str, message: str, reason: str = "", suggested_tool: str | None = None):
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.reason = reason
-        self.suggested_tool = suggested_tool
 
 
 _PUNCT_RE = re.compile(r"[^\w\s]", re.UNICODE)
@@ -45,7 +39,7 @@ class UniquenessEngine:
 
     @property
     def config(self) -> dict:
-        """Параметры расчёта. Битую декларацию не глушим — иначе она тихо перестанет работать (D2)."""
+        """Параметры расчёта. Битую декларацию не глушим — иначе она тихо перестанет работать."""
         if not self.config_file.exists():
             raise UniquenessError(
                 "TEMPLATE_NOT_FOUND", f"Нет декларации расчёта: {self.config_file.name}",
@@ -231,7 +225,7 @@ class UniquenessEngine:
 
     def _alert(self, composed: float, scores: dict, fragment_scores: dict, thresholds: dict,
                readiness: str) -> tuple[str | None, list[str]]:
-        """Худшая оценка решает (владелец S22).
+        """Худшая оценка решает (решение владельца).
 
         Порог проверяется на композиции И на каждой объявленной оценке; берём самый тяжёлый
         уровень и называем, ЧТО его дало — иначе «critical» не подсказывает, где чинить.

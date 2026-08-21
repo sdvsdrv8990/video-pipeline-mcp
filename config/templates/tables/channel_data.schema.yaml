@@ -1,5 +1,5 @@
 # channel_data.xlsx — из спеки (scripts/spec_to_schema.py) + листы конфига канала
-# (scripts/config_to_schema.py, S22). ДОСОБРАН — spec_to_schema его больше не перезаписывает.
+# (scripts/config_to_schema.py). ДОСОБРАН — spec_to_schema его больше не перезаписывает.
 # Источник: docs/roadmap/spec/schemas/channel_data.schema.md. Формат: spec/TABLE_SCHEMA_FORMAT.md.
 book: channel_data
 level: channel
@@ -236,7 +236,7 @@ sheets:
       - { name: trend, type: string, flag: F }
       - { name: alert, type: string, flag: F }
 
-  # ═══ Листы из бывшего config/channel_config.yaml (S22) ═══
+  # ═══ Листы из бывшего config/channel_config.yaml ═══
   # Перенесены механически scripts/config_to_schema.py (round-trip проверен).
   # РЕШЕНИЯ, которые несла спека channel_config.schema.md:
   #  1. WORKFLOW_SEQUENCES — allow-list разрешённых переходов + human-gate,

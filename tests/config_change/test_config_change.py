@@ -69,7 +69,7 @@ async def test_firewall_config():
 
 
 async def test_hot_reload_rejects_broken_config():
-    """F128: смена конфига на живом сервере — битый тип не должен уезжать в правила."""
+    """Смена конфига на живом сервере — битый тип не должен уезжать в правила."""
     print("\n=== Hot-reload: битый конфиг ===")
 
     tmp = Path(tempfile.mkdtemp(prefix="cfgchange_"))

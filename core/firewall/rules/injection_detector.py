@@ -36,7 +36,7 @@ class InjectionDetector:
     """
 
     def __init__(self, patterns: list[str] | None = None, case_sensitive: bool = False):
-        # D15: копируем список чтобы не мутировать DEFAULT_PATTERNS.
+        # Копируем список чтобы не мутировать DEFAULT_PATTERNS.
         self.patterns = list(patterns) if patterns is not None else list(DEFAULT_PATTERNS)
         self.case_sensitive = case_sensitive
         self._attempts = 0
@@ -76,9 +76,8 @@ class InjectionDetector:
     def _check_string(self, text: str) -> bool:
         """Проверка строки на наличие паттернов.
 
-        D7: добавлена word-boundary проверка чтобы "act as a narrator"
-        не матчился как "act as" (legitimate FP). Паттерн ищется как
-        целое слово/фраза, а не подстрока.
+        Паттерн ищется как целое слово/фраза, а не подстрока: иначе
+        "act as a narrator" матчится как "act as" (legitimate FP).
 
         Args:
             text: Строка для проверки
@@ -91,7 +90,7 @@ class InjectionDetector:
 
         for pattern in self.patterns:
             check_pattern = pattern if self.case_sensitive else pattern.lower()
-            # D7: word-boundary поиск (regex \b) вместо простого `in`.
+            # Word-boundary поиск (regex \b) вместо простого `in`.
             # Это устраняет FP: "act as a narrator" ≠ "act as" (boundary после "as")
             # но сохраняет FN для "ignoreprevious" (нет boundaries = нет match).
             import re
@@ -106,21 +105,3 @@ class InjectionDetector:
             Количество попыток
         """
         return self._attempts
-
-    def add_pattern(self, pattern: str):
-        """Добавление нового паттерна.
-
-        Args:
-            pattern: Паттерн для добавления
-        """
-        if pattern not in self.patterns:
-            self.patterns.append(pattern)
-
-    def remove_pattern(self, pattern: str):
-        """Удаление паттерна.
-
-        Args:
-            pattern: Паттерн для удаления
-        """
-        if pattern in self.patterns:
-            self.patterns.remove(pattern)

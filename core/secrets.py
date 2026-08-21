@@ -1,5 +1,5 @@
 """
-core/secrets.py — ключи провайдеров: на уровне канала, зашифрованы, ИИ недоступны (S23).
+core/secrets.py — ключи провайдеров: на уровне канала, зашифрованы, ИИ недоступны.
 
 ## Назначение
 Ключ — свойство КАНАЛА, а не сервера, поэтому файл ключей лежит в самом канале:
@@ -22,8 +22,9 @@ import time
 from pathlib import Path
 
 from core.paths import safe_resolve
+from core.contracts import ContractError
 
-try:  # Шифрование — опциональная зависимость: без неё честно объявляем себя недоступным (G16).
+try: # Шифрование — опциональная зависимость: без неё честно объявляем себя недоступным.
     from cryptography.fernet import Fernet, InvalidToken
     ENCRYPTION_AVAILABLE = True
 except ImportError:  # pragma: no cover — среда без cryptography
@@ -36,15 +37,8 @@ SECRET_MODE = stat.S_IRUSR | stat.S_IWUSR     # 0600
 FINGERPRINT_LEN = 12
 
 
-class SecretError(Exception):
+class SecretError(ContractError):
     """Отказ работы с ключами (код из server_reactions.yaml)."""
-
-    def __init__(self, code: str, message: str, reason: str = "", suggested_tool: str | None = None):
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.reason = reason
-        self.suggested_tool = suggested_tool
 
 
 def fingerprint(value: str) -> str:

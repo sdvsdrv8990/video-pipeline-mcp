@@ -13,7 +13,7 @@ from pathlib import Path
 
 import openpyxl
 
-warnings.simplefilter("error", UserWarning)  # чужой код ошибки (D25/G14) → падение
+warnings.simplefilter("error", UserWarning) # чужой код ошибки → падение
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -178,7 +178,7 @@ print("== 7b. Строки-дефолты из схемы доезжают В К
 ws5 = tempfile.mkdtemp(prefix="tm5_")
 r5 = new_materializer(ws5).materialize("channel_data", "ch.xlsx")
 wb5 = openpyxl.load_workbook(Path(ws5) / "ch.xlsx")
-# Считаем по самой схеме: новый провайдер добавляет строки (S24 — фон и апскейл), и сверка с
+# Считаем по самой схеме: новый провайдер добавляет строки (фон и апскейл), и сверка с
 # числом, вписанным сюда однажды, ловила бы не потерю дефолтов, а факт их добавления.
 import yaml
 _declared_rows = sum(len(s.get("rows") or []) for s in yaml.safe_load(
@@ -221,7 +221,7 @@ ok(_r30["formulas_guarded"] == 3, f"объявленные формулы обё
 _f30 = [c.value for c in openpyxl.load_workbook(Path(_ws30) / "p.xlsx")["CALC"][2]]
 ok(all(str(v).startswith("=IFERROR(") for v in _f30[2:]), f"в книгу легла защищённая формула: {_f30[2]}")
 
-# Пересчёт РЕАЛЬНЫМ движком: без него это была бы проверка строки, а не поведения (урок F29).
+# Пересчёт РЕАЛЬНЫМ движком: без него это была бы проверка строки, а не поведения.
 try:
     _calc30 = _e30._recalc_via_lo(Path(_ws30) / "p.xlsx")
     _vals30 = [c.value for c in openpyxl.load_workbook(_calc30, data_only=True)["CALC"][2]]

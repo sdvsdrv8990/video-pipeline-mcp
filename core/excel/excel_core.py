@@ -8,7 +8,7 @@ CRUD над ФОРМОЙ книги: листы, столбцы, формулы,
 Заголовки столбцов — строка 1, данные со строки 2; столбец адресуется ПО ИМЕНИ заголовка,
 а не по букве. `read_range` — отладочное сырое чтение, рабочее идёт через снапшот и проекции.
 `insert_formula` не перезаписывает существующую формулу молча (FORMULA_PROTECTED).
-Все пути — через `core.paths.safe_resolve` внутри `workspace/` (G17/D29).
+Все пути — через `core.paths.safe_resolve` внутри `workspace/`.
 """
 
 from __future__ import annotations
@@ -17,10 +17,11 @@ import re
 from pathlib import Path
 
 from core.paths import safe_resolve
+from core.contracts import ContractError
 
 # Ссылка в формуле: необязательный лист (`META!` / `'Мой лист'!`), затем ячейка или
 # диапазон (`B2`, `$B$2`, `A2:D9`). Границы обязательны: без них `LOG10(` в `=LOG10(x)`
-# прочиталось бы как ячейка LOG10 и дало ложную зависимость (F28).
+# прочиталось бы как ячейка LOG10 и дало ложную зависимость.
 CELL_REF_RE = re.compile(
     r"(?<![A-Za-z0-9_$!])"
     r"(?:(?:'(?P<quoted>[^']+)'|(?P<plain>[A-Za-z_][A-Za-z0-9_.]*))!)?"
@@ -33,15 +34,8 @@ CELL_REF_RE = re.compile(
 # если библиотека не установлена (движок данных Категории 3 от неё не зависит).
 
 
-class ExcelError(Exception):
+class ExcelError(ContractError):
     """Ошибка движка структуры. Код из server_reactions.yaml + подсказка."""
-
-    def __init__(self, code: str, message: str, reason: str = "", suggested_tool: str | None = None):
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.reason = reason
-        self.suggested_tool = suggested_tool
 
 
 class ExcelEngine:
@@ -263,7 +257,7 @@ class ExcelEngine:
         return {"path": path, "sheet": sheet, "row": last + 1, "written": len(values)}
 
     def find_dependents(self, path: str, sheet: str, column: str) -> dict:
-        """Формулы, ссылающиеся на столбец (F28). Читающая операция — ничего не меняет.
+        """Формулы, ссылающиеся на столбец. Читающая операция — ничего не меняет.
 
         Ищем по ВСЕЙ книге: ссылка бывает межлистовой (`META!B2`). Диапазон `A2:D9` считается
         ссылкой на каждый столбец внутри него — удаление любого из них ломает диапазон.
@@ -307,7 +301,7 @@ class ExcelEngine:
 
     def _guard_column(self, wb, sheet: str, column: str, col_idx: int,
                       action: str, force: bool) -> list[dict]:
-        """Пред-проверка деструктива над столбцом: молчаливый коррапт формул запрещён (F28)."""
+        """Пред-проверка деструктива над столбцом: молчаливый коррапт формул запрещён."""
         deps = self._dependents(wb, sheet, col_idx)
         if deps and not force:
             where = ", ".join(f"{d['sheet']}!{d['cell']}" for d in deps[:5])
@@ -447,14 +441,15 @@ class ExcelEngine:
                  "--convert-to", "xlsx:Calc MS Excel 2007 XML", "--outdir", str(td), str(src)],
                 check=True, capture_output=True, timeout=120,
             )
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
             shutil.rmtree(td, ignore_errors=True)
             raise ExcelError("RECALC_UNAVAILABLE", "Пересчёт формул превысил таймаут.",
-                             reason="Файл слишком большой/сложный или LibreOffice завис.")
+                             reason="Файл слишком большой/сложный или LibreOffice завис.") from e
         except subprocess.CalledProcessError as e:
             shutil.rmtree(td, ignore_errors=True)
             raise ExcelError("RECALC_UNAVAILABLE", "Пересчёт формул не удался.",
-                             reason=f"LibreOffice вернул ошибку: {e.stderr.decode('utf-8', 'ignore')[:200]}")
+                             reason=f"LibreOffice вернул ошибку: "
+                                    f"{e.stderr.decode('utf-8', 'ignore')[:200]}") from e
         out = td / src.name
         if not out.exists():
             shutil.rmtree(td, ignore_errors=True)
@@ -463,7 +458,7 @@ class ExcelEngine:
         return out
 
     def validate_formulas(self, path: str) -> dict:
-        """Валидация формул РЕАЛЬНЫМ пересчётом (LibreOffice) — ловит #DIV/0!/#REF! и пр. (F29).
+        """Валидация формул РЕАЛЬНЫМ пересчётом (LibreOffice) — ловит #DIV/0!/#REF! и пр.
 
         Раньше был греп токенов по несчитанной книге (openpyxl) = театр: `=1/0` не ловился.
         """

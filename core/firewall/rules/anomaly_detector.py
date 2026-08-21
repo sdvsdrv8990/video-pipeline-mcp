@@ -27,15 +27,15 @@ class AnomalyResult:
 class AnomalyDetector:
     """Детектор аномалий в поведении.
 
-    D17: time-based anomaly detection УДАЛЁН — таймеры пропускают события
-    и дают ложные срабатывания. Оставлен ТОЛЬКО event-based detection:
-    проверка конкретного запроса на опасные инструменты.
+    Детекция ТОЛЬКО event-based: проверка конкретного запроса на опасные
+    инструменты. Time-based по окну не годится — таймеры пропускают события
+    и дают ложные срабатывания.
 
     Attributes:
-        dangerous_tools: Множество деструктивных инструментов (D18)
+        dangerous_tools: Множество деструктивных инструментов
     """
 
-    # D18: дефолтный список. Перекрывается декларацией firewall.yaml →
+    # Дефолтный список. Перекрывается декларацией firewall.yaml →
     # anomaly_detection.dangerous_tools (её читает core/firewall/firewall.py).
     DEFAULT_DANGEROUS_TOOLS = frozenset({
         "fs_delete", "fs_remove", "fs_move_outside",
@@ -43,7 +43,7 @@ class AnomalyDetector:
     })
 
     def __init__(self, dangerous_tools: set[str] | None = None):
-        # D18: конфигурируемый список вместо хардкода.
+        # Конфигурируемый список вместо хардкода.
         self.dangerous_tools = set(dangerous_tools) if dangerous_tools is not None else set(self.DEFAULT_DANGEROUS_TOOLS)
         self._detected = 0
 

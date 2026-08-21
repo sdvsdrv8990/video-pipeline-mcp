@@ -162,7 +162,7 @@ class RunnerService:
     # ═══ Пути ═══
 
     def _place(self, rel: str) -> Path:
-        """Куда писать. Тип файла — тот же allowlist, что у сервера (S2), а не «раз просят»."""
+        """Куда писать. Тип файла — тот же allowlist, что у сервера, а не «раз просят»."""
         if not rel:
             raise PathEscapeError("не указан путь результата")
         self.write_policy.check(rel)

@@ -16,7 +16,7 @@ from .rules.anomaly_detector import AnomalyDetector
 class Firewall:
     """Файрвол MCP-сервера: фильтрует ВСЕ входящие запросы ДО ядра модульными правилами.
 
-    F54: `enabled: false` в конфиге правило реально выключает, а не игнорируется.
+    `enabled: false` в конфиге правило реально выключает, а не игнорируется.
     """
 
     def __init__(self, config: dict | None = None):
@@ -29,7 +29,7 @@ class Firewall:
 
     @staticmethod
     def _num(config: dict, section: str, key: str, default: int) -> int:
-        """F128: число из конфига обязано быть целым числом ЗДЕСЬ.
+        """Число из конфига обязано быть целым числом ЗДЕСЬ.
 
         Иначе сравнение падает уже на запросе: reload объявляет успех, а сервер отвечает
         отказом на всё подряд — прежние правила при этом снесены.
@@ -64,14 +64,15 @@ class Firewall:
         anomaly_detector = AnomalyDetector(
             dangerous_tools=config.get("anomaly_detection", {}).get("dangerous_tools", None)
         )
-        # F54: `enabled` раньше объявлялся в firewall.yaml, но не читался — выключатель был мёртвым.
+        # Выключатель правила обязан ЧИТАТЬСЯ: объявленный, но никем не читаемый `enabled`
+        # выглядит рабочим и молча ничего не выключает.
         # Отсутствие ключа = правило включено (обратная совместимость со старым конфигом).
         enabled = {
             section: bool(config.get(section, {}).get("enabled", True))
             for section in ("rate_limit", "ip_blocklist", "injection_detection", "anomaly_detection")
         }
-        # Родня F54: `logging.log_suspicious` объявлялся в конфиге и не читался никем, поэтому
-        # сигнал log-only оставался немым — счётчик в памяти видели только тесты.
+        # Та же родня: без чтения `logging.log_suspicious` сигнал log-only остаётся немым —
+        # счётчик в памяти видят только тесты.
         log_suspicious = bool(config.get("logging", {}).get("log_suspicious", True))
         return (rate_limiter, injection_detector, ip_blocklist, anomaly_detector,
                 enabled, log_suspicious)
@@ -84,7 +85,7 @@ class Firewall:
     def reload(self, config: dict | None) -> bool:
         """Горячая перезагрузка правил из нового config БЕЗ пересоздания файрвола.
 
-        Fail-closed (D10): битый конфиг — не выключенный файрвол, а прежние рабочие правила
+        Fail-closed: битый конфиг — не выключенный файрвол, а прежние рабочие правила
         и False на выходе. Объект Firewall тот же, поэтому все держатели (в т.ч. Transport)
         сразу видят новые правила; рантайм-счётчики rate-limit и баны IP при этом сбрасываются.
         """
@@ -107,7 +108,7 @@ class Firewall:
         # 2. Проверка rate limit
         rate_result = self.rate_limiter.check(request.ip, request.timestamp)
         if self.enabled["rate_limit"] and not rate_result.allowed:
-            # D6: бан НЕ с первого превышения. Мягкий 429 до порога ban_after,
+            # Бан НЕ с первого превышения. Мягкий 429 до порога ban_after,
             # и только после N нарушений — фактический бан IP. За туннелем Claude
             # сидит за одним IP: один всплеск не должен блокировать его на 24ч.
             if self.rate_limiter.should_ban(request.ip):
@@ -118,7 +119,7 @@ class Firewall:
             )
 
         # 3. Детекция prompt injection
-        # D7: блокируем ТОЛЬКО текущий запрос, без авто-бана IP. Эвристика на
+        # Блокируем ТОЛЬКО текущий запрос, без авто-бана IP. Эвристика на
         # подстроках даёт ложные срабатывания (легитимный "act as a narrator"),
         # а Claude — доверенная сторона; бан за это — операционная мина.
         if self.enabled["injection_detection"] and self.injection_detector.detect(request.params):
@@ -149,14 +150,6 @@ class Firewall:
             reason: Причина блокировки
         """
         self.ip_blocklist.block(ip, reason)
-
-    def unblock_ip(self, ip: str):
-        """Разблокировка IP.
-
-        Args:
-            ip: IP для разблокировки
-        """
-        self.ip_blocklist.unblock(ip)
 
     def get_stats(self) -> dict:
         """Получение статистики файрвола.

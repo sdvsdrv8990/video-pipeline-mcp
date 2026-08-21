@@ -92,23 +92,6 @@ class IPBlocklist:
         self._cleanup_expired()
         return len(self._blocked)
 
-    def get_blocked_list(self) -> list[dict]:
-        """Получение списка заблокированных IP.
-
-        Returns:
-            Список словарей с информацией о банах
-        """
-        self._cleanup_expired()
-        return [
-            {
-                "ip": b.ip,
-                "reason": b.reason,
-                "blocked_at": b.blocked_at,
-                "expires_at": b.expires_at
-            }
-            for b in self._blocked.values()
-        ]
-
     def _cleanup_expired(self):
         """Очистка истёкших банов."""
         now = time.time()

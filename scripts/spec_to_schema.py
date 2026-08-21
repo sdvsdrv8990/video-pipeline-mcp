@@ -392,7 +392,8 @@ def verify() -> int:
     problems = []
     if [s["name"] for s in ref["sheets"]] != [s["name"] for s in got["sheets"]]:
         problems.append(f"листы: эталон {[s['name'] for s in ref['sheets']]} vs разбор {[s['name'] for s in got['sheets']]}")
-    for rs, gs in zip(ref["sheets"], got["sheets"]):
+    # Расхождение числа листов уже названо выше; режем по короткому, чтобы сверить общее.
+    for rs, gs in zip(ref["sheets"], got["sheets"], strict=False):
         for key in ("name", "type", "flag", "enum"):
             r = [c.get(key) for c in rs["columns"]]
             g = [c.get(key) for c in gs["columns"]]

@@ -8,17 +8,18 @@ core/ids/link_registry.py — Реестр связей сущностей (ан
 ## Границы
 - Связь односторонняя: `link(child, parent)` пишет parent_id ребёнку. Оба дерева не правим —
   источник истины один, рассинхрону неоткуда взяться.
-- Персист: `workspace/_id_registry.json`, атомарно (D9). Файлы не материализует (это TemplateEngine).
+- Персист: `workspace/_id_registry.json`, атомарно. Файлы не материализует (это TemplateEngine).
 - ORPHAN-политика (`REQUIRED_PARENT_TYPE`) намеренно уже объявления предков в шаблонах:
   `ancestors` считает адрес, а висящим объявляется только тот, кого без родителя не найти.
-  Расширение списка меняет продукт, а не реализацию (F99, решение владельца).
+  Расширение списка меняет продукт, а не реализацию (решение владельца).
 """
 
 import json
 import threading
 from pathlib import Path
 
-from core.state.state_manager import _atomic_write_json  # D9: единый атомарный писатель
+from core.state.state_manager import _atomic_write_json  # единый атомарный писатель
+from core.contracts import ContractError
 
 REGISTRY_FILE = "_id_registry.json"
 
@@ -29,15 +30,8 @@ REQUIRED_PARENT_TYPE = {
 }
 
 
-class LinkError(Exception):
+class LinkError(ContractError):
     """Ошибка реестра связей в формате контракта (маппится обёрткой в ErrorDetail)."""
-
-    def __init__(self, code: str, message: str, reason: str = "", suggested_tool: str | None = None):
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.reason = reason
-        self.suggested_tool = suggested_tool
 
 
 class LinkRegistry:
@@ -47,7 +41,7 @@ class LinkRegistry:
         self.ws = Path(workspace_path)
         self.path = self.ws / REGISTRY_FILE
         self._lock = threading.Lock()
-        # S9: личность инстанса. None → подпись не ставится и не проверяется (локальные
+        # Личность инстанса. None → подпись не ставится и не проверяется (локальные
         # прогоны и тесты); в бою её выдаёт build_context, и тогда чужие записи отклоняются.
         self.identity = identity
 
@@ -64,7 +58,7 @@ class LinkRegistry:
         return {"entities": {}}
 
     def _check_seal(self, data: dict) -> str:
-        """S9: чья это запись. "" — наша (или проверка не подключена)."""
+        """Чья это запись. "" — наша (или проверка не подключена)."""
         if self.identity is None:
             return ""
         seal = data.get("_seal") or {}
@@ -75,7 +69,7 @@ class LinkRegistry:
         return self.identity.verify({"entities": data["entities"]}, seal)
 
     def _guard_write(self, data: dict) -> None:
-        """Отказ записи поверх чужого артефакта (S9): состояние не меняем."""
+        """Отказ записи поверх чужого артефакта: состояние не меняем."""
         verdict = getattr(self, "_verdict", "") or self._check_seal(data)
         if not verdict:
             return
@@ -93,7 +87,7 @@ class LinkRegistry:
             "structure_check_integrity")
 
     def _save(self, data: dict) -> None:
-        """Атомарная запись с подписью инстанса (S9)."""
+        """Атомарная запись с подписью инстанса."""
         if self.identity is not None:
             seal = self.identity.seal({"entities": data["entities"]})
             if seal:
@@ -109,7 +103,7 @@ class LinkRegistry:
         return p.strip("/")
 
     def find_by_path(self, path: str) -> dict | None:
-        """Кто зарегистрирован по этому пути (обратное отображение путь → сущность, F64)."""
+        """Кто зарегистрирован по этому пути (обратное отображение путь → сущность)."""
         want = self._norm(path)
         if not want:
             return None
@@ -124,7 +118,7 @@ class LinkRegistry:
         check_unique=True → проверяет что ID не занят другой сущностью (для файлов).
 
         Инвариант пути: один путь = одна сущность. Попытка завести ВТОРОЙ ID на уже
-        занятый путь — раздвоение личности каталога (S18-h) → DUPLICATE_PATH."""
+        занятый путь — раздвоение личности каталога → DUPLICATE_PATH."""
         with self._lock:
             data = self._load()
             self._guard_write(data)
@@ -202,7 +196,7 @@ class LinkRegistry:
 
     def resolve_ref(self, entity_id: str = "", path: str = "",
                     etype: str = "", name: str = "") -> dict:
-        """Адресация сущности: по ID → по пути → по (тип, имя). ID и путь однозначны всегда (F64).
+        """Адресация сущности: по ID → по пути → по (тип, имя). ID и путь однозначны всегда.
 
         Пара (тип, имя) в иерархии неоднозначна по природе (два видео `intro` в разных каналах),
         поэтому при совпадении нескольких отдаём КАНДИДАТОВ с их ID и путями — чтобы перезвать
@@ -243,7 +237,7 @@ class LinkRegistry:
 
         Прямая сторона (запись есть, каталога нет) была всегда. Обратной не было, и каталог,
         созданный мимо сервера, оставался невидимым: «целостность зелёная» при расхождении —
-        тот же класс немой потери, что и молчаливый отказ (F25). Обратный проход требует
+        тот же класс немой потери, что и молчаливый отказ. Обратный проход требует
         таксономии (что здесь контейнер, а что сущность); без неё он честно НЕ выполняется
         и это написано в ответе, а не подразумевается.
         """
@@ -265,7 +259,7 @@ class LinkRegistry:
                                    "also": paths_seen[path]})
                 else:
                     paths_seen[path] = eid
-                # Рассинхрон реестра с диском: запись есть, каталога/файла нет (F65).
+                # Рассинхрон реестра с диском: запись есть, каталога/файла нет.
                 # Перенос мимо реестра больше не проходит молча.
                 if not (self.ws / path).exists():
                     issues.append({"type": "missing_path", "id": eid, "path": path,
@@ -289,12 +283,12 @@ class LinkRegistry:
         }
 
     def _scan_disk(self, taxonomy, registered: set, entities: dict) -> dict:
-        """Обратный проход: каталоги-сущности на диске, которых нет в реестре (F25).
+        """Обратный проход: каталоги-сущности на диске, которых нет в реестре.
 
         Спуск идёт ПО ОБЪЯВЛЕНИЮ, а не по имени родительского каталога: контейнер может
         нести токен `{parent:<тип>}` (`competitors/{parent:channel}/`), подставленный именем
         предка или опущенный (§4). Сравнение имён с литералом пропускало сгруппированную
-        ветку целиком и принимало сегмент группировки за сущность (F93).
+        ветку целиком и принимало сегмент группировки за сущность.
         """
         if taxonomy is None:
             return {"issues": [], "state": "не выполнен: таксономия не передана"}
@@ -389,7 +383,7 @@ class LinkRegistry:
             return True
 
     # РЕСУРСНЫЕ границы (не защита): реестр — единый JSON, и чужой текст не должен его раздувать.
-    # Защита от инъекций делается конвертом провенанса на выводе (core/contracts/untrusted.py, S3):
+    # Защита от инъекций делается конвертом провенанса на выводе (core/contracts/untrusted.py):
     # обрезать «ignore previous instructions» до 200 символов бессмысленно — оно короче.
     LABEL_MAX = 500
     TAG_MAX = 40
@@ -455,7 +449,7 @@ class LinkRegistry:
         return out
 
     def re_adopt(self) -> dict:
-        """S9: присвоить существующий реестр этому инстансу (явное действие владельца).
+        """Присвоить существующий реестр этому инстансу (явное действие владельца).
 
         Нужен после законного переноса — смены железа, переезда VM, восстановления из бэкапа.
         Данные не меняются, меняется только подпись: чужой артефакт становится нашим осознанно,
@@ -471,22 +465,10 @@ class LinkRegistry:
         """Все записи реестра (снимок). Для индексов на стороне читателей (поиск)."""
         return list(self._load()["entities"].values())
 
-    def find_under(self, path: str) -> list[dict]:
-        """Сущности, лежащие по этому пути или под ним (поддерево)."""
-        want = self._norm(path)
-        if not want:
-            return []
-        out = []
-        for e in self._load()["entities"].values():
-            p = self._norm(e.get("path", ""))
-            if p == want or p.startswith(want + "/"):
-                out.append(e)
-        return out
-
     def migrate_subtree(self, old_path: str, new_path: str) -> list[dict]:
-        """Перенос поддерева: путь сущности и всех её потомков переписывается (F65).
+        """Перенос поддерева: путь сущности и всех её потомков переписывается.
 
-        Собственные ID неизменны — меняется только адрес (S18-g), поэтому ссылки не рвутся.
+        Собственные ID неизменны — меняется только адрес, поэтому ссылки не рвутся.
         """
         old, new = self._norm(old_path), self._norm(new_path)
         moved = []

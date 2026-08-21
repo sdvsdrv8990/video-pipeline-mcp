@@ -8,7 +8,7 @@ tools/media — медиа-слой: кто исполняет ресурс, и 
   по диску и учтённым расходом. Синхронный провайдер отдаёт файл сразу, асинхронный —
   идентификатор задачи, и тогда сервер прозванивает её циклом внутри этого же вызова.
 
-Цикл прозвонки живёт ВНУТРИ вызова: демона нет (решение владельца S15). Отсюда честная
+Цикл прозвонки живёт ВНУТРИ вызова: демона нет (решение владельца). Отсюда честная
 граница — отвалившийся клиент задачу не теряет и не спасает, её статус прозванивается заново.
 """
 
@@ -210,7 +210,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                     "новый: в input нужен путь к существующему файлу внутри рабочей области.")
         rel = _asset_path(cfg, cycle, table, resource_type, slug, scene_id, params,
                           source_stem=source_file.stem if source_file else "")
-        # Тип файла — та же дверь, что у любой записи (S2): результат провайдера не привилегирован.
+        # Тип файла — та же дверь, что у любой записи: результат провайдера не привилегирован.
         def _checked_target() -> Path:
             ctx.write_policy.check(rel)          # бросает при запрещённом типе
             return ctx.resolve(rel)
@@ -222,7 +222,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         # иначе каждый новый адаптер обязан помнить про mkdir, и первый забывший роняет вызов.
         target.parent.mkdir(parents=True, exist_ok=True)
 
-        # S23: ключ проверяется ДО подъёма адаптера — он свойство провайдера, а не кода, и без
+        # Ключ проверяется ДО подъёма адаптера — он свойство провайдера, а не кода, и без
         # него вызов не состоится в любом случае. Берётся из закрытого файла канала и живёт
         # только до конца вызова.
         registry = AdapterRegistry(ctx.config_path / "providers.yaml", ctx.config_path.parent)
@@ -347,7 +347,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         try:
             report = ledger.charge_call(table, sheet, decision, text=text, files=files)
         except ProviderError as e:
-            # Файл уже сделан: молча «успех без расхода» означал бы вечный лимит (F72-класс).
+            # Файл уже сделан: молча «успех без расхода» означал бы вечный лимит.
             return {"charged": False, "code": e.code, "reason": e.message}
         report["charged"] = True
         return report

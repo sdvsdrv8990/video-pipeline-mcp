@@ -25,10 +25,10 @@ from tools._context import ANNOTATIONS_MODIFY, ANNOTATIONS_READONLY, ToolContext
 def register(engine: Engine, ctx: ToolContext) -> None:
     """Регистрация группы filesystem в движке."""
 
-    # F60: поиск получает реестр (личность файлов) и таксономию (раскладка из объявлений).
+    # Поиск получает реестр (личность файлов) и таксономию (раскладка из объявлений).
     fs_searcher = FsSearcher(ctx.workspace_path, registry=ctx.link_registry, taxonomy=ctx.taxonomy)
 
-    # Общий хвост описаний создающих инструментов: сервер сам объявляет владельца (S18-g).
+    # Общий хвост описаний создающих инструментов: сервер сам объявляет владельца.
     OWNER = (" Владельца сервер определяет ПО КАТАЛОГУ и всегда возвращает (owner_id + chain). "
              "assign_id=true дополнительно выдаёт файлу СОБСТВЕННЫЙ ID: префикс берётся из класса файла "
              "(.md→MEM, .json→DATA, .xlsx→TBL, .py→SCRIPT, ассеты→AST), в ответе приходят id, file_class "
@@ -47,7 +47,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         def build_tree(p: Path) -> dict:
             tree = {}
             for item in sorted(p.iterdir()):
-                # S23: обход идёт по диску мимо резолвера — закрытый каталог отсекаем здесь же,
+                # Обход идёт по диску мимо резолвера — закрытый каталог отсекаем здесь же,
                 # иначе он был бы «невидим для чтения, но виден в списке».
                 if is_secret_path(item.name):
                     continue
@@ -67,8 +67,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         if not target.exists():
             return ctx.err("FILE_NOT_FOUND", f"File not found: {path}")
         content = target.read_text(encoding="utf-8")
-        # S3: содержимое рабочей области — чужой текст. Отдаём в конверте провенанса, чтобы
-        # инструкция внутри файла не выглядела инструкцией сервера (F33/OUT1).
+        # Содержимое рабочей области — чужой текст. Отдаём в конверте провенанса, чтобы
+        # инструкция внутри файла не выглядела инструкцией сервера.
         envelope = as_untrusted(content, f"workspace:{path}", ctx.injection_flagger)
         return ToolResult(status="success",
                           data={"content": envelope.model_dump(), "size": len(content)},
@@ -76,12 +76,12 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                                                              "flags": envelope.flags})])
 
     def _check_write(path: str, content=None) -> None:
-        """S2: одна дверь для решения «можно ли писать» — тип файла И его содержимое."""
+        """Одна дверь для решения «можно ли писать» — тип файла И его содержимое."""
         ctx.write_policy.check(path)
         ctx.write_policy.check_content(path, content)
 
     def _owner_of(path: str) -> dict:
-        """Владелец файла по ВМЕСТИМОСТИ: ближайший зарегистрированный предок пути (S18-g).
+        """Владелец файла по ВМЕСТИМОСТИ: ближайший зарегистрированный предок пути.
 
         Файл, созданный вручную, собственного ID не получает, но перестаёт быть безымянным:
         сервер сообщает, чьей сущности он принадлежит и какова цепочка владельцев.
@@ -95,11 +95,11 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 "owner_type": nearest.get("type", ""), "owner_path": nearest.get("path", "")}
 
     def _assign_id(path: str) -> dict:
-        """Выдать файлу СОБСТВЕННЫЙ ID по запросу (директива владельца S19).
+        """Выдать файлу СОБСТВЕННЫЙ ID по запросу (директива владельца).
 
         Генерация — отдельный шаг, а не побочный эффект записи: ИИ сам решает, нужна ли
         файлу личность, и может сверить выданный префикс с классом файла. Уже
-        зарегистрированный путь отдаёт СВОЙ ID, второго не заводим (инвариант S18-h).
+        зарегистрированный путь отдаёт СВОЙ ID, второго не заводим (инвариант реестра).
         """
         existing = ctx.link_registry.find_by_path(path)
         if existing:
@@ -133,7 +133,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                           facts=[Fact(type=fact_type, data={"path": path, "size": size, **entity})])
 
     async def fs_create_file(path: str, content: str = "", assign_id: bool = False) -> "ToolResult":
-        """Создание файла: владелец по вместимости всегда, собственный ID — по запросу (S18-g/S19)."""
+        """Создание файла: владелец по вместимости всегда, собственный ID — по запросу."""
         try:
             target = ctx.resolve(path)
         except ValueError as _pe:
@@ -163,7 +163,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         return res
 
     async def fs_move(source: str, destination: str) -> "ToolResult":
-        """Перемещение файла или каталога (реестр переезжает вместе с диском, F65)."""
+        """Перемещение файла или каталога (реестр переезжает вместе с диском)."""
         try:
             src, dst = ctx.resolve(source), ctx.resolve(destination)
         except ValueError as _pe:
@@ -172,13 +172,13 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             return ctx.err("FILE_NOT_FOUND", f"Source not found: {source}")
         if dst.exists():
             return ctx.err("FILE_EXISTS", f"Destination exists: {destination}")
-        # S2: перенос не должен становиться лазейкой — создать data.txt и переехать в run.sh
+        # Перенос не должен становиться лазейкой — создать data.txt и переехать в run.sh
         # значит обойти allowlist. Тип цели проверяется так же, как при создании.
         if src.is_file():
             ok_type, denied = ctx.safe(lambda: _check_write(destination))
             if not ok_type:
                 return denied
-        # S18-h: адрес цели считается ДО переноса — ИИ видит, куда сущность попадёт.
+        # Адрес цели считается ДО переноса — ИИ видит, куда сущность попадёт.
         ok, plan = ctx.safe(lambda: ctx.chain_resolver.resolve(str(Path(destination).parent)))
         if not ok:
             return plan
@@ -207,7 +207,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             return ctx.err_path(_pe, f"New name escapes workspace: {new_name}")
         if dst.exists():
             return ctx.err("FILE_EXISTS", f"Name exists: {new_name}")
-        # S2: та же лазейка через переименование (notes.md → notes.sh).
+        # Та же лазейка через переименование (notes.md → notes.sh).
         if src.is_file():
             ok_type, denied = ctx.safe(lambda: _check_write(new_name))
             if not ok_type:
@@ -229,7 +229,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             return ctx.err_path(_pe, f"Path escapes workspace: {path}")
         if not target.exists():
             return ctx.err("FILE_NOT_FOUND", f"Not found: {path}")
-        # S3: удаление необратимо → подтверждение обязательно ВСЕГДА, а не только для непустых
+        # Удаление необратимо → подтверждение обязательно ВСЕГДА, а не только для непустых
         # каталогов. Инъекция в файле не должна оборачиваться тихой потерей данных.
         if not force:
             kind = "каталог" if target.is_dir() else "файл"
@@ -240,7 +240,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             shutil.rmtree(target)
         else:
             target.unlink()
-        # Реестр не должен переживать диск: снятые записи возвращаются клиенту явно (F65).
+        # Реестр не должен переживать диск: снятые записи возвращаются клиенту явно.
         dropped = ctx.link_registry.forget_subtree(path)
         return ToolResult(status="success",
                           data={"deleted": path,
@@ -274,9 +274,12 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                              "owner_id": r.owner_id, "chain": r.chain}
                             for r in results],
                 "count": len(results),
-            }, facts=[Fact(type="FsSearch", data={"directory": directory, "count": len(results)})])
+                # Нечитаемое НЕ прячем: иначе неполный ответ выглядит полным.
+                "unreadable": task.unreadable,
+            }, facts=[Fact(type="FsSearch", data={"directory": directory, "count": len(results),
+                                                  "unreadable": len(task.unreadable)})])
         except FsSearchError as e:
-            return ctx.err(e.code, e.message, e.reason)
+            return ctx.err(e.code, e.message, e.reason, e.suggested_tool)
         except Exception as e:
             return ctx.err("INTERNAL_ERROR", f"Ошибка поиска: {e}")
 
@@ -293,9 +296,11 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                             for r in results],
                 "count": len(results),
                 "query_name": task.id,
-            }, facts=[Fact(type="FsSearchYaml", data={"count": len(results)})])
+                "unreadable": task.unreadable,
+            }, facts=[Fact(type="FsSearchYaml", data={"count": len(results),
+                                                      "unreadable": len(task.unreadable)})])
         except FsSearchError as e:
-            return ctx.err(e.code, e.message, e.reason)
+            return ctx.err(e.code, e.message, e.reason, e.suggested_tool)
         except Exception as e:
             return ctx.err("INTERNAL_ERROR", f"Ошибка поиска: {e}")
 
@@ -336,7 +341,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         if not path.endswith(".py"):
             return ctx.err("INVALID_EXTENSION", f"Not a Python file: {path}")
         desc = description or target.stem
-        # F45: каркас захардкожен здесь — должен переехать в config/templates/ (отдельный воркстрим).
+        # Каркас захардкожен здесь — должен переехать в config/templates/ (отдельный воркстрим).
         skeleton = f'"""\n{desc}\n"""\n\nimport sys\nfrom pathlib import Path\n\n\ndef main():\n    """Main entry point."""\n    print(f"Running {{__file__}}")\n    # TODO: implement\n    pass\n\n\nif __name__ == "__main__":\n    main()\n'
         # description приходит от ИИ и попадает В файл — путь пишущий, значит через ту же дверь.
         ok_type, denied = ctx.safe(lambda: _check_write(path, skeleton))

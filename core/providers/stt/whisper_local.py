@@ -10,7 +10,7 @@ core/providers/stt/whisper_local.py — транскрибация локаль�
   который отсеивает pickle (`.pt`/`.bin` исполняют код при загрузке);
 - параметры вызова — столбцы строки и декларация, не ветки здесь;
 - звук декодирует ffmpeg (системный бинарь, не pip) — его отсутствие обязано быть слышно;
-- результат уходит ФАЙЛОМ: текст в `meta` уехал бы клиенту мимо конверта провенанса (S3);
+- результат уходит ФАЙЛОМ: текст в `meta` уехал бы клиенту мимо конверта провенанса;
 - нет весов — `LOCAL_MODEL_MISSING`, нет среды — `LOCAL_INFERENCE_FAILED`, а не тишина.
 """
 
@@ -111,11 +111,6 @@ class WhisperLocalSTT:
                 "CONTENT_REJECTED", "Нечего транскрибировать: исходный аудиофайл не найден.",
                 reason="Передай путь к существующему файлу записи — повтор того же входа даст "
                        "тот же отказ.")
-        if not shutil.which("ffmpeg"):
-            raise ProviderError(
-                "LOCAL_INFERENCE_FAILED", "Нечем декодировать звук: ffmpeg не найден в PATH.",
-                reason="ffmpeg — системный бинарь, а не пакет pip: поставь его пакетным "
-                       "менеджером (apt/dnf/brew). Без него распознавание не поднимется вовсе.")
         writer = self._writer(request.target)
         where = self._where(request.params)
         # Опись хранит путь к ФАЙЛУ весов, а `from_pretrained` нужен каталог с конфигом и
@@ -125,6 +120,14 @@ class WhisperLocalSTT:
         entry = self.registry.model_entry(name) or {}
         pipe = self._pipe(ref if ref.is_dir() else ref.parent, where,
                           str(entry.get("revision") or "main"))
+        # Проверка СРЕДЫ идёт последней, после проверок запроса: «формат не поддержан» и «весов
+        # нет» верны независимо от ffmpeg, и на машине без него все отказы схлопнулись бы в один
+        # (поймано красным CI — локально ffmpeg есть, у раннера нет).
+        if not shutil.which("ffmpeg"):
+            raise ProviderError(
+                "LOCAL_INFERENCE_FAILED", "Нечем декодировать звук: ffmpeg не найден в PATH.",
+                reason="ffmpeg — системный бинарь, а не пакет pip: поставь его пакетным "
+                       "менеджером (apt/dnf/brew). Без него распознавание не поднимется вовсе.")
         request.target.parent.mkdir(parents=True, exist_ok=True)
         try:
             out = pipe(str(source), generate_kwargs=self._generate_kwargs(request.params),

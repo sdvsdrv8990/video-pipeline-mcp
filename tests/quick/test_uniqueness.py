@@ -15,7 +15,7 @@ from pathlib import Path
 
 import yaml
 
-warnings.simplefilter("error", UserWarning)  # чужой Fact.type (D25) → падение
+warnings.simplefilter("error", UserWarning) # чужой Fact.type → падение
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -112,7 +112,7 @@ _dup = uniq.compute(text="герой просыпается и идёт на р�
                     corpus=["герой просыпается и идёт на работу под дождём каждый день"],
                     fragments={"svg_bg": ["A"], "svg_character": ["C"]}, profile_rows=PROFILE)
 ok(_dup["scores"]["script_score"] == 0.0, "текст повторён целиком → уникальность текста 0.0")
-# Решение владельца S22: ХУДШАЯ ОЦЕНКА РЕШАЕТ. Композиция здесь = 0.5 (мягкий alert), но текст
+# Решение владельца: ХУДШАЯ ОЦЕНКА РЕШАЕТ. Композиция здесь = 0.5 (мягкий alert), но текст
 # скопирован слово в слово (0.0) — сигнал обязан быть critical, иначе плагиат прячется за сценой.
 ok(_dup["composed"] == 0.5, f"композиция усредняет провал до 0.5 (получено {_dup['composed']})")
 ok(_dup["alert"] == "critical",

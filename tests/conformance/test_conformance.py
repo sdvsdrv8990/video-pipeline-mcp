@@ -1,5 +1,5 @@
 """
-tests/conformance/test_conformance.py — сверка с эталонным набором спеки MCP (T7).
+tests/conformance/test_conformance.py — сверка с эталонным набором спеки MCP.
 
 Standalone-прогон:  python tests/conformance/test_conformance.py
 Нужен `npx` (пакет @modelcontextprotocol/conformance). Нет node — набор ЧЕСТНО пропускается
@@ -101,7 +101,7 @@ ok(fw.read_text(encoding="utf-8").replace("100000", "60") == src_fw,
 
 with live_server(env={"MCP_CONFIG": str(cfg_dir)}) as srv, AuthProxy(srv.url, srv.token) as proxy:
     # Прокси добавляет ключ за клиента, который его не умеет: калитка MCP_ALLOW_NO_AUTH сняла бы
-    # проверяемый слой целиком (F74). Host прокси передаёт как есть — на нём стоит защита F103.
+    # проверяемый слой целиком. Host прокси передаёт как есть — на нём стоит проверка Host.
     out_dir = Path(tempfile.mkdtemp(prefix="conf_out_"))
     run = subprocess.run(["npx", "-y", PACKAGE, "server", "--url", proxy.url, "-o", str(out_dir)],
                          capture_output=True, text=True, timeout=1200,

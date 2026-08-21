@@ -1,4 +1,4 @@
-"""tests/conftest.py — общие фикстуры прогонов (T0)."""
+"""tests/conftest.py — общие фикстуры прогонов."""
 
 import sys
 from pathlib import Path

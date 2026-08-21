@@ -11,6 +11,7 @@ Host → Origin → Content-Type → тело → Auth → Firewall → Engine �
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -38,7 +39,7 @@ from tools import excel, filesystem, media, memory, search, structure, tables, u
 
 # ═══ КОНФИГУРАЦИЯ ═══
 
-# D12: по умолчанию слушаем localhost — публичный доступ идёт только через туннель.
+# По умолчанию слушаем localhost — публичный доступ идёт только через туннель.
 HOST = os.environ.get("MCP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MCP_PORT", "8080"))
 
@@ -52,17 +53,17 @@ WORKSPACE_PATH = Path(os.environ.get("MCP_WORKSPACE") or (BASE_PATH / "workspace
 # долбящий 30 сценариев подряд, банит сам себя, и «несоответствие спеке» оказывается блокировкой.
 CONFIG_PATH = Path(os.environ.get("MCP_CONFIG") or (BASE_PATH / "config")).resolve()
 
-# D12/F106: спека транспорта MCP требует валидировать Origin на ВСЕХ соединениях. Пустой список
+# Спека транспорта MCP требует валидировать Origin на ВСЕХ соединениях. Пустой список
 # больше не значит «не проверять»: браузер прикладывает Origin к любому кросс-доменному запросу,
 # поэтому запрос С чужим Origin — чужая вкладка. Список РАСШИРЯЕТ разрешённые браузерные источники
 # сверх петли, но не отключает клиента-бэкенда: тот Origin не шлёт вовсе (решение владельца).
 ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("MCP_ALLOWED_ORIGINS", "").split(",") if o.strip()]
 
-# F107: тело принимаем только этим типом. Три «простых» типа (text/plain, form-urlencoded,
+# Тело принимаем только этим типом. Три «простых» типа (text/plain, form-urlencoded,
 # multipart) браузер шлёт БЕЗ preflight — на них и держится CSRF из чужой вкладки.
 JSON_CONTENT_TYPE = "application/json"
 
-# F109: заголовки ответа не-UI сервера: сниффинг запрещён, страница из ответа ничего не грузит и
+# Заголовки ответа не-UI сервера: сниффинг запрещён, страница из ответа ничего не грузит и
 # не встраивается, промежуточные кэши ответ не хранят, версия сервера наружу не объявляется.
 RESPONSE_HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -72,7 +73,7 @@ RESPONSE_HEADERS = {
     "Server": "mcp",
 }
 
-# F103: Host валидируется ВСЕГДА (анти-DNS-rebinding) — петля + hostname туннеля + MCP_ALLOWED_HOSTS.
+# Host валидируется ВСЕГДА (анти-DNS-rebinding) — петля + hostname туннеля + MCP_ALLOWED_HOSTS.
 # 0.0.0.0 не входит намеренно: это имя браузерного обхода localhost («0.0.0.0 Day»), не bind раннера.
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
@@ -88,8 +89,11 @@ def _allowed_hosts() -> set:
             declared = (_yaml.safe_load(tunnel_cfg.read_text(encoding="utf-8")) or {}).get("hostname", "")
             if declared:
                 hosts.add(str(declared).strip().lower())
-        except Exception:
-            pass          # битый конфиг туннеля не должен ронять сервер: петля остаётся разрешена
+        except (OSError, ValueError, yaml.YAMLError) as e:
+            # Сервер не роняем — петля остаётся разрешена. Но молчать нельзя: без hostname
+            # туннеля в allowlist каждый запрос ЧЕРЕЗ туннель получит 403, и причина не видна.
+            print(f"⚠️  [tunnel] {tunnel_cfg.name} не прочитан ({e!r}) — hostname туннеля НЕ в "
+                  f"allowlist: запросы через туннель будут отклоняться, пока конфиг битый")
     return hosts
 
 
@@ -98,10 +102,10 @@ ALLOWED_HOSTS = _allowed_hosts()
 # Значения, о которых уже сообщили: чужая вкладка в цикле иначе забьёт консоль владельца.
 _REPORTED_ORIGINS: set = set()
 
-# S1/F14: ключ сервер выдаёт себе сам (см. core/auth). Пустой токен больше НЕ означает
+# Ключ сервер выдаёт себе сам (см. core/auth). Пустой токен больше НЕ означает
 # «auth отключена» — это fail-closed: без ключа сервер не стартует, если явно не разрешено.
 ENV_PATH = BASE_PATH / ENV_FILE
-# S21: сервер держит ОТПЕЧАТОК ключа, не значение — сравнение идёт по хэшу.
+# Сервер держит ОТПЕЧАТОК ключа, не значение — сравнение идёт по хэшу.
 MCP_AUTH_DIGEST = ""
 # Явная и громкая калитка для локальной разработки и тестов (по умолчанию закрыта).
 ALLOW_NO_AUTH = os.environ.get("MCP_ALLOW_NO_AUTH", "") == "1"
@@ -118,17 +122,19 @@ def _load_yaml(path: Path) -> dict:
 
 def create_server() -> tuple[Engine, Transport, Firewall]:
     """Создание и настройка сервера."""
-    # D2: реально загружаем конфиг файрвола (раньше игнорировался).
+    # Конфиг файрвола обязан ЗАГРУЖАТЬСЯ: объявленный, но не прочитанный файл
+    # оставил бы правила дефолтными молча.
     firewall_config = _load_yaml(CONFIG_PATH / "firewall.yaml")
 
-    # D4: реестр реакций подключаем к движку (раньше висел мёртвым объектом).
+    # Реестр реакций подключается к движку — иначе он лишь объект в памяти,
+    # а ошибки уходят наружу без class/recovery.
     reactions = Reactions(CONFIG_PATH / "server_reactions.yaml")
 
     firewall = Firewall(firewall_config)
     id_generator = IDGenerator()
     state_manager = StateManager(WORKSPACE_PATH)
 
-    # D24: state_manager передаётся в engine для логирования facts в _SESSION_LOG.
+    # state_manager передаётся в engine для логирования facts в _SESSION_LOG.
     engine = Engine(reactions=reactions, state_manager=state_manager)
 
     # Создаём workspace если нет
@@ -188,7 +194,7 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
     Args:
         host: Хост
         port: Порт
-        use_tunnel: Поднять Cloudflare-туннель вместе с сервером (D11)
+        use_tunnel: Поднять Cloudflare-туннель вместе с сервером
     """
     global MCP_AUTH_DIGEST
     if not ALLOW_NO_AUTH:
@@ -234,24 +240,24 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
 
     async def handle_jsonrpc(request: "web.Request") -> "web.Response":
         """Обработка JSON-RPC запросов: Origin → Auth → Firewall → Transport."""
-        # F103: Host — первым, до всего остального. Чужое имя хоста означает, что до нас
+        # Host — первым, до всего остального. Чужое имя хоста означает, что до нас
         # достучались через браузер жертвы (DNS-rebinding), и разбирать такой запрос незачем.
         host = (request.headers.get("Host") or "").strip().lower()
-        # F108: запятая в Host — склейка двух заголовков посредником; разбирать первое значение
+        # Запятая в Host — склейка двух заголовков посредником; разбирать первое значение
         # значит верить отправителю в выборе, какое из имён считать нашим.
         if "," in host or (host.rsplit(":", 1)[0].strip("[]") not in {h.strip("[]") for h in ALLOWED_HOSTS}
                            and host not in ALLOWED_HOSTS):
             return web.json_response(_jsonrpc_error(None, -32002, "Forbidden host"), status=403)
 
-        # D12/F106: Origin проверяется всегда, когда он есть. Отсутствие заголовка = не браузер:
+        # Origin проверяется всегда, когда он есть. Отсутствие заголовка = не браузер:
         # кросс-доменный запрос без Origin браузер отправить не может, а CSRF простым запросом
-        # отбивает требование application/json ниже (F107).
+        # отбивает требование application/json ниже.
         origin = request.headers.get("Origin")
         if origin is not None and not _origin_allowed(origin):
             _report_origin(origin)
             return web.json_response(_jsonrpc_error(None, -32002, "Forbidden origin"), status=403)
 
-        # F107: чужой тип тела = запрос, который браузер отправляет без preflight.
+        # Чужой тип тела = запрос, который браузер отправляет без preflight.
         if request.content_type != JSON_CONTENT_TYPE:
             return web.json_response(
                 _jsonrpc_error(None, -32600, f"Unsupported Media Type: {JSON_CONTENT_TYPE} required"),
@@ -262,13 +268,13 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
         except Exception:
             return web.json_response(_jsonrpc_error(None, -32700, "Cannot read body"), status=400)
 
-        # D10: fail-closed — не можем распарсить/проверить → блокируем, а не пропускаем.
+        # Fail-closed — не можем распарсить/проверить → блокируем, а не пропускаем.
         try:
             req_data = json.loads(raw_request)
         except json.JSONDecodeError as e:
             return web.json_response(_jsonrpc_error(None, -32700, f"Parse error: {e}"), status=400)
 
-        # S1: аутентификация ДО файрвола. Принимаем оба заголовка из allowlist коннектора
+        # Аутентификация ДО файрвола. Принимаем оба заголовка из allowlist коннектора
         # Claude AI Web (Authorization: Bearer / X-Api-Key) — иначе клиент не сможет прислать ключ.
         if not ALLOW_NO_AUTH:
             deny = check_auth(request.headers, MCP_AUTH_DIGEST)
@@ -291,8 +297,8 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
                 )
                 fw_result = firewall.check(fw_request)
             except Exception as e:
-                # D10: любой сбой firewall = блокировка (fail-closed), не пропуск.
-                # F129: причина сбоя — в консоль владельца; наружу только факт отказа, иначе
+                # Любой сбой firewall = блокировка (fail-closed), не пропуск.
+                # Причина сбоя — в консоль владельца; наружу только факт отказа, иначе
                 # клиент получает текст внутреннего исключения (имена типов, значения полей).
                 print(f"⛔ [firewall] сбой проверки, запрос отклонён: {e!r}")
                 return web.json_response(
@@ -301,7 +307,7 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
                     status=403
                 )
 
-            # D21: RATE_LIMIT и BLOCK — разные HTTP-коды, чтобы Claude различал.
+            # RATE_LIMIT и BLOCK — разные HTTP-коды, чтобы Claude различал.
             if fw_result.decision == FirewallDecision.BLOCK:
                 return web.json_response(
                     _jsonrpc_error(req_data.get("id") if isinstance(req_data, dict) else None,
@@ -337,7 +343,7 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
                 f"(MCP protocol {params.get('protocolVersion', '?')}, ip={request.remote or '?'})"
             )
 
-        # Обработка запроса. None → это была нотификация → HTTP 202 без тела (D13).
+        # Обработка запроса. None → это была нотификация → HTTP 202 без тела.
         response_text = await transport.handle_request(raw_request)
         if response_text is None:
             return web.Response(status=202)
@@ -345,7 +351,7 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
 
     @web.middleware
     async def security_headers(request: "web.Request", handler):
-        """F109: заголовки навешиваются и на отказы — 405/403 тоже уходят в браузер."""
+        """Заголовки навешиваются и на отказы — 405/403 тоже уходят в браузер."""
         try:
             response = await handler(request)
         except web.HTTPException as exc:
@@ -368,7 +374,7 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
     print(f"Сервер запущен на http://{host}:{port}")
     print(f"JSON-RPC endpoint: http://{host}:{port}/mcp")
 
-    # D11: поднимаем туннель вместе с сервером (одной командой).
+    # Поднимаем туннель вместе с сервером (одной командой).
     tunnel = None
     tunnel_status_str = "нет"
     if use_tunnel:
@@ -496,10 +502,8 @@ def main():
     # на каждой строке: буфер сохраняется (быстрый вывод), но сообщения не теряются.
     # Не трогаем при отсутствии reconfigure (заглушки stdout в тестах/встраивании).
     for stream in (sys.stdout, sys.stderr):
-        try:
+        with contextlib.suppress(AttributeError, ValueError):
             stream.reconfigure(line_buffering=True)
-        except (AttributeError, ValueError):
-            pass
 
     parser = argparse.ArgumentParser(description="MCP-сервер видеопайплайна")
     parser.add_argument("--host", default=HOST, help="Хост (по умолчанию: %(default)s)")
@@ -510,7 +514,7 @@ def main():
     args = parser.parse_args()
 
     if args.re_adopt:
-        # S9: явное подтверждение владельца, что перенос/восстановление — его действие.
+        # Явное подтверждение владельца, что перенос/восстановление — его действие.
         from core.integrity import InstanceIdentity
         from core.ids import LinkRegistry
         ident = InstanceIdentity(BASE_PATH, WORKSPACE_PATH)

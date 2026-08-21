@@ -1,5 +1,5 @@
 """
-core/advice.py — второй канал объяснения: советы в УСПЕШНОМ ответе (F59).
+core/advice.py — второй канал объяснения: советы в УСПЕШНОМ ответе.
 
 ## Назначение
 `server_reactions.yaml` объясняет ошибки — но у ИИ бывает выбор, о котором он не знает,
@@ -10,15 +10,17 @@ core/advice.py — второй канал объяснения: советы в
 ## Отказ
 Нет файла или нет ключа → пустой список. Совет — не контракт: его отсутствие не должно ронять
 операцию, которая уже выполнена. А вот СЛОМАННЫЙ файл глушить нельзя, иначе декларация тихо
-перестанет работать (D2) — такой случай отдаём исключением.
+перестанет работать — такой случай отдаём исключением.
 """
 
 from pathlib import Path
 
 import yaml
 
+from core.contracts import ContractError
 
-class AdviceError(Exception):
+
+class AdviceError(ContractError):
     """Битая декларация советов: молчать нельзя, иначе канал тихо исчезнет."""
 
 
@@ -38,9 +40,10 @@ class Advice:
             try:
                 data = yaml.safe_load(self.path.read_text(encoding="utf-8")) or {}
             except yaml.YAMLError as e:
-                raise AdviceError(f"Битый {self.path.name}: {e}") from e
+                raise AdviceError("ADVICE_INVALID", f"Битый {self.path.name}: {e}") from e
             if not isinstance(data, dict):
-                raise AdviceError(f"{self.path.name}: ожидался словарь ключ → список советов.")
+                raise AdviceError("ADVICE_INVALID",
+                                  f"{self.path.name}: ожидался словарь ключ → список советов.")
             self._cache, self._mtime = data, mtime
         return self._cache
 

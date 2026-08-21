@@ -16,7 +16,7 @@ from core.paths import safe_resolve
 
 
 def _atomic_write_json(path: Path, data: Any):
-    """D9: атомарная запись JSON — temp-файл в том же каталоге + os.replace.
+    """Атомарная запись JSON — temp-файл в том же каталоге + os.replace.
 
     os.replace атомарен в пределах одной ФС: читатель видит либо старый,
     либо новый файл целиком, но никогда не «рваную» запись. Это устраняет
@@ -31,7 +31,7 @@ def _atomic_write_json(path: Path, data: Any):
     os.replace(tmp, path)
 
 
-# S3/F33: журнал сервера — не место для содержимого рабочей области и секретов.
+# Журнал сервера — не место для содержимого рабочей области и секретов.
 # Значения усекаются, секретные ключи маскируются: лог остаётся следом событий,
 # а не копией пользовательских данных.
 LOG_VALUE_MAX = 200
@@ -65,7 +65,7 @@ class StateManager:
         """
         self.workspace_path = Path(workspace_path)
         self.log_path = Path(log_path) if log_path else None
-        # D9: сериализуем read-modify-write очереди в пределах процесса.
+        # Сериализуем read-modify-write очереди в пределах процесса.
         # Кросс-процессную блокировку (несколько инстансов) добавит filelock.
         self._lock = threading.Lock()
 
@@ -79,9 +79,9 @@ class StateManager:
             Словарь данных или None
 
         Raises:
-            ValueError: если путь выходит за пределы workspace (D29)
+            ValueError: если путь выходит за пределы workspace
         """
-        safe_resolve(entity_path, self.workspace_path)  # D29: containment
+        safe_resolve(entity_path, self.workspace_path)
         snapshot_file = self.workspace_path / entity_path / "read.json"
 
         if not snapshot_file.exists():
@@ -98,11 +98,11 @@ class StateManager:
             data: Данные для записи
 
         Raises:
-            ValueError: если путь выходит за пределы workspace (D29)
+            ValueError: если путь выходит за пределы workspace
         """
-        safe_resolve(entity_path, self.workspace_path)  # D29: containment
+        safe_resolve(entity_path, self.workspace_path)
         snapshot_file = self.workspace_path / entity_path / "read.json"
-        _atomic_write_json(snapshot_file, data)  # D9
+        _atomic_write_json(snapshot_file, data)
 
     def push_to_queue(self, entity_path: str, operation: dict) -> bool:
         """Добавление операции в очередь (write.json).
@@ -115,12 +115,12 @@ class StateManager:
             True если добавлено успешно
 
         Raises:
-            ValueError: если путь выходит за пределы workspace (D29)
+            ValueError: если путь выходит за пределы workspace
         """
-        safe_resolve(entity_path, self.workspace_path)  # D29: containment
+        safe_resolve(entity_path, self.workspace_path)
         queue_file = self.workspace_path / entity_path / "write.json"
 
-        # D9: read-modify-write под локом + атомарная запись (без гонок/порчи).
+        # Read-modify-write под локом + атомарная запись (без гонок/порчи).
         with self._lock:
             queue = []
             if queue_file.exists():
@@ -146,12 +146,12 @@ class StateManager:
             Список выполненных операций
 
         Raises:
-            ValueError: если путь выходит за пределы workspace (D29)
+            ValueError: если путь выходит за пределы workspace
         """
-        safe_resolve(entity_path, self.workspace_path)  # D29: containment
+        safe_resolve(entity_path, self.workspace_path)
         queue_file = self.workspace_path / entity_path / "write.json"
 
-        # D9: атомарный «забрать и очистить» под локом.
+        # Атомарный «забрать и очистить» под локом.
         with self._lock:
             if not queue_file.exists():
                 return []
@@ -167,12 +167,12 @@ class StateManager:
         """Очистка очереди без выполнения: в отличие от execute_queue операции НЕ применяются
         к read.json, а выбрасываются.
 
-        Возвращает число отброшенных операций; ValueError — путь вне workspace (D29).
+        Возвращает число отброшенных операций; ValueError — путь вне workspace.
         """
-        safe_resolve(entity_path, self.workspace_path)  # D29: containment
+        safe_resolve(entity_path, self.workspace_path)
         queue_file = self.workspace_path / entity_path / "write.json"
 
-        # D9: read-modify-write под локом + атомарная запись.
+        # Read-modify-write под локом + атомарная запись.
         with self._lock:
             if not queue_file.exists():
                 return 0
@@ -201,18 +201,3 @@ class StateManager:
 
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(entry)
-
-    def entity_exists(self, entity_path: str) -> bool:
-        """Проверка существования сущности.
-
-        Args:
-            entity_path: Путь к сущности
-
-        Returns:
-            True если существует
-
-        Raises:
-            ValueError: если путь выходит за пределы workspace (D29)
-        """
-        safe_resolve(entity_path, self.workspace_path)  # D29: containment
-        return (self.workspace_path / entity_path).exists()

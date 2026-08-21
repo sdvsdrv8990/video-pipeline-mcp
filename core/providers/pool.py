@@ -6,7 +6,7 @@ core/providers/pool.py — поднятая модель переживает в
 структуры и перенос на карту иначе повторяются на каждом кадре.
 
 ## Границы
-- пул ничего не делает сам (демона нет, S15): не тикает и не просыпается — залежавшееся
+- пул ничего не делает сам (демона нет): не тикает и не просыпается — залежавшееся
   выгружается В МОМЕНТ следующего обращения, поэтому на простое память остаётся занятой;
 - размера модели пул не знает: спрашивает оценку у вызывающего и уточняет замером на карте;
 - пока укладываемся в объявленную долю свободной памяти — держим, иначе выгружаем самое давнее.
@@ -93,14 +93,6 @@ class ModelPool:
                          "вызов — доли секунды. Залежавшееся выгружается при следующем обращении, "
                          "а не демоном в фоне (демона на сервере нет).")}
 
-    def release_all(self) -> int:
-        """Выгрузить всё. Нужен там, где память важнее скорости (и в тестах)."""
-        with _LOCK:
-            keys = list(_ENTRIES)
-            for key in keys:
-                self._drop(key)
-        return len(keys)
-
     # ═══ Освобождение ═══
 
     def _evict_idle(self) -> None:
@@ -137,7 +129,7 @@ class ModelPool:
                 import torch
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-            except Exception:  # torch не обязателен
+            except (ImportError, RuntimeError):  # torch не обязателен, драйвер может не ответить
                 pass
 
     @staticmethod
@@ -148,5 +140,5 @@ class ModelPool:
         try:
             import torch
             return int(torch.cuda.memory_allocated()) if torch.cuda.is_available() else 0
-        except Exception:  # torch не обязателен
+        except (ImportError, RuntimeError):  # torch не обязателен, драйвер может не ответить
             return 0

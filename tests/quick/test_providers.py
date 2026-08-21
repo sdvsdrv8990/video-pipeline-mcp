@@ -6,6 +6,7 @@ Standalone-прогон:  python tests/quick/test_providers.py
 объявленный fallback и говорит об этом, кольцо в данных не зацикливает, отказы идут кодами
 реестра, параметры вызова = вся строка минус служебные столбцы.
 """
+import os
 import sys
 import tempfile
 import warnings
@@ -314,7 +315,7 @@ except ProviderError as e:
     ok(e.code == "PROVIDER_ADAPTER_MISSING",
        f"имя провайдера из данных не поднимает произвольный модуль ({e.code})")
 
-# F3/F10: облачные провайдеры ОБЪЯВЛЕНЫ, но исполнителя у них нет. Честность держит этот отказ,
+# Облачные провайдеры ОБЪЯВЛЕНЫ, но исполнителя у них нет. Честность держит этот отказ,
 # а не файл-заглушка: мёртвый адаптер снят, значит отказ обязан остаться слышным и называть выход.
 for _cloud, _rt in (("ElevenLabs", "tts_characters"), ("OpenAI", "images"), ("Fal", "images")):
     try:
@@ -323,7 +324,7 @@ for _cloud, _rt in (("ElevenLabs", "tts_characters"), ("OpenAI", "images"), ("Fa
     except ProviderError as _ec:
         ok(_ec.code == "PROVIDER_ADAPTER_MISSING" and "media_provider_status" in (_ec.suggested_tool or ""),
            f"{_cloud}: отказ назван и есть чем разбираться ({_ec.code})")
-        # F105: рецепт называет ТОЛЬКО имена с исполнителем — иначе он ведёт на тот же отказ.
+        # Рецепт называет ТОЛЬКО имена с исполнителем — иначе он ведёт на тот же отказ.
         # Сверка по элементам, а не подстрокой: пара «Fal:bg_removals» исполнима, голый «Fal» — нет.
         _named = [s.strip() for s in (_ec.reason or "").split("исполнять:")[-1].split(".")[0].split(",")]
         ok("Local_piper" in _named and _cloud not in _named,
@@ -434,7 +435,7 @@ ok(_ldk({"выдуманный_столбец": "x", "steps": 4}, {}) == {},
 ok(_reg.model_entry("такой-модели-нет") == {},
    "неизвестной модели опись не выдумывает свойств")
 
-# Модель берётся из ОПИСИ, а не зашита в тест: источник локальных моделей один (S23).
+# Модель берётся из ОПИСИ, а не зашита в тест: источник локальных моделей один.
 from core.providers.catalog import ModelCatalog as _MCat
 from core.providers.hardware import probe as _probe
 
@@ -446,7 +447,7 @@ if _img_entry:
     (_ws / "i" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
         "I1": {"resource_type": "image_generations", "provider": "Local_diffusers",
                "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
-               # `variant` в строке НЕТ намеренно: он приходит из описи (F80). Если регрессия
+               # `variant` в строке НЕТ намеренно: он приходит из описи. Если регрессия
                # вернёт требование столбца, вызов упадёт LOCAL_MODEL_MISSING прямо здесь.
                "warning_threshold": -1, "model": _img_entry["id"], "img_size": "512x512",
                "img_n": 1, "steps": 1, "usage_unit": "image"}}}}), encoding="utf-8")
@@ -852,7 +853,7 @@ ok(_inst.status == "error" and _inst.error.code == "CONFIRM_REQUIRED",
    f"установка весов подтверждается явно: гигабайты с внешнего источника ({_inst.error.code if _inst.error else 'success'})")
 _lst = _call("media_models", scope="installed")
 # Эталон — сама опись, а не «больше нуля»: на чистой машине моделей нет вовсе, и инструмент
-# обязан честно показать пустой список, а не считаться сломанным (F91).
+# обязан честно показать пустой список, а не считаться сломанным.
 ok(_lst.status == "success"
    and ([m["id"] for m in _lst.data["models"]]
         == [e["id"] for e in ModelCatalog(CFG, ROOT / "vendor" / "models").inventory()]),
@@ -1469,7 +1470,7 @@ ok(not any(g["param"] == "tile" for g in _gaps14),
    "наши служебные столбцы строки не объявлены моделью и не считаются нарушением")
 
 # Сквозь инструмент: спека приходит ИИ с источником и параметрами. Спека читается ИЗ ФАЙЛОВ
-# модели, поэтому без поставленных весов проверять нечего — пропуск с причиной (F91).
+# модели, поэтому без поставленных весов проверять нечего — пропуск с причиной.
 _spec_tool = _call("media_models", scope="spec", provider="Local_diffusers", model="sdxl-turbo")
 if _spec_tool.status == "success" and _spec_tool.data.get("source") == "model_files":
     ok(bool(_spec_tool.data["parameters"]),
@@ -1527,7 +1528,7 @@ ok(_held == {"big2"},
 ok(_p15.stats()["budget_mb"]["cpu"] == 500,
    f"бюджет считается от свободной памяти и объявленной доли ({_p15.stats()['budget_mb']})")
 
-# Простой: залежавшееся убирается при СЛЕДУЮЩЕМ обращении, а не демоном в фоне (S15).
+# Простой: залежавшееся убирается при СЛЕДУЮЩЕМ обращении, а не демоном в фоне.
 _pool_mod._ENTRIES.clear(); _lifts["n"] = 0
 _p_idle = _Pool({"enabled": True, "budget_ratio": 0.9, "idle_ttl_sec": 0.05}, _hw15)
 _p_idle.get("old", _lift("old"), need_bytes=1000, device="cpu")
@@ -1536,7 +1537,7 @@ _p_idle.get("new", _lift("new"), need_bytes=1000, device="cpu")
 ok({r["key"] for r in _p_idle.stats()["models"]} == {"new"},
    "модель, которой давно не пользовались, выгружена при следующем обращении")
 
-# Выключатель обязан выключать (F54-класс): без пула модель поднимается каждый раз.
+# Выключатель обязан выключать: без пула модель поднимается каждый раз.
 _pool_mod._ENTRIES.clear(); _lifts["n"] = 0
 _p_off = _Pool({"enabled": False}, _hw15)
 _p_off.get("m", _lift("m"), need_bytes=1, device="cpu")
@@ -1763,7 +1764,7 @@ finally:
 
 # ═══ §13 Транскрибация: локальный STT по умолчанию (stable-ts) ═══
 # Провайдер объявлен, а не импортирован: проверяем, что декларация доводит до класса и что
-# каждый отказ назван кодом. Веса вне git — живой прогон пропускается с причиной (как F91).
+# каждый отказ назван кодом. Веса вне git — живой прогон пропускается с причиной.
 _stt = _reg.load("Local_whisper", "transcriptions")
 ok(type(_stt).__name__ == "WhisperLocalSTT", f"декларация ведёт к адаптеру ({type(_stt).__name__})")
 
@@ -1787,6 +1788,23 @@ for _case, _req, _code in (
         ok(False, f"транскрибация ({_case}) обязана отказать, а не молчать")
     except ProviderError as _e13:
         ok(_e13.code == _code, f"транскрибация, {_case}: {_e13.code}")
+
+# Проверка среды не должна опережать проверку запроса: на машине без ffmpeg все отказы
+# схлопывались в LOCAL_INFERENCE_FAILED, и клиент не узнавал ни про формат, ни про веса.
+# Ловится только там, где ffmpeg НЕТ, — поэтому прячем его, а не полагаемся на машину.
+_was_path = os.environ.get("PATH", "")
+os.environ["PATH"] = str(_stt_dir / "пусто")
+try:
+    for _case, _req, _code in (
+            ("формат", _stt_req("a.srt", _fake_audio), "CONTENT_REJECTED"),
+            ("веса", _stt_req("a.json", _fake_audio, model="нет-такой-модели"), "LOCAL_MODEL_MISSING")):
+        try:
+            _stt.generate(_req)
+            ok(False, f"без ffmpeg отказ по «{_case}» обязан остаться собой")
+        except ProviderError as _e13n:
+            ok(_e13n.code == _code, f"без ffmpeg «{_case}» по-прежнему {_e13n.code}, а не среда")
+finally:
+    os.environ["PATH"] = _was_path
 
 # Форматы транскрипта и write_allowlist — два списка, обязанных совпадать. Держим инвариантом,
 # а не дисциплиной: формат, который сервер напишет, но файрвол не пропустит, — тихий отказ.
