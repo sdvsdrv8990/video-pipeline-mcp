@@ -739,11 +739,13 @@ _want33 = ["WORKFLOW_SEQUENCES", "PUBLISHING_SCHEDULE", "RESOURCE_LIMITS", "META
 ok(all(n in _sheets33 for n in _want33),
    f"7 секций конфига стали листами channel_data: нет {[n for n in _want33 if n not in _sheets33]}")
 _rows33 = {n: len(_sheets33[n].get("rows") or []) for n in _want33 if n in _sheets33}
-# Число строк растёт при каждом новом провайдере (фон и апскейл), поэтому сверяется не оно,
-# а само свойство: ни один лист не приехал пустой формой, и суммарно дефолтов не убыло.
-ok(all(_rows33.values()) and sum(_rows33.values()) >= 36,
+# Считаются ЯЧЕЙКИ, а не строки: `RENDER_CONFIG` сменил форму со «строка = параметр» на
+# «строка = профиль», и число строк упало (7→2), хотя дефолтов стало не меньше (21→20 ячеек)
+# и форматов больше. Ячейка не зависит от формы и ловит вдобавок пропажу дефолтов у столбца.
+_cells33 = {n: sum(len(r) for r in (_sheets33[n].get("rows") or [])) for n in _want33 if n in _sheets33}
+ok(all(_rows33.values()) and sum(_cells33.values()) >= 294,
    f"листы несут строки-дефолты, а не пустую форму (пустые: {[n for n, c in _rows33.items() if not c]}, "
-   f"всего {sum(_rows33.values())})")
+   f"ячеек-дефолтов {sum(_cells33.values())})")
 ok({r["provider"] for r in _sheets33["RESOURCE_LIMITS"]["rows"]} >= {"Local_piper", "Local_diffusers"},
    "в дефолтах есть провайдеры, работающие без ключей — цепочка fallback кончается исполнимым")
 # «Тихий столбец» и единый источник провайдеров — те самые РЕШЕНИЯ, ради которых делался перенос.

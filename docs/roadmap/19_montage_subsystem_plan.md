@@ -92,7 +92,11 @@
 `crf`, `bitrate`, `container`, `subtitles_mode`. Дефолтные строки: `long_16x9` и `short_9x16`.
 Видео выбирает профиль (`META.render_profile`), точечные переопределения — на видео.
 
-`subtitles_mode`: `burn` | `track` | `off`. Дефолт `burn` для вертикали (там дорожку никто не
+`subtitles_mode`: `BURN` | `TRACK` | `OFF`. Регистр — НЕ общепроектная конвенция: её нет, в одном
+листе `AUTOMATION_RULES` соседствуют строчный `action` и заглавный `severity`. Причина у́же:
+конвертер спек умеет извлекать только ЗАГЛАВНЫЕ токены, поэтому все словари монтажа, приезжающие
+из спеки, заглавные — и написанный руками выровнен по ним, чтобы подсистема не разошлась внутри
+себя. Дефолт `BURN` для вертикали (там дорожку никто не
 включит), `track` для горизонтали (правится без перерендера, читается площадкой).
 
 ### 3.2 Новый лист `SCENE_ELEMENTS` (видео)
@@ -100,7 +104,7 @@
 когда и какого размера каждый. Строка-на-элемент, не массив в столбце сцены.
 
 `element_id` · `scene_id` (fk) · `element_role` (1:1 с `SCENE_PROFILE.fragment_type`) · `asset_path` ·
-`alpha_mode` (`as_is` / `remove_bg` / `chromakey` / `none`) · `x` · `y` · `width` · `height` (пусто =
+`alpha_mode` (`AS_IS` / `REMOVE_BG` / `CHROMAKEY` / `NONE`) · `x` · `y` · `width` · `height` (пусто =
 натуральный размер) · `z_index` · `time_start` · `time_end` · `notes`.
 
 `alpha_mode` — потому что настоящая задача наложения это ПРОЗРАЧНОСТЬ, а не формат: провайдер
@@ -141,7 +145,7 @@
 Аудио — не слой: у него своя позиция, время, громкость, скорость. Инвариант «может не быть» —
 пустой лист валиден и не является отказом.
 
-`audio_id` · `scene_id` (fk) · `audio_role` (`voice`/`music`/`sound`) · `asset_path` · `time_start` ·
+`audio_id` · `scene_id` (fk) · `audio_role` (`VOICE`/`MUSIC`/`SOUND`) · `asset_path` · `time_start` ·
 `source_in` · `source_out` (обрезка внутри исходника) · `volume` · `volume_curve` (точки `t:уровень`,
 пусто = ровная) · `speed` · `fade_in_sec` · `fade_out_sec` · `notes`.
 

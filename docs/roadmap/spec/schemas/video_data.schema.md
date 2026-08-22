@@ -174,7 +174,7 @@
 > Достроен из `SCENE_BREAKDOWN`. Привязка к фразе — через `SCENE_SEMANTICS.script_phrase`
 > по `scene_id`. Сцена больше НЕ живёт в `UNIQUENESS`-секции-3.
 > Фрагменты разведены по типам: SVG-роли (фон/персонажи/компоненты), музыка, звуки,
-> фильтры, переходы. Какие типы активны — из `channel_config.SCENE_PROFILE`; видео
+> фильтры, переходы. Какие типы активны — из `channel_data.SCENE_PROFILE`; видео
 > собирает только из включённых типов (выключенный = «тихий столбец», не считается/не шумит).
 
 | Столбец | Тип | Флаг | Прим. |
@@ -190,7 +190,7 @@
 | `sound_assets` | string[] | W 🆕 | звуковые эффекты |
 | `filter_assets` | string[] | W 🆕 | фильтры/обработка |
 | `transition_assets` | string[] | W | переходы |
-| `scene_uniqueness` | float | F 🆕 | взвешенная композиция по типам; веса/активность из `channel_config.SCENE_PROFILE`; выключенный тип не входит; определена при пустом |
+| `scene_uniqueness` | float | F 🆕 | взвешенная композиция по типам; веса/активность из `channel_data.SCENE_PROFILE`; выключенный тип не входит; определена при пустом |
 | `animation_order` | string | W | порядок появления элементов |
 | `animation_speed` | enum | W | Fast/Medium/Slow |
 | `retention_at_this_sec` | float | F | из YouTube Analytics |
@@ -198,7 +198,55 @@
 
 ---
 
-## Лист 16: `SCENE_SEMANTICS` — сенсорный слой сцены
+## Лист 16: `SCENE_ELEMENTS` 🆕 — что лежит в кадре
+
+> Строка = ОДИН элемент на холсте. `SCENES` говорит, какие ассеты участвуют, но не где, когда и
+> какого размера каждый — геометрию и тайминг хранить было негде, и это блокировало рендер.
+> Роль элемента — ссылка на `channel_data.SCENE_PROFILE.fragment_type`: словарь ролей живёт там,
+> второй копии здесь нет. Прозрачен ФОН, а не объект: нейросеть отдаёт объект на зелёном, зелень
+> снимается из-под него, и только фон самой сцены идёт `as_is` без хромакея.
+> Ключевых кадров нет: «анимация» — это окно появления плюс движение по точкам.
+
+| Столбец | Тип | Флаг | Прим. |
+|---|---|---|---|
+| `element_id` | string | id | |
+| `scene_id` | string | fk | сцена-владелец |
+| `element_role` | string | fk | → `channel_data.SCENE_PROFILE.fragment_type` |
+| `asset_path` | string | W | файл элемента |
+| `alpha_mode` | enum | W | AS_IS/REMOVE_BG/CHROMAKEY/NONE — чем снимается фон |
+| `x` `y` | integer | W | положение в кадре |
+| `width` `height` | integer | W | пусто = натуральный размер |
+| `z_index` | integer | W | он же ступень на таймлайне; отдельной дорожки нет намеренно |
+| `time_start` `time_end` | float | W | окно появления |
+| `source_in` `source_out` | float | W | обрезка внутри исходника; для картинки пусто |
+| `speed` | float | W | пусто = 1.0 |
+| `motion_path` | string | W | точки `t:x,y`, пусто = неподвижен; форма как у `volume_curve` |
+| `notes` | string | W | |
+
+---
+
+## Лист 17: `SCENE_AUDIO` 🆕 — звук сцены по ролям
+
+> Аудио — не слой: геометрии у него нет, зато своя обрезка, громкость и темп. Пустой лист валиден
+> и отказом не является — сцена без музыки и звуков рендерится.
+
+| Столбец | Тип | Флаг | Прим. |
+|---|---|---|---|
+| `audio_id` | string | id | |
+| `scene_id` | string | fk | сцена-владелец |
+| `audio_role` | enum | W | VOICE/MUSIC/SOUND |
+| `asset_path` | string | W | файл звука |
+| `time_start` | float | W | когда вступает |
+| `source_in` `source_out` | float | W | обрезка внутри исходника |
+| `volume` | float | W | пусто = 1.0 |
+| `volume_curve` | string | W | точки `t:уровень`, пусто = ровная |
+| `speed` | float | W | вне 0.5–2.0 исполняется цепочкой `atempo` |
+| `fade_in_sec` `fade_out_sec` | float | W | |
+| `notes` | string | W | |
+
+---
+
+## Лист 18: `SCENE_SEMANTICS` — сенсорный слой сцены
 
 > Несёт `script_phrase` — точную привязку сцены к фразе сценария (по `scene_id`).
 
@@ -226,7 +274,7 @@
 
 ---
 
-## Листы 17–19: `VISUAL_/SCRIPT_/AUDIO_PATTERNS_USED` (общий шаблон)
+## Листы 19–21: `VISUAL_/SCRIPT_/AUDIO_PATTERNS_USED` (общий шаблон)
 
 > Три листа близкой структуры — реестры применённых паттернов по типу. Общие столбцы
 > ниже, дельты — в примечании.
@@ -254,7 +302,7 @@
 
 ---
 
-## Лист 20: `RETENTION_PATTERNS` — синергии (комбинации)
+## Лист 22: `RETENTION_PATTERNS` — синергии (комбинации)
 
 | Столбец | Тип | Флаг | Прим. |
 |---|---|---|---|
@@ -274,7 +322,7 @@
 
 ---
 
-## Лист 21: `RENDERS` 🆕 — смонтированные видео по стадиям
+## Лист 23: `RENDERS` 🆕 — смонтированные видео по стадиям
 
 > Рендер — не один файл: сначала черновой, потом финальный (плюс, возможно, форматы).
 > Лист связывает стадии, хранит путь готового файла и его статус. Файл физически лежит
@@ -284,7 +332,7 @@
 |---|---|---|---|
 | `render_id` | string | id | ключ рендера |
 | `render_stage` | enum | W | `draft` / `final` |
-| `render_profile` | string | fk | профиль из `channel_config.RENDER_CONFIG` (codec/res/aspect) |
+| `render_profile` | string | fk | профиль из `channel_data.RENDER_CONFIG` (codec/res/aspect) |
 | `format_label` | string | W | напр. `long_16x9` / `short_9x16` (если форматов несколько) |
 | `file_path` | string | W | путь в `videos/<video>/renders/` (с `video_id` в имени) |
 | `file_name` | string | F | `{video_slug}_{render_stage}[_{format_label}].mp4` |
@@ -300,7 +348,7 @@
 
 ---
 
-## Лист 22: `POST_MORTEM` — журнал ошибок и уроков
+## Лист 24: `POST_MORTEM` — журнал ошибок и уроков
 
 | Столбец | Тип | Флаг | Прим. |
 |---|---|---|---|
@@ -318,7 +366,7 @@
 
 ---
 
-## Лист 23: `ANALYTICS` — дашборд видео (Read-Only)
+## Лист 25: `ANALYTICS` — дашборд видео (Read-Only)
 
 | Столбец | Тип | Флаг | Прим. |
 |---|---|---|---|

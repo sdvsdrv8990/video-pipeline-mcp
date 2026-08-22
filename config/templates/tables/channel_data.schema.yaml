@@ -626,30 +626,42 @@ sheets:
         signal_on_reuse: false
         reuse_threshold: 0
 
+  # Строка = ПРОФИЛЬ рендера, а не отдельный параметр. Прежняя форма `param/value` описывала ровно
+  # один формат и противоречила себе: `1920x1080` + `16:9` при примечании «Стандарт для Shorts/Reels».
+  # `RENDERS.render_profile` объявлен fk сюда, а `RENDERS.format_label` уже знал про два формата —
+  # многоформатность схема предполагала, лист её не давал.
   - name: RENDER_CONFIG
     columns:
-      - { name: param, type: string, flag: id }
-      - { name: value, type: string, flag: W }
+      - { name: profile_id, type: string, flag: id }   # → `RENDERS.render_profile`, `META.render_profile`
+      - { name: codec, type: string, flag: W }
+      - { name: resolution, type: string, flag: W }
+      - { name: aspect_ratio, type: string, flag: W }
+      - { name: fps, type: integer, flag: W }
+      - { name: crf, type: integer, flag: W }   # меньше = лучше и тяжелее
+      - { name: bitrate, type: string, flag: W }
+      - { name: container, type: string, flag: W }
+      # Режим субтитров — свойство ФОРМАТА, а не видео: на вертикали дорожку никто не включит,
+      # на горизонтали она правится без перерендера и читается площадкой.
+      - { name: subtitles_mode, type: enum, flag: W, enum: ['BURN', 'TRACK', 'OFF'] }
       - { name: notes, type: string, flag: W }
     rows:
-      - param: codec
-        value: h265
-        notes: HEVC для YouTube/Telegram
-      - param: resolution
-        value: 1920x1080
-        notes: Full HD
-      - param: aspect_ratio
-        value: '16:9'
-        notes: Горизонтальный
-      - param: fps
-        value: '30'
-        notes: Стандарт для Shorts/Reels
-      - param: crf
-        value: '20'
-        notes: Баланс качества и размера
-      - param: bitrate
-        value: 8M
-        notes: Для 1080p@30fps
-      - param: container
-        value: mp4
-        notes: Универсальный контейнер
+      - profile_id: long_16x9
+        codec: h265
+        resolution: 1920x1080
+        aspect_ratio: '16:9'
+        fps: 30
+        crf: 20
+        bitrate: 8M
+        container: mp4
+        subtitles_mode: TRACK
+        notes: Горизонтальный Full HD. Дорожка правится без перерендера
+      - profile_id: short_9x16
+        codec: h265
+        resolution: 1080x1920
+        aspect_ratio: '9:16'
+        fps: 30
+        crf: 20
+        bitrate: 8M
+        container: mp4
+        subtitles_mode: BURN
+        notes: Вертикальный для Shorts/Reels. Субтитры в кадр — дорожку там не включают

@@ -106,11 +106,47 @@ sheets:
       - { name: sound_assets, type: string, flag: W }   # звуковые эффекты
       - { name: filter_assets, type: string, flag: W }   # фильтры/обработка
       - { name: transition_assets, type: string, flag: W }   # переходы
-      - { name: scene_uniqueness, type: float, flag: W }   # взвешенная композиция по типам; веса/активность из `channel_data.SCENE_PROFILE`; выключенный тип не входит; определена
+      - { name: scene_uniqueness, type: float, flag: W }   # взвешенная композиция по типам; веса/активность из `channel_data.SCENE_PROFILE`; выключенный тип не входит; определена п
       - { name: animation_order, type: string, flag: W }   # порядок появления элементов
       - { name: animation_speed, type: enum, flag: W }   # Fast/Medium/Slow
       - { name: retention_at_this_sec, type: float, flag: F }   # из YouTube Analytics
       - { name: retention_impact, type: enum, flag: F, enum: ['HIGH', 'MED', 'LOW'] }   # HIGH/MED/LOW по дельте retention
+
+  - name: SCENE_ELEMENTS   # 🆕 — что лежит в кадре
+    columns:
+      - { name: element_id, type: string, flag: id }
+      - { name: scene_id, type: string, flag: fk }   # сцена-владелец
+      - { name: element_role, type: string, flag: fk }   # → `channel_data.SCENE_PROFILE.fragment_type`
+      - { name: asset_path, type: string, flag: W }   # файл элемента
+      - { name: alpha_mode, type: enum, flag: W, enum: ['AS_IS', 'REMOVE_BG', 'CHROMAKEY', 'NONE'] }   # AS_IS/REMOVE_BG/CHROMAKEY/NONE — чем снимается фон
+      - { name: x, type: integer, flag: W }   # положение в кадре
+      - { name: y, type: integer, flag: W }   # положение в кадре
+      - { name: width, type: integer, flag: W }   # пусто = натуральный размер
+      - { name: height, type: integer, flag: W }   # пусто = натуральный размер
+      - { name: z_index, type: integer, flag: W }   # он же ступень на таймлайне; отдельной дорожки нет намеренно
+      - { name: time_start, type: float, flag: W }   # окно появления
+      - { name: time_end, type: float, flag: W }   # окно появления
+      - { name: source_in, type: float, flag: W }   # обрезка внутри исходника; для картинки пусто
+      - { name: source_out, type: float, flag: W }   # обрезка внутри исходника; для картинки пусто
+      - { name: speed, type: float, flag: W }   # пусто = 1.0
+      - { name: motion_path, type: string, flag: W }   # точки `t:x,y`, пусто = неподвижен; форма как у `volume_curve`
+      - { name: notes, type: string, flag: W }
+
+  - name: SCENE_AUDIO   # 🆕 — звук сцены по ролям
+    columns:
+      - { name: audio_id, type: string, flag: id }
+      - { name: scene_id, type: string, flag: fk }   # сцена-владелец
+      - { name: audio_role, type: enum, flag: W, enum: ['VOICE', 'MUSIC', 'SOUND'] }   # VOICE/MUSIC/SOUND
+      - { name: asset_path, type: string, flag: W }   # файл звука
+      - { name: time_start, type: float, flag: W }   # когда вступает
+      - { name: source_in, type: float, flag: W }   # обрезка внутри исходника
+      - { name: source_out, type: float, flag: W }   # обрезка внутри исходника
+      - { name: volume, type: float, flag: W }   # пусто = 1.0
+      - { name: volume_curve, type: string, flag: W }   # точки `t:уровень`, пусто = ровная
+      - { name: speed, type: float, flag: W }   # вне 0.5–2.0 исполняется цепочкой `atempo`
+      - { name: fade_in_sec, type: float, flag: W }
+      - { name: fade_out_sec, type: float, flag: W }
+      - { name: notes, type: string, flag: W }
 
   - name: SCENE_SEMANTICS   # сенсорный слой сцены
     columns:
