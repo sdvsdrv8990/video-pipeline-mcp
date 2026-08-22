@@ -267,6 +267,20 @@ sheets:
       - { name: thumbnail_uniqueness, type: float, flag: F }   # отдельный балл, в `overall_uniqueness` НЕ входит
       - { name: notes, type: string, flag: W }
 
+  - name: THUMBNAIL_COMPONENTS   # 🆕 — из чего собрана обложка
+    columns:
+      - { name: component_id, type: string, flag: id }   # идентификатор компонента в обложке
+      - { name: thumbnail_id, type: string, flag: fk }   # → `THUMBNAILS`
+      - { name: design_id, type: string, flag: fk }   # → `channel_data.THUMBNAIL_DESIGNS`
+      - { name: global_asset_id, type: string, flag: fk }   # → `ASSETS_USED`: какой ассет видео переиспользован
+      - { name: x, type: integer, flag: W }   # положение в обложке
+      - { name: y, type: integer, flag: W }   # положение в обложке
+      - { name: width, type: integer, flag: W }   # пусто = натуральный размер
+      - { name: height, type: integer, flag: W }   # пусто = натуральный размер
+      - { name: z_index, type: integer, flag: W }   # порядок наложения
+      - { name: alpha_mode, type: enum, flag: W, enum: ['AS_IS', 'REMOVE_BG', 'CHROMAKEY', 'NONE'] }   # AS_IS/REMOVE_BG/CHROMAKEY/NONE — как у элемента сцены
+      - { name: notes, type: string, flag: W }
+
   - name: POST_MORTEM   # журнал ошибок и уроков
     columns:
       - { name: issue_type, type: enum, flag: W }   # retention_drop/pacing_issue/style_violation/visual_mismatch/factual_error

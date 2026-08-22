@@ -106,6 +106,18 @@ ok("thumbnail" not in (_uniq.get("formula") or ""),
    f"обложка НЕ вошла в overall_uniqueness: {_uniq.get('formula')}")
 ok(TH["thumbnail_uniqueness"]["flag"] == "F", "балл обложки вычисляемый, а не записываемый")
 
+TC = {c["name"]: c for c in VD["THUMBNAIL_COMPONENTS"]["columns"]}
+for need in ("thumbnail_id", "design_id", "component_id"):
+    ok(need in TC, f"`{need}` на строке компонента — три идентификатора, как решено")
+# Компонент обложки берётся из ассетов ВИДЕО: описать стикмена вторично — значит развести описания.
+ok(TC["global_asset_id"]["flag"] == "fk",
+   "компонент ссылается на `ASSETS_USED`, а не описывает ассет заново")
+# Счётчики видео живут в ASSETS_USED/SCENE_ELEMENTS. Если бы обложка их растила, она влияла бы на
+# уникальность видео через чёрный ход — вопреки решению «обложка считается отдельно».
+ok(not ({"usage_count_in_video", "uniqueness_score", "videos_since_last_use"} & set(TC)),
+   f"счётчиков видео на компоненте обложки нет: {sorted({'usage_count_in_video', 'uniqueness_score', 'videos_since_last_use'} & set(TC))}")
+ok("scene_id" not in TC, "компонент обложки не привязан к сцене — обложка не кадр видео")
+
 print("\n== регистр enum внутри подсистемы монтажа ==")
 # Общепроектной конвенции НЕТ: в одном листе `AUTOMATION_RULES` соседствуют строчный `action` и
 # заглавный `severity`. Но enum из спеки конвертер умеет отдавать ТОЛЬКО заглавными (он извлекает
