@@ -92,6 +92,20 @@ for need in ("volume", "volume_curve", "speed", "fade_in_sec", "fade_out_sec", "
 # Движение элемента и кривая громкости — одна форма «точки во времени»; разошлись бы при второй.
 ok("x" not in AU and "z_index" not in AU, "у звука нет геометрии — он не слой")
 
+print("\n== обложки: CTR конструируется периодами ==")
+TH = {c["name"]: c for c in VD["THUMBNAILS"]["columns"]}
+# YouTube считает CTR на ВИДЕО: «исторический CTR обложки» взять неоткуда, его дают периоды.
+for need in ("applied_from", "applied_to", "impressions", "ctr_percent"):
+    ok(need in TH, f"`{need}` объявлен — без периода подмену обложки не измерить")
+ok(TH["design_id"]["flag"] == "fk", "обложка ссылается на дизайн, а не описывает его заново")
+DS = {c["name"]: c for c in CH["THUMBNAIL_DESIGNS"]["columns"]}
+ok("videos_since_last_use" in DS, "«пора менять» считается на уровне канала")
+# Веса `overall_uniqueness` уже дают 1.00 — слагаемое сдвинуло бы числа во всех каналах.
+_uniq = next(c for c in VD["UNIQUENESS"]["columns"] if c["name"] == "overall_uniqueness")
+ok("thumbnail" not in (_uniq.get("formula") or ""),
+   f"обложка НЕ вошла в overall_uniqueness: {_uniq.get('formula')}")
+ok(TH["thumbnail_uniqueness"]["flag"] == "F", "балл обложки вычисляемый, а не записываемый")
+
 print("\n== регистр enum внутри подсистемы монтажа ==")
 # Общепроектной конвенции НЕТ: в одном листе `AUTOMATION_RULES` соседствуют строчный `action` и
 # заглавный `severity`. Но enum из спеки конвертер умеет отдавать ТОЛЬКО заглавными (он извлекает

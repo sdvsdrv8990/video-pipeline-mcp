@@ -6,6 +6,7 @@ Standalone-прогон:  python tests/quick/test_table_materializer.py
 контракт ошибок (нет схемы, битая схема, книга уже есть), фаза по tables_pending
 (отказ одной книги не роняет соседние).
 """
+import re
 import sys
 import tempfile
 import warnings
@@ -253,6 +254,31 @@ s2s = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(s2s)
 
 ok(s2s.verify() == 0, "разбор сходится с собранной РУКАМИ network_config (приёмка конвертера)")
+
+# Пометка новизны рядом с флагом (`F 🆕`) не должна его съедать: пока съедала, вычисляемые столбцы
+# приезжали записываемыми, а `variation_id` — без `id`. Проверяется и разбор, и результат на диске:
+# сходимость спека↔схема, потому что схемы регенерируются не при каждой правке спеки.
+_probe_flags = {"F 🆕": "F", "id 🆕": "id", "fk 🆕": "fk", "W 🆕": "W", "F": "F", "": "W"}
+for _cell, _want in _probe_flags.items():
+    _body = ("## Лист 1: `PROBE`\n\n| Столбец | Тип | Флаг | Прим. |\n|---|---|---|---|\n"
+             f"| `col_a` | string | {_cell} | без формулы |\n")
+    _p = Path(tempfile.mkdtemp(prefix="s2sflag_")) / "probe.schema.md"
+    _p.write_text(_body, encoding="utf-8")
+    _got = s2s.parse_spec(_p)["sheets"][0]["columns"][0]["flag"]
+    ok(_got == _want, f"флаг «{_cell or '—'}» разобран как {_want} (получено {_got})")
+
+_lost_flags: list[str] = []
+for _sp in sorted((ROOT / "docs/roadmap/spec/schemas").glob("*.schema.md")):
+    _y = ROOT / "config/templates/tables" / _sp.name.replace(".schema.md", ".schema.yaml")
+    if not _y.exists():
+        continue
+    _want_f = dict(re.findall(r"^\| *`([a-z][a-z0-9_]*)` *\| *[^|]*\| *(F|id|fk) 🆕",
+                              _sp.read_text(encoding="utf-8"), re.M))
+    _have_f = {c["name"]: c.get("flag")
+               for sh in yaml.safe_load(_y.read_text(encoding="utf-8"))["sheets"] for c in sh["columns"]}
+    _lost_flags += [f"{_sp.stem}.{n}: спека {f}, схема {_have_f.get(n)}"
+                    for n, f in _want_f.items() if _have_f.get(n) != f]
+ok(not _lost_flags, f"объявленный в спеке флаг дожил до схемы: расходятся {_lost_flags[:4]}")
 
 specs = Path(tempfile.mkdtemp(prefix="s2s_"))
 

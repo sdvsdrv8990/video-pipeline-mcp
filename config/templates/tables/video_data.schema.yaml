@@ -60,7 +60,7 @@ sheets:
   - name: ASSETS_USED   # ассеты видео (🆕 ключи + статусы)
     columns:
       - { name: global_asset_id, type: string, flag: W }   # мастер, от которого ассет (канонический ключ)
-      - { name: variation_id, type: string, flag: W }   # какая вариация; пусто = сам мастер
+      - { name: variation_id, type: string, flag: id }   # какая вариация; пусто = сам мастер
       - { name: asset_type, type: enum, flag: W }   # svg/music/sound/transition/effect
       - { name: is_master, type: boolean, flag: W }   # TRUE = мастер, не вариация
       - { name: description, type: string, flag: W }   # краткое — Claude понимает ассет не открывая файл
@@ -81,7 +81,7 @@ sheets:
       - { name: transition_score, type: float, flag: F }   # мягкие формулы (пул ниши)
       - { name: overall_uniqueness, type: float, flag: F, formula: '=script*0.35+svg*0.40+music*0.10+sound*0.08+transition*0.07' }   # `=script*0.35+svg*0.40+music*0.10+sound*0.08+transition*0.07`
       - { name: tier, type: enum, flag: F, formula: '=IF(>=0.80,"HIGH",IF(>=0.60,"MED","LOW"))' }   # `=IF(>=0.80,"HIGH",IF(>=0.60,"MED","LOW"))`
-      - { name: scenes_uniqueness_ref, type: string, flag: W }   # ССЫЛКА на лист `SCENES.scene_uniqueness` (дубль убран)
+      - { name: scenes_uniqueness_ref, type: string, flag: F }   # ССЫЛКА на лист `SCENES.scene_uniqueness` (дубль убран)
 
   - name: SCRIPT_DNA_APPLIED   # применённые правила стиля
     columns:
@@ -106,7 +106,7 @@ sheets:
       - { name: sound_assets, type: string, flag: W }   # звуковые эффекты
       - { name: filter_assets, type: string, flag: W }   # фильтры/обработка
       - { name: transition_assets, type: string, flag: W }   # переходы
-      - { name: scene_uniqueness, type: float, flag: W }   # взвешенная композиция по типам; веса/активность из `channel_data.SCENE_PROFILE`; выключенный тип не входит; определена п
+      - { name: scene_uniqueness, type: float, flag: F }   # взвешенная композиция по типам; веса/активность из `channel_data.SCENE_PROFILE`; выключенный тип не входит; определена п
       - { name: animation_order, type: string, flag: W }   # порядок появления элементов
       - { name: animation_speed, type: enum, flag: W }   # Fast/Medium/Slow
       - { name: retention_at_this_sec, type: float, flag: F }   # из YouTube Analytics
@@ -253,6 +253,18 @@ sheets:
       - { name: derived_from_render_id, type: string, flag: W }   # привязка финала к черновику (история стадий)
       - { name: duration_sec, type: integer, flag: F }   # из готового файла (verify)
       - { name: file_verified, type: boolean, flag: F }   # файл ≠ 0 байт И играбелен (реальность-чек)
+      - { name: notes, type: string, flag: W }
+
+  - name: THUMBNAILS   # 🆕 — журнал обложек и их периодов
+    columns:
+      - { name: thumbnail_id, type: string, flag: id }
+      - { name: design_id, type: string, flag: fk }   # → `channel_data.THUMBNAIL_DESIGNS`
+      - { name: file_path, type: string, flag: W }   # файл обложки
+      - { name: applied_from, type: date, flag: W }   # с какого дня стояла
+      - { name: applied_to, type: date, flag: W }   # по какой; пусто = стоит сейчас
+      - { name: impressions, type: integer, flag: W }   # вводит пользователь
+      - { name: ctr_percent, type: float, flag: W }   # вводит пользователь
+      - { name: thumbnail_uniqueness, type: float, flag: F }   # отдельный балл, в `overall_uniqueness` НЕ входит
       - { name: notes, type: string, flag: W }
 
   - name: POST_MORTEM   # журнал ошибок и уроков

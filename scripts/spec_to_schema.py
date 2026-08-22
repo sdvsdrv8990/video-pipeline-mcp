@@ -118,7 +118,10 @@ def parse_row(line: str) -> list[dict] | None:
     names = NAME_RE.findall(names_cell)
     if not names:
         return None
-    flag = (flag_cell or "").strip().strip("`")
+    # Пометка новизны (`F 🆕`) — украшение спеки, а не часть флага. Прежде она оставалась в строке,
+    # совпадения с KNOWN_FLAGS не было, и объявленный флаг молча уезжал в `W`: вычисляемые столбцы
+    # становились записываемыми, а `variation_id` переставал быть идентификатором.
+    flag = re.sub(r"[^A-Za-z]", "", (flag_cell or "").strip().strip("`"))
     if flag not in KNOWN_FLAGS:
         flag = "W"                      # не объявлено — консервативно «правит человек»
     ctype = norm_type(type_cell, note)

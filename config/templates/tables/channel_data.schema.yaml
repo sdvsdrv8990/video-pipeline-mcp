@@ -48,8 +48,8 @@ sheets:
       - { name: total_uses, type: integer, flag: F }
       - { name: last_used_video, type: string, flag: W }
       - { name: videos_since_last_use, type: integer, flag: F }
-      - { name: variation_count, type: integer, flag: W }   # сколько вариаций мастера всего по каналу (агрегат снизу; 0 = валидно)
-      - { name: effective_freshness, type: float, flag: W }   # свежесть с поправкой на разнообразие: f(total_uses, variation_count), мягкий вес вариаций (коэф. в конфиге); определена 
+      - { name: variation_count, type: integer, flag: F }   # сколько вариаций мастера всего по каналу (агрегат снизу; 0 = валидно)
+      - { name: effective_freshness, type: float, flag: F }   # свежесть с поправкой на разнообразие: f(total_uses, variation_count), мягкий вес вариаций (коэф. в конфиге); определена 
       - { name: rotation_status, type: enum, flag: F, formula: '=IF(videos_since_last_use>=4,"OK","ROTATE")' }   # `=IF(videos_since_last_use>=4,"OK","ROTATE")`
 
   - name: UNIQUENESS_ALERTS   # алерты (только MED/LOW)
@@ -665,3 +665,15 @@ sheets:
         container: mp4
         subtitles_mode: BURN
         notes: Вертикальный для Shorts/Reels. Субтитры в кадр — дорожку там не включают
+
+  # Отвечает на «как часто используется тот или иной дизайн»: обложка живёт периодами
+  # (`video_data.THUMBNAILS`), а повторяемость дизайна видна только на уровне канала.
+  - name: THUMBNAIL_DESIGNS
+    columns:
+      - { name: design_id, type: string, flag: id }   # ← `video_data.THUMBNAILS.design_id`
+      - { name: description, type: string, flag: W }
+      - { name: usage_count, type: integer, flag: F }
+      - { name: last_used_video_n, type: integer, flag: F }
+      - { name: videos_since_last_use, type: integer, flag: F }   # «пора менять» считается отсюда
+      - { name: avg_ctr, type: float, flag: F }   # среднее по периодам этого дизайна
+      - { name: notes, type: string, flag: W }
