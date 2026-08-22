@@ -1,0 +1,111 @@
+# Словарь переходов и фильтров: объявленное имя → чем оно является для ffmpeg.
+#
+# ЗАЧЕМ. `SCENE_PROFILE` включает переход, `SCENES` несёт `transition_assets`/`filter_assets`, но
+# чем «crossfade» является для ffmpeg — не было объявлено нигде. Образец формы — `providers.yaml`
+# → `adapters.by_provider`: карта имени в исполнителя. Это МЕХАНИЗМ, поэтому YAML; таймлайн
+# остаётся в книге, сюда не переезжает.
+#
+# СЛОВАРЬ ЗАКРЫТ, и это не строгость ради строгости. Значения приходят из книги, которую заполняет
+# ИИ, и попадают в строку фильтров ffmpeg. Незакрытый словарь означал бы «подставь в команду что
+# дали» — то есть инъекцию в фильтрограф. Незнакомое имя = отказ кодом реестра, не пропуск дальше.
+#
+# ЧЕГО ЗДЕСЬ НЕТ НАМЕРЕННО: копии 57 переходов `xfade` из бинаря. Копия чужого списка стареет молча
+# и не имеет читателя-машины. Объявлены НАШИ имена; что токен существует в установленном ffmpeg,
+# проверяет `tests/quick/test_ffmpeg_filters.py` — сверкой с бинарём, а не доверием к этому файлу.
+
+# ═══ ПЕРЕХОДЫ МЕЖДУ СЦЕНАМИ ═══
+# Видеопереход исполняет ровно один фильтр — `xfade`; имена различаются его токеном `transition`.
+# Звук на стыке сшивает `acrossfade`: без него на переходе слышен щелчок.
+transitions:
+  video_filter: xfade
+  audio_filter: acrossfade
+  defaults:
+    duration_sec: 0.5           # правится в книге на сцену; здесь только значение по умолчанию
+  by_name:
+    # Монтажная склейка без перехода. Объявлена ИМЕНЕМ, а не пустой строкой: пустое значение в
+    # книге неотличимо от «не заполнено», и рендер не должен угадывать, что имел в виду автор.
+    cut:          {transition: null, duration_sec: 0}
+    crossfade:    {transition: fade}
+    dip_to_black: {transition: fadeblack}
+    dip_to_white: {transition: fadewhite}
+    dissolve:     {transition: dissolve}
+    slide_left:   {transition: slideleft}
+    slide_right:  {transition: slideright}
+    slide_up:     {transition: slideup}
+    slide_down:   {transition: slidedown}
+    wipe_left:    {transition: wipeleft}
+    wipe_right:   {transition: wiperight}
+    circle_open:  {transition: circleopen}
+    circle_close: {transition: circleclose}
+    zoom_in:      {transition: zoomin}
+    pixelize:     {transition: pixelize}
+    radial:       {transition: radial}
+
+# ═══ ФИЛЬТРЫ ОБРАБОТКИ ═══
+# Ключ — наше имя из `filter_assets`. `filter` — фильтр ffmpeg, `params` — JSON Schema его входов.
+# Схема здесь не украшение: она И документация параметра, И граница допустимого. Формат выбран не
+# новый — это уже язык сервера (`input_schema` инструментов, `capabilities` в providers.yaml),
+# и проверяет его установленная библиотека, а не наш код.
+filters:
+  by_name:
+    # Съём фона по цвету. Порог отделяет фон от объекта: занижен — остаётся кайма, завышен —
+    # выедает сам объект. Значение подбирает человек, поэтому оно в книге, а не в коде.
+    chromakey:
+      filter: chromakey
+      params:
+        type: object
+        additionalProperties: false
+        properties:
+          color:      {type: string, pattern: '^0x[0-9A-Fa-f]{6}$', default: '0x00FF00'}
+          similarity: {type: number, minimum: 0.01, maximum: 1.0, default: 0.1}
+          blend:      {type: number, minimum: 0.0, maximum: 1.0, default: 0.0}
+    # То же по RGB. Отдельным именем, а не флагом chromakey: у ffmpeg это разные фильтры и разные
+    # цветовые пространства — «тот же с параметром» врал бы про механизм.
+    colorkey:
+      filter: colorkey
+      params:
+        type: object
+        additionalProperties: false
+        properties:
+          color:      {type: string, pattern: '^0x[0-9A-Fa-f]{6}$', default: '0x00FF00'}
+          similarity: {type: number, minimum: 0.01, maximum: 1.0, default: 0.1}
+          blend:      {type: number, minimum: 0.0, maximum: 1.0, default: 0.0}
+    blur:
+      filter: gblur
+      params:
+        type: object
+        additionalProperties: false
+        properties:
+          sigma: {type: number, minimum: 0.0, maximum: 100.0, default: 5.0}
+    sharpen:
+      filter: unsharp
+      params:
+        type: object
+        additionalProperties: false
+        properties:
+          amount: {type: number, minimum: -2.0, maximum: 5.0, default: 1.0}
+    # Яркость/контраст/насыщенность — один фильтр ffmpeg с тремя входами, поэтому одно имя с тремя
+    # параметрами, а не три имени: три имени на один фильтр развалились бы при совместном применении.
+    color_correct:
+      filter: eq
+      params:
+        type: object
+        additionalProperties: false
+        properties:
+          brightness: {type: number, minimum: -1.0, maximum: 1.0, default: 0.0}
+          contrast:   {type: number, minimum: -1000.0, maximum: 1000.0, default: 1.0}
+          saturation: {type: number, minimum: 0.0, maximum: 3.0, default: 1.0}
+    grayscale:
+      filter: hue
+      params:
+        type: object
+        additionalProperties: false
+        properties:
+          s: {type: number, minimum: 0.0, maximum: 0.0, default: 0.0}   # обесцвечивание = насыщенность 0
+    vignette:
+      filter: vignette
+      params:
+        type: object
+        additionalProperties: false
+        properties:
+          angle: {type: number, minimum: 0.0, maximum: 1.5707963, default: 0.7853982}
