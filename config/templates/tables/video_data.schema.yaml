@@ -32,6 +32,8 @@ sheets:
       - { name: engagement_rate, type: float, flag: F, formula: '=(likes+comments+shares)/views*100' }   # `=(likes+comments+shares)/views*100` — снимок вовлечённости
       - { name: performance_score, type: float, flag: F, formula: '=like_rate*0.4+comment_rate*0.3+(retention/100)*0.3' }   # `=like_rate*0.4+comment_rate*0.3+(retention/100)*0.3`
       - { name: prediction_accuracy, type: enum, flag: F, enum: ['ACCURATE', 'CLOSE', 'MISS', 'PENDING'] }   # ACCURATE/CLOSE/MISS/PENDING (формула по status)
+      - { name: video_url, type: string, flag: F }   # ЗЕРКАЛО `META.url` — чтобы видно было, к чему метрики
+      - { name: thumbnail_url, type: string, flag: F }   # ЗЕРКАЛО текущей обложки (`THUMBNAILS`, у которой пуст `applied_to`)
 
   - name: TRANSCRIPT   # пословная транскрипция по сценам
     columns:
@@ -75,11 +77,11 @@ sheets:
   - name: UNIQUENESS   # итог уникальности видео (🆕 секция сцен убрана)
     columns:
       - { name: script_score, type: float, flag: F, formula: '=1.0' }   # `=1.0` (скрипт уникален)
-      - { name: svg_scene_score, type: float, flag: F, formula: '=AVERAGE(uniqueness всех svg)' }   # `=AVERAGE(uniqueness всех svg)`
+      - { name: layer_scene_score, type: float, flag: F, formula: '=AVERAGE(uniqueness всех layer)' }   # `=AVERAGE(uniqueness всех layer)`
       - { name: music_score, type: float, flag: F }   # мягкие формулы (пул ниши)
       - { name: sound_score, type: float, flag: F }   # мягкие формулы (пул ниши)
       - { name: transition_score, type: float, flag: F }   # мягкие формулы (пул ниши)
-      - { name: overall_uniqueness, type: float, flag: F, formula: '=script*0.35+svg*0.40+music*0.10+sound*0.08+transition*0.07' }   # `=script*0.35+svg*0.40+music*0.10+sound*0.08+transition*0.07`
+      - { name: overall_uniqueness, type: float, flag: F, formula: '=script*0.35+layer*0.40+music*0.10+sound*0.08+transition*0.07' }   # `=script*0.35+layer*0.40+music*0.10+sound*0.08+transition*0.07`
       - { name: tier, type: enum, flag: F, formula: '=IF(>=0.80,"HIGH",IF(>=0.60,"MED","LOW"))' }   # `=IF(>=0.80,"HIGH",IF(>=0.60,"MED","LOW"))`
       - { name: scenes_uniqueness_ref, type: string, flag: F }   # ССЫЛКА на лист `SCENES.scene_uniqueness` (дубль убран)
 
@@ -259,7 +261,8 @@ sheets:
     columns:
       - { name: thumbnail_id, type: string, flag: id }
       - { name: design_id, type: string, flag: fk }   # → `channel_data.THUMBNAIL_DESIGNS`
-      - { name: file_path, type: string, flag: W }   # файл обложки
+      - { name: file_path, type: string, flag: W }   # локальный файл обложки
+      - { name: thumbnail_url, type: string, flag: W }   # ссылка на опубликованную обложку; из YouTube API, в MVP вносит человек
       - { name: applied_from, type: date, flag: W }   # с какого дня стояла
       - { name: applied_to, type: date, flag: W }   # по какой; пусто = стоит сейчас
       - { name: impressions, type: integer, flag: W }   # вводит пользователь

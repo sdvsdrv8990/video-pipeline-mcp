@@ -173,7 +173,7 @@ automation_rules:
 
 ```yaml
 scene_profile:
-  - fragment_type: string            # svg_bg / svg_character / svg_component / music / sound / filter / transition
+  - fragment_type: string            # layer_bg / layer_character / layer_component / music / sound / filter / transition
     enabled: bool                    # вкл/выкл тип на канале
     niche_weight: float              # вес типа в формуле уникальности сцены
     signal_on_reuse: bool            # слать ли сигнал переиспользования

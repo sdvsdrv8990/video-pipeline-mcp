@@ -14,11 +14,20 @@ sheets:
       - { name: duration_sec, type: integer, flag: W }
       - { name: views, type: integer, flag: W }   # импорт аналитики
       - { name: likes, type: integer, flag: W }   # импорт аналитики
-      - { name: retention_pct, type: float, flag: W }   # импорт аналитики
+      - { name: comments, type: integer, flag: W }   # импорт аналитики
+      - { name: ctr_percent, type: float, flag: W }   # CTR видео; из YouTube API, в MVP вносит человек
+      - { name: retention_pct, type: float, flag: W }   # импорт аналитики — глубина просмотра
+      # Формула вовлечённости объявлена ОДИН раз, в `video_data.PERFORMANCE`; здесь свод, а не
+      # второй расчёт: две формулы под одним именем разъедутся, и никто не заметит.
+      - { name: engagement_rate, type: float, flag: F }   # свод из `video_data.PERFORMANCE`
+      # Ссылки — чтобы в метриках сразу было видно, к какому видео они относятся. Хозяин ссылок
+      # тот же (`video_data`), здесь свод; после публикации источник — YouTube API, в MVP человек.
+      - { name: video_url, type: string, flag: F }   # свод из `video_data.META.url`
+      - { name: thumbnail_url, type: string, flag: F }   # свод: текущая обложка видео
       - { name: overall_uniqueness, type: float, flag: F }   # свод из `video_data`
       - { name: tier, type: enum, flag: F, enum: ['HIGH', 'MED', 'LOW'] }   # HIGH/MED/LOW (из uniqueness)
       - { name: script_score, type: float, flag: F }   # свод из `video_data`
-      - { name: svg_score, type: float, flag: F }   # свод из `video_data`
+      - { name: layer_score, type: float, flag: F }   # свод из `video_data`
       - { name: music_score, type: float, flag: F }   # свод из `video_data`
       - { name: sound_score, type: float, flag: F }   # свод из `video_data`
       - { name: transition_score, type: float, flag: F }   # свод из `video_data`
@@ -28,10 +37,17 @@ sheets:
   - name: CHANNEL_STATS   # агрегаты канала
     columns:
       - { name: total_videos, type: integer, flag: F }
+      # Агрегаты канала: те же три сырых числа, что у видео, — из них считаются вовлечённость и
+      # глубина по каналу. Без них «канал в целом» измерить нечем.
+      - { name: total_views, type: integer, flag: F }
+      - { name: total_likes, type: integer, flag: F }
+      - { name: total_comments, type: integer, flag: F }
+      - { name: avg_engagement_rate, type: float, flag: F }
+      - { name: avg_ctr, type: float, flag: F }   # средний CTR по видео канала
       - { name: avg_retention, type: float, flag: F }
       - { name: avg_uniqueness, type: float, flag: F }
       - { name: avg_script_score, type: float, flag: F }
-      - { name: avg_svg_score, type: float, flag: F }
+      - { name: avg_layer_score, type: float, flag: F }
       - { name: videos_high, type: integer, flag: F }   # счётчик по tier
       - { name: videos_med, type: integer, flag: F }
       - { name: videos_low, type: integer, flag: F }
@@ -590,17 +606,17 @@ sheets:
       - { name: signal_on_reuse, type: boolean, flag: W }
       - { name: reuse_threshold, type: integer, flag: W }
     rows:
-      - fragment_type: svg_bg
+      - fragment_type: layer_bg
         enabled: true
         niche_weight: 0.3
         signal_on_reuse: true
         reuse_threshold: 5
-      - fragment_type: svg_character
+      - fragment_type: layer_character
         enabled: true
         niche_weight: 0.4
         signal_on_reuse: true
         reuse_threshold: 3
-      - fragment_type: svg_component
+      - fragment_type: layer_component
         enabled: true
         niche_weight: 0.2
         signal_on_reuse: false

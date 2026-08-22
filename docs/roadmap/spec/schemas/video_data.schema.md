@@ -48,6 +48,13 @@
 | `engagement_rate` | float | F | `=(likes+comments+shares)/views*100` — снимок вовлечённости |
 | `performance_score` | float | F | `=like_rate*0.4+comment_rate*0.3+(retention/100)*0.3` |
 | `prediction_accuracy` | enum | F | ACCURATE/CLOSE/MISS/PENDING (формула по status) |
+| `video_url` | string | F 🆕 | ЗЕРКАЛО `META.url` — чтобы видно было, к чему метрики |
+| `thumbnail_url` | string | F 🆕 | ЗЕРКАЛО текущей обложки (`THUMBNAILS`, у которой пуст `applied_to`) |
+
+> Обе ссылки — ВЫЧИСЛЯЕМЫЕ, а не вторая записываемая копия. Владелец просил их рядом с метриками
+> для удобства («сразу видно, к какому видео это относится»); зеркало даёт то же удобство, но
+> хозяин значения остаётся один — `META.url` и `THUMBNAILS`. Вторая записываемая копия разошлась бы.
+> Источник обеих после публикации — YouTube API; пока его нет, значения вносит человек (MVP).
 
 > Динамика вовлечённости во времени (день 1/7/30) отложена — для MVP снимок+тренд.
 > При нуле просмотров формулы определены (не `#DIV/0!`) — «нет данных не ошибка».
@@ -142,10 +149,10 @@
 |---|---|---|---|
 | **Секция 1 — по типам** | | | |
 | `script_score` | float | F | `=1.0` (скрипт уникален) |
-| `svg_scene_score` | float | F | `=AVERAGE(uniqueness всех svg)` |
+| `layer_scene_score` | float | F | `=AVERAGE(uniqueness всех layer)` |
 | `music_score` `sound_score` `transition_score` | float | F | мягкие формулы (пул ниши) |
 | **Секция 2 — итог** | | | |
-| `overall_uniqueness` | float | F | `=script*0.35+svg*0.40+music*0.10+sound*0.08+transition*0.07` |
+| `overall_uniqueness` | float | F | `=script*0.35+layer*0.40+music*0.10+sound*0.08+transition*0.07` |
 | `tier` | enum | F | `=IF(>=0.80,"HIGH",IF(>=0.60,"MED","LOW"))` |
 | **Секция 3 — по сценам** | | | |
 | `scenes_uniqueness_ref` | — | F 🆕 | ССЫЛКА на лист `SCENES.scene_uniqueness` (дубль убран) |
@@ -361,7 +368,8 @@
 |---|---|---|---|
 | `thumbnail_id` | string | id | |
 | `design_id` | string | fk | → `channel_data.THUMBNAIL_DESIGNS` |
-| `file_path` | string | W | файл обложки |
+| `file_path` | string | W | локальный файл обложки |
+| `thumbnail_url` | string | W | ссылка на опубликованную обложку; из YouTube API, в MVP вносит человек |
 | `applied_from` | date | W | с какого дня стояла |
 | `applied_to` | date | W | по какой; пусто = стоит сейчас |
 | `impressions` | integer | W | вводит пользователь |

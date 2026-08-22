@@ -43,8 +43,8 @@ def ok(cond, msg):
 
 
 PROFILE = [
-    {"fragment_type": "svg_bg", "enabled": True, "niche_weight": 0.3},
-    {"fragment_type": "svg_character", "enabled": True, "niche_weight": 0.4},
+    {"fragment_type": "layer_bg", "enabled": True, "niche_weight": 0.3},
+    {"fragment_type": "layer_character", "enabled": True, "niche_weight": 0.4},
     # Вес выключенного типа НЕ нулевой намеренно: с нулём проверка «тихого столбца» проходила бы
     # потому, что вес обнуляет вклад, а не потому, что тумблер гасит тип.
     {"fragment_type": "sound", "enabled": False, "niche_weight": 0.5},
@@ -65,7 +65,7 @@ ok(len(uniq.shingles("два слова")) == 1, "текст короче окн
 print("== 2. «Тихий столбец»: выключенный тип не входит в расчёт вовсе ==")
 _with_off = uniq.compute(text="новый текст про совершенно другое дело",
                          corpus=["старый про рыбалку"],
-                         fragments={"svg_bg": ["A", "B"], "svg_character": ["C", "D"],
+                         fragments={"layer_bg": ["A", "B"], "layer_character": ["C", "D"],
                                     "sound": ["S", "S", "S"]},   # повторы в ВЫКЛЮЧЕННОМ типе
                          profile_rows=PROFILE)
 ok(_with_off["scores"]["scene_score"] == 1.0,
@@ -73,7 +73,7 @@ ok(_with_off["scores"]["scene_score"] == 1.0,
 _on = [dict(r) for r in PROFILE]
 _on[2]["enabled"] = True
 _with_on = uniq.compute(text="новый текст про совершенно другое дело", corpus=["старый про рыбалку"],
-                        fragments={"svg_bg": ["A", "B"], "svg_character": ["C", "D"],
+                        fragments={"layer_bg": ["A", "B"], "layer_character": ["C", "D"],
                                    "sound": ["S", "S", "S"]},
                         profile_rows=_on)
 ok(_with_on["scores"]["scene_score"] < 1.0,
@@ -81,9 +81,9 @@ ok(_with_on["scores"]["scene_score"] < 1.0,
 
 print("== 3. «Нет данных» ≠ «нулевая уникальность» ==")
 _gap = uniq.compute(text="новый текст про совершенно другое дело", corpus=["старый про рыбалку"],
-                    fragments={"svg_bg": ["A", "B"]},          # svg_character включён, но пуст
+                    fragments={"layer_bg": ["A", "B"]},          # layer_character включён, но пуст
                     profile_rows=PROFILE)
-ok(_gap["fragment_gaps"] == ["svg_character"],
+ok(_gap["fragment_gaps"] == ["layer_character"],
    f"включённый тип без применений назван поимённо (получено {_gap['fragment_gaps']})")
 ok(_gap["readiness"] == "partial", "пробел по типу делает расчёт неполным, а не полным")
 ok(_gap["scores"]["scene_score"] == 1.0,
@@ -91,10 +91,10 @@ ok(_gap["scores"]["scene_score"] == 1.0,
 
 print("== 4. Готовность: full / partial / empty ==")
 _full = uniq.compute(text="новый текст про совершенно другое дело", corpus=["старый про рыбалку"],
-                     fragments={"svg_bg": ["A"], "svg_character": ["C"]}, profile_rows=PROFILE)
+                     fragments={"layer_bg": ["A"], "layer_character": ["C"]}, profile_rows=PROFILE)
 ok(_full["readiness"] == "full", "все входы на месте → full")
 ok(set(_full["scores"]) == {"script_score", "scene_score"}, "при full посчитаны ВСЕ объявленные оценки")
-_partial = uniq.compute(text="есть текст", fragments={"svg_bg": ["A"], "svg_character": ["C"]},
+_partial = uniq.compute(text="есть текст", fragments={"layer_bg": ["A"], "layer_character": ["C"]},
                         profile_rows=PROFILE)
 ok(_partial["readiness"] == "partial" and _partial["missing_inputs"] == {"script_score": ["corpus"]},
    f"нет корпуса → partial с точным именем входа ({_partial['missing_inputs']})")
@@ -110,7 +110,7 @@ ok(_empty["alert"] is None, "на пустом входе сигнал не по
 print("== 5. Пороги сигнала — из декларации, не из кода ==")
 _dup = uniq.compute(text="герой просыпается и идёт на работу под дождём каждый день",
                     corpus=["герой просыпается и идёт на работу под дождём каждый день"],
-                    fragments={"svg_bg": ["A"], "svg_character": ["C"]}, profile_rows=PROFILE)
+                    fragments={"layer_bg": ["A"], "layer_character": ["C"]}, profile_rows=PROFILE)
 ok(_dup["scores"]["script_score"] == 0.0, "текст повторён целиком → уникальность текста 0.0")
 # Решение владельца: ХУДШАЯ ОЦЕНКА РЕШАЕТ. Композиция здесь = 0.5 (мягкий alert), но текст
 # скопирован слово в слово (0.0) — сигнал обязан быть critical, иначе плагиат прячется за сценой.
@@ -120,11 +120,11 @@ ok(_dup["alert"] == "critical",
 ok(_dup["alert_sources"] == ["script_score"],
    f"сервер называет, ЧТО пробило порог (получено {_dup['alert_sources']})")
 _clean = uniq.compute(text="совсем новое про другое дело целиком", corpus=["старое про рыбалку"],
-                      fragments={"svg_bg": ["A"], "svg_character": ["C"]}, profile_rows=PROFILE)
+                      fragments={"layer_bg": ["A"], "layer_character": ["C"]}, profile_rows=PROFILE)
 ok(_clean["alert"] is None and _clean["alert_sources"] == [],
    "всё уникально → сигнала нет и источников нет")
 _src = (ROOT / "core/uniqueness/uniqueness_core.py").read_text(encoding="utf-8")
-ok(not any(t in _src for t in ("svg_bg", "svg_character", "music", "transition")),
+ok(not any(t in _src for t in ("layer_bg", "layer_character", "music", "transition")),
    "в коде расчёта нет ни одного типа фрагмента — они приходят данными")
 ok("0.6" not in _src and "0.4" not in _src, "пороги в коде не зашиты — только в декларации")
 
@@ -155,11 +155,11 @@ ok(any(f.type == "UniquenessIncomplete" for f in _r.facts),
         "P1": {"pattern_description": "герой просыпается и идёт на работу под дождём каждый день"},
         "P2": {"pattern_description": "герой просыпается и идёт на работу под дождём каждый день"}}},
     "ASSETS_USED": {"schema": {}, "rows": {
-        "A1": {"asset_type": "svg_bg", "asset_id": "BG_1"},
-        "A2": {"asset_type": "svg_character", "asset_id": "CH_1"}}},
+        "A1": {"asset_type": "layer_bg", "asset_id": "BG_1"},
+        "A2": {"asset_type": "layer_character", "asset_id": "CH_1"}}},
     "SCENE_PROFILE": {"schema": {}, "rows": {
-        "R1": {"fragment_type": "svg_bg", "enabled": True, "niche_weight": 0.3},
-        "R2": {"fragment_type": "svg_character", "enabled": True, "niche_weight": 0.4}}},
+        "R1": {"fragment_type": "layer_bg", "enabled": True, "niche_weight": 0.3},
+        "R2": {"fragment_type": "layer_character", "enabled": True, "niche_weight": 0.4}}},
 }), encoding="utf-8")
 
 _r2 = _call("uniqueness_check", table="v1", row_id="P1")
@@ -173,14 +173,14 @@ ok(all(f.type != "UniquenessIncomplete" for f in _r2.facts),
    "при полных данных факта неполноты нет")
 
 print("== 6b. Сигнал на КАЖДОМ уровне + компенсация записывается и накапливается ==")
-_P6 = [{"fragment_type": "svg_bg", "enabled": True, "niche_weight": 0.7},
+_P6 = [{"fragment_type": "layer_bg", "enabled": True, "niche_weight": 0.7},
        {"fragment_type": "music", "enabled": True, "niche_weight": 0.3}]
 # Уникальный фон закрывает заспамленную музыку: итог отличный, но музыка провальная.
 _c = uniq.compute(text="абсолютно новый текст про совершенно иное дело сегодня",
                   corpus=["старый текст про рыбалку и лодку на озере"],
-                  fragments={"svg_bg": ["BG1", "BG2"], "music": ["M1", "M1", "M1"]},
+                  fragments={"layer_bg": ["BG1", "BG2"], "music": ["M1", "M1", "M1"]},
                   profile_rows=_P6)
-ok(_c["fragment_scores"] == {"svg_bg": 1.0, "music": 0.3333},
+ok(_c["fragment_scores"] == {"layer_bg": 1.0, "music": 0.3333},
    f"оценка считается по КАЖДОМУ типу фрагмента, не только в среднем ({_c['fragment_scores']})")
 ok(_c["composed"] > 0.8, f"итоговое число выглядит отличным ({_c['composed']})")
 ok(_c["alert"] == "critical" and _c["alert_sources"] == ["fragment:music"],
@@ -190,13 +190,13 @@ ok(_c["compensation"]["active"] and _c["compensation"]["items"] == ["fragment:mu
 ok(_c["compensation"]["escalated"] is False, "первое применение приёма — ещё не эскалация")
 _esc = uniq.compute(text="абсолютно новый текст про совершенно иное дело сегодня",
                     corpus=["старый текст про рыбалку и лодку на озере"],
-                    fragments={"svg_bg": ["BG1", "BG2"], "music": ["M1", "M1", "M1"]},
+                    fragments={"layer_bg": ["BG1", "BG2"], "music": ["M1", "M1", "M1"]},
                     profile_rows=_P6, compensation_history=2)
 ok(_esc["compensation"]["escalated"] is True,
    "приём применён к сцене объявленное число раз → требование ужесточается")
 _clean6 = uniq.compute(text="абсолютно новый текст про совершенно иное дело сегодня",
                        corpus=["старый текст про рыбалку и лодку на озере"],
-                       fragments={"svg_bg": ["BG1", "BG2"], "music": ["M1", "M2", "M3"]},
+                       fragments={"layer_bg": ["BG1", "BG2"], "music": ["M1", "M2", "M3"]},
                        profile_rows=_P6, compensation_history=5)
 ok(not _clean6["compensation"]["active"],
    "всё уникально само по себе → компенсации нет, сколько бы ни было истории")
@@ -208,13 +208,13 @@ ok(not _clean6["compensation"]["active"],
         "P1": {"pattern_description": "абсолютно новый текст про совершенно иное дело сегодня"},
         "P2": {"pattern_description": "старый текст про рыбалку и лодку на озере"}}},
     "ASSETS_USED": {"schema": {}, "rows": {
-        "A1": {"asset_type": "svg_bg", "asset_id": "BG1"},
-        "A2": {"asset_type": "svg_bg", "asset_id": "BG2"},
+        "A1": {"asset_type": "layer_bg", "asset_id": "BG1"},
+        "A2": {"asset_type": "layer_bg", "asset_id": "BG2"},
         "A3": {"asset_type": "music", "asset_id": "M1"},
         "A4": {"asset_type": "music", "asset_id": "M1"},
         "A5": {"asset_type": "music", "asset_id": "M1"}}},
     "SCENE_PROFILE": {"schema": {}, "rows": {
-        "R1": {"fragment_type": "svg_bg", "enabled": True, "niche_weight": 0.7},
+        "R1": {"fragment_type": "layer_bg", "enabled": True, "niche_weight": 0.7},
         "R2": {"fragment_type": "music", "enabled": True, "niche_weight": 0.3}}},
 }), encoding="utf-8")
 _runs = [_call("uniqueness_check", table="v2", row_id="P1").data["compensation"] for _ in range(3)]

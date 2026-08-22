@@ -118,6 +118,43 @@ ok(not ({"usage_count_in_video", "uniqueness_score", "videos_since_last_use"} & 
    f"счётчиков видео на компоненте обложки нет: {sorted({'usage_count_in_video', 'uniqueness_score', 'videos_since_last_use'} & set(TC))}")
 ok("scene_id" not in TC, "компонент обложки не привязан к сцене — обложка не кадр видео")
 
+print("\n== сигналы видео и обложки не смешиваются ==")
+# Риск владельца: формулы видео и обложки технически не связаны, но при реализации их легко
+# перепутать — и получить ложный сигнал, который выглядит достоверным. Проверяется В ОБЕ стороны.
+_VIDEO_TERMS = ("script", "svg", "layer", "music", "sound", "transition")
+_thumb_cols = [c for sh in ("THUMBNAILS", "THUMBNAIL_COMPONENTS") for c in VD[sh]["columns"]]
+_leak_in = [f"{c['name']}: {c['formula']}" for c in _thumb_cols
+            if any(t in (c.get("formula") or "") for t in _VIDEO_TERMS)]
+ok(not _leak_in, f"в формулы обложки не затекли слагаемые видео: {_leak_in}")
+
+_uniq_cols = [c for c in VD["UNIQUENESS"]["columns"]] + [c for c in VD["SCENES"]["columns"]]
+_leak_out = [f"{c['name']}: {c['formula']}" for c in _uniq_cols
+             if "thumbnail" in (c.get("formula") or "")]
+ok(not _leak_out, f"в формулы видео не затекла обложка: {_leak_out}")
+
+# Второй риск — не расчёт, а ЧТЕНИЕ: одинаковые имена в разных областях смешиваются при пересказе.
+# Поэтому всё, что принадлежит обложке, носит её префикс и опознаётся без знания листа.
+_thumb_scoped = [c["name"] for c in VD["THUMBNAILS"]["columns"] if "uniqueness" in c["name"]]
+ok(_thumb_scoped == ["thumbnail_uniqueness"],
+   f"балл обложки назван со своей областью, а не «uniqueness»: {_thumb_scoped}")
+
+print("\n== метрики: сырые числа есть на обоих уровнях ==")
+_perf = {c["name"]: c for c in VD["PERFORMANCE"]["columns"]}
+for need in ("views", "likes", "comments", "ctr_percent", "engagement_rate", "retention_percent"):
+    ok(need in _perf, f"видео: `{need}`")
+# Ссылки — ЗЕРКАЛА: удобство рядом с метриками без второй записываемой копии.
+ok(_perf["video_url"]["flag"] == "F" and _perf["thumbnail_url"]["flag"] == "F",
+   "ссылки у метрик видео вычисляемые, а не вторая копия")
+_vi = {c["name"]: c for c in CH["VIDEOS_INDEX"]["columns"]}
+for need in ("views", "likes", "comments", "ctr_percent", "engagement_rate", "video_url", "thumbnail_url"):
+    ok(need in _vi, f"канал (индекс видео): `{need}`")
+_cs = {c["name"] for c in CH["CHANNEL_STATS"]["columns"]}
+for need in ("total_views", "total_likes", "total_comments", "avg_engagement_rate", "avg_ctr"):
+    ok(need in _cs, f"канал (агрегаты): `{need}`")
+# Одна формула вовлечённости на проект: на канале свод, а не второй расчёт под тем же именем.
+ok(_vi["engagement_rate"]["flag"] == "F" and not _vi["engagement_rate"].get("formula"),
+   "вовлечённость канала — свод, формула объявлена один раз у видео")
+
 print("\n== регистр enum внутри подсистемы монтажа ==")
 # Общепроектной конвенции НЕТ: в одном листе `AUTOMATION_RULES` соседствуют строчный `action` и
 # заглавный `severity`. Но enum из спеки конвертер умеет отдавать ТОЛЬКО заглавными (он извлекает

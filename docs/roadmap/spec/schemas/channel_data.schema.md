@@ -37,7 +37,7 @@
 | `overall_uniqueness` | float | F | свод из `video_data` |
 | `tier` | enum | F | HIGH/MED/LOW (из uniqueness) |
 | `script_score` | float | F | свод из `video_data` |
-| `svg_score` | float | F | свод из `video_data` |
+| `layer_score` | float | F | свод из `video_data` |
 | `music_score` | float | F | свод из `video_data` |
 | `sound_score` | float | F | свод из `video_data` |
 | `transition_score` | float | F | свод из `video_data` |
@@ -57,7 +57,7 @@
 | `avg_retention` | float | F | |
 | `avg_uniqueness` | float | F | |
 | `avg_script_score` | float | F | |
-| `avg_svg_score` | float | F | |
+| `avg_layer_score` | float | F | |
 | `videos_high` | integer | F | счётчик по tier |
 | `videos_med` | integer | F | |
 | `videos_low` | integer | F | |

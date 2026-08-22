@@ -5,6 +5,7 @@ Standalone-прогон:  python tests/quick/test_structure.py
 Проверяет: niche-only, channel-минус-видео, названное видео → поддерево, отложенные
 таблицы (kind:table), пофрагментный контроль детей, PATH_ESCAPE, TEMPLATE_NOT_FOUND, ID узлов.
 """
+import re
 import sys
 import tempfile
 import warnings
@@ -748,6 +749,39 @@ ok(all(_rows33.values()) and sum(_cells33.values()) >= 294,
    f"ячеек-дефолтов {sum(_cells33.values())})")
 ok({r["provider"] for r in _sheets33["RESOURCE_LIMITS"]["rows"]} >= {"Local_piper", "Local_diffusers"},
    "в дефолтах есть провайдеры, работающие без ключей — цепочка fallback кончается исполнимым")
+
+print("== 33б′. Совет без читателя — считаемый долг, а не тишина ==")
+# Ключ, который никто не запрашивает, читает только ревьюер. Ключи достаются и через переменные,
+# и через `advice_key` в config/*.yaml — поэтому ищем ПОДСТРОКУ по коду и декларациям, а не вызовы.
+_rec_path = ROOT / "config" / "recommendations.yaml"
+_rec_keys = list(_y.safe_load(_rec_path.read_text(encoding="utf-8")).keys())
+_hay = ""
+for _pat in ("core/**/*.py", "tools/**/*.py", "server.py", "config/*.yaml"):
+    for _f in ROOT.glob(_pat):
+        if _f != _rec_path:
+            _hay += _f.read_text(encoding="utf-8", errors="ignore")
+_orphan = sorted(k for k in _rec_keys if k not in _hay)
+# Единственный допущенный: метрики некому предложить, пока нет инструмента, который их читает.
+# Список не должен расти — новый сирота означает совет, которого никто никогда не увидит.
+ok(_orphan == ["metrics.missing"],
+   f"ключей совета без читателя ровно один и он назван: {_orphan}")
+
+print("== 33в. Веса уникальности: имена переименовываемы, ЧИСЛА нет ==")
+# Решение владельца при переименовании `svg_*`: имена меняем, веса не трогаем. Два НЕЗАВИСИМЫХ
+# набора, и разъезжаются они молча, поэтому закреплены числами, а не намерением.
+_prof33 = {r["fragment_type"]: r["niche_weight"] for r in _sheets33["SCENE_PROFILE"]["rows"]}
+ok(sorted(_prof33.values()) == [0.0, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
+   f"НАБОР весов типов фрагмента не сдвинулся: {sorted(_prof33.values())}")
+ok(_prof33.get("music") == 0.5 and _prof33.get("transition") == 0.1,
+   f"веса привязаны к тем же типам: music={_prof33.get('music')}, transition={_prof33.get('transition')}")
+_vd33 = {s["name"]: s for s in _y.safe_load(
+    (ROOT / "config/templates/tables/video_data.schema.yaml").read_text(encoding="utf-8"))["sheets"]}
+_ovr33 = next(c for c in _vd33["UNIQUENESS"]["columns"] if c["name"] == "overall_uniqueness")
+_nums33 = re.findall(r"\*([0-9.]+)", _ovr33.get("formula") or "")
+ok(_nums33 == ["0.35", "0.40", "0.10", "0.08", "0.07"],
+   f"веса overall_uniqueness не сдвинулись: {_nums33}")
+ok(abs(sum(float(x) for x in _nums33) - 1.0) < 1e-9,
+   f"веса по-прежнему дают ровно 1.00 (сумма {sum(float(x) for x in _nums33)})")
 # «Тихий столбец» и единый источник провайдеров — те самые РЕШЕНИЯ, ради которых делался перенос.
 ok({c["name"] for c in _sheets33.get("SCENE_PROFILE", {}).get("columns", [])} >= {"enabled", "niche_weight"},
    "SCENE_PROFILE сохранил тумблер enabled («тихий столбец»)")

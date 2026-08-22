@@ -189,7 +189,7 @@ ok(r5["rows_total"] == _declared_rows,
 _sp = wb5["SCENE_PROFILE"]
 _vals = {row[0]: row[1] for row in _sp.iter_rows(min_row=2, values_only=True) if row[0]}
 ok(len(_vals) == 7, f"SCENE_PROFILE: 7 строк данных на листе (получено {len(_vals)})")
-ok(_vals.get("sound") is False and _vals.get("svg_bg") is True,
+ok(_vals.get("sound") is False and _vals.get("layer_bg") is True,
    "значения дефолтов легли как есть: выключенный тип остался выключенным (тихий столбец)")
 _wf = wb5["WORKFLOW_SEQUENCES"]
 _hdr = [c.value for c in _wf[1]]
@@ -272,12 +272,23 @@ for _sp in sorted((ROOT / "docs/roadmap/spec/schemas").glob("*.schema.md")):
     _y = ROOT / "config/templates/tables" / _sp.name.replace(".schema.md", ".schema.yaml")
     if not _y.exists():
         continue
-    _want_f = dict(re.findall(r"^\| *`([a-z][a-z0-9_]*)` *\| *[^|]*\| *(F|id|fk) 🆕",
-                              _sp.read_text(encoding="utf-8"), re.M))
-    _have_f = {c["name"]: c.get("flag")
+    # Ключ — ПАРА «лист + столбец»: одно имя живёт в разных листах с разными ролями
+    # (`thumbnail_url` — `W` у своего листа-хозяина и `F`-зеркало рядом с метриками),
+    # и плоский ключ по имени склеил бы их в ложное расхождение.
+    _want_f: dict[tuple[str, str], str] = {}
+    _sheet = ""
+    for _line in _sp.read_text(encoding="utf-8").splitlines():
+        _h = re.match(r"^##\s*Лист[ыа]?\s*[\d–\-—, ]*:\s*`([^`]+)`", _line)
+        if _h:
+            _sheet = _h.group(1)
+            continue
+        _m = re.match(r"^\| *`([a-z][a-z0-9_]*)` *\| *[^|]*\| *(F|id|fk) 🆕", _line)
+        if _m and _sheet:
+            _want_f[(_sheet, _m.group(1))] = _m.group(2)
+    _have_f = {(sh["name"], c["name"]): c.get("flag")
                for sh in yaml.safe_load(_y.read_text(encoding="utf-8"))["sheets"] for c in sh["columns"]}
-    _lost_flags += [f"{_sp.stem}.{n}: спека {f}, схема {_have_f.get(n)}"
-                    for n, f in _want_f.items() if _have_f.get(n) != f]
+    _lost_flags += [f"{_sp.stem}.{s}.{n}: спека {f}, схема {_have_f.get((s, n))}"
+                    for (s, n), f in _want_f.items() if _have_f.get((s, n)) != f]
 ok(not _lost_flags, f"объявленный в спеке флаг дожил до схемы: расходятся {_lost_flags[:4]}")
 
 specs = Path(tempfile.mkdtemp(prefix="s2s_"))
