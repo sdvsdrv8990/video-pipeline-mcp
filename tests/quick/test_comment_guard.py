@@ -130,6 +130,36 @@ for _case, _src in (
 ok("неразбираемый файл даёт замечание, а не молчание", notes_of("def f(:\n  pass\n") != [],
    notes_of("def f(:\n  pass\n"))
 
+print("== Правило не зависит от стека: маркеры знает лексер, а не наш список ==")
+# Ни один из этих языков в коде сторожа не назван — их приносит библиотека. Если бы список
+# маркеров вели мы, каждый новый стек требовал бы правки, а до неё молчал бы «чисто».
+for _name, _src in {
+    "a.rs": "// D42: раст\nfn main() {}\n",
+    "a.go": "// D42: го\nfunc main() {}\n",
+    "a.css": "/* D42: стиль */\n.a { color: #fff; }\n",
+    "a.sql": "-- D42: скуль\nSELECT 1;\n",
+    "a.vue": "<!-- D42: разметка -->\n<template></template>\n",
+}.items():
+    ok(f"координата задачи поймана в {_name}", G.review(_name, _src) != [], G.review(_name, _src))
+
+print("== Фронтенд: сторож видит комментарии TS/TSX, а не молчит на них ==")
+_TSX = "studio/src/Card.tsx"
+_tsx_tag = 'export const Card = () => {\n  // D42: временно, потом вынести\n  return null;\n};\n'
+ok("координата задачи в `//` поймана", G.review(_TSX, _tsx_tag) != [], G.review(_TSX, _tsx_tag))
+_tsx_block = "/*\n * D42: разбор задачи на много строк\n */\nexport const A = 1;\n"
+ok("координата задачи в блоке `/* */` поймана", G.review(_TSX, _tsx_block) != [],
+   G.review(_TSX, _tsx_block))
+# Ложное срабатывание страшнее пропуска: храповик заморозил бы его как принятый долг.
+_tsx_clean = 'const url = "https://x/y"; // адрес витрины\nconst re = /a\\/b/;\n'
+ok("слэши в строке и регулярке не считаются комментарием", G.review(_TSX, _tsx_clean) == [],
+   G.review(_TSX, _tsx_clean))
+# Решётка в TSX комментарием НЕ является — иначе CSS-цвет читался бы как комментарий.
+ok("решётка в TSX не принимается за комментарий",
+   G.review(_TSX, 'const c = "#D42FFF";\n') == [], G.review(_TSX, 'const c = "#D42FFF";\n'))
+# И обратно: в yaml маркером остаётся решётка, слэши — нет.
+ok("в yaml слэши не стали комментарием", G.review("a.yaml", "// D42\nkey: 1\n") == [],
+   G.review("a.yaml", "// D42\nkey: 1\n"))
+
 print(f"\n{'=' * 50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

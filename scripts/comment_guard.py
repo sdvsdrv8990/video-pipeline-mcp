@@ -10,9 +10,9 @@
 Единственная копия правила; хук `~/.claude/hooks/vpm-comment-guard.py` — шим сюда.
 Режимы: `--hook` (PostToolUse: предупреждает), `--scan` (отчёт), `--check` (храповик:
 превышение = exit 1), `--bless` (переписать потолок после прополки).
-Границы текста даёт `ast`+`tokenize`, цели — `git ls-files`: свой построчный разбор путал
-кавычки константы с докстрингом, а фиксированный список целей не видел новый пакет.
-В не-Python цели (декларации, CI, ignore) комментарием считается только строка целиком.
+Границы текста в Python даёт `ast`+`tokenize`, в остальных языках — лексер `pygments`
+(правило не зависит от стека, новый язык не требует правки сторожа); цель без лексера
+разбирается по решётке. Цели — `git ls-files`, иначе новый пакет не виден.
 """
 
 import argparse
@@ -24,6 +24,10 @@ import subprocess
 import sys
 import tokenize
 from pathlib import Path
+
+from pygments.lexers import get_lexer_for_filename
+from pygments.token import Comment
+from pygments.util import ClassNotFound
 
 PROJECT = Path(__file__).resolve().parent.parent
 BASELINE = Path(__file__).with_name("comment_guard_baseline.txt")
@@ -95,16 +99,50 @@ def _tag_note(path: Path | str, n: int, tag: str) -> str:
             f"а не объясняет код — её место в commit")
 
 
-def _review_text(path: Path | str, text: str) -> list[str]:
-    """Не-Python цель: комментарий = строка, начинающаяся с `#`.
+def _comment_lines(path: Path | str, text: str) -> dict[int, str] | None:
+    """Номера строк-комментариев по лексеру ЯЗЫКА. `None` — языка библиотека не знает.
 
-    Хвостовой `#` после значения не разбираем: без парсера языка он неотличим от решётки
-    внутри кавычек, а ложное замечание храповик заморозил бы как принятый долг.
+    Маркеры (`#`, `//`, `/* */`, `--`, `<!-- -->`) знает pygments, а не наш список: правило
+    работает на любом стеке, и новый язык не требует правки сторожа. Он же отличает маркер
+    от такого же символа внутри строки — `"#D42FFF"` в TSX комментарием не считается.
+    """
+    try:
+        lexer = get_lexer_for_filename(str(path))
+    except ClassNotFound:
+        return None
+    lines = text.split("\n")
+    marked: dict[int, str] = {}
+    n, col = 1, 0
+    for ttype, value in lexer.get_tokens(text):
+        # Хвостовой комментарий после значения не берём — прежнее решение сторожа сохранено:
+        # расширение охвата это отдельная правка, а не побочный эффект смены разбора.
+        if ttype in Comment and not lines[n - 1][:col].strip():
+            for k in range(value.count("\n") + 1):
+                if n + k <= len(lines):
+                    marked[n + k] = lines[n + k - 1]
+        if (nl := value.count("\n")):
+            n += nl
+            col = len(value) - value.rfind("\n") - 1
+        else:
+            col += len(value)
+    return marked
+
+
+def _review_text(path: Path | str, text: str) -> list[str]:
+    """Не-Python цель: комментарии выделяет лексер языка.
+
+    Запасной разбор по решётке — только для целей без лексера (`.gitignore`, `.env.example`):
+    они как раз из семейства решётки. Хвостовой маркер там не разбираем — без парсера он
+    неотличим от решётки внутри кавычек, а ложное замечание храповик заморозил бы как долг.
     """
     notes: list[str] = []
     seen: set[str] = set()
+    marked = _comment_lines(path, text)
     for n, line in enumerate(text.split("\n"), 1):
-        if not line.lstrip().startswith("#"):
+        if marked is None:
+            if not line.lstrip().startswith("#"):
+                continue
+        elif n not in marked:
             continue
         for pattern, why in NARRATIVE:
             if re.search(pattern, line) and why not in seen:
@@ -175,7 +213,8 @@ def review(path: Path | str, text: str) -> list[str]:
 
 def _tracked() -> list[Path]:
     """Цели под контролем git: новый пакет и новая декларация попадают в замер сами."""
-    globs = ["*.py", "*.yaml", "*.yml", "*.toml", "*.sh", ".gitignore", ".env.example"]
+    globs = ["*.py", "*.yaml", "*.yml", "*.toml", "*.sh", ".gitignore", ".env.example",
+             "*.ts", "*.tsx", "*.js", "*.jsx"]
     try:
         out = subprocess.run(["git", "-C", str(PROJECT), "ls-files", "-z", *globs],
                              capture_output=True, text=True, check=True).stdout
