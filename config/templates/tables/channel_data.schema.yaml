@@ -661,6 +661,97 @@ sheets:
         reuse_threshold: 3
         fills_frame: false
 
+  # ═══ ШАБЛОНЫ СЦЕН ═══
+  # Шаблон — это СТРОКИ, а не файл: применение шаблона дописывает строки в книгу выбранного видео,
+  # а собрать несколько шаблонов в один значит применить их подряд со смещением. Слияние строк
+  # механическое; слияние кода — нет, и потому шаблон живёт здесь, а не скриптом сервера.
+  # Столбцы намеренно повторяют листы сцены: заготовка обязана быть тем же, чем станет.
+  - name: SCENE_TEMPLATE_ELEMENTS
+    columns:
+      - { name: template_row_id, type: string, flag: id }
+      - { name: template_id, type: string, flag: W }   # что применяем целиком
+      - { name: element_role, type: string, flag: W }
+      - { name: slot_id, type: string, flag: fk }
+      - { name: variant_id, type: string, flag: fk }
+      - { name: asset_path, type: string, flag: W }   # пусто = файл берётся у варианта
+      - { name: alpha_mode, type: enum, flag: W, enum: ['AS_IS', 'REMOVE_BG', 'CHROMAKEY', 'NONE'] }
+      - { name: x, type: integer, flag: W }
+      - { name: y, type: integer, flag: W }
+      - { name: width, type: integer, flag: W }
+      - { name: height, type: integer, flag: W }
+      - { name: z_index, type: integer, flag: W }
+      - { name: time_start, type: float, flag: W }
+      - { name: time_end, type: float, flag: W }
+      - { name: fade_sec, type: float, flag: W }
+      # Заготовка вправе задавать и обрезку, и темп, и движение: иначе шаблон «герой въезжает по
+      # точкам» пришлось бы дособирать руками после каждой раскладки.
+      - { name: source_in, type: float, flag: W }
+      - { name: source_out, type: float, flag: W }
+      - { name: speed, type: float, flag: W }
+      - { name: motion_path, type: string, flag: W }
+      - { name: notes, type: string, flag: W }
+    rows:
+      # Дефолтный шаблон свежего канала: говорящий герой на фоне. Это ОБРАЗЕЦ формы, а не
+      # обязательство — правится в редакторе как любая строка.
+      - template_row_id: TPLE_01
+        template_id: talking_head
+        element_role: layer_bg
+        slot_id: ''
+        variant_id: ''
+        asset_path: ''
+        alpha_mode: AS_IS
+        x: 0
+        y: 0
+        width: ''
+        height: ''
+        z_index: 0
+        time_start: 0.0
+        time_end: ''
+        fade_sec: ''
+        notes: Фон сцены. Растягивается на кадр по роли; путь подставляет автор сцены
+      - template_row_id: TPLE_02
+        template_id: talking_head
+        element_role: layer_character
+        slot_id: ''
+        variant_id: ''
+        asset_path: ''
+        alpha_mode: CHROMAKEY
+        x: 0
+        y: 0
+        width: ''
+        height: ''
+        z_index: 1
+        time_start: 0.0
+        time_end: ''
+        fade_sec: ''
+        notes: Герой поверх фона. Зелень снимается ffmpeg; при включённой вариативности здесь стоит слот
+
+  - name: SCENE_TEMPLATE_AUDIO
+    columns:
+      - { name: template_row_id, type: string, flag: id }
+      - { name: template_id, type: string, flag: W }
+      - { name: audio_role, type: enum, flag: W, enum: ['VOICE', 'MUSIC', 'SOUND'] }
+      - { name: asset_path, type: string, flag: W }
+      - { name: time_start, type: float, flag: W }
+      - { name: volume, type: float, flag: W }
+      - { name: fade_in_sec, type: float, flag: W }
+      - { name: fade_out_sec, type: float, flag: W }
+      - { name: source_in, type: float, flag: W }
+      - { name: source_out, type: float, flag: W }
+      - { name: speed, type: float, flag: W }
+      - { name: volume_curve, type: string, flag: W }
+      - { name: notes, type: string, flag: W }
+    rows:
+      - template_row_id: TPLA_01
+        template_id: talking_head
+        audio_role: VOICE
+        asset_path: ''
+        time_start: 0.0
+        volume: 1.0
+        fade_in_sec: 0.0
+        fade_out_sec: 0.0
+        notes: Озвучка сцены. Пустой лист аудио валиден — дорожку можно не заводить вовсе
+
   # ═══ ОСНАСТКА ПЕРСОНАЖА (позы и эмоции как ГРУППЫ вариантов) ═══
   # Персонаж — не один ассет, а слоты: тело держит голову, голова держит лицо. Родитель здесь несёт
   # два смысла сразу — порядок наложения И совместимость: вариант ребёнка годится только к тому

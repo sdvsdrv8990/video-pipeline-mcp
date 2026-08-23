@@ -1497,6 +1497,48 @@
   },
   "title": "Память: записать решение"
  },
+ "montage_generate_scene": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Берёт шаблон сцены из книги канала и дописывает его СТРОКАМИ в книгу выбранного видео: слои в лист элементов, дорожки в лист звука, всё под указанным scene_id. Шаблон — это строки, а не файл: он правится в редакторе как любые данные, и потому несколько шаблонов собираются в одну сцену простым повторным вызовом со смещением по времени (time_offset) и порядку слоёв (z_offset). Что разложено — обычные строки: дальше двигай и меняй их через table_set, а собирай через montage_render_scene. Список доступных заготовок приходит в ответе.",
+  "group": "montage",
+  "input_schema": {
+   "properties": {
+    "scene_id": {
+     "description": "Под каким ID сцены разложить строки",
+     "type": "string"
+    },
+    "table": {
+     "description": "Путь сущности видео в workspace",
+     "type": "string"
+    },
+    "template_id": {
+     "description": "Какую заготовку применить",
+     "type": "string"
+    },
+    "time_offset": {
+     "default": 0.0,
+     "description": "Сдвиг времён заготовки, сек (для второго шаблона подряд)",
+     "type": "number"
+    },
+    "z_offset": {
+     "default": 0,
+     "description": "Сдвиг порядка слоёв (чтобы второй шаблон лёг поверх первого)",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "table",
+    "scene_id",
+    "template_id"
+   ],
+   "type": "object"
+  },
+  "title": "Монтаж: разложить сцену по заготовке"
+ },
  "montage_render_scene": {
   "annotations": {
    "destructiveHint": false,

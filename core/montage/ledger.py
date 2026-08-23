@@ -20,6 +20,28 @@ from core.providers.declaration import Declaration
 from .errors import MontageError
 
 
+def append_rows(state, table: str, sheet: str, rows: list[dict], ids, prefix: str) -> list[str]:
+    """Дописать строки в лист снапшота. ID выдаёт сервер, как и в очереди.
+
+    Одна реализация на два случая — результат рендера и раскладка шаблона: второй копией они
+    разошлись бы по мелочам (одна создаёт лист, другая нет).
+    """
+    snapshot = state.read_snapshot(table)
+    if snapshot is None:
+        raise MontageError(
+            "TABLE_NOT_FOUND", f"Данных проекта нет: {table}",
+            reason="Писать некуда. Создай структуру проекта.",
+            suggested_tool="fs_create_project_structure")
+    sheet_obj = snapshot.setdefault(sheet, {"schema": {}, "rows": {}})
+    written = []
+    for row in rows:
+        row_id = ids.generate_simple(prefix)
+        sheet_obj.setdefault("rows", {})[row_id] = row
+        written.append(row_id)
+    state.write_snapshot(table, snapshot)
+    return written
+
+
 class RenderLedger:
     """Запись строки результата рендера в данные проекта."""
 
@@ -46,16 +68,7 @@ class RenderLedger:
                 reason="Столбцы результата перечислены в config/montage.yaml → target.columns.")
         row = {columns[key]: value for key, value in values.items()}
         self._check_enums(table, spec["sheet"], row)
-        snapshot = self.state.read_snapshot(table)
-        if snapshot is None:
-            raise MontageError(
-                "TABLE_NOT_FOUND", f"Данных проекта нет: {table}",
-                reason="Файл собран, но записать его некуда. Создай структуру проекта.",
-                suggested_tool="fs_create_project_structure")
-        sheet = snapshot.setdefault(spec["sheet"], {"schema": {}, "rows": {}})
-        row_id = self.ids.generate_simple(spec["id_prefix"])
-        sheet.setdefault("rows", {})[row_id] = row
-        self.state.write_snapshot(table, snapshot)
+        row_id = append_rows(self.state, table, spec["sheet"], [row], self.ids, spec["id_prefix"])[0]
         return {"row_id": row_id, "sheet": spec["sheet"], "row": row}
 
     def _check_enums(self, table: str, sheet: str, row: dict) -> None:

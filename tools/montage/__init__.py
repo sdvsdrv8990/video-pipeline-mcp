@@ -10,7 +10,7 @@ from pathlib import Path
 
 from core.contracts import Fact, ToolResult
 from core.engine import Engine
-from core.montage import RenderLedger, SceneBook, SceneScript
+from core.montage import RenderLedger, SceneBook, SceneScript, SceneTemplate
 from core.providers.ffmpeg import FfmpegEngine
 from tools._context import ANNOTATIONS_MODIFY, ToolContext
 
@@ -21,6 +21,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
     book = SceneBook(ctx.state_manager, ctx.config_path, ctx.resolve)
     ledger = RenderLedger(ctx.state_manager, ctx.config_path, ctx.id_generator)
     script = SceneScript(book)
+    templates = SceneTemplate(book, ctx.id_generator)
 
     def _output(table: str, scene_id: str, stage: str, container: str, given: str) -> Path:
         """Куда лечь файлу: названное вызовом или объявленное место внутри сущности видео."""
@@ -121,6 +122,57 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 table, scene_id).get("variants_enabled"),
             "executed": False, **report,
         }, facts=[Fact(type="FileCreated", data={"path": relative, "kind": "scene_script"})])
+
+
+    async def montage_generate_scene(table: str, scene_id: str, template_id: str,
+                                     time_offset: float = 0.0, z_offset: int = 0) -> "ToolResult":
+        """Разложить сцену по заготовке: строки шаблона канала дописываются в книгу видео.
+
+        Собрать несколько шаблонов в одну сцену — это вызвать несколько раз со смещением по
+        времени и порядку слоёв: строки складываются, а не спорят. Дальше сцена правится как
+        любые строки книги, и рендер собирает её тем же montage_render_scene.
+        """
+        ok, applied = ctx.safe(lambda: templates.apply(table, scene_id, template_id,
+                                                       time_offset, z_offset))
+        if not ok:
+            return applied
+        ok, state = ctx.safe(lambda: book.variants_state(table, scene_id))
+        advice = []
+        if ok and state.get("advice_key"):
+            advice = ctx.advice.get(state["advice_key"], table=table, scene_id=scene_id,
+                                    channel=state.get("channel") or table)
+        return ToolResult(status="success", data={
+            **({"recommendations": advice} if advice else {}),
+            "table": table, "scene_id": scene_id, "template_id": template_id,
+            "elements": len(applied["elements"]), "audio": len(applied["audio"]),
+            "row_ids": applied["elements"] + applied["audio"],
+            "time_offset": time_offset, "z_offset": z_offset,
+            "templates_available": templates.names(table),
+        }, facts=[Fact(type="RowAppended", data={
+            "sheet": "scene", "scene_id": scene_id, "template_id": template_id,
+            "rows": len(applied["elements"]) + len(applied["audio"])})])
+
+    engine.register(
+        name="montage_generate_scene",
+        title="Монтаж: разложить сцену по заготовке",
+        description=(
+            "Берёт шаблон сцены из книги канала и дописывает его СТРОКАМИ в книгу выбранного "
+            "видео: слои в лист элементов, дорожки в лист звука, всё под указанным scene_id. "
+            "Шаблон — это строки, а не файл: он правится в редакторе как любые данные, и потому "
+            "несколько шаблонов собираются в одну сцену простым повторным вызовом со смещением по "
+            "времени (time_offset) и порядку слоёв (z_offset). "
+            "Что разложено — обычные строки: дальше двигай и меняй их через table_set, а собирай "
+            "через montage_render_scene. Список доступных заготовок приходит в ответе."),
+        input_schema={"type": "object", "properties": {
+            "table": {"type": "string", "description": "Путь сущности видео в workspace"},
+            "scene_id": {"type": "string", "description": "Под каким ID сцены разложить строки"},
+            "template_id": {"type": "string", "description": "Какую заготовку применить"},
+            "time_offset": {"type": "number", "default": 0.0,
+                            "description": "Сдвиг времён заготовки, сек (для второго шаблона подряд)"},
+            "z_offset": {"type": "integer", "default": 0,
+                         "description": "Сдвиг порядка слоёв (чтобы второй шаблон лёг поверх первого)"},
+        }, "required": ["table", "scene_id", "template_id"]},
+        handler=montage_generate_scene, group="montage", annotations=ANNOTATIONS_MODIFY)
 
     engine.register(
         name="montage_scene_script",

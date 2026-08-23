@@ -112,6 +112,15 @@ _uniq_cols = [c for s in _video["sheets"] if s["name"] == "UNIQUENESS" for c in 
 ok(not any(c.get("formula") for c in _uniq_cols),
    "в книге не осталось замороженной формулы уникальности — иначе включённый тумблер делает её ложной")
 
+_tpls = MONTAGE["templates"]
+for _part in ("elements", "audio"):
+    _cols = _columns(_channel, _tpls[_part]["sheet"])
+    _target = set(MONTAGE["scene"][_part]["fields"])
+    _lost = sorted(_target - _cols)
+    ok(not _lost, f"{_tpls[_part]['sheet']}: заготовка несёт те же поля, что и лист сцены (нет: {_lost or '—'})")
+    ok(_tpls[_part]["template_column"] in _cols,
+       f"{_tpls[_part]['sheet']}: есть чем сгруппировать строки в один шаблон")
+
 _tpl = yaml.safe_load((CONFIG / "templates/workspace/video.tpl.yaml").read_text(encoding="utf-8"))
 _folders = {f["name"] for f in _tpl["video"]["folders"]}
 ok(MONTAGE["output"]["dir"] in _folders,
@@ -255,6 +264,38 @@ else:
     _ch["SCENE_PROFILE"]["rows"].pop("R9", None)          # канал возвращается к выключенному тумблеру
     (WS / "ch1" / "read.json").write_text(json.dumps(_ch, ensure_ascii=False), encoding="utf-8")
     book(ELEMENTS, AUDIO)
+
+    print("\n  ── раскладка по заготовке ──")
+    _gen = call("montage_generate_scene", table="ch1/v1", scene_id="S07", template_id="talking_head")
+    ok(_gen.status == "success" and _gen.data["elements"] == 2 and _gen.data["audio"] == 1,
+       f"заготовка разложилась строками ({_gen.data.get('elements')} слоёв, {_gen.data.get('audio')} звук)")
+    ok(_gen.data["templates_available"] == ["talking_head"],
+       f"какие заготовки есть — приходит выборкой, а не догадкой ({_gen.data['templates_available']})")
+    _snap = SM.read_snapshot("ch1/v1") or {}
+    _made = {rid: row for rid, row in _snap["SCENE_ELEMENTS"]["rows"].items()
+             if row.get("scene_id") == "S07"}
+    ok(len(_made) == 2 and all(r.get("template_row_id") is None for r in _made.values()),
+       "ID строк выдал сервер: идентификатор заготовки в сцену не переехал")
+    ok(all(set(r) <= set(MONTAGE["scene"]["elements"]["fields"]) | {"scene_id", "slot_id",
+                                                                    "variant_id", "fade_sec",
+                                                                    "element_role"}
+           for r in _made.values()),
+       "в сцену попали только объявленные поля — заготовка не приносит чужих столбцов")
+
+    _gen2 = call("montage_generate_scene", table="ch1/v1", scene_id="S07",
+                 template_id="talking_head", time_offset=4.0, z_offset=10)
+    _snap2 = SM.read_snapshot("ch1/v1") or {}
+    _all7 = [row for row in _snap2["SCENE_ELEMENTS"]["rows"].values() if row.get("scene_id") == "S07"]
+    ok(len(_all7) == 4, f"второй шаблон ДОПИСАЛСЯ, а не заменил первый ({len(_all7)} строк)")
+    ok(sorted({r.get("time_start") for r in _all7}) == [0.0, 4.0]
+       and sorted({r.get("z_index") for r in _all7}) == [0, 1, 10, 11],
+       "смещение по времени и порядку слоёв применилось — так шаблоны и собираются в одну сцену")
+
+    refuses(lambda: call("montage_generate_scene", table="ch1/v1", scene_id="S08",
+                         template_id="нет_такой"),
+            "TEMPLATE_NOT_FOUND", "незнакомая заготовка отбивается и называет доступные")
+    refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S07"),
+            "SCENE_EMPTY", "разложенная заготовка без ассетов не рендерится молча: сказано, чего нет")
 
     print("\n  ── чистый скрипт сцены по требованию ──")
     _scr = call("montage_scene_script", table="ch1/v1", scene_id="S01")

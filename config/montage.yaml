@@ -76,6 +76,21 @@ rig:
     disabled_but_used: montage.variants_disabled
     enabled_but_unused: montage.variants_unused
 
+# ═══ ШАБЛОНЫ СЦЕН (строки, а не файл) ═══
+# Применение шаблона ДОПИСЫВАЕТ строки в книгу выбранного видео. Несколько шаблонов в одну сцену —
+# это применить их подряд со смещением по времени и z-порядку, а не слить два файла.
+# Столбцы заготовки те же, что у листов сцены: копируются поля, объявленные в `scene`, — так
+# заготовка не может разойтись с тем, чем станет.
+templates:
+  elements:
+    sheet: SCENE_TEMPLATE_ELEMENTS
+    template_column: template_id
+    fallback_book: channel_data
+  audio:
+    sheet: SCENE_TEMPLATE_AUDIO
+    template_column: template_id
+    fallback_book: channel_data
+
 # ═══ ШАБЛОН СЦЕНЫ ДЛЯ ИИ ═══
 # Сервер выдаёт ЧИСТЫЙ скрипт сцены по запросу: требования канала подтянуты, наполнения нет.
 # Зачем это здесь, а не в коде: форма строки и текст пояснений — данные, а не логика; менять их
