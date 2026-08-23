@@ -123,3 +123,20 @@ failures:
     "No such file or directory": FILE_NOT_FOUND      # ассет из книги пропал между записью и рендером
     "Invalid data found when processing input": RENDER_INPUT_UNPREPARED
   default: RENDER_FAILED
+
+# ═══ КОДЕКИ: имя из книги → энкодер ffmpeg ═══
+# `RENDER_CONFIG.codec` заполняет человек, и пишет он имя КОДЕКА (`h265`). Ключ `-c:v` принимает
+# имя ЭНКОДЕРА (`libx265`), и «h265» ffmpeg не знает — дефолтные строки профилей были
+# нерендерящимися с рождения. Перевод живёт здесь, тем же образцом, что переходы и фильтры;
+# что каждый энкодер есть в установленном бинаре, проверяет `tests/quick/test_ffmpeg_filters.py`.
+codecs:
+  video:
+    by_name:
+      h264: libx264
+      h265: libx265
+      vp9: libvpx-vp9
+      av1: libsvtav1
+  # Звук микса и формат пикселей не приходят из книги: у профиля таких столбцов нет, а значения
+  # общие для всех форматов. Объявлены здесь, чтобы не жить константами в коде сборки команды.
+  audio: aac
+  pixel_format: yuv420p

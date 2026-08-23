@@ -168,12 +168,24 @@ else:
     refuses(lambda: ENGINE.render_scene(_neural), "RENDER_INPUT_UNPREPARED",
             "снятие фона нейросетью — работа провайдера, а не ffmpeg")
 
+    _unknown = SceneSpec(scene_id="unknowncodec", output=_tmp / "unknown.mp4", duration_sec=1.0,
+                         profile=RenderProfile(profile_id="broken", resolution="640x360",
+                                               fps=25, codec="h266"),
+                         layers=[Layer(element_id="bg", asset_path=BG, fit_canvas=True)])
+    refuses(lambda: ENGINE.render_scene(_unknown), "RENDER_PROFILE_INVALID",
+            "кодек, которого нет в словаре, отбивается до запуска бинаря")
+
+    # Тот же код и с другой стороны: имя объявлено, а энкодера в этой сборке ffmpeg нет —
+    # ловится уже разбором stderr. Проверяем на своём словаре, боевой для этого не ломаем.
+    _fake_dict = _tmp / "broken_filters.yaml"
+    _fake_dict.write_text((ROOT / "config" / "ffmpeg_filters.yaml").read_text(encoding="utf-8")
+                          .replace("h264: libx264", "h264: nosuchencoder"), encoding="utf-8")
+    _fake_engine = FfmpegEngine(FfmpegDictionary(_fake_dict))
     _badcodec = SceneSpec(scene_id="badcodec", output=_tmp / "badcodec.mp4", duration_sec=1.0,
-                          profile=RenderProfile(profile_id="broken", resolution="640x360",
-                                                fps=25, codec="nosuchcodec"),
+                          profile=RenderProfile(profile_id="broken", resolution="640x360", fps=25),
                           layers=[Layer(element_id="bg", asset_path=BG, fit_canvas=True)])
-    refuses(lambda: ENGINE.render_scene(_badcodec), "RENDER_PROFILE_INVALID",
-            "кодек, которого нет в бинаре, приходит кодом профиля, а не сырым stderr")
+    refuses(lambda: _fake_engine.render_scene(_badcodec), "RENDER_PROFILE_INVALID",
+            "энкодер, которого нет в бинаре, приходит кодом профиля, а не сырым stderr")
 
     _noduration = scene("noduration", layers=[Layer(element_id="bg", asset_path=BG, fit_canvas=True)])
     refuses(lambda: ENGINE.render_scene(_noduration), "VALIDATION_ERROR",

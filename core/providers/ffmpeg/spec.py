@@ -52,7 +52,7 @@ class RenderProfile(BaseModel):
     """Строка листа профилей рендера: чем кодировать и в какой геометрии."""
 
     profile_id: str
-    codec: str = "libx264"
+    codec: str = "h264"   # имя КОДЕКА, как его пишет человек; энкодер подставит словарь
     resolution: str = "1920x1080"
     aspect_ratio: str = ""
     fps: int = Field(default=30, ge=1, le=240)

@@ -100,6 +100,19 @@ else:
     for name, spec in FILTERS.items():
         ok(_filter_exists(spec["filter"]), f"фильтр `{name}` → {spec['filter']} существует в этом ffmpeg")
 
+    def _encoder_exists(name: str) -> bool:
+        out = subprocess.run([FFMPEG, "-hide_banner", "-h", f"encoder={name}"],
+                             capture_output=True, text=True)
+        return "is not recognized" not in (out.stdout + out.stderr)
+
+    CODECS = D["codecs"]
+    for name, encoder in CODECS["video"]["by_name"].items():
+        ok(_encoder_exists(encoder), f"кодек `{name}` → энкодер {encoder} есть в этом ffmpeg")
+    ok(_encoder_exists(CODECS["audio"]), f"звук микса кодируется существующим {CODECS['audio']}")
+    ok(CODECS["pixel_format"] in subprocess.run([FFMPEG, "-hide_banner", "-pix_fmts"],
+                                                capture_output=True, text=True).stdout,
+       f"формат пикселей {CODECS['pixel_format']} этот ffmpeg знает")
+
     # Копия чужого списка стареет молча и не имеет читателя. Объявляем СВОЁ подмножество.
     ok(len(_declared) < len(_tokens),
        f"словарь не копия бинаря: объявлено {len(_declared)} из {len(_tokens)} доступных")

@@ -17,9 +17,6 @@ from .errors import FfmpegError
 from .probe import MediaFacts
 from .spec import Layer, SceneSpec
 
-# Совместимость плееров важнее лишних цветов: без этого половина устройств не покажет кадр.
-PIXEL_FORMAT = "yuv420p"
-AUDIO_CODEC = "aac"
 # Ключевые фильтры непрозрачности объявлены в словаре; движку нужно знать, какое имя брать по
 # умолчанию, когда книга говорит «снять зелень», не называя параметров.
 CHROMA_FILTER = "chromakey"
@@ -177,16 +174,17 @@ class SceneCommand:
                      if self.spec.subtitles_path and profile.subtitles_mode == "TRACK" else None)
         argv = [binary, "-hide_banner", "-v", "error", "-nostdin", *self.inputs,
                 "-filter_complex", ";".join(self.graph), "-map", f"[{video}]"]
+        defaults = self.dict.output_defaults()
         if audio:
-            argv += ["-map", f"[{audio}]", "-c:a", AUDIO_CODEC]
+            argv += ["-map", f"[{audio}]", "-c:a", defaults["audio"]]
         if subtitles is not None:
             argv += ["-map", f"{subtitles}:s", "-c:s", "mov_text"]
-        argv += ["-c:v", guard(profile.codec, "codec")]
+        argv += ["-c:v", self.dict.encoder(profile.codec)]
         if profile.bitrate:
             argv += ["-b:v", guard(profile.bitrate, "bitrate")]
         elif profile.crf is not None:
             argv += ["-crf", str(profile.crf)]
-        argv += ["-r", str(profile.fps), "-t", fmt(self.duration), "-pix_fmt", PIXEL_FORMAT]
+        argv += ["-r", str(profile.fps), "-t", fmt(self.duration), "-pix_fmt", defaults["pixel_format"]]
         return argv + ["-y", str(self.spec.output)]
 
 

@@ -1,0 +1,69 @@
+# montage.yaml — откуда монтаж берёт замысел сцены и куда записывает результат.
+#
+# ЗАЧЕМ. Движок (`core/providers/ffmpeg/`) не знает про листы книги, а книга не знает про ffmpeg;
+# между ними нужен перевод, и он объявляется, а не пишется ветками. Образец формы —
+# `uniqueness.yaml → sources`: имя листа и столбца живёт в декларации, код читает объявленное.
+#
+# ИМЕНА ПОЛЕЙ И СТОЛБЦОВ СОВПАДАЮТ НАМЕРЕННО: листы `SCENE_ELEMENTS`/`SCENE_AUDIO` проектировались
+# от замысла сцены, поэтому `fields` — это одновременно столбец книги и поле замысла. Переименование
+# столбца = правка здесь, а не в коде.
+
+scene:
+  elements:
+    sheet: SCENE_ELEMENTS
+    scene_column: scene_id            # какие строки относятся к этой сцене
+    id_column: element_id
+    role_column: element_role         # роль → `fills_frame` профиля сцен канала
+    fields: [asset_path, alpha_mode, x, y, width, height, z_index,
+             time_start, time_end, source_in, source_out, speed, motion_path]
+  audio:
+    sheet: SCENE_AUDIO
+    scene_column: scene_id
+    id_column: audio_id
+    fields: [asset_path, audio_role, time_start, source_in, source_out,
+             volume, volume_curve, speed, fade_in_sec, fade_out_sec]
+  # Какой слой растягивается на кадр — свойство РОЛИ, и объявляет его канал (лист профиля сцен).
+  # Ветка `if role == "layer_bg"` в коде рендера была бы хардкодом сущности.
+  roles:
+    sheet: SCENE_PROFILE
+    type_column: fragment_type
+    fills_frame_column: fills_frame
+    fallback_book: channel_data
+
+# Профиль рендера: строка листа профилей. Ищется вверх по дереву — у видео своего листа нет,
+# он живёт в книге канала; пока книга не заполнена, берётся дефолт декларации И НАЗЫВАЕТСЯ.
+profile:
+  sheet: RENDER_CONFIG
+  id_column: profile_id
+  selector_sheet: META              # чем видео выбирает профиль
+  selector_column: render_profile
+  fallback_book: channel_data
+
+# Куда ложится результат. Каталог тот же, что объявлен в шаблоне видео (`renders`), и совпадение
+# этих двух объявлений проверяется тестом, а не дисциплиной.
+output:
+  dir: renders
+  name: "{scene_id}_{render_stage}"   # расширение = `container` профиля
+
+# Предел времени на один рендер. Значение политики, а не механизма: длинная сцена на слабой
+# машине идёт минутами, и обрыв по таймауту обязан быть решением владельца, а не константой в коде.
+render:
+  timeout_sec: 1800
+
+# Строка результата. Пишется рендером, а не человеком: `file_verified` и `duration_sec` приходят
+# из приёмки ffprobe, поэтому заполнять их вручную нечем и незачем.
+target:
+  sheet: RENDERS
+  id_prefix: RND
+  stage: draft                        # сцена — всегда черновая стадия; финал собирает склейка
+  status_ready: ready
+  columns:
+    stage: render_stage
+    profile: render_profile
+    format_label: format_label
+    file_path: file_path
+    file_name: file_name
+    status: render_status
+    duration: duration_sec
+    verified: file_verified
+    derived_from: derived_from_render_id

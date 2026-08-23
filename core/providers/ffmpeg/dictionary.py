@@ -105,6 +105,25 @@ class FfmpegDictionary:
             pairs.append(f"{guard(key, name)}={guard(fmt(value), f'{name}.{key}')}")
         return f"{guard(spec['filter'], name)}=" + ":".join(pairs) if pairs else guard(spec["filter"], name)
 
+    # ═══ Кодеки и общие параметры выхода ═══
+
+    def encoder(self, codec: str) -> str:
+        """Имя кодека из книги → имя энкодера ffmpeg. Человек пишет `h265`, ключу нужен `libx265`."""
+        section = (self.data.get("codecs") or {}).get("video") or {}
+        by_name = section.get("by_name") or {}
+        if codec not in by_name:
+            raise FfmpegError(
+                "RENDER_PROFILE_INVALID", f"Кодек `{codec}` не объявлен.",
+                reason=f"Допустимые: {', '.join(sorted(by_name))}. Поправь строку профиля рендера.",
+                suggested_tool="table_set")
+        return guard(str(by_name[codec]), "codec")
+
+    def output_defaults(self) -> dict:
+        """Звук микса и формат пикселей: у профиля таких столбцов нет, значения общие."""
+        section = self.data.get("codecs") or {}
+        return {"audio": guard(str(section.get("audio", "aac")), "audio codec"),
+                "pixel_format": guard(str(section.get("pixel_format", "yuv420p")), "pixel format")}
+
     # ═══ Жалобы бинаря ═══
 
     def failure_code(self, stderr: str) -> str:

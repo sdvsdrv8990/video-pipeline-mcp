@@ -605,42 +605,52 @@ sheets:
       - { name: niche_weight, type: float, flag: W }
       - { name: signal_on_reuse, type: boolean, flag: W }
       - { name: reuse_threshold, type: integer, flag: W }
+      # Слой без своих размеров растягивается на весь кадр. Это свойство РОЛИ фрагмента, и знать
+      # его обязана книга: имя `layer_bg` в коде рендера было бы веткой на сущность.
+      - { name: fills_frame, type: boolean, flag: W }
     rows:
       - fragment_type: layer_bg
         enabled: true
         niche_weight: 0.3
         signal_on_reuse: true
         reuse_threshold: 5
+        fills_frame: true
       - fragment_type: layer_character
         enabled: true
         niche_weight: 0.4
         signal_on_reuse: true
         reuse_threshold: 3
+        fills_frame: false
       - fragment_type: layer_component
         enabled: true
         niche_weight: 0.2
         signal_on_reuse: false
         reuse_threshold: 0
+        fills_frame: false
       - fragment_type: music
         enabled: true
         niche_weight: 0.5
         signal_on_reuse: true
         reuse_threshold: 2
+        fills_frame: false
       - fragment_type: sound
         enabled: false
         niche_weight: 0.0
         signal_on_reuse: false
         reuse_threshold: 0
+        fills_frame: false
       - fragment_type: filter
         enabled: false
         niche_weight: 0.0
         signal_on_reuse: false
         reuse_threshold: 0
+        fills_frame: false
       - fragment_type: transition
         enabled: true
         niche_weight: 0.1
         signal_on_reuse: false
         reuse_threshold: 0
+        fills_frame: false
 
   # Строка = ПРОФИЛЬ рендера, а не отдельный параметр. Прежняя форма `param/value` описывала ровно
   # один формат и противоречила себе: `1920x1080` + `16:9` при примечании «Стандарт для Shorts/Reels».

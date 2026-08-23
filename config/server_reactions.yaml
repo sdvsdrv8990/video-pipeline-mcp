@@ -450,6 +450,14 @@ RENDER_INPUT_UNPREPARED:
     suggested_tool: "media_generate"
     reason: "Снятие фона нейросетью делает провайдер ДО монтажа: ffmpeg режет фон только по цвету. Подготовь ассет и подставь готовый файл."
 
+SCENE_EMPTY:
+  class: ai_recoverable
+  message_template: "В сцене нет ни одного элемента: {scene_id}"
+  recovery:
+    suggested_tool: "table_append"
+    suggested_params: { sheet: "SCENE_ELEMENTS" }
+    reason: "Рендерить нечего. Разложи фрагменты сцены по строкам листа элементов: строка = слой, в ней ассет, положение, размер и время появления."
+
 RENDER_FAILED:
   class: human_required
   message_template: "ffmpeg отказался собирать: {reason}"

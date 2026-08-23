@@ -17,6 +17,9 @@ sheets:
       - { name: status, type: enum, flag: W }   # статус видео (палитра ниже)
       - { name: target_audience_category, type: enum, flag: W, enum: ['C1', 'C2', 'C3'] }   # C1/C2/C3
       - { name: prediction_id, type: string, flag: fk }   # → CONTENT_PREDICTION (нишевый уровень)
+      # Каким профилем канала это видео рендерится. Формат — свойство ВИДЕО (одно и то же
+      # видео живёт и в 16:9, и в 9:16), а параметры формата — свойство канала.
+      - { name: render_profile, type: string, flag: fk }   # → channel_data.RENDER_CONFIG.profile_id
 
   - name: PERFORMANCE   # метрики (снимок + формулы)
     columns:
@@ -246,12 +249,12 @@ sheets:
   - name: RENDERS   # 🆕 — смонтированные видео по стадиям
     columns:
       - { name: render_id, type: string, flag: id }   # ключ рендера
-      - { name: render_stage, type: enum, flag: W }   # `draft` / `final`
+      - { name: render_stage, type: enum, flag: W, enum: ['draft', 'final'] }
       - { name: render_profile, type: string, flag: fk }   # профиль из `channel_data.RENDER_CONFIG` (codec/res/aspect)
       - { name: format_label, type: string, flag: W }   # напр. `long_16x9` / `short_9x16` (если форматов несколько)
       - { name: file_path, type: string, flag: W }   # путь в `videos/<video>/renders/` (с `video_id` в имени)
       - { name: file_name, type: string, flag: F }   # `{video_slug}_{render_stage}[_{format_label}].mp4`
-      - { name: render_status, type: enum, flag: W }   # `queued` / `rendering` / `ready` / `failed` (см. палитру)
+      - { name: render_status, type: enum, flag: W, enum: ['queued', 'rendering', 'ready', 'failed'] }
       - { name: derived_from_render_id, type: string, flag: W }   # привязка финала к черновику (история стадий)
       - { name: duration_sec, type: integer, flag: F }   # из готового файла (verify)
       - { name: file_verified, type: boolean, flag: F }   # файл ≠ 0 байт И играбелен (реальность-чек)
