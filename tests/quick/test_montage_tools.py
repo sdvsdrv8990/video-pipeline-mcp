@@ -8,6 +8,7 @@ Standalone-прогон:  python tests/quick/test_montage_tools.py
 """
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -143,8 +144,17 @@ _src = (ROOT / "core/montage/book.py").read_text(encoding="utf-8")
 ok(not any(name in _src for name in ("SCENE_ELEMENTS", "SCENE_AUDIO", "RENDER_CONFIG", "layer_bg")),
    "в коде перевода нет ни одного имени листа или роли — они приходят декларацией")
 
+# Пропуск ЗАПРЕЩЁН, когда бинарь обязан быть (в CI он ставится джобой): раз его нет — установка
+# сломалась, и «пропущено с причиной» дало бы зелёный гейт, не собравший ни одного кадра.
+def _require_ffmpeg(found):
+    if not found and os.environ.get("VPM_FFMPEG_REQUIRED") == "1":
+        print("ОТКАЗ: ffmpeg обязателен (VPM_FFMPEG_REQUIRED=1), а его нет в PATH")
+        sys.exit(1)
+    return found
+
+
 print("\n── прогон на установленном ffmpeg ──")
-if not shutil.which("ffmpeg"):
+if not _require_ffmpeg(shutil.which("ffmpeg")):
     # Пропуск с ПРИЧИНОЙ: рендер живёт на машине владельца, а не на раннере CI.
     print("  ⤼ ffmpeg не найден в PATH — прогонные проверки пропущены (не отказ)")
 else:

@@ -7,6 +7,7 @@ Standalone-прогон:  python tests/quick/test_ffmpeg_engine.py
 Без бинаря структурная часть отрабатывает, прогонные проверки пропускаются с причиной.
 """
 import re
+import os
 import shutil
 import subprocess
 import sys
@@ -105,8 +106,17 @@ for _src in (ROOT / "core" / "providers" / "ffmpeg").glob("*.py"):
 ok(_used and not (_used - _declared),
    f"каждый код движка объявлен в server_reactions.yaml (нет: {sorted(_used - _declared) or '—'})")
 
+# Пропуск ЗАПРЕЩЁН, когда бинарь обязан быть (в CI он ставится джобой): раз его нет — установка
+# сломалась, и «пропущено с причиной» дало бы зелёный гейт, не собравший ни одного кадра.
+def _require_ffmpeg(found):
+    if not found and os.environ.get("VPM_FFMPEG_REQUIRED") == "1":
+        print("ОТКАЗ: ffmpeg обязателен (VPM_FFMPEG_REQUIRED=1), а его нет в PATH")
+        sys.exit(1)
+    return found
+
+
 print("\n── прогон на установленном ffmpeg ──")
-FFMPEG = shutil.which("ffmpeg")
+FFMPEG = _require_ffmpeg(shutil.which("ffmpeg"))
 if not FFMPEG:
     # Пропуск с ПРИЧИНОЙ: рендер живёт на машине владельца, а не на раннере CI.
     print("  ⤼ ffmpeg не найден в PATH — прогонные проверки пропущены (не отказ)")

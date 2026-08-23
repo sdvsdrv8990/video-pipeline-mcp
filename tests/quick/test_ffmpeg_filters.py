@@ -6,6 +6,7 @@ Standalone-прогон:  python tests/quick/test_ffmpeg_filters.py
 словарь закрыт (незнакомый вход в фильтрограф не проходит), параметры — валидная JSON Schema и
 дефолт ей удовлетворяет, словарь не является копией списка из бинаря.
 """
+import os
 import shutil
 import subprocess
 import sys
@@ -61,8 +62,17 @@ for name, spec in FILTERS.items():
     ok(not errors, f"{name}: дефолты удовлетворяют своей же схеме"
        + (f" — {errors[0].message}" if errors else ""))
 
+# Пропуск ЗАПРЕЩЁН, когда бинарь обязан быть (в CI он ставится джобой): раз его нет — установка
+# сломалась, и «пропущено с причиной» дало бы зелёный гейт, не собравший ни одного кадра.
+def _require_ffmpeg(found):
+    if not found and os.environ.get("VPM_FFMPEG_REQUIRED") == "1":
+        print("ОТКАЗ: ffmpeg обязателен (VPM_FFMPEG_REQUIRED=1), а его нет в PATH")
+        sys.exit(1)
+    return found
+
+
 print("\n── сверка с установленным ffmpeg ──")
-FFMPEG = shutil.which("ffmpeg")
+FFMPEG = _require_ffmpeg(shutil.which("ffmpeg"))
 if not FFMPEG:
     # Пропуск с ПРИЧИНОЙ: рендер живёт на машине владельца, а не на раннере CI. Структурные
     # проверки выше отработали и без бинаря.
