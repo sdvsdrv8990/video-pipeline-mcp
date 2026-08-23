@@ -67,7 +67,14 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "duration": int(round(outcome.duration_sec)), "verified": True}))
         if not ok:
             return written
+        ok, state = ctx.safe(lambda: book.variants_state(table, scene_id))
+        state = state if ok else {"advice_key": ""}
+        advice = (ctx.advice.get(state["advice_key"], table=table, scene_id=scene_id,
+                                 channel=state.get("channel") or table)
+                  if state.get("advice_key") else [])
         return ToolResult(status="success", data={
+            **({"recommendations": advice} if advice else {}),
+            "variants_enabled": state.get("variants_enabled"),
             "table": table, "scene_id": scene_id, "file_path": relative,
             "duration_sec": outcome.duration_sec, "frame": f"{outcome.width}x{outcome.height}",
             "file_verified": True, "render_row_id": written["row_id"],

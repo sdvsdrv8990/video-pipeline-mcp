@@ -188,9 +188,15 @@ ok(r5["rows_total"] == _declared_rows,
    f"все строки-дефолты схемы доехали в книгу ({r5['rows_total']} из {_declared_rows})")
 _sp = wb5["SCENE_PROFILE"]
 _vals = {row[0]: row[1] for row in _sp.iter_rows(min_row=2, values_only=True) if row[0]}
-ok(len(_vals) == 7, f"SCENE_PROFILE: 7 строк данных на листе (получено {len(_vals)})")
+_sp_declared = [s for s in yaml.safe_load(
+    (ROOT / "config/templates/tables/channel_data.schema.yaml").read_text(encoding="utf-8"))["sheets"]
+    if s["name"] == "SCENE_PROFILE"][0]["rows"]
+ok(len(_vals) == len(_sp_declared),
+   f"SCENE_PROFILE: строк на листе столько же, сколько объявлено ({len(_vals)} из {len(_sp_declared)})")
 ok(_vals.get("sound") is False and _vals.get("layer_bg") is True,
    "значения дефолтов легли как есть: выключенный тип остался выключенным (тихий столбец)")
+ok(_vals.get("layer_character_variants") is False,
+   "вариативность персонажа приезжает в канал ВЫКЛЮЧЕННОЙ: включает человек, а не установка")
 _wf = wb5["WORKFLOW_SEQUENCES"]
 _hdr = [c.value for c in _wf[1]]
 _first = next(_wf.iter_rows(min_row=2, values_only=True), ())     # строк может не быть вовсе

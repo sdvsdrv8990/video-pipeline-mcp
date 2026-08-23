@@ -45,6 +45,37 @@ output:
   dir: renders
   name: "{scene_id}_{render_stage}"   # расширение = `container` профиля
 
+# ═══ ОСНАСТКА ПЕРСОНАЖА ═══
+# Слоты и варианты живут на КАНАЛЕ (персонаж переиспользуется между видео), в видео едет только
+# выбор. Тумблер — строка профиля сцен: включённый тип входит в расчёт уникальности и
+# перенормирует веса, поэтому решение включить его принимает человек, а не установка.
+rig:
+  slots:
+    sheet: CHARACTER_SLOTS
+    id_column: slot_id
+    parent_column: parent_slot
+    key_column: compat_axis
+    fields: [slot_role, anchor_x, anchor_y, bounds_w, bounds_h, z_offset, default_fade_sec]
+    fallback_book: channel_data
+  variants:
+    sheet: ASSET_VARIANTS
+    id_column: variant_id
+    slot_column: slot_id
+    key_column: compat_key
+    fields: [label, asset_path, width, height, status]
+    fallback_book: channel_data
+  toggle:
+    sheet: SCENE_PROFILE
+    type_column: fragment_type
+    enabled_column: enabled
+    fragment_type: layer_character_variants
+    fallback_book: channel_data
+  # Совет приходит только когда тумблер и данные РАСХОДЯТСЯ: молчание в согласованном случае —
+  # это и есть отсутствие шума.
+  advice:
+    disabled_but_used: montage.variants_disabled
+    enabled_but_unused: montage.variants_unused
+
 # Предел времени на один рендер. Значение политики, а не механизма: длинная сцена на слабой
 # машине идёт минутами, и обрыв по таймауту обязан быть решением владельца, а не константой в коде.
 render:

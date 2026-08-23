@@ -125,6 +125,28 @@ class SceneBook:
         return {str(row.get(spec["type_column"])): bool(row.get(spec["fills_frame_column"]))
                 for row in rows}
 
+    def variants_state(self, table: str, scene_id: str) -> dict:
+        """Тумблер вариативности и то, пользуется ли им сцена. Совет — только при расхождении."""
+        rig = self.config.get("rig") or {}
+        toggle = rig.get("toggle") or {}
+        rows, _source, owner = self._upward(table, toggle["sheet"])
+        if not rows:
+            rows = self._declared_rows(toggle["fallback_book"], toggle["sheet"])
+        enabled = next((bool(row.get(toggle["enabled_column"])) for row in rows
+                        if row.get(toggle["type_column"]) == toggle["fragment_type"]), None)
+        el_cfg = self.config["scene"]["elements"]
+        used = any(row.get("slot_id") for _row_id, row in self._scene_rows(table, el_cfg, scene_id))
+        advice = rig.get("advice") or {}
+        key = ""
+        # `None` = строки тумблера в канале нет вовсе (книга старой формы). Для совета это то же
+        # «не включено»: сцена уже пользуется слотами, а оценка их не считает.
+        if used and not enabled:
+            key = advice.get("disabled_but_used", "")
+        elif enabled and not used:
+            key = advice.get("enabled_but_unused", "")
+        return {"variants_enabled": enabled, "variants_used": used,
+                "advice_key": key, "channel": owner}
+
     def _values(self, row: dict, fields: list[str]) -> dict:
         """Объявленные поля строки без пустых: пустая ячейка означает «не задано», а не ноль."""
         return {name: row[name] for name in fields if row.get(name) not in (None, "")}
@@ -143,6 +165,15 @@ class SceneBook:
         for row_id, row in self._scene_rows(table, el_cfg, scene_id):
             values = self._values(row, el_cfg["fields"])
             asset = values.pop("asset_path", "")
+            if not asset and row.get("variant_id"):
+                # Недоделанное обязано кричать: строка ссылается на вариант каталога, а подстановка
+                # его файла ещё не построена — молча пропустить слой значило бы отдать неполный кадр.
+                raise MontageError(
+                    "RENDER_INPUT_UNPREPARED",
+                    f"Элемент {row_id} ссылается на вариант {row['variant_id']}, а файла у строки нет.",
+                    reason="Разрешение варианта каталога в файл ещё не построено: пока заполни "
+                           "asset_path строки путём к ассету варианта.",
+                    suggested_tool="table_set")
             if not asset:
                 raise MontageError(
                     "SCENE_EMPTY", f"У элемента {row_id} сцены {scene_id} не заполнен ассет.",

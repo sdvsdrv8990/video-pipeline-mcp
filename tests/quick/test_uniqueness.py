@@ -343,6 +343,32 @@ ok(_real.data["fragment_scores"].get("layer_bg") == 0.6667,
    f"повтор мастера считается по столбцу книги: 2 из 3 = 0.6667 (получено "
    f"{_real.data['fragment_scores'].get('layer_bg')})")
 
+print("== 10. Тумблер вариативности персонажа: выключенный не двигает числа, включённый двигает ==")
+_VAR = "layer_character_variants"
+_base_rows = [{"fragment_type": "layer_bg", "enabled": True, "niche_weight": 0.3},
+              {"fragment_type": "layer_character", "enabled": True, "niche_weight": 0.4}]
+_var_row = [r for r in yaml.safe_load(
+    (ROOT / "config/templates/tables/channel_data.schema.yaml").read_text(encoding="utf-8"))["sheets"]
+    if r["name"] == "SCENE_PROFILE"][0]["rows"]
+_var_row = next(r for r in _var_row if r["fragment_type"] == _VAR)
+_frags10 = {"layer_bg": ["BG1", "BG2"], "layer_character": ["CH1", "CH2"],
+            # покадровая смена поз повторяет один вариант много раз — в этом и смысл дорожки
+            _VAR: ["POSE_idle", "POSE_idle", "POSE_idle", "EMO_smile", "EMO_smile"]}
+
+
+def _score10(rows):
+    return uniq.compute(text="совсем новый текст про иное дело", corpus=["старый про рыбалку"],
+                        fragments=_frags10, profile_rows=rows)["scores"]["scene_score"]
+
+
+_without = _score10(_base_rows)
+_off = _score10(_base_rows + [{**_var_row, "enabled": False}])
+_on = _score10(_base_rows + [{**_var_row, "enabled": True}])
+ok(_off == _without,
+   f"выключенный тип не двигает число ни на разряд ({_without} → {_off})")
+ok(_on != _without,
+   f"включённый — двигает, и это решение человека, а не установки ({_without} → {_on})")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

@@ -5,7 +5,6 @@ Standalone-прогон:  python tests/quick/test_structure.py
 Проверяет: niche-only, channel-минус-видео, названное видео → поддерево, отложенные
 таблицы (kind:table), пофрагментный контроль детей, PATH_ESCAPE, TEMPLATE_NOT_FOUND, ID узлов.
 """
-import re
 import sys
 import tempfile
 import warnings
@@ -770,18 +769,23 @@ print("== 33в. Веса уникальности: имена переимено
 # Решение владельца при переименовании `svg_*`: имена меняем, веса не трогаем. Два НЕЗАВИСИМЫХ
 # набора, и разъезжаются они молча, поэтому закреплены числами, а не намерением.
 _prof33 = {r["fragment_type"]: r["niche_weight"] for r in _sheets33["SCENE_PROFILE"]["rows"]}
-ok(sorted(_prof33.values()) == [0.0, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
-   f"НАБОР весов типов фрагмента не сдвинулся: {sorted(_prof33.values())}")
-ok(_prof33.get("music") == 0.5 and _prof33.get("transition") == 0.1,
-   f"веса привязаны к тем же типам: music={_prof33.get('music')}, transition={_prof33.get('transition')}")
+_FROZEN = {"layer_bg": 0.3, "layer_character": 0.4, "layer_component": 0.2,
+           "music": 0.5, "sound": 0.0, "filter": 0.0, "transition": 0.1}
+# Привязка «тип → вес» жёстче прежнего набора значений: набор совпал бы и при перестановке весов
+# между типами. Новые типы допускаются, но каждый обязан приехать ВЫКЛЮЧЕННЫМ — иначе он двигает
+# числа существующих каналов в момент установки, а не по решению человека.
+_moved = {k: (v, _prof33.get(k)) for k, v in _FROZEN.items() if _prof33.get(k) != v}
+ok(not _moved, f"веса объявленных типов не сдвинулись (сдвинулись: {_moved or '—'})")
+_enabled33 = {r["fragment_type"]: r["enabled"] for r in _sheets33["SCENE_PROFILE"]["rows"]}
+_new_on = sorted(k for k, on in _enabled33.items() if k not in _FROZEN and on)
+ok(not _new_on, f"новый тип фрагмента приезжает выключенным (включённые новички: {_new_on or '—'})")
 _vd33 = {s["name"]: s for s in _y.safe_load(
     (ROOT / "config/templates/tables/video_data.schema.yaml").read_text(encoding="utf-8"))["sheets"]}
-_ovr33 = next(c for c in _vd33["UNIQUENESS"]["columns"] if c["name"] == "overall_uniqueness")
-_nums33 = re.findall(r"\*([0-9.]+)", _ovr33.get("formula") or "")
-ok(_nums33 == ["0.35", "0.40", "0.10", "0.08", "0.07"],
-   f"веса overall_uniqueness не сдвинулись: {_nums33}")
-ok(abs(sum(float(x) for x in _nums33) - 1.0) < 1e-9,
-   f"веса по-прежнему дают ровно 1.00 (сумма {sum(float(x) for x in _nums33)})")
+# Замороженной формулы в книге больше НЕТ намеренно: веса живут в строках профиля и
+# перенормируются по включённым, поэтому любая вписанная в ячейку формула лжёт с первого тумблера.
+# Возврат формулы = возврат третьего источника правды, и его ловит эта проверка.
+_frozen33 = [c["name"] for c in _vd33["UNIQUENESS"]["columns"] if c.get("formula")]
+ok(not _frozen33, f"в листе уникальности нет замороженных формул (есть: {_frozen33 or '—'})")
 # «Тихий столбец» и единый источник провайдеров — те самые РЕШЕНИЯ, ради которых делался перенос.
 ok({c["name"] for c in _sheets33.get("SCENE_PROFILE", {}).get("columns", [])} >= {"enabled", "niche_weight"},
    "SCENE_PROFILE сохранил тумблер enabled («тихий столбец»)")

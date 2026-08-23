@@ -79,13 +79,17 @@ sheets:
 
   - name: UNIQUENESS   # итог уникальности видео (🆕 секция сцен убрана)
     columns:
-      - { name: script_score, type: float, flag: F, formula: '=1.0' }   # `=1.0` (скрипт уникален)
-      - { name: layer_scene_score, type: float, flag: F, formula: '=AVERAGE(uniqueness всех layer)' }   # `=AVERAGE(uniqueness всех layer)`
+      # Формул здесь НЕТ намеренно. Уникальность считает сервер (`core/uniqueness`) по включённым
+      # типам фрагментов книги канала, перенормируя веса; замороженная формула в ячейке была третьим
+      # утверждением о той же величине и расходилась с обоими — включение любого типа делает её
+      # ложной в тот же миг. Значение приходит расчётом, а не пересчётом Excel.
+      - { name: script_score, type: float, flag: F }
+      - { name: layer_scene_score, type: float, flag: F }
       - { name: music_score, type: float, flag: F }   # мягкие формулы (пул ниши)
       - { name: sound_score, type: float, flag: F }   # мягкие формулы (пул ниши)
       - { name: transition_score, type: float, flag: F }   # мягкие формулы (пул ниши)
-      - { name: overall_uniqueness, type: float, flag: F, formula: '=script*0.35+layer*0.40+music*0.10+sound*0.08+transition*0.07' }   # `=script*0.35+layer*0.40+music*0.10+sound*0.08+transition*0.07`
-      - { name: tier, type: enum, flag: F, formula: '=IF(>=0.80,"HIGH",IF(>=0.60,"MED","LOW"))' }   # `=IF(>=0.80,"HIGH",IF(>=0.60,"MED","LOW"))`
+      - { name: overall_uniqueness, type: float, flag: F }
+      - { name: tier, type: enum, flag: F }
       - { name: scenes_uniqueness_ref, type: string, flag: F }   # ССЫЛКА на лист `SCENES.scene_uniqueness` (дубль убран)
 
   - name: SCRIPT_DNA_APPLIED   # применённые правила стиля
@@ -134,7 +138,13 @@ sheets:
       - { name: source_in, type: float, flag: W }   # обрезка внутри исходника; для картинки пусто
       - { name: source_out, type: float, flag: W }   # обрезка внутри исходника; для картинки пусто
       - { name: speed, type: float, flag: W }   # пусто = 1.0
-      - { name: motion_path, type: string, flag: W }   # точки `t:x,y`, пусто = неподвижен; форма как у `volume_curve`
+      - { name: motion_path, type: string, flag: W }
+      # Слот оснастки, которому принадлежит строка: строки одного слота — дорожка вариантов
+      # (поза сменяется позой), а не спорящие за место слои. Пусто = самостоятельный слой.
+      - { name: slot_id, type: string, flag: fk }   # → channel_data.CHARACTER_SLOTS
+      - { name: variant_id, type: string, flag: fk }   # → channel_data.ASSET_VARIANTS
+      # Перекрытие на стыке с соседним вариантом ТОГО ЖЕ слота. Пусто = значение слота.
+      - { name: fade_sec, type: float, flag: W }   # точки `t:x,y`, пусто = неподвижен; форма как у `volume_curve`
       - { name: notes, type: string, flag: W }
 
   - name: SCENE_AUDIO   # 🆕 — звук сцены по ролям

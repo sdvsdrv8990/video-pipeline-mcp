@@ -87,6 +87,31 @@ _target_cols = _columns(_video, MONTAGE["target"]["sheet"])
 _lost = [c for c in MONTAGE["target"]["columns"].values() if c not in _target_cols]
 ok(not _lost, f"каждый столбец результата объявлен в книге видео (нет: {_lost or '—'})")
 
+_rig = MONTAGE["rig"]
+for _part in ("slots", "variants"):
+    _cfg = _rig[_part]
+    _cols = _columns(_channel, _cfg["sheet"])
+    _lost = [f for f in _cfg["fields"] + [_cfg["id_column"]] if f not in _cols]
+    ok(not _lost, f"{_cfg['sheet']}: каждое объявленное поле есть столбцом книги канала (нет: {_lost or '—'})")
+ok(_rig["slots"]["parent_column"] in _columns(_channel, _rig["slots"]["sheet"]),
+   "у слота есть чем назвать родителя — от него и порядок наложения, и совместимость")
+ok(_rig["variants"]["key_column"] in _columns(_channel, _rig["variants"]["sheet"])
+   and _rig["slots"]["key_column"] in _columns(_channel, _rig["slots"]["sheet"]),
+   "ось совместимости объявлена с обеих сторон: у слота — что сравнивать, у варианта — чем")
+_el_cols = _columns(_video, MONTAGE["scene"]["elements"]["sheet"])
+ok({"slot_id", "variant_id", "fade_sec"} <= _el_cols,
+   "строка элемента умеет быть кадром дорожки слота, а не только одиночным слоем")
+
+_toggle = _rig["toggle"]
+_profile_rows = [s for s in _channel["sheets"] if s["name"] == _toggle["sheet"]][0]["rows"]
+_flag = next((r for r in _profile_rows if r[_toggle["type_column"]] == _toggle["fragment_type"]), None)
+ok(_flag is not None, f"тумблер вариативности объявлен строкой листа {_toggle['sheet']}")
+ok(_flag and _flag[_toggle["enabled_column"]] is False,
+   "и приезжает в канал ВЫКЛЮЧЕННЫМ: включение сдвигает числа уникальности, это решение человека")
+_uniq_cols = [c for s in _video["sheets"] if s["name"] == "UNIQUENESS" for c in s["columns"]]
+ok(not any(c.get("formula") for c in _uniq_cols),
+   "в книге не осталось замороженной формулы уникальности — иначе включённый тумблер делает её ложной")
+
 _tpl = yaml.safe_load((CONFIG / "templates/workspace/video.tpl.yaml").read_text(encoding="utf-8"))
 _folders = {f["name"] for f in _tpl["video"]["folders"]}
 ok(MONTAGE["output"]["dir"] in _folders,
@@ -178,6 +203,31 @@ else:
     _silent = call("montage_render_scene", table="ch1/v1", scene_id="S02")
     ok(_silent.status == "success", "сцена без единой дорожки звука собирается: пустой звук не отказ")
 
+    print("\n  ── тумблер вариативности и советы ──")
+    _plain = call("montage_render_scene", table="ch1/v1", scene_id="S02")
+    ok(not _plain.data.get("recommendations"),
+       "тумблер выключен, слотов в сцене нет — сервер молчит: согласованный случай не советует")
+
+    book({**ELEMENTS, "E2": {**ELEMENTS["E2"], "slot_id": "hero_head", "variant_id": "emo_smile"}}, AUDIO)
+    _mismatch = call("montage_render_scene", table="ch1/v1", scene_id="S01")
+    _rec = (_mismatch.data.get("recommendations") or [{}])[0]
+    ok(_rec.get("id") == "variants_disabled_but_used",
+       f"сцена пользуется слотами при выключенном тумблере → совет ({_rec.get('id') or 'нет совета'})")
+    ok(_rec.get("tool") == "table_set" and _rec.get("params", {}).get("sheet") == "SCENE_PROFILE",
+       "совет исполним: назван инструмент и лист, а не проза")
+
+    _ch = json.loads((WS / "ch1" / "read.json").read_text(encoding="utf-8"))
+    _ch["SCENE_PROFILE"]["rows"]["R9"] = {"fragment_type": MONTAGE["rig"]["toggle"]["fragment_type"],
+                                          "enabled": True, "niche_weight": 0.25}
+    (WS / "ch1" / "read.json").write_text(json.dumps(_ch, ensure_ascii=False), encoding="utf-8")
+    _on_used = call("montage_render_scene", table="ch1/v1", scene_id="S01")
+    ok(not _on_used.data.get("recommendations") and _on_used.data["variants_enabled"] is True,
+       "тумблер включён и сцена по слотам — снова молчание, и состояние тумблера видно клиенту")
+    _on_unused = call("montage_render_scene", table="ch1/v1", scene_id="S02")
+    ok((_on_unused.data.get("recommendations") or [{}])[0].get("id") == "variants_enabled_but_unused",
+       "включено, а сцена без слотов → второй совет: пробел готовности вместо числа")
+    book(ELEMENTS, AUDIO)
+
     print("\n  ── отказы ──")
     refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S99"),
             "SCENE_EMPTY", "сцены без элементов не рендерятся, а называются")
@@ -188,6 +238,12 @@ else:
                              "asset_path": "../../../etc/passwd"}}, AUDIO)
     refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S01"),
             "PATH_ESCAPE", "путь ассета из книги проходит containment рабочей области")
+
+    book({**ELEMENTS, "E5": {"element_id": "E5", "scene_id": "S01", "element_role": "layer_character",
+                             "slot_id": "hero_face", "variant_id": "emo_smile", "z_index": 2}}, AUDIO)
+    refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S01"),
+            "RENDER_INPUT_UNPREPARED",
+            "ссылка на вариант каталога без файла КРИЧИТ: подстановка ещё не построена")
 
     book({**ELEMENTS, "E4": {**ELEMENTS["E1"], "element_id": "E4", "speed": "быстро"}}, AUDIO)
     refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S01"),

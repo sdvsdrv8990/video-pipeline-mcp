@@ -651,6 +651,95 @@ sheets:
         signal_on_reuse: false
         reuse_threshold: 0
         fills_frame: false
+      # Покадровая вариативность персонажа (позы и эмоции по дорожкам слотов). ВЫКЛЮЧЕНА: включает
+      # человек, осознанно. Тумблер тут не косметика — включённый тип входит в расчёт уникальности,
+      # и веса перенормируются по включённым, то есть числа канала сдвинутся в тот же миг.
+      - fragment_type: layer_character_variants
+        enabled: false
+        niche_weight: 0.25
+        signal_on_reuse: true
+        reuse_threshold: 3
+        fills_frame: false
+
+  # ═══ ОСНАСТКА ПЕРСОНАЖА (позы и эмоции как ГРУППЫ вариантов) ═══
+  # Персонаж — не один ассет, а слоты: тело держит голову, голова держит лицо. Родитель здесь несёт
+  # два смысла сразу — порядок наложения И совместимость: вариант ребёнка годится только к тому
+  # родителю, с которым совпал `compat_key` (ракурс) и в чью рамку он влезает. Поэтому проверка
+  # сочетаемости — сравнение двух ячеек, а не разбор картинок: ИИ видит её ДО того, как предложить
+  # комбинацию или заказать генерацию недостающего.
+  - name: CHARACTER_SLOTS
+    columns:
+      - { name: slot_id, type: string, flag: id }
+      - { name: character_id, type: string, flag: W }   # чей слот; персонаж живёт на канале, а не в видео
+      - { name: slot_role, type: enum, flag: W, enum: ['BODY', 'HEAD', 'FACE', 'PROP'] }
+      - { name: parent_slot, type: string, flag: fk }   # → slot_id: к чему крепится (пусто = к сцене)
+      # Ось совместимости: что должно совпасть у ребёнка с родителем. Обычно ракурс.
+      - { name: compat_axis, type: string, flag: W }
+      - { name: anchor_x, type: integer, flag: W }   # точка крепления В КООРДИНАТАХ РОДИТЕЛЯ
+      - { name: anchor_y, type: integer, flag: W }
+      # Рамка слота: вариант больше неё не примеряется. Это и есть «эмоция не уплывёт за голову» —
+      # проверяемое условие, а не пожелание.
+      - { name: bounds_w, type: integer, flag: W }
+      - { name: bounds_h, type: integer, flag: W }
+      - { name: z_offset, type: integer, flag: W }   # порядок ВНУТРИ персонажа
+      - { name: default_fade_sec, type: float, flag: W }   # перекрытие при смене варианта
+      - { name: notes, type: string, flag: W }
+    rows:
+      - slot_id: hero_body
+        character_id: hero
+        slot_role: BODY
+        parent_slot: ''
+        compat_axis: view
+        anchor_x: 0
+        anchor_y: 0
+        bounds_w: 0
+        bounds_h: 0
+        z_offset: 0
+        default_fade_sec: 0.15
+        notes: Корневой слот персонажа. Рамка 0 = не ограничена
+      - slot_id: hero_head
+        character_id: hero
+        slot_role: HEAD
+        parent_slot: hero_body
+        compat_axis: view
+        anchor_x: 0
+        anchor_y: 0
+        bounds_w: 0
+        bounds_h: 0
+        z_offset: 1
+        default_fade_sec: 0.15
+        notes: Крепится к телу; ракурс головы обязан совпасть с ракурсом позы
+      - slot_id: hero_face
+        character_id: hero
+        slot_role: FACE
+        parent_slot: hero_head
+        compat_axis: view
+        anchor_x: 0
+        anchor_y: 0
+        bounds_w: 0
+        bounds_h: 0
+        z_offset: 2
+        default_fade_sec: 0.12
+        notes: Эмоция отдельным слоем. Пусто = эмоция меняется вариантом головы, а не слоем
+
+  # Каталог вариантов: ЧТО вообще доступно в каждом слоте. Отвечает на вопрос ИИ «из чего выбирать
+  # и чего не хватает» одной выборкой по листу — новый инструмент для этого не нужен.
+  # `global_asset_id` — тот же канонический ключ мастера, что в `ASSET_USAGE_HISTORY`: вариант это
+  # вариация мастера, а не новая сущность рядом с ним.
+  - name: ASSET_VARIANTS
+    columns:
+      - { name: variant_id, type: string, flag: id }
+      - { name: slot_id, type: string, flag: fk }   # → CHARACTER_SLOTS
+      - { name: global_asset_id, type: string, flag: fk }   # → ASSET_USAGE_HISTORY (мастер = группа)
+      - { name: label, type: string, flag: W }   # pose_arms_crossed / emotion_smile
+      # Значение оси совместимости. Пусто = подходит к любому родителю.
+      - { name: compat_key, type: string, flag: W }
+      - { name: asset_path, type: string, flag: W }
+      - { name: width, type: integer, flag: W }   # натуральный размер: рамка проверяется без открытия файла
+      - { name: height, type: integer, flag: W }
+      - { name: status, type: enum, flag: W, enum: ['ACTIVE', 'RETIRED'] }
+      - { name: notes, type: string, flag: W }
+    rows: []
 
   # Строка = ПРОФИЛЬ рендера, а не отдельный параметр. Прежняя форма `param/value` описывала ровно
   # один формат и противоречила себе: `1920x1080` + `16:9` при примечании «Стандарт для Shorts/Reels».
