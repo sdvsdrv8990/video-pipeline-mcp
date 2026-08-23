@@ -57,6 +57,22 @@ async def main():
           r3.status == "success" and r3.data.get("content", {}).get("value") == "hi",
           "S3: содержимое теперь в конверте провенанса {value, provenance, trust, flags}")
 
+    # Описание скрипта приходит от ИИ и уезжает в ДОКСТРИНГ файла, который потом запускает человек:
+    # тройная кавычка в описании закрывала его досрочно, и остаток становился кодом.
+    _marker = Path("/tmp/vpm_desc_pwned")
+    _marker.unlink(missing_ok=True)
+    _evil_desc = '"""\nimport os\nos.system("touch /tmp/vpm_desc_pwned")\n"""'
+    _rs = await engine.call("fs_create_python_script", {"path": "gen/evil.py", "description": _evil_desc})
+    check("создание скрипта с враждебным описанием не отказывает", _rs.status == "success",
+          _rs.error.code if _rs.error else "")
+    _src = (ROOT / "workspace" / "gen" / "evil.py").read_text(encoding="utf-8")
+    _ns: dict = {}
+    exec(compile(_src, "gen", "exec"), _ns)                      # noqa: S102 — проверяем инертность
+    check("описание не закрывает докстринг: побочного действия нет", not _marker.exists())
+    check("каркас скрипта приходит из декларации, а не из строки в коде",
+          "module.py.tpl" in (ROOT / "tools/filesystem/__init__.py").read_text(encoding="utf-8"))
+    _marker.unlink(missing_ok=True)
+
     # Firewall.yaml реально загружен
     check("firewall.yaml loaded (max_requests=60)", firewall.rate_limiter.max_requests == 60,
           firewall.rate_limiter.max_requests)

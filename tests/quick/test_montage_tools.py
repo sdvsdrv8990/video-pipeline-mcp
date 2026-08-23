@@ -226,7 +226,62 @@ else:
     _on_unused = call("montage_render_scene", table="ch1/v1", scene_id="S02")
     ok((_on_unused.data.get("recommendations") or [{}])[0].get("id") == "variants_enabled_but_unused",
        "включено, а сцена без слотов → второй совет: пробел готовности вместо числа")
+    _ch["SCENE_PROFILE"]["rows"].pop("R9", None)          # канал возвращается к выключенному тумблеру
+    (WS / "ch1" / "read.json").write_text(json.dumps(_ch, ensure_ascii=False), encoding="utf-8")
     book(ELEMENTS, AUDIO)
+
+    print("\n  ── чистый скрипт сцены по требованию ──")
+    _scr = call("montage_scene_script", table="ch1/v1", scene_id="S01")
+    ok(_scr.status == "success", f"скелет выдан ({_scr.error.message if _scr.error else ''})")
+    _src = (WS / _scr.data["file_path"]).read_text(encoding="utf-8")
+    ok(_scr.data["file_path"].endswith(".py") and _scr.data["executed"] is False,
+       f"файл лёг в объявленное место и НЕ исполнялся ({_scr.data['file_path']})")
+    _ns: dict = {}
+    exec(compile(_src, "scene_template", "exec"), _ns)          # noqa: S102 — свой же скелет
+    ok(_ns["RESOLUTION"] == "640x360" and _ns["FPS"] == 25 and _ns["CODEC"] == "h264",
+       f"требования канала подтянуты в скрипт ({_ns['RESOLUTION']}, {_ns['FPS']}, {_ns['CODEC']})")
+    ok(_ns["ELEMENTS"] == [] and _ns["AUDIO"] == [],
+       "наполнения нет: ни ассетов, ни таймингов, ни звука")
+    ok(_ns["scene"]()["scene_id"] == "S01" and _ns["PROFILE_ID"] == "test_16x9",
+       "скрипт исполним и знает, чья он сцена и каким профилем собирается")
+    ok("{{" not in _src, "в файле не осталось незакрытых мест шаблона")
+
+    _off_src = _src
+    _ch2 = json.loads((WS / "ch1" / "read.json").read_text(encoding="utf-8"))
+    _ch2["SCENE_PROFILE"]["rows"]["R9"] = {"fragment_type": MONTAGE["rig"]["toggle"]["fragment_type"],
+                                           "enabled": True, "niche_weight": 0.25}
+    (WS / "ch1" / "read.json").write_text(json.dumps(_ch2, ensure_ascii=False), encoding="utf-8")
+    _scr_on = call("montage_scene_script", table="ch1/v1", scene_id="S01")
+    _on_src = (WS / _scr_on.data["file_path"]).read_text(encoding="utf-8")
+    _ns_on: dict = {}
+    exec(compile(_on_src, "scene_template", "exec"), _ns_on)    # noqa: S102
+    ok(_ns_on["VARIANTS_ENABLED"] is True and _ns["VARIANTS_ENABLED"] is False,
+       "флаг канала доезжает В СКРИПТ, а не остаётся в книге")
+    ok(_ns_on["SLOTS"] and any(s.get("parent_slot") for s in _ns_on["SLOTS"]),
+       f"при включённой вариативности скрипт знает слоты и их родителей ({len(_ns_on['SLOTS'])})")
+    ok("slot_id" in _on_src and "slot_id" not in _off_src,
+       "форма строки в примере МЕНЯЕТСЯ по флагу: выключено — про слоты ни слова")
+    _ch2["SCENE_PROFILE"]["rows"].pop("R9")
+    (WS / "ch1" / "read.json").write_text(json.dumps(_ch2, ensure_ascii=False), encoding="utf-8")
+
+    # Значение из книги уезжает В ФАЙЛ: кавычка в ячейке не должна закрывать докстринг.
+    _evil = call("montage_scene_script", table="ch1/v1",
+                 scene_id='S01"""\nimport os\nos.system("touch /tmp/vpm_pwned")\n"""')
+    _marker = Path("/tmp/vpm_pwned")
+    _marker.unlink(missing_ok=True)
+    if _evil.status == "success":
+        _evil_src = (WS / _evil.data["file_path"]).read_text(encoding="utf-8")
+        _ns_evil: dict = {}
+        exec(compile(_evil_src, "evil", "exec"), _ns_evil)      # noqa: S102 — проверяем инертность
+        ok(not _marker.exists(),
+           "кавычки и перевод строки из ячейки НЕ становятся кодом: побочного действия не произошло")
+        ok(_ns_evil["SCENE_ID"].startswith("S01") and "os.system" in _ns_evil["SCENE_ID"],
+           "враждебный текст доехал ЛИТЕРАЛОМ — он данные, а не инструкции")
+        ok("/" not in Path(_evil.data["file_path"]).name and
+           Path(_evil.data["file_path"]).parent.name == MONTAGE["script"]["dir"],
+           f"имя файла собрано из значения безопасно ({Path(_evil.data['file_path']).name})")
+    else:
+        ok(True, f"враждебное имя сцены отбито до записи ({_evil.error.code})")
 
     print("\n  ── отказы ──")
     refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S99"),

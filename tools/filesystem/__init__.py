@@ -9,6 +9,7 @@ tools/filesystem — группа инструментов файловой си
 `tests/quick/tools_inventory.golden.json` — менять только осознанно.
 """
 
+import re
 import shutil
 from pathlib import Path
 
@@ -348,8 +349,13 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         if not path.endswith(".py"):
             return ctx.err("INVALID_EXTENSION", f"Not a Python file: {path}")
         desc = description or target.stem
-        # Каркас захардкожен здесь — должен переехать в config/templates/ (отдельный воркстрим).
-        skeleton = f'"""\n{desc}\n"""\n\nimport sys\nfrom pathlib import Path\n\n\ndef main():\n    """Main entry point."""\n    print(f"Running {{__file__}}")\n    # TODO: implement\n    pass\n\n\nif __name__ == "__main__":\n    main()\n'
+        tpl = ctx.config_path / "templates" / "scripts" / "module.py.tpl"
+        if not tpl.exists():
+            return ctx.err("TEMPLATE_NOT_FOUND", f"Каркас скрипта не найден: {tpl.name}")
+        # Описание приходит от ИИ и попадает в докстринг: кавычки и переводы строк там закрывают
+        # его досрочно, поэтому в текст уезжает очищенное значение, а не сырое.
+        safe_desc = re.sub(r'[\"\\\n\r]', " ", desc).strip()
+        skeleton = tpl.read_text(encoding="utf-8").replace("{{DESCRIPTION}}", safe_desc)
         # description приходит от ИИ и попадает В файл — путь пишущий, значит через ту же дверь.
         ok_type, denied = ctx.safe(lambda: _check_write(path, skeleton))
         if not ok_type:

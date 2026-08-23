@@ -10,7 +10,7 @@ from pathlib import Path
 
 from core.contracts import Fact, ToolResult
 from core.engine import Engine
-from core.montage import RenderLedger, SceneBook
+from core.montage import RenderLedger, SceneBook, SceneScript
 from core.providers.ffmpeg import FfmpegEngine
 from tools._context import ANNOTATIONS_MODIFY, ToolContext
 
@@ -20,6 +20,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
 
     book = SceneBook(ctx.state_manager, ctx.config_path, ctx.resolve)
     ledger = RenderLedger(ctx.state_manager, ctx.config_path, ctx.id_generator)
+    script = SceneScript(book)
 
     def _output(table: str, scene_id: str, stage: str, container: str, given: str) -> Path:
         """Куда лечь файлу: названное вызовом или объявленное место внутри сущности видео."""
@@ -83,6 +84,64 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "scene_id": scene_id, "render_id": written["row_id"], "file_path": relative,
             "duration_sec": outcome.duration_sec, "profile_id": report["profile_id"],
             "elements": counts["elements"], "audio": counts["audio"]})])
+
+
+    async def montage_scene_script(table: str, scene_id: str, profile_id: str = "",
+                                   path: str = "") -> "ToolResult":
+        """Выдать чистый скрипт сцены: требования канала подтянуты, наполнения нет.
+
+        Формат кадра, кодек, режим субтитров и состояние тумблера вариативности приходят из
+        книги канала — выяснять их самому не нужно. Свой скрипт писать по-прежнему можно:
+        шаблон это удобство, а источником правды в обоих случаях остаётся книга.
+        """
+        ok, resolved = ctx.safe(lambda: book.profile(table, profile_id))
+        if not ok:
+            return resolved
+        profile, report = resolved
+        ok, text = ctx.safe(lambda: script.render(table, scene_id, profile, report))
+        if not ok:
+            return text
+        relative = path or script.target(table, scene_id)
+        ok, target = ctx.safe(lambda: ctx.resolve(relative))
+        if not ok:
+            return target
+        def _allowed() -> None:
+            # Та же дверь, что у любого файла: политика проверяет и тип, и содержимое.
+            ctx.write_policy.check(relative)
+            ctx.write_policy.check_content(relative, text)
+
+        ok, denied = ctx.safe(_allowed)
+        if not ok:
+            return denied
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        return ToolResult(status="success", data={
+            "table": table, "scene_id": scene_id, "file_path": relative,
+            "bytes": len(text.encode("utf-8")), "variants_enabled": book.variants_state(
+                table, scene_id).get("variants_enabled"),
+            "executed": False, **report,
+        }, facts=[Fact(type="FileCreated", data={"path": relative, "kind": "scene_script"})])
+
+    engine.register(
+        name="montage_scene_script",
+        title="Монтаж: чистый скрипт сцены с требованиями канала",
+        description=(
+            "Отдаёт ГОТОВЫЙ скелет скрипта сцены, в который уже подтянуты требования канала: "
+            "разрешение, соотношение сторон, частота кадров, кодек, контейнер, режим субтитров и "
+            "состояние вариативности персонажа (позы и эмоции дорожками — или нет). Наполнения в "
+            "нём нет намеренно: ассеты, тайминги и звук это твоё решение, и они кладутся строками "
+            "книги, а не строками кода. "
+            "Писать свой скрипт по-прежнему можно — шаблон удобство, а не обязанность; книга "
+            "остаётся источником правды в обоих случаях, поэтому логика не разойдётся. "
+            "Сервер файл ТОЛЬКО СОЗДАЁТ и не исполняет: запуск чужого кода сервером означал бы "
+            "выполнение того, что написал не он."),
+        input_schema={"type": "object", "properties": {
+            "table": {"type": "string", "description": "Путь сущности видео в workspace"},
+            "scene_id": {"type": "string", "description": "Для какой сцены скелет"},
+            "profile_id": {"type": "string", "description": "Профиль рендера (пусто → выбор видео или единственный)"},
+            "path": {"type": "string", "description": "Куда положить (пусто → объявленное место внутри видео)"},
+        }, "required": ["table", "scene_id"]},
+        handler=montage_scene_script, group="montage", annotations=ANNOTATIONS_MODIFY)
 
     engine.register(
         name="montage_render_scene",
