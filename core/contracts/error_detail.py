@@ -77,7 +77,7 @@ KNOWN_ERROR_CODES = {
     # Монтаж: словарь ffmpeg, сборка команды, запуск и приёмка результата
     "FFMPEG_MISSING", "FILTER_UNKNOWN", "RENDER_PROFILE_INVALID",
     "RENDER_INPUT_UNPREPARED", "RENDER_FAILED", "RENDER_TIMEOUT", "RENDER_UNVERIFIED",
-    "SCENE_EMPTY",
+    "SCENE_EMPTY", "VARIANT_INCOMPATIBLE",
 }
 
 

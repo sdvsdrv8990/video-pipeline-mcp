@@ -147,6 +147,60 @@ class SceneBook:
         return {"variants_enabled": enabled, "variants_used": used,
                 "advice_key": key, "channel": owner}
 
+    # ═══ Оснастка: слоты и варианты ═══
+
+    def _rig_rows(self, table: str, part: str) -> list[dict]:
+        spec = (self.config.get("rig") or {}).get(part) or {}
+        rows, _source, _owner = self._upward(table, spec["sheet"])
+        return rows or self._declared_rows(spec["fallback_book"], spec["sheet"])
+
+    def slots(self, table: str) -> dict[str, dict]:
+        """Слоты канала по идентификатору: чем крепится, куда и в какую рамку."""
+        spec = (self.config.get("rig") or {}).get("slots") or {}
+        return {str(row.get(spec["id_column"])): row for row in self._rig_rows(table, "slots")
+                if row.get(spec["id_column"])}
+
+    def variants(self, table: str) -> dict[str, dict]:
+        """Каталог вариантов канала по идентификатору."""
+        spec = (self.config.get("rig") or {}).get("variants") or {}
+        return {str(row.get(spec["id_column"])): row for row in self._rig_rows(table, "variants")
+                if row.get(spec["id_column"])}
+
+    def _variant(self, catalogue: dict, variant_id: str, row_id: str) -> dict:
+        if variant_id not in catalogue:
+            raise MontageError(
+                "RENDER_INPUT_UNPREPARED", f"Вариант `{variant_id}` (строка {row_id}) не объявлен в каталоге.",
+                reason=f"Доступные берутся из листа вариантов канала: {', '.join(sorted(catalogue)) or 'пусто'}. "
+                       "Нет нужного — сгенерируй ассет и заведи строкой.",
+                suggested_tool="table_append")
+        return catalogue[variant_id]
+
+    def _fits(self, size: tuple, bounds: tuple, child: str, parent: str) -> None:
+        """Рамка родителя: вариант больше неё не примеряется. Это «эмоция не уплывёт за голову»."""
+        width, height = size
+        limit_w, limit_h = bounds
+        if (limit_w and width and width > limit_w) or (limit_h and height and height > limit_h):
+            raise MontageError(
+                "VARIANT_INCOMPATIBLE", f"Вариант слота `{child}` не влезает в рамку слота `{parent}`: "
+                f"{width}x{height} против {limit_w}x{limit_h}.",
+                reason="Рамка объявлена в листе слотов канала. Возьми вариант по размеру или "
+                       "поправь рамку, если она занижена.",
+                suggested_tool="table_find_row")
+
+    def _compatible(self, child: dict, parents: list[dict], key_column: str,
+                    child_id: str, parent_slot: str) -> None:
+        """Совместимость — сравнение двух ячеек: ключ оси у ребёнка и у вариантов родителя."""
+        key = str(child.get(key_column) or "")
+        parent_keys = {str(row.get(key_column) or "") for row in parents}
+        if not key or not parent_keys or "" in parent_keys or key in parent_keys:
+            return
+        raise MontageError(
+            "VARIANT_INCOMPATIBLE", f"Вариант `{child_id}` не сочетается со слотом `{parent_slot}`: "
+            f"ключ `{key}` против `{', '.join(sorted(parent_keys))}`.",
+            reason="Совпадение ключа оси — условие сочетаемости (обычно это ракурс). Возьми вариант "
+                   "с тем же ключом или сгенерируй недостающий.",
+            suggested_tool="table_find_row")
+
     def _values(self, row: dict, fields: list[str]) -> dict:
         """Объявленные поля строки без пустых: пустая ячейка означает «не задано», а не ноль."""
         return {name: row[name] for name in fields if row.get(name) not in (None, "")}
@@ -161,28 +215,45 @@ class SceneBook:
         scene_cfg = self.config["scene"]
         el_cfg, au_cfg = scene_cfg["elements"], scene_cfg["audio"]
         fills = self._fills_frame(table)
+        slots, catalogue = self.slots(table), self.variants(table)
+        rig = (self.config.get("rig") or {}).get("variants") or {}
+        rows = self._scene_rows(table, el_cfg, scene_id)
+        by_slot: dict[str, list[dict]] = {}
+        for _rid, row in rows:
+            if row.get("slot_id") and row.get("variant_id") in catalogue:
+                by_slot.setdefault(str(row["slot_id"]), []).append(catalogue[str(row["variant_id"])])
         layers = []
-        for row_id, row in self._scene_rows(table, el_cfg, scene_id):
+        for row_id, row in rows:
             values = self._values(row, el_cfg["fields"])
             asset = values.pop("asset_path", "")
-            if not asset and row.get("variant_id"):
-                # Недоделанное обязано кричать: строка ссылается на вариант каталога, а подстановка
-                # его файла ещё не построена — молча пропустить слой значило бы отдать неполный кадр.
-                raise MontageError(
-                    "RENDER_INPUT_UNPREPARED",
-                    f"Элемент {row_id} ссылается на вариант {row['variant_id']}, а файла у строки нет.",
-                    reason="Разрешение варианта каталога в файл ещё не построено: пока заполни "
-                           "asset_path строки путём к ассету варианта.",
-                    suggested_tool="table_set")
+            slot_id = str(row.get("slot_id") or "")
+            slot = slots.get(slot_id) or {}
+            parent_slot = str(slot.get("parent_slot") or "")
+            if variant_id := str(row.get("variant_id") or ""):
+                variant = self._variant(catalogue, variant_id, row_id)
+                asset = asset or variant.get(rig["fields"][1]) or ""
+                if parent_slot:
+                    self._fits((variant.get("width"), variant.get("height")),
+                               (slots.get(parent_slot, {}).get("bounds_w"),
+                                slots.get(parent_slot, {}).get("bounds_h")), slot_id, parent_slot)
+                    self._compatible(variant, by_slot.get(parent_slot, []), rig["key_column"],
+                                     variant_id, parent_slot)
             if not asset:
                 raise MontageError(
                     "SCENE_EMPTY", f"У элемента {row_id} сцены {scene_id} не заполнен ассет.",
-                    reason=f"Столбец {el_cfg['sheet']}.asset_path — это то, что кладётся в кадр.",
+                    reason=f"Столбец {el_cfg['sheet']}.asset_path — это то, что кладётся в кадр; "
+                           f"либо сошлись на вариант каталога, у которого файл уже есть.",
                     suggested_tool="table_set")
             role = str(row.get(el_cfg["role_column"]) or "")
+            # Слот объявляет, ГДЕ он крепится к родителю; строка сдвигает от этой точки.
+            if slot:
+                values["x"] = int(slot.get("anchor_x") or 0) + int(values.get("x") or 0)
+                values["y"] = int(slot.get("anchor_y") or 0) + int(values.get("y") or 0)
+                values.setdefault("fade_sec", slot.get("default_fade_sec") or 0.0)
             layers.append(self._model(
                 Layer, {**values, "element_id": str(row.get(el_cfg["id_column"]) or row_id),
                         "asset_path": self._resolve(str(asset)),
+                        "slot": slot_id, "parent_slot": parent_slot,
                         "fit_canvas": fills.get(role, False)}, row_id, el_cfg["sheet"]))
         if not layers:
             raise MontageError(

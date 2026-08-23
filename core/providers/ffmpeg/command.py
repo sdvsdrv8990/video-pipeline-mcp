@@ -78,6 +78,29 @@ class SceneCommand:
 
     # ═══ Слои ═══
 
+    def _handover(self, layer: Layer) -> list[str]:
+        """Перекрытие на стыке кадров дорожки: уходящий гаснет, приходящий проявляется.
+
+        Длительность объявляет ПРИХОДЯЩИЙ кадр (`fade_sec`); ноль = честная встык-смена, а не
+        забытая настройка. При `speed != 1` момент перекрытия едет вместе с темпом слоя.
+        """
+        frames = self.spec.tracks.get(layer.slot) or []
+        if len(frames) < 2:
+            return []
+        index = frames.index(layer)
+        steps = []
+        if index > 0 and layer.fade_sec:
+            steps.append(f"fade=t=in:alpha=1:st={fmt(max(0.0, layer.time_start - layer.fade_sec))}"
+                         f":d={fmt(layer.fade_sec)}")
+        if index + 1 < len(frames):
+            nxt = frames[index + 1]
+            end = layer.time_end if layer.time_end else nxt.time_start
+            if nxt.fade_sec:
+                steps.append(f"fade=t=out:alpha=1:st={fmt(max(0.0, end - nxt.fade_sec))}"
+                             f":d={fmt(nxt.fade_sec)}")
+        # Затухание работает по альфе, значит она обязана существовать до фильтра.
+        return ["format=rgba", *steps] if steps else []
+
     def _chain(self, layer: Layer) -> list[str]:
         """Цепочка обработки слоя: непрозрачность, объявленные фильтры, размер, темп."""
         if layer.alpha_mode == "REMOVE_BG":
@@ -97,17 +120,63 @@ class SceneCommand:
             steps.append(f"scale={fmt(width or -1)}:{fmt(height or -1)}")
         if layer.speed != 1.0 and self.facts[layer.asset_path].kind == "video":
             steps.append(f"setpts=PTS/{fmt(layer.speed)}")
-        return steps
+        return steps + self._handover(layer)
+
+    # ═══ Координаты: свои или сложенные с родительскими ═══
+
+    def _own_position(self, layer: Layer) -> tuple[str, str]:
+        """Положение слоя без учёта родителя: точка или ломаная движения."""
+        motion = layer.motion
+        if motion:
+            return ramp(motion, 1), ramp(motion, 2)
+        return fmt(layer.x), fmt(layer.y)
+
+    def _slot_position(self, slot: str, seen: tuple[str, ...] = ()) -> tuple[str, str]:
+        """Где стоит СЛОТ целиком. Кадры дорожки обязаны стоять в одной точке — иначе ребёнок,
+        привязанный к слоту, поехал бы при смене варианта, а не при движении родителя."""
+        if slot in seen:
+            raise FfmpegError(
+                "VALIDATION_ERROR", f"Слоты замкнулись в кольцо: {' → '.join((*seen, slot))}",
+                reason="Родитель слота не может быть его же потомком — цепочка крепления обязана кончаться.")
+        frames = self.spec.tracks.get(slot) or []
+        if not frames:
+            raise FfmpegError(
+                "VALIDATION_ERROR", f"Слой ссылается на слот `{slot}`, которого в сцене нет.",
+                reason="Родительский слот обязан присутствовать в этой же сцене хотя бы одним кадром.",
+                suggested_tool="table_append")
+        spots = {self._own_position(frame) for frame in frames}
+        if len(spots) > 1:
+            raise FfmpegError(
+                "VALIDATION_ERROR", f"Кадры дорожки `{slot}` стоят в разных точках.",
+                reason="Слот двигается целиком: положение задаётся дорожке, а не отдельному варианту. "
+                       "Сведи x/y (и движение) кадров слота к одному значению.",
+                suggested_tool="table_set")
+        return self._position(frames[0], (*seen, slot))
+
+    def _position(self, layer: Layer, seen: tuple[str, ...] = ()) -> tuple[str, str]:
+        """Итоговые координаты: свои, а у ребёнка — сложенные с родительскими."""
+        x, y = self._own_position(layer)
+        if layer.parent_slot:
+            px, py = self._slot_position(layer.parent_slot, seen)
+            return f"({px})+({x})", f"({py})+({y})"
+        return x, y
+
+    # ═══ Наложение ═══
+
+    def _window(self, layer: Layer) -> tuple[float, float]:
+        """Окно присутствия кадра на сцене, с учётом перекрытия на входе."""
+        start = max(0.0, layer.time_start - layer.fade_sec)
+        end = layer.time_end if layer.time_end else self.duration
+        return start, end
 
     def _overlay(self, layer: Layer) -> str:
-        """Наложение: положение (точкой или ломаной) и окно присутствия на сцене."""
-        motion = layer.motion
-        x = f"'{ramp(motion, 1)}'" if motion else fmt(layer.x)
-        y = f"'{ramp(motion, 2)}'" if motion else fmt(layer.y)
-        args = [f"x={x}", f"y={y}"]
-        if layer.time_start or layer.time_end:
-            end = layer.time_end if layer.time_end else self.duration
-            args.append(f"enable='between(t,{fmt(layer.time_start)},{fmt(end)})'")
+        """Наложение: положение (точкой, ломаной или от родителя) и окно присутствия."""
+        x, y = self._position(layer)
+        quoted = "'" in x or "(" in x or "'" in y or "(" in y
+        args = [f"x='{x}'" if quoted else f"x={x}", f"y='{y}'" if quoted else f"y={y}"]
+        start, end = self._window(layer)
+        if start or layer.time_end:
+            args.append(f"enable='between(t,{fmt(start)},{fmt(end)})'")
         return "overlay=" + ":".join(args)
 
     def _video(self) -> str:

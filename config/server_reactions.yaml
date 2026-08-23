@@ -450,6 +450,14 @@ RENDER_INPUT_UNPREPARED:
     suggested_tool: "media_generate"
     reason: "Снятие фона нейросетью делает провайдер ДО монтажа: ffmpeg режет фон только по цвету. Подготовь ассет и подставь готовый файл."
 
+VARIANT_INCOMPATIBLE:
+  class: ai_recoverable
+  message_template: "Вариант не годится в этот слот: {reason}"
+  recovery:
+    suggested_tool: "table_find_row"
+    suggested_params: { sheet: "ASSET_VARIANTS" }
+    reason: "Сочетаемость проверяется двумя ячейками: ключ оси (обычно ракурс) обязан совпасть с ключом вариантов родительского слота, а размер варианта — влезть в его рамку. Возьми подходящий вариант из каталога или сгенерируй недостающий и заведи строкой."
+
 SCENE_EMPTY:
   class: ai_recoverable
   message_template: "В сцене нет ни одного элемента: {scene_id}"

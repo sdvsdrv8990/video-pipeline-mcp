@@ -23,7 +23,7 @@ import server  # noqa: E402
 from core.engine import Engine  # noqa: E402
 from core.ids import IDGenerator  # noqa: E402
 from core.montage import MontageError, RenderLedger, SceneBook  # noqa: E402
-from core.providers.ffmpeg import AudioTrack, Layer  # noqa: E402
+from core.providers.ffmpeg import AudioTrack, FfmpegEngine, Layer  # noqa: E402
 from core.state import StateManager  # noqa: E402
 
 CONFIG = ROOT / "config"
@@ -133,6 +133,9 @@ else:
         (["-f", "lavfi", "-i", "color=c=navy:s=320x240:d=1", "-frames:v", "1"], "bg.png"),
         (["-f", "lavfi", "-i", "color=c=0x00FF00:s=80x80:d=1", "-frames:v", "1"], "hero.png"),
         (["-f", "lavfi", "-i", "sine=frequency=330:duration=2"], "voice.wav"),
+        (["-f", "lavfi", "-i", "color=c=red:s=60x60:d=1", "-frames:v", "1"], "pose_a.png"),
+        (["-f", "lavfi", "-i", "color=c=yellow:s=60x60:d=1", "-frames:v", "1"], "pose_b.png"),
+        (["-f", "lavfi", "-i", "color=c=white:s=20x20:d=1", "-frames:v", "1"], "face.png"),
     ):
         subprocess.run(["ffmpeg", "-hide_banner", "-v", "error", *_args,
                         str(WS / "ch1/v1/assets" / _dst), "-y"], check=True)
@@ -145,6 +148,29 @@ else:
         "SCENE_PROFILE": {"schema": {}, "rows": {
             "R1": {"fragment_type": "layer_bg", "enabled": True, "fills_frame": True},
             "R2": {"fragment_type": "layer_character", "enabled": True, "fills_frame": False}}},
+        "CHARACTER_SLOTS": {"schema": {}, "rows": {
+            "S1": {"slot_id": "body", "character_id": "hero", "slot_role": "BODY",
+                   "parent_slot": "", "compat_axis": "view", "anchor_x": 40, "anchor_y": 60,
+                   "bounds_w": 60, "bounds_h": 60, "z_offset": 0, "default_fade_sec": 0.3},
+            "S2": {"slot_id": "face", "character_id": "hero", "slot_role": "FACE",
+                   "parent_slot": "body", "compat_axis": "view", "anchor_x": 20, "anchor_y": 10,
+                   "bounds_w": 0, "bounds_h": 0, "z_offset": 2, "default_fade_sec": 0.12}}},
+        "ASSET_VARIANTS": {"schema": {}, "rows": {
+            "V1": {"variant_id": "pose_idle", "slot_id": "body", "label": "спокойно",
+                   "compat_key": "front", "asset_path": "ch1/v1/assets/pose_a.png",
+                   "width": 60, "height": 60, "status": "ACTIVE"},
+            "V2": {"variant_id": "pose_point", "slot_id": "body", "label": "указывает",
+                   "compat_key": "front", "asset_path": "ch1/v1/assets/pose_b.png",
+                   "width": 60, "height": 60, "status": "ACTIVE"},
+            "V3": {"variant_id": "emo_smile", "slot_id": "face", "label": "улыбка",
+                   "compat_key": "front", "asset_path": "ch1/v1/assets/face.png",
+                   "width": 20, "height": 20, "status": "ACTIVE"},
+            "V4": {"variant_id": "emo_side", "slot_id": "face", "label": "профиль",
+                   "compat_key": "side", "asset_path": "ch1/v1/assets/face.png",
+                   "width": 20, "height": 20, "status": "ACTIVE"},
+            "V5": {"variant_id": "emo_huge", "slot_id": "face", "label": "великанская",
+                   "compat_key": "front", "asset_path": "ch1/v1/assets/pose_a.png",
+                   "width": 200, "height": 200, "status": "ACTIVE"}}},
     }, ensure_ascii=False), encoding="utf-8")
 
     def book(scene_rows, audio_rows, meta=None):
@@ -208,7 +234,7 @@ else:
     ok(not _plain.data.get("recommendations"),
        "тумблер выключен, слотов в сцене нет — сервер молчит: согласованный случай не советует")
 
-    book({**ELEMENTS, "E2": {**ELEMENTS["E2"], "slot_id": "hero_head", "variant_id": "emo_smile"}}, AUDIO)
+    book({**ELEMENTS, "E2": {**ELEMENTS["E2"], "slot_id": "body"}}, AUDIO)
     _mismatch = call("montage_render_scene", table="ch1/v1", scene_id="S01")
     _rec = (_mismatch.data.get("recommendations") or [{}])[0]
     ok(_rec.get("id") == "variants_disabled_but_used",
@@ -294,12 +320,6 @@ else:
     refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S01"),
             "PATH_ESCAPE", "путь ассета из книги проходит containment рабочей области")
 
-    book({**ELEMENTS, "E5": {"element_id": "E5", "scene_id": "S01", "element_role": "layer_character",
-                             "slot_id": "hero_face", "variant_id": "emo_smile", "z_index": 2}}, AUDIO)
-    refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S01"),
-            "RENDER_INPUT_UNPREPARED",
-            "ссылка на вариант каталога без файла КРИЧИТ: подстановка ещё не построена")
-
     book({**ELEMENTS, "E4": {**ELEMENTS["E1"], "element_id": "E4", "speed": "быстро"}}, AUDIO)
     refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S01"),
             "VALIDATION_ERROR", "нечисло в числовой ячейке отбивается с именем строки и листа")
@@ -309,9 +329,62 @@ else:
     ok(_no_choice.status == "success",
        "профиль в книге один — видео вправе его не называть")
 
-    print("\n  ── профиль и строка результата поштучно ──")
+    print("\n  ── дорожки слотов: варианты, рамка, совместимость ──")
+    TRACK = {
+        "T0": {"element_id": "T0", "scene_id": "S05", "element_role": "layer_bg",
+               "asset_path": "ch1/v1/assets/bg.png", "z_index": 0, "time_end": 3.0},
+        # дорожка тела: поза сменяется позой, файл берётся ИЗ КАТАЛОГА, а не из строки
+        "T1": {"element_id": "T1", "scene_id": "S05", "element_role": "layer_character",
+               "slot_id": "body", "variant_id": "pose_idle", "z_index": 1,
+               "time_start": 0.0, "time_end": 1.5},
+        "T2": {"element_id": "T2", "scene_id": "S05", "element_role": "layer_character",
+               "slot_id": "body", "variant_id": "pose_point", "z_index": 1,
+               "time_start": 1.5, "time_end": 3.0},
+        # лицо крепится к телу: координаты складываются, свои x/y не трогаем
+        "T3": {"element_id": "T3", "scene_id": "S05", "element_role": "layer_component",
+               "slot_id": "face", "variant_id": "emo_smile", "z_index": 2, "time_end": 3.0},
+    }
+    book({**ELEMENTS, **TRACK}, AUDIO)
     _book = SceneBook(SM, CONFIG, lambda p: (WS / p).resolve())
     _profile, _report = _book.profile("ch1/v1")
+    _spec5, _ = _book.scene("ch1/v1", "S05", WS / "t.mp4", _profile)
+    _body = [el for el in _spec5.layers if el.slot == "body"]
+    _face = next(el for el in _spec5.layers if el.slot == "face")
+    ok(all(str(el.asset_path).endswith(".png") for el in _body),
+       "вариант разрешён В ФАЙЛ: путь пришёл из каталога, строка его не дублирует")
+    ok({el.x for el in _body} == {40} and {el.y for el in _body} == {60},
+       f"кадры дорожки стоят в точке крепления слота ({ {el.x for el in _body} })")
+    ok(_face.parent_slot == "body" and (_face.x, _face.y) == (20, 10),
+       f"лицо знает родителя и несёт СВОЁ смещение, а не абсолютную точку ({_face.x},{_face.y})")
+    ok(_body[1].fade_sec == 0.3 and _face.fade_sec == 0.12,
+       "перекрытие пришло из слота, когда строка его не назвала")
+
+    _argv5, _ = FfmpegEngine().build(_spec5)
+    _graph5 = _argv5[_argv5.index("-filter_complex") + 1]
+    ok("fade=t=out:alpha=1" in _graph5 and "fade=t=in:alpha=1" in _graph5,
+       "на стыке дорожки уходящий гаснет, а приходящий проявляется")
+    ok("x='(40)+(20)'" in _graph5 and "y='(60)+(10)'" in _graph5,
+       "координаты ребёнка СЛОЖЕНЫ с родительскими, а не заданы заново")
+
+    _track_render = call("montage_render_scene", table="ch1/v1", scene_id="S05")
+    ok(_track_render.status == "success" and _track_render.data["elements"] == 4,
+       f"сцена с дорожками собирается целиком ({_track_render.data.get('elements')} слоёв)")
+
+    book({**TRACK, "T3": {**TRACK["T3"], "variant_id": "emo_huge"}}, AUDIO)
+    refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S05"),
+            "VARIANT_INCOMPATIBLE", "вариант больше рамки родителя не примеряется")
+    book({**TRACK, "T3": {**TRACK["T3"], "variant_id": "emo_side"}}, AUDIO)
+    refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S05"),
+            "VARIANT_INCOMPATIBLE", "ключ оси не совпал с родителем — сочетание отбито до рендера")
+    book({**TRACK, "T3": {**TRACK["T3"], "variant_id": "нет_такого"}}, AUDIO)
+    refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S05"),
+            "RENDER_INPUT_UNPREPARED", "висячая ссылка на вариант каталога отбивается, а не игнорируется")
+    book({**TRACK, "T2": {**TRACK["T2"], "x": 15}}, AUDIO)
+    refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S05"),
+            "VALIDATION_ERROR", "кадры дорожки в разных точках отбиваются: слот двигается целиком")
+    book(ELEMENTS, AUDIO)
+
+    print("\n  ── профиль и строка результата поштучно ──")
     ok(_profile.codec == "h264" and _report["profile_owner"] == "ch1",
        "профиль найден вверх по дереву у канала, а не у самого видео")
     _spec, _counts = _book.scene("ch1/v1", "S01", WS / "out.mp4", _profile)

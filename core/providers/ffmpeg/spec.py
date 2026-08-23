@@ -114,6 +114,10 @@ class Layer(BaseModel):
     motion_path: str = ""
     filters: list[FilterUse] = Field(default_factory=list)
     fit_canvas: bool = False
+    # Дорожка: строки с одним `slot` сменяют друг друга во времени, а не спорят за место.
+    slot: str = ""
+    parent_slot: str = ""          # чьи координаты складываются с нашими (голова → тело)
+    fade_sec: float = Field(default=0.0, ge=0.0, le=5.0)   # перекрытие на стыке с соседом дорожки
 
     @property
     def motion(self) -> list[tuple[float, ...]]:
@@ -153,7 +157,16 @@ class SceneSpec(BaseModel):
 
     @property
     def ordered(self) -> list[Layer]:
-        return sorted(self.layers, key=lambda el: el.z_index)
+        return sorted(self.layers, key=lambda el: (el.z_index, el.time_start))
+
+    @property
+    def tracks(self) -> dict[str, list[Layer]]:
+        """Дорожки: слой на слот, кадры по времени. Слои без слота — сами по себе."""
+        out: dict[str, list[Layer]] = {}
+        for layer in self.layers:
+            if layer.slot:
+                out.setdefault(layer.slot, []).append(layer)
+        return {slot: sorted(frames, key=lambda el: el.time_start) for slot, frames in out.items()}
 
     def declared_duration(self) -> float | None:
         """Длительность, следующая из книги: явная либо последний уход слоя со сцены."""
