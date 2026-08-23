@@ -74,6 +74,9 @@ KNOWN_ERROR_CODES = {
     "FILE_TYPE_FORBIDDEN",
     # Подтверждение необратимой операции
     "CONFIRM_REQUIRED",
+    # Монтаж: словарь ffmpeg, сборка команды, запуск и приёмка результата
+    "FFMPEG_MISSING", "FILTER_UNKNOWN", "RENDER_PROFILE_INVALID",
+    "RENDER_INPUT_UNPREPARED", "RENDER_FAILED", "RENDER_TIMEOUT", "RENDER_UNVERIFIED",
 }
 
 

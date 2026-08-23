@@ -419,6 +419,55 @@ CONFIRM_REQUIRED:
     suggested_params: { force: true }
     reason: "Повтори вызов с force=true, если удаление действительно нужно. Подтверждение обязательно всегда: так инъекция в данных не превращается в тихую потерю файлов."
 
+# ═══ Монтаж: сборка, запуск и приёмка рендера ═══
+
+FFMPEG_MISSING:
+  class: human_required
+  message_template: "Нечем монтировать: ffmpeg не найден в PATH."
+  recovery:
+    reason: "ffmpeg — системный бинарь, а не пакет pip: поставь его пакетным менеджером (dnf/apt/brew) и повтори. Ни один инструмент монтажа без него не работает."
+
+FILTER_UNKNOWN:
+  class: ai_recoverable
+  message_template: "Имя перехода или фильтра не объявлено: {name}"
+  recovery:
+    suggested_tool: "fs_read_file"
+    suggested_params: { path: "config/ffmpeg_filters.yaml" }
+    reason: "Словарь монтажа закрыт намеренно: незнакомое имя из книги в фильтрограф не уходит. Возьми имя из словаря или заведи его там."
+
+RENDER_PROFILE_INVALID:
+  class: ai_recoverable
+  message_template: "Профиль рендера просит невозможное: {reason}"
+  recovery:
+    suggested_tool: "table_get_row"
+    suggested_params: { sheet: "RENDER_CONFIG" }
+    reason: "Кодек, разрешение или частота кадров в строке профиля не исполнимы этим ffmpeg. Почини строку профиля в книге канала."
+
+RENDER_INPUT_UNPREPARED:
+  class: ai_recoverable
+  message_template: "Ассет не подготовлен к наложению: {path}"
+  recovery:
+    suggested_tool: "media_generate"
+    reason: "Снятие фона нейросетью делает провайдер ДО монтажа: ffmpeg режет фон только по цвету. Подготовь ассет и подставь готовый файл."
+
+RENDER_FAILED:
+  class: human_required
+  message_template: "ffmpeg отказался собирать: {reason}"
+  recovery:
+    reason: "Причину называет сам ffmpeg последней строкой. Смотри её: чаще всего это несовместимые параметры ассета и профиля."
+
+RENDER_TIMEOUT:
+  class: server_recoverable
+  message_template: "Рендер не уложился в отведённое время ({timeout} с)."
+  recovery:
+    reason: "Процесс снят по таймауту, файл не готов. Раздели сцену, уменьши разрешение профиля или подними лимит времени вызова."
+
+RENDER_UNVERIFIED:
+  class: integrity
+  message_template: "Файл собран, но приёмка его не подтверждает: {reason}"
+  recovery:
+    reason: "ffprobe не нашёл в результате того, что обещал профиль (поток, длительность, размер кадра). Файл есть, но считать его готовым нельзя — это немая потеря, поэтому отказ."
+
 # ═══ Fallback ═══
 
 DEFAULT:

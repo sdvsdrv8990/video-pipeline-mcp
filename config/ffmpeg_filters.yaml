@@ -109,3 +109,17 @@ filters:
         additionalProperties: false
         properties:
           angle: {type: number, minimum: 0.0, maximum: 1.5707963, default: 0.7853982}
+
+# ═══ ОТКАЗЫ: ЧЕМ ЖАЛУЕТСЯ БИНАРЬ → КОД РЕЕСТРА ═══
+# Обратное направление того же словаря: наверху наше имя переводится в язык ffmpeg, здесь язык
+# ffmpeg переводится обратно. Причину бинарь называет последней строкой вида
+# `Error opening (input|output) files: <причина>` — по ней и сверяемся.
+#
+# Каждая строка ниже получена ЗАПУСКОМ (ffmpeg 8.1.2), а не догадкой о формулировках. Незнакомая
+# жалоба уходит в `default`: молча объявить её «нашей» значило бы соврать о причине.
+failures:
+  by_reason:
+    "Encoder not found": RENDER_PROFILE_INVALID      # кодек строки профиля этот ffmpeg не умеет
+    "No such file or directory": FILE_NOT_FOUND      # ассет из книги пропал между записью и рендером
+    "Invalid data found when processing input": RENDER_INPUT_UNPREPARED
+  default: RENDER_FAILED
