@@ -42,8 +42,13 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
       # LibreOffice — движок пересчёта формул (`validate_formulas`). Без него тест скипается.
-      - name: install LibreOffice (formula recalc)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-calc
+      # ffmpeg — САМ ПРОДУКТ оси P, а не вспомогательный инструмент: без бинаря наборы монтажа
+      # пропускают прогонную половину с причиной, и гейт зеленеет, ничего не собрав. Замер на
+      # 2026-08-23: с бинарём 166 проверок в трёх наборах, без него 60 — то есть 106 (64%) в CI
+      # не исполнялись вовсе, включая рендер, приёмку ffprobe, дорожки слотов и совместимость.
+      # Это пакет менеджера пакетов, а не гигабайты весов модели, — ставится за секунды.
+      - name: install LibreOffice (formula recalc) + ffmpeg (montage)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-calc ffmpeg
       # I7 T0: единый раннер вместо ручного перечисления файлов (забытая строка = тест вне гейта).
       # tests/test_suites.py находит все наборы сам и гоняет каждый подпроцессом (exit-код = вердикт).
       # Маркер `live` больше никого не отсекает — сервер поднимает харнесс.

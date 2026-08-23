@@ -43,6 +43,19 @@ def ok(cond, msg):
         print(f"  ✓ {msg}")
 
 
+def data_of(result, msg):
+    """Данные успешного вызова. Отказ = красная проверка С КОДОМ, а не `AttributeError` по None.
+
+    `ToolResult.data` при `status="error"` равен None по контракту, поэтому чтение `.data[...]`
+    сразу после вызова роняет набор и прячет причину — виден питоновский трейс, а не код отказа.
+    """
+    if result.status != "success":
+        ok(False, f"{msg} — вместо успеха {result.error.code if result.error else '?'}: "
+                  f"{result.error.message if result.error else ''}")
+        return {}
+    return result.data or {}
+
+
 def refuses(fn, code, msg):
     """Отказ пришёл КОДОМ реестра, а не текстом."""
     try:
@@ -245,7 +258,8 @@ else:
 
     book({**ELEMENTS, "E2": {**ELEMENTS["E2"], "slot_id": "body"}}, AUDIO)
     _mismatch = call("montage_render_scene", table="ch1/v1", scene_id="S01")
-    _rec = (_mismatch.data.get("recommendations") or [{}])[0]
+    _rec = (data_of(_mismatch, "сцена со слотом при выключенном тумблере собирается")
+            .get("recommendations") or [{}])[0]
     ok(_rec.get("id") == "variants_disabled_but_used",
        f"сцена пользуется слотами при выключенном тумблере → совет ({_rec.get('id') or 'нет совета'})")
     ok(_rec.get("tool") == "table_set" and _rec.get("params", {}).get("sheet") == "SCENE_PROFILE",
@@ -255,11 +269,13 @@ else:
     _ch["SCENE_PROFILE"]["rows"]["R9"] = {"fragment_type": MONTAGE["rig"]["toggle"]["fragment_type"],
                                           "enabled": True, "niche_weight": 0.25}
     (WS / "ch1" / "read.json").write_text(json.dumps(_ch, ensure_ascii=False), encoding="utf-8")
-    _on_used = call("montage_render_scene", table="ch1/v1", scene_id="S01")
-    ok(not _on_used.data.get("recommendations") and _on_used.data["variants_enabled"] is True,
+    _on_used = data_of(call("montage_render_scene", table="ch1/v1", scene_id="S01"),
+                       "сцена со слотом при включённом тумблере собирается")
+    ok(not _on_used.get("recommendations") and _on_used.get("variants_enabled") is True,
        "тумблер включён и сцена по слотам — снова молчание, и состояние тумблера видно клиенту")
-    _on_unused = call("montage_render_scene", table="ch1/v1", scene_id="S02")
-    ok((_on_unused.data.get("recommendations") or [{}])[0].get("id") == "variants_enabled_but_unused",
+    _on_unused = data_of(call("montage_render_scene", table="ch1/v1", scene_id="S02"),
+                         "сцена без слотов при включённом тумблере собирается")
+    ok((_on_unused.get("recommendations") or [{}])[0].get("id") == "variants_enabled_but_unused",
        "включено, а сцена без слотов → второй совет: пробел готовности вместо числа")
     _ch["SCENE_PROFILE"]["rows"].pop("R9", None)          # канал возвращается к выключенному тумблеру
     (WS / "ch1" / "read.json").write_text(json.dumps(_ch, ensure_ascii=False), encoding="utf-8")
@@ -282,8 +298,9 @@ else:
            for r in _made.values()),
        "в сцену попали только объявленные поля — заготовка не приносит чужих столбцов")
 
-    _gen2 = call("montage_generate_scene", table="ch1/v1", scene_id="S07",
-                 template_id="talking_head", time_offset=4.0, z_offset=10)
+    data_of(call("montage_generate_scene", table="ch1/v1", scene_id="S07",
+                 template_id="talking_head", time_offset=4.0, z_offset=10),
+            "второе применение заготовки проходит")
     _snap2 = SM.read_snapshot("ch1/v1") or {}
     _all7 = [row for row in _snap2["SCENE_ELEMENTS"]["rows"].values() if row.get("scene_id") == "S07"]
     ok(len(_all7) == 4, f"второй шаблон ДОПИСАЛСЯ, а не заменил первый ({len(_all7)} строк)")
@@ -298,11 +315,10 @@ else:
             "SCENE_EMPTY", "разложенная заготовка без ассетов не рендерится молча: сказано, чего нет")
 
     print("\n  ── чистый скрипт сцены по требованию ──")
-    _scr = call("montage_scene_script", table="ch1/v1", scene_id="S01")
-    ok(_scr.status == "success", f"скелет выдан ({_scr.error.message if _scr.error else ''})")
-    _src = (WS / _scr.data["file_path"]).read_text(encoding="utf-8")
-    ok(_scr.data["file_path"].endswith(".py") and _scr.data["executed"] is False,
-       f"файл лёг в объявленное место и НЕ исполнялся ({_scr.data['file_path']})")
+    _scr = data_of(call("montage_scene_script", table="ch1/v1", scene_id="S01"), "скелет выдан")
+    _src = (WS / _scr["file_path"]).read_text(encoding="utf-8")
+    ok(_scr["file_path"].endswith(".py") and _scr["executed"] is False,
+       f"файл лёг в объявленное место и НЕ исполнялся ({_scr['file_path']})")
     _ns: dict = {}
     exec(compile(_src, "scene_template", "exec"), _ns)          # noqa: S102 — свой же скелет
     ok(_ns["RESOLUTION"] == "640x360" and _ns["FPS"] == 25 and _ns["CODEC"] == "h264",
@@ -318,8 +334,9 @@ else:
     _ch2["SCENE_PROFILE"]["rows"]["R9"] = {"fragment_type": MONTAGE["rig"]["toggle"]["fragment_type"],
                                            "enabled": True, "niche_weight": 0.25}
     (WS / "ch1" / "read.json").write_text(json.dumps(_ch2, ensure_ascii=False), encoding="utf-8")
-    _scr_on = call("montage_scene_script", table="ch1/v1", scene_id="S01")
-    _on_src = (WS / _scr_on.data["file_path"]).read_text(encoding="utf-8")
+    _scr_on = data_of(call("montage_scene_script", table="ch1/v1", scene_id="S01"),
+                      "скелет выдан при включённом тумблере")
+    _on_src = (WS / _scr_on["file_path"]).read_text(encoding="utf-8")
     _ns_on: dict = {}
     exec(compile(_on_src, "scene_template", "exec"), _ns_on)    # noqa: S102
     ok(_ns_on["VARIANTS_ENABLED"] is True and _ns["VARIANTS_ENABLED"] is False,

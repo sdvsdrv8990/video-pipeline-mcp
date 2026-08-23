@@ -106,8 +106,20 @@ else:
         return "is not recognized" not in (out.stdout + out.stderr)
 
     CODECS = D["codecs"]
+    # Обязателен тот кодек, который ПРОСЯТ книги: профиль, чей энкодер отсутствует, не соберётся —
+    # это отказ по делу. Остальной словарь показываем справкой: сборка ffmpeg у раннера CI беднее
+    # домашней, и требовать от неё av1 значило бы красить гейт там, где ничего не сломано.
+    _books = yaml.safe_load((ROOT / "config/templates/tables/channel_data.schema.yaml")
+                            .read_text(encoding="utf-8"))
+    _needed = {str(row.get("codec")) for sheet in _books["sheets"] if sheet["name"] == "RENDER_CONFIG"
+               for row in sheet.get("rows") or [] if row.get("codec")}
     for name, encoder in CODECS["video"]["by_name"].items():
-        ok(_encoder_exists(encoder), f"кодек `{name}` → энкодер {encoder} есть в этом ffmpeg")
+        if name in _needed:
+            ok(_encoder_exists(encoder),
+               f"кодек `{name}` просит профиль книги → энкодер {encoder} обязан быть в этом ffmpeg")
+        else:
+            print(f"  · `{name}` → {encoder}: "
+                  f"{'есть' if _encoder_exists(encoder) else 'НЕТ в этой сборке (профили его не просят)'}")
     ok(_encoder_exists(CODECS["audio"]), f"звук микса кодируется существующим {CODECS['audio']}")
     ok(CODECS["pixel_format"] in subprocess.run([FFMPEG, "-hide_banner", "-pix_fmts"],
                                                 capture_output=True, text=True).stdout,
