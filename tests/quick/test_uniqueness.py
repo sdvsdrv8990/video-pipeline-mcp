@@ -155,8 +155,8 @@ ok(any(f.type == "UniquenessIncomplete" for f in _r.facts),
         "P1": {"pattern_description": "герой просыпается и идёт на работу под дождём каждый день"},
         "P2": {"pattern_description": "герой просыпается и идёт на работу под дождём каждый день"}}},
     "ASSETS_USED": {"schema": {}, "rows": {
-        "A1": {"asset_type": "layer_bg", "asset_id": "BG_1"},
-        "A2": {"asset_type": "layer_character", "asset_id": "CH_1"}}},
+        "A1": {"asset_type": "layer_bg", "global_asset_id": "BG_1"},
+        "A2": {"asset_type": "layer_character", "global_asset_id": "CH_1"}}},
     "SCENE_PROFILE": {"schema": {}, "rows": {
         "R1": {"fragment_type": "layer_bg", "enabled": True, "niche_weight": 0.3},
         "R2": {"fragment_type": "layer_character", "enabled": True, "niche_weight": 0.4}}},
@@ -208,11 +208,11 @@ ok(not _clean6["compensation"]["active"],
         "P1": {"pattern_description": "абсолютно новый текст про совершенно иное дело сегодня"},
         "P2": {"pattern_description": "старый текст про рыбалку и лодку на озере"}}},
     "ASSETS_USED": {"schema": {}, "rows": {
-        "A1": {"asset_type": "layer_bg", "asset_id": "BG1"},
-        "A2": {"asset_type": "layer_bg", "asset_id": "BG2"},
-        "A3": {"asset_type": "music", "asset_id": "M1"},
-        "A4": {"asset_type": "music", "asset_id": "M1"},
-        "A5": {"asset_type": "music", "asset_id": "M1"}}},
+        "A1": {"asset_type": "layer_bg", "global_asset_id": "BG1"},
+        "A2": {"asset_type": "layer_bg", "global_asset_id": "BG2"},
+        "A3": {"asset_type": "music", "global_asset_id": "M1"},
+        "A4": {"asset_type": "music", "global_asset_id": "M1"},
+        "A5": {"asset_type": "music", "global_asset_id": "M1"}}},
     "SCENE_PROFILE": {"schema": {}, "rows": {
         "R1": {"fragment_type": "layer_bg", "enabled": True, "niche_weight": 0.7},
         "R2": {"fragment_type": "music", "enabled": True, "niche_weight": 0.3}}},
@@ -295,6 +295,53 @@ _wide = UniquenessEngine(_cfg2).similarity("герой просыпается и
                                            ["герой просыпается и идёт домой"])
 _narrow = uniq.similarity("герой просыпается и идёт на работу", ["герой просыпается и идёт домой"])
 ok(_wide != _narrow, f"смена окна n-gram меняет результат ({_narrow} → {_wide}) — конфиг не декоративный")
+
+print("== 9. Декларация источников сверяется с книгами, а не с верой ==")
+_BOOKS = {}
+for _schema in sorted((ROOT / "config" / "templates" / "tables").glob("*.schema.yaml")):
+    for _sheet in (yaml.safe_load(_schema.read_text(encoding="utf-8")) or {}).get("sheets") or []:
+        _BOOKS.setdefault(_sheet["name"], set()).update(c["name"] for c in _sheet["columns"])
+
+_DECL = yaml.safe_load(CFG.read_text(encoding="utf-8"))
+_named = []
+for _key, _spec in (_DECL.get("sources") or {}).items():
+    for _field in ("column", "type_column", "id_column", "enabled_column", "weight_column"):
+        if _spec.get(_field):
+            _named.append((_key, _spec["sheet"], _spec[_field]))
+for _src in _DECL.get("corpus_sources") or []:
+    _named.append((_src["id"], _src["sheet"], None))
+# Известный пробел держим ПОИМЁННО: корпус конкурентов лежит в чужой сущности, и межсущностного
+# чтения нет. Молчание тут означало бы, что дефекта не существует.
+_KNOWN_GAP = {"COMPETITOR_PATTERNS"}
+_orphan_sheets = sorted({s for _, s, _ in _named if s not in _BOOKS})
+ok(set(_orphan_sheets) <= _KNOWN_GAP,
+   f"новых листов-сирот в источниках нет (сверх известного: {sorted(set(_orphan_sheets) - _KNOWN_GAP) or '—'})")
+ok(set(_orphan_sheets) == _KNOWN_GAP,
+   "известный пробел корпуса конкурентов ещё открыт — тест краснеет, когда его закроют")
+_orphan_cols = sorted({f"{s}.{c}" for _, s, c in _named if c and s in _BOOKS and c not in _BOOKS[s]})
+# Столбец, которого в книге нет, не даёт отказа: ключом становится None, все строки схлопываются
+# в одну, и оценка приходит НЕВЕРНОЙ при readiness=full. Молчаливее дефекта не бывает.
+ok(not _orphan_cols, f"каждый столбец источника есть в книге (нет: {_orphan_cols or '—'})")
+
+_frag = _DECL["sources"]["fragments"]
+(_ws / "v9").mkdir()
+(_ws / "v9" / "read.json").write_text(json.dumps({
+    "SCRIPT_PATTERNS_USED": {"schema": {}, "rows": {
+        "P1": {"pattern_description": "первый текст про одно дело"},
+        "P2": {"pattern_description": "второй текст про совершенно иное"}}},
+    # Строки пишем столбцами КНИГИ, а не теми, что назвала декларация: иначе тест согласится
+    # с декларацией, оба разойдутся с книгой, и зелёный цвет будет означать только их согласие.
+    _frag["sheet"]: {"schema": {}, "rows": {
+        "A1": {"asset_type": "layer_bg", "global_asset_id": "BG_1", "variation_id": "BG_1_v1"},
+        "A2": {"asset_type": "layer_bg", "global_asset_id": "BG_1", "variation_id": "BG_1_v2"},
+        "A3": {"asset_type": "layer_bg", "global_asset_id": "BG_9", "variation_id": "BG_9_v1"}}},
+    "SCENE_PROFILE": {"schema": {}, "rows": {
+        "R1": {"fragment_type": "layer_bg", "enabled": True, "niche_weight": 0.3}}},
+}, ensure_ascii=False), encoding="utf-8")
+_real = _call("uniqueness_check", table="v9", row_id="P1")
+ok(_real.data["fragment_scores"].get("layer_bg") == 0.6667,
+   f"повтор мастера считается по столбцу книги: 2 из 3 = 0.6667 (получено "
+   f"{_real.data['fragment_scores'].get('layer_bg')})")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
