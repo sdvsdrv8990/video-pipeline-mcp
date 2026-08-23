@@ -160,7 +160,7 @@ async def main():
           r.data["applied"]==0 and len(r.data["skipped"])==1
           and r.data["skipped"][0]["code"]=="ENUM_VIOLATION")
     r = await call("table_get_row", table=T, sheet="META", row_id="VID_1")
-    check("update: ни одно поле не применилось частично (F56)",
+    check("update: ни одно поле не применилось частично",
           r.data["row"]["title"]=="через очередь" and r.data["row"]["status"]=="published")
 
     # ── push_to_queue with read action → INVALID_ACTION ──

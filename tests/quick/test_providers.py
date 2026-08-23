@@ -249,7 +249,7 @@ try:
     _tc.verify_download("../../etc/passwd", _dws)
     ok(False, "путь наружу должен отбиваться")
 except PathEscapeError:
-    ok(True, "ссылка приходит извне — путь загрузки проходит containment (G17)")
+    ok(True, "ссылка приходит извне — путь загрузки проходит containment")
 ok(_tc.expected_name("scene_01", {"response_format": "wav"}) == "scene_01.wav",
    "расширение берётся из строки провайдера, а не угадывается из ссылки")
 _tsrc = (ROOT / "core/providers/task_cycle.py").read_text(encoding="utf-8")
@@ -424,7 +424,7 @@ ok("guidance_scale" in _IMG(_reg)._call_kwargs({"guidance": 0}),
 # Параметры ПОДЪЁМА — по объявленной карте «столбец → параметр библиотеки», а не ветками.
 _ldk = _IMG(_reg)._load_kwargs
 ok(_ldk({}, {"variant": "fp16"}) == {"variant": "fp16"},
-   "вариант весов приходит из ОПИСИ: ИИ не обязан знать, что лежит на диске (F80)")
+   "вариант весов приходит из ОПИСИ: ИИ не обязан знать, что лежит на диске")
 ok(_ldk({"variant": "fp32"}, {"variant": "fp16"})["variant"] == "fp32",
    "непустой столбец строки перекрывает опись — но только непустой")
 ok(_ldk({"device_map": "balanced", "max_memory": {0: "8GiB"}}, {}) ==
@@ -1476,7 +1476,7 @@ if _spec_tool.status == "success" and _spec_tool.data.get("source") == "model_fi
     ok(bool(_spec_tool.data["parameters"]),
        f"инструмент отдаёт спеку с источником ({_spec_tool.data.get('source')})")
     ok(_spec_tool.facts and _spec_tool.facts[0].type == "ModelSpecRead",
-       "чтение спеки приходит фактом контракта (тип заведён в KNOWN_FACT_TYPES, D25)")
+       "чтение спеки приходит фактом контракта (тип заведён в KNOWN_FACT_TYPES)")
 
     # И главное: вызов не состоится, если строка канала просит невозможное.
     (_ws / "spec14").mkdir()

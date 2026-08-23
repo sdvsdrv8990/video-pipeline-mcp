@@ -41,7 +41,7 @@ JUNK = "\n".join(["    Строка разбора задачи номер %d." 
 for prefix in ('r', 'R', 'u', 'f', 'F', ''):
     src = 'def f():\n    %s"""Шапка.\n%s\n    """\n    return 1\n' % (prefix, JUNK)
     n = notes_of(src)
-    ok(f"F125: текст с префиксом {prefix or '(без)'!r} виден сторожу", any("докстринг на" in x for x in n), n)
+    ok(f"текст с префиксом{prefix or '(без)'!r} виден сторожу", any("докстринг на" in x for x in n), n)
 
 # Голая строка-выражение НЕ первой в теле — тоже текст в коде.
 src = 'def f():\n    x = 1\n    """Эссе.\n%s\n    """\n    return x\n' % JUNK
@@ -51,31 +51,31 @@ ok("голая строка в середине тела — тоже текст
 # построчный разбор принимал её за открывающую и объявлял ДАННЫЕ докстрингом: маркер внутри
 # данных становился ложным замечанием, а потолок такое замечание защищал как «принятый долг».
 src = 'ШАБЛОН = (\n    """\n    прежде было так\n    """\n)\n'
-ok("F123: маркер внутри строки-ДАННЫХ не считается замечанием", notes_of(src) == [], notes_of(src))
+ok("маркер внутри строки-ДАННЫХ не считается замечанием", notes_of(src) == [], notes_of(src))
 src = ('ШАБЛОН = (\n    """\n    текст данных\n    """\n)\n\n'
        'def f():\n    """Док.\n%s\n    """\n    return 1\n' % JUNK)
 n = notes_of(src)
-ok("F123: длинный докстринг ПОСЛЕ строки-константы всё равно найден", any("докстринг на" in x for x in n), n)
+ok("длинный докстринг ПОСЛЕ строки-константы всё равно найден", any("докстринг на" in x for x in n), n)
 
 # `#` внутри строки-данных — не комментарий.
 src = 'ДАННЫЕ = """\n' + "\n".join(f"# строка данных {i}" for i in range(8)) + '\n"""\n'
-ok("F124: восемь `#` внутри строки-данных не считаются прогоном комментариев", notes_of(src) == [], notes_of(src))
+ok("восемь `#` внутри строки-данных не считаются прогоном комментариев", notes_of(src) == [], notes_of(src))
 src = "\n".join(f"# рассуждение {i}" for i in range(8)) + "\nx = 1\n"
-ok("F124: восемь настоящих `#` подряд — замечание", any("подряд" in x for x in notes_of(src)), notes_of(src))
+ok("восемь настоящих `#` подряд — замечание", any("подряд" in x for x in notes_of(src)), notes_of(src))
 
 # Пересказ декларации прозой (`ключ: значение`) — главный класс мусора.
 src = ('class C:\n    """Роль.\n\n    Attributes:\n        a: первое поле\n        b: второе поле\n'
        '        c: третье поле\n        d: четвёртое поле\n    """\n    a: int\n')
-ok("F126: блок из четырёх «ключ: значение» пойман", any("пересказ декларации" in x for x in notes_of(src)),
+ok("блок из четырёх «ключ: значение» пойман", any("пересказ декларации" in x for x in notes_of(src)),
    notes_of(src))
 src = 'def f():\n    """Роль.\n\n    Возврат: число.\n    """\n    return 1\n'
-ok("F126: одна строка «ключ: значение» замечанием не стала", notes_of(src) == [], notes_of(src))
+ok("одна строка «ключ: значение» замечанием не стала", notes_of(src) == [], notes_of(src))
 
 # Цели замера = всё, что под git, а не фиксированный список.
 _globs = ["*.py", "*.yaml", "*.yml", "*.toml", "*.sh", ".gitignore", ".env.example"]
 tracked = {p for p in subprocess.run(["git", "-C", str(ROOT), "ls-files", *_globs],
                                      capture_output=True, text=True, check=True).stdout.split() if p}
-ok("F122: замер покрывает ровно объявленные цели под git", set(G.collect()) == tracked,
+ok("замер покрывает ровно объявленные цели под git", set(G.collect()) == tracked,
    sorted(tracked ^ set(G.collect()))[:5])
 ok("цели включают декларации и CI, а не только Python",
    any(p.endswith((".yaml", ".yml")) for p in tracked) and "pyproject.toml" in tracked)
@@ -96,13 +96,13 @@ with tempfile.TemporaryDirectory() as tmp:
     alien.write_text('def f():\n    """Док.\n%s\n    """\n' % JUNK, encoding="utf-8")
     try:
         out = G.collect([str(alien)])
-        ok("F127: файл вне репозитория просканирован без падения", any(out.values()), out)
+        ok("файл вне репозитория просканирован без падения", any(out.values()), out)
     except ValueError as e:
-        ok("F127: файл вне репозитория просканирован без падения", False, f"{type(e).__name__}: {e}")
+        ok("файл вне репозитория просканирован без падения", False, f"{type(e).__name__}: {e}")
 
 # Сторож не ловит сам себя — таблица шаблонов внутри него это КОД, а не текст.
 guard_src = (ROOT / "scripts" / "comment_guard.py").read_text(encoding="utf-8")
-ok("F120: сторож на себе самом чист", G.review("scripts/comment_guard.py", guard_src) == [],
+ok("сторож на себе самом чист", G.review("scripts/comment_guard.py", guard_src) == [],
    G.review("scripts/comment_guard.py", guard_src))
 
 # ─── Координата задачи в тексте: ловится по классам, но НЕ ценой ложных срабатываний ───

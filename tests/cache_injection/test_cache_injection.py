@@ -44,7 +44,7 @@ def test_inert_payloads_allowed():
           _decision("rm -rf /", "198.51.100.10") == "allow")
     check("'delete all files' как контент → allow",
           _decision("delete all files", "198.51.100.11") == "allow")
-    check("'drop table users' → allow (нет SQL-поверхности, D33)",
+    check("'drop table users' → allow (нет SQL-поверхности)",
           _decision("drop table users", "198.51.100.12") == "allow")
 
 

@@ -106,7 +106,7 @@ def test_anomaly_detection():
         ip="198.51.100.6", method="tools/call",
         params={"name": "fs_delete"}, timestamp=3100.0
     ))
-    check("fs_delete: allow (log-only, не глухой блок — D32)", resd.decision.value == "allow", resd.reason)
+    check("fs_delete: allow (log-only, не глухой блок)", resd.decision.value == "allow", resd.reason)
     check("fs_delete: посчитан как аномалия (get_stats)", fw2.get_stats()["anomalies_detected"] == 1)
 
 

@@ -127,9 +127,9 @@ def main():
                 return False
             except FsSearchError as e:
                 return getattr(e, "code", "") == "PATH_ESCAPE"
-        check("D36 root='/etc' → PATH_ESCAPE", esc("/etc"))
-        check("D36 root='../../../../etc' → PATH_ESCAPE", esc("../../../../etc"))
-        check("D36 root='docs/../../..' → PATH_ESCAPE", esc("docs/../../.."))
+        check("root='/etc' → PATH_ESCAPE", esc("/etc"))
+        check("root='../../../../etc' → PATH_ESCAPE", esc("../../../../etc"))
+        check("root='docs/../../..' → PATH_ESCAPE", esc("docs/../../.."))
 
         print("== FsSearcher: edge ==")
         try:
@@ -172,9 +172,9 @@ def main():
         check("ReadTask поля распарсились", plan.reads[0].table == "t1" and plan.reads[0].sheet == "META")
         try:
             qp.load_query("/etc/passwd")
-            check("D36 QueryPlanner.load_query('/etc/passwd') → PATH_ESCAPE", False, "не бросил")
+            check("QueryPlanner.load_query('/etc/passwd') → PATH_ESCAPE", False, "не бросил")
         except SearchError as e:
-            check("D36 QueryPlanner.load_query('/etc/passwd') → PATH_ESCAPE",
+            check("QueryPlanner.load_query('/etc/passwd') → PATH_ESCAPE",
                   getattr(e, "code", "") == "PATH_ESCAPE")
 
         print("== QueryPlanner: фильтры и сортировка в СВОЕЙ зоне (F55, слепая зона 3) ==")
@@ -204,7 +204,7 @@ def main():
         check("фильтр по равенству отбирает строки, а не отдаёт всё",
               sorted(r["_row_id"] for r in got) == ["R1", "R3"], [r["_row_id"] for r in got])
         got = _rows({"filter": {"views": {"gt": 50}}})
-        check("фильтр gt отбирает по числу и не падает на строковом значении (F42)",
+        check("фильтр gt отбирает по числу и не падает на строковом значении",
               [r["_row_id"] for r in got] == ["R1"], [r["_row_id"] for r in got])
         got = _rows({"filter": {"name": {"contains": "ам"}}})
         check("фильтр contains ищет подстроку", [r["_row_id"] for r in got] == ["R3"],
@@ -213,7 +213,7 @@ def main():
         check("фильтр in сужает по списку", [r["_row_id"] for r in got] == ["R2"],
               [r["_row_id"] for r in got])
         got = _rows({"filter": {"_row_id": {"eq": "R2"}}})
-        check("поиск по идентификатору строки находит её, а не отдаёт ноль (F57)",
+        check("поиск по идентификатору строки находит её, а не отдаёт ноль",
               [r["_row_id"] for r in got] == ["R2"], [r["_row_id"] for r in got])
         got = _rows({"filter": {"_row_id": {"in": ["R1", "R3"]}}})
         check("идентификатор работает во всех операциях фильтра, не только eq",
@@ -243,35 +243,35 @@ def main():
               sorted(_SharedSnapshot.data["META"]["rows"]["R1"]))
 
         got = _rows(sort={"column": "views", "order": "desc"})
-        check("сортировка убыванием: наибольшее первым, чужеродное в хвосте (F90)",
+        check("сортировка убыванием: наибольшее первым, чужеродное в хвосте",
               [r["_row_id"] for r in got] == ["R1", "R2", "R3"], [r["_row_id"] for r in got])
         got = _rows(sort={"column": "views", "order": "asc"})
-        check("сортировка возрастанием: порядок чисел развернулся, хвост остался хвостом (F90)",
+        check("сортировка возрастанием: порядок чисел развернулся, хвост остался хвостом",
               [r["_row_id"] for r in got] == ["R2", "R1", "R3"], [r["_row_id"] for r in got])
         got = _rows(sort={"column": "name", "order": "desc"})
         check("текстовый столбец сортируется по-прежнему по алфавиту в обе стороны",
               [r["_row_id"] for r in got] == ["R3", "R2", "R1"], [r["_row_id"] for r in got])
 
-        print("== FsSearcher: _detect_entity_type (D37 FIXED — все уровни иерархии) ==")
+        print("== FsSearcher: _detect_entity_type — все уровни иерархии ==")
         fs_tx = FsSearcher(ws, taxonomy=Taxonomy(TPL_DIR))
         def det(rel):
             return fs_tx._detect_entity_type(ws / rel / "x.yaml")
-        check("D37 niche", det("niches/gaming") == "niche", det("niches/gaming"))
-        check("D37 network", det("niches/gaming/networks/n1") == "network", det("niches/gaming/networks/n1"))
-        check("D37 channel", det("niches/gaming/networks/n1/channels/ch") == "channel",
+        check("тип уровня: ниша", det("niches/gaming") == "niche", det("niches/gaming"))
+        check("тип уровня: сетка", det("niches/gaming/networks/n1") == "network", det("niches/gaming/networks/n1"))
+        check("тип уровня: канал", det("niches/gaming/networks/n1/channels/ch") == "channel",
               det("niches/gaming/networks/n1/channels/ch"))
-        check("D37 video", det("niches/gaming/networks/n1/channels/ch/videos/v") == "video",
+        check("тип уровня: видео", det("niches/gaming/networks/n1/channels/ch/videos/v") == "video",
               det("niches/gaming/networks/n1/channels/ch/videos/v"))
-        check("D37 competitor_channel", det("niches/gaming/networks/n1/competitors/c1") == "competitor_channel",
+        check("competitor_channel", det("niches/gaming/networks/n1/competitors/c1") == "competitor_channel",
               det("niches/gaming/networks/n1/competitors/c1"))
-        check("D37 competitor_video", det("niches/gaming/networks/n1/competitors/c1/videos/v") == "competitor_video",
+        check("competitor_video", det("niches/gaming/networks/n1/competitors/c1/videos/v") == "competitor_video",
               det("niches/gaming/networks/n1/competitors/c1/videos/v"))
-        check("D37 вне niches → unknown", fs_tx._detect_entity_type(ws / "docs" / "a.txt") == "unknown")
+        check("вне niches → unknown", fs_tx._detect_entity_type(ws / "docs" / "a.txt") == "unknown")
         # §4: конкурент может лежать под сегментом НАШЕГО канала — раскладка та же декларация
-        check("D37 конкурент под нашим каналом",
+        check("конкурент под нашим каналом",
               det("niches/gaming/networks/n1/competitors/chA/c1") == "competitor_channel",
               det("niches/gaming/networks/n1/competitors/chA/c1"))
-        check("D37 видео конкурента под нашим каналом",
+        check("видео конкурента под нашим каналом",
               det("niches/gaming/networks/n1/competitors/chA/c1/videos/v") == "competitor_video",
               det("niches/gaming/networks/n1/competitors/chA/c1/videos/v"))
 

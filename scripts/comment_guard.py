@@ -99,6 +99,32 @@ def _tag_note(path: Path | str, n: int, tag: str) -> str:
             f"а не объясняет код — её место в commit")
 
 
+def _report_labels(text: str) -> list[tuple[int, str]]:
+    """Строки-ярлыки: литерал прямым аргументом функции, объявленной в этом же файле.
+
+    Ярлык уходит человеку в отчёт — это тот же текст в коде, что комментарий, только
+    напечатанный. Данные от ярлыка отличает адресат: литерал, уезжающий в разбираемый код,
+    лежит в переменной или контейнере, а не прямым аргументом своей же функции.
+    """
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return []
+    local = {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    out: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in local):
+            continue
+        for arg in node.args:
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                out.append((arg.lineno, arg.value))
+            elif isinstance(arg, ast.JoinedStr):
+                # Подстановки заменяем меткой: координата ищется в постоянной части шаблона.
+                out.append((arg.lineno, "".join(v.value if isinstance(v, ast.Constant) else "\u00b7"
+                                                for v in arg.values)))
+    return out
+
+
 def _comment_lines(path: Path | str, text: str) -> dict[int, str] | None:
     """Номера строк-комментариев по лексеру ЯЗЫКА. `None` — языка библиотека не знает.
 
@@ -208,6 +234,13 @@ def review(path: Path | str, text: str) -> list[str]:
         # отдельно, и схлопнутый счётчик перестал бы убывать по мере прополки.
         if (tag := _task_tag(line)) is not None:
             notes.append(_tag_note(path, n, tag))
+
+    # Ярлык проверки — тот же текст в коде: реестр находок в имени проверки заставляет читателя
+    # идти в другой документ за смыслом, а сам смысл обязан следовать из кода проверки.
+    for n, label in _report_labels(text):
+        if (tag := _task_tag(label)) is not None:
+            notes.append(f"{path}:{n} — координата задачи `{tag}` в ярлыке проверки: "
+                         f"смысл берётся из кода проверки, а не из реестра")
     return notes
 
 

@@ -137,7 +137,7 @@ ok(phase_real["created"] == _with_schema,
 ok(phase_real["materialized"] and (Path(ws3) / phase_real["materialized"][0]["path"]).exists(),
    "книга легла ровно по пути из tables_pending")
 ok(all(f["code"] == "TEMPLATE_NOT_FOUND" for f in phase_real["failed"]),
-   "книги без схемы честно отчитались TEMPLATE_NOT_FOUND (G16: не молчаливый успех)")
+   "книги без схемы честно отчитались TEMPLATE_NOT_FOUND не молчаливый успех)")
 
 print("== 7. Директива владельца: клиент передаёт ИМЕНА, книги делает сервер ==")
 import asyncio
@@ -170,9 +170,9 @@ ok(data["tables_materialized"] and data["tables_materialized"][0]["book"] == "ne
 ok(not list(ws4.rglob("videos/*/")),
    "видео не названы → сущностей видео нет, книг видео тоже нет (умное создание)")
 ok(all(f["code"] == "TEMPLATE_NOT_FOUND" for f in data["tables_deferred"]),
-   "книги без декларации отложены честно, а не «созданы» (G16)")
+   "книги без декларации отложены честно, а не «созданы»")
 ok(any(f.type == "TableMaterialized" for f in res.facts),
-   "факт TableMaterialized доехал в контракт (тип заведён в KNOWN_FACT_TYPES, D25)")
+   "факт TableMaterialized доехал в контракт (тип заведён в KNOWN_FACT_TYPES)")
 
 
 print("== 7b. Строки-дефолты из схемы доезжают В КНИГУ, а не только в декларацию ==")

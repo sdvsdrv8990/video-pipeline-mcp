@@ -44,7 +44,7 @@ def test_inert_shell_code_allowed():
           _decision("import os; os.system('rm -rf /')", "198.51.100.20") == "allow")
     check("rm -rf как контент → allow (инертно)",
           _decision("rm -rf /home", "198.51.100.21") == "allow")
-    check("format c: как контент → allow (Windows-театр снят, D33)",
+    check("format c: как контент → allow (Windows-театр снят)",
           _decision("format c:", "198.51.100.22") == "allow")
 
 

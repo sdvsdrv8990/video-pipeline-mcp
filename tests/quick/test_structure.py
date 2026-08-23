@@ -73,8 +73,8 @@ ok(list((base / "videos").iterdir()) == [], "videos/ пуст — ни одно�
 tp = {t["path"].split("/")[-1] for t in res["tables_pending"]}
 ok(tp == {"channel_data.xlsx"}, "книга канала отложена (tables_pending), не на диске")
 ok(not (base / "channel_config.yaml").exists(),
-   "отдельного YAML-конфига у канала нет — он живёт листами в channel_data (S22)")
-ok(not (base / "channel_data.xlsx").exists(), "channel_data.xlsx НЕ создан (фаза таблиц, Ф3)")
+   "отдельного YAML-конфига у канала нет — он живёт листами в channel_data")
+ok(not (base / "channel_data.xlsx").exists(), "channel_data.xlsx НЕ создан (фаза таблиц)")
 
 print("== 3. названное видео → всё поддерево видео ==")
 eng, ws = new_engine()
@@ -223,7 +223,7 @@ try:
 except LinkError as e:
     ok(e.code == "DUPLICATE_PATH", "раздвоение личности каталога → DUPLICATE_PATH")
 ok(reg13.find_by_path("niches/gaming/channels/chSolo")["id"] == "CH_solo",
-   "find_by_path: обратное отображение путь → сущность (F64)")
+   "find_by_path: обратное отображение путь → сущность")
 ok(rv.chain_for_entity(ch_id)["qualified_id"].endswith(ch_id) and
    len(rv.chain_for_entity(ch_id)["chain"]) == 2,
    "цепочка существующей сущности вычисляема (2 предка), собственный сегмент на месте")
@@ -296,8 +296,8 @@ def call(tool, **kw):
 s1 = call("structure_create", type="niche", name="gaming", children={"network": ["net1"], "channel": ["chA"]})
 ok(s1.status == "success" and len(s1.data["entities"]) == 3, "сессия 1: ниша+сетка+канал, 3 блока entities[]")
 ok(all({"id", "name", "path", "chain", "qualified_id", "owner_id"} <= set(e) for e in s1.data["entities"]),
-   "каждый блок несёт имя, путь, id и цепочку (пост-контракт S18-g)")
-ok(any(f.type == "EntityRegistered" for f in s1.facts), "факт EntityRegistered доехал в контракт (D25)")
+   "каждый блок несёт имя, путь, id и цепочку (пост-контракт)")
+ok(any(f.type == "EntityRegistered" for f in s1.facts), "факт EntityRegistered доехал в контракт")
 
 s2 = call("structure_create", type="video", name="intro",
           parent_path="niches/gaming/networks/net1/channels/chA/videos/")
@@ -319,7 +319,7 @@ blocked = call("structure_create", type="video", name="v1",
                parent_path="niches/gaming/networks/ghostnet/channels/chX/videos/")
 ok(blocked.status == "error" and blocked.error.code == "CHAIN_UNRESOLVED",
    "предки на диске без записи → CHAIN_UNRESOLVED, а не выдуманный ID")
-ok(blocked.error.recovery.suggested_tool == "structure_resolve", "ошибка ведёт к предпросмотру (F59)")
+ok(blocked.error.recovery.suggested_tool == "structure_resolve", "ошибка ведёт к предпросмотру")
 adopted = call("structure_create", type="video", name="v1", adopt=True,
                parent_path="niches/gaming/networks/ghostnet/channels/chX/videos/")
 ok(adopted.status == "success" and [a["type"] for a in adopted.data["adopted"]] == ["network", "channel"],
@@ -361,7 +361,7 @@ ok(all("/clip_v2" in m["new_path"] for m in mv.data["entities_moved"]),
    "все переехавшие записи указывают на новый путь")
 ok(_ctx.link_registry.get(vid_id)["path"].endswith("clip_v2") and
    _ctx.link_registry.get(vid_id)["id"] == vid_id,
-   "адрес изменился, СОБСТВЕННЫЙ сегмент — нет (ссылки не рвутся, S18-g)")
+   "адрес изменился, СОБСТВЕННЫЙ сегмент — нет (ссылки не рвутся)")
 ok(call("structure_check_integrity").data["issues_count"] == 0,
    "после переноса рассинхрона нет (раньше check_integrity давал 0 issues при битом реестре)")
 
@@ -592,7 +592,7 @@ _real = {n for n in _names if any(k in n for k in ("delete", "move", "rename", "
 ok(_real <= set(_dang), f"все разрушающие инструменты отслеживаются: не хватает {sorted(_real - set(_dang))}")
 ok(not any("sql" in p.lower() or "drop table" in p.lower()
            for p in _fw["injection_detection"]["patterns"]),
-   "SQL-паттернов нет: у сервера нет БД, такая защита не сработала бы никогда (D33)")
+   "SQL-паттернов нет: у сервера нет БД, такая защита не сработала бы никогда")
 
 print("== 30. S2: allowlist типов файлов (default-deny) ==")
 for good in ("notes.md", "data.json", "scene.svg", "tool.py", "book.xlsx"):
@@ -815,9 +815,9 @@ _tpl34 = Path(tempfile.mkdtemp(prefix="vpm_tpl34_"))
 _ws34 = Path(tempfile.mkdtemp(prefix="vpm_ws34_"))
 _r34 = TemplateEngine(_ws34, IDGenerator(), _tpl34, ROOT / "config").create_node("evil", "n1")
 _sk34 = {s["name"]: s["reason"] for s in _r34["skipped"]}
-ok(_sk34.get("payload.sh") == "forbidden", "шаблон не пишет .sh мимо allowlist (M50)")
-ok(_sk34.get("notes.md") == "forbidden", "shebang под .md отклонён и в шаблоне (M51)")
-ok(_sk34.get("stolen.yaml") == "source escape", "kind: config не тянет файл из-за пределов config/ (M52)")
+ok(_sk34.get("payload.sh") == "forbidden", "шаблон не пишет .sh мимо allowlist")
+ok(_sk34.get("notes.md") == "forbidden", "shebang под .md отклонён и в шаблоне")
+ok(_sk34.get("stolen.yaml") == "source escape", "kind: config не тянет файл из-за пределов config/")
 for _rel in ("payload.sh", "notes.md", "stolen.yaml"):
     ok(not (_ws34 / "evil/n1" / _rel).exists(), f"{_rel}: на диске ничего не появилось")
 ok((_ws34 / "evil/n1/ok.md").exists(), "соседний легитимный фрагмент создан (пофрагментный скип)")
@@ -901,9 +901,9 @@ _e35 = _call35("structure_create", type="network", name="n1",
                parent_path="niches/n1/networks/", mode="custom")
 ok(_e35.data["templates_source"] == "project", "custom реально взял шаблон ПРОЕКТА")
 _sk35 = {(s.get("name") or ""): s.get("reason") for s in _e35.data.get("skipped", [])}
-ok(_sk35.get("payload.sh") == "forbidden", "custom: .sh отбит allowlist так же, как в default (M50)")
-ok(_sk35.get("notes.md") == "forbidden", "custom: shebang под .md отбит (M51)")
-ok(_sk35.get("stolen.yaml") == "source escape", "custom: source за пределы config/ отбит (M52)")
+ok(_sk35.get("payload.sh") == "forbidden", "custom: .sh отбит allowlist так же, как в default")
+ok(_sk35.get("notes.md") == "forbidden", "custom: shebang под .md отбит")
+ok(_sk35.get("stolen.yaml") == "source escape", "custom: source за пределы config/ отбит")
 _base35 = _ws35 / "niches/n1/networks/n1"
 ok({p.name for p in _base35.iterdir()} == {"ok.md"} if _base35.exists() else False,
    "custom: на диске только легитимный файл — периметр не ослаб от смены шаблона")
@@ -949,7 +949,7 @@ try:
     ok({m["id"] for m in _mig36.data["entities_moved"]} >= {_comp36["id"], _cvid36["id"]},
        "ответ перечисляет всё, что переехало, — переезд потомков не молчаливый")
     ok(any(f.type == "EntityMigrated" and f.data.get("id") == _cvid36["id"] for f in _mig36.facts),
-       "переезд потомка доехал фактом до контракта (D25)")
+       "переезд потомка доехал фактом до контракта")
 
     _int36 = _call36("structure_check_integrity")
     _codes36 = sorted({i["type"] for i in _int36.data["issues"]})
@@ -1012,7 +1012,7 @@ try:
     ok(_unf39["bogus_type"]["names"] == ["x"] and _unf39["bogus_type"]["reason"],
        "в пометке видно, что именно не создано и почему")
     ok(any(f.type == "ChildUnfulfilled" for f in _bogus39.facts),
-       "пометка доехала фактом до контракта (D25)")
+       "пометка доехала фактом до контракта")
     _deep39 = asyncio.run(_eng39.call("structure_create", {
         "type": "niche", "name": "n39b", "children": {"channel": ["ch39"]}}))
     ok([u["type"] for u in _deep39.data["children_unfulfilled"]] == ["channel"],
