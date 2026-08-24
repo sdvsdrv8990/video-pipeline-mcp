@@ -5,6 +5,7 @@ core/engine/engine.py — Основной класс Engine
 Реестр и исполнитель инструментов. Claude отправляет запрос → Engine находит инструмент → выполняет.
 """
 
+import asyncio
 from typing import Callable, Awaitable
 from dataclasses import dataclass
 
@@ -35,18 +36,49 @@ class Engine:
         tools: Реестр инструментов
     """
 
-    def __init__(self, reactions=None, state_manager=None):
+    def __init__(self, reactions=None, state_manager=None, resources=None):
         """Инициализация движка.
 
         Args:
             reactions: Реестр реакций — если задан, ошибки движка
                 собираются через server_reactions.yaml, а не хардкодом.
             state_manager: Менеджер состояния — для логирования facts в _SESSION_LOG.
+            resources: Объявление ресурсов (`config/resources.yaml`) — какие вызовы уходят
+                с цикла событий. Без него всё исполняется inline.
         """
         self.tools: dict[str, ToolDefinition] = {}
         self.reactions = reactions
         self._state_manager = state_manager
         self._log_broken = False   # об отказе журнала говорим ОДИН раз за процесс
+        self._offload = self._offload_map(resources or {})
+
+    @staticmethod
+    def _offload_map(resources: dict) -> set[str]:
+        """Инструменты, чей класс объявлен снимаемым с цикла. Класс без `offload` = inline."""
+        classes = {name: bool((body or {}).get("offload"))
+                   for name, body in (resources.get("classes") or {}).items()}
+        default = classes.get(str(resources.get("default") or "inline"), False)
+        chosen = {name for name, klass in (resources.get("tools") or {}).items()
+                  if classes.get(str(klass), default)}
+        return chosen
+
+    async def _invoke(self, tool: ToolDefinition, params: dict) -> ToolResult:
+        """Тяжёлый вызов уходит в поток со своим циклом, лёгкий исполняется здесь.
+
+        Тела хендлеров синхронны (ни одного `await` внутри), поэтому inline-вызов держит ВЕСЬ
+        сервер: пока идёт рендер, не отвечает даже `tools/list`. Поток возвращает циклу
+        способность обслуживать остальных; предела одновременности здесь нет.
+        """
+        if tool.name not in self._offload:
+            return await tool.handler(**params)
+        # `handler` объявлен как Awaitable, а не Coroutine: обёртка делает из любого ожидаемого
+        # настоящую корутину, которую можно запустить своим циклом в потоке.
+        awaitable = tool.handler(**params)
+
+        async def _run() -> ToolResult:
+            return await awaitable
+
+        return await asyncio.to_thread(lambda: asyncio.run(_run()))
 
     def _error(self, code: str, message: str, recovery: "Recovery") -> ToolResult:
         """Сборка ошибки: через реестр реакций, если он подключён.
@@ -105,7 +137,7 @@ class Engine:
             return error
 
         try:
-            result = await tool.handler(**params)
+            result = await self._invoke(tool, params)
             # Логируем facts в _SESSION_LOG (если state_manager подключён).
             if self._state_manager and isinstance(result, ToolResult) and result.facts:
                 for fact in result.facts:

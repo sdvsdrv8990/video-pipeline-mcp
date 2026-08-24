@@ -1,0 +1,48 @@
+# resources.yaml — чем занят вызов и можно ли снимать его с цикла событий.
+#
+# Хендлеры объявлены `async`, но работу делают синхронно, и тяжёлый вызов замораживает ВЕСЬ сервер:
+# создание дерева идёт ~37 с, и `tools/list` рядом ждёт столько же. Снятие с цикла объявляется здесь,
+# а не ветками в коде: новый тяжёлый инструмент — строка тут, а не правка движка.
+#
+# `offload: true` — вызов уходит в отдельный поток со своим циклом. Это безопасно: тела хендлеров
+# синхронны (ни одного `await` внутри), а общее состояние (`StateManager`, `LinkRegistry`) защищено
+# собственными блокировками.
+# Предела одновременности (`max_concurrent`) здесь НЕТ намеренно: объявление без читателя выглядит
+# работающим и не работает. Появится вместе с тем, кто его исполняет.
+
+default: inline
+
+classes:
+  inline:                 # считаные миллисекунды: поток дороже самой работы
+    offload: false
+  cpu_heavy:              # внешний бинарь, материализация книг, обход диска с чтением
+    offload: true
+  gpu:                    # инференс локальных моделей
+    offload: true
+
+tools:
+  # ── Монтаж: рендер через внешний бинарь и сборка сцены ──
+  montage_render_scene: cpu_heavy
+  montage_generate_scene: cpu_heavy
+  montage_scene_script: cpu_heavy
+
+  # ── Структура: материализация деревьев и книг ──
+  structure_create: cpu_heavy
+  structure_migrate: cpu_heavy
+  structure_reconcile: cpu_heavy
+  structure_check_integrity: cpu_heavy
+
+  # ── Таблицы и книги: пересчёт формул и запись xlsx ──
+  json_execute_queue: cpu_heavy
+  excel_create_workbook: cpu_heavy
+  excel_validate_formulas: cpu_heavy
+
+  # ── Поиск: обход диска с чтением содержимого ──
+  fs_search_yaml: cpu_heavy
+  fs_search_multi: cpu_heavy
+  search_tables: cpu_heavy
+  search_multi: cpu_heavy
+
+  # ── Медиа: подъём моделей на карте ──
+  media_generate: gpu
+  media_runner: gpu

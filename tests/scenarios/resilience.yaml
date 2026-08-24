@@ -45,3 +45,16 @@
   then:
     - call: structure_status
       expect: {ok: true, console_absent: Traceback}
+
+- scenario: res_heavy_call_does_not_freeze_server
+  why: тяжёлый вызов не имеет права морозить остальных клиентов — регрессия F137
+  when:
+    - python: busy_server_still_answers
+      with:
+        heavy: structure_create
+        heavy_args: {type: niche, name: freeze,
+                     children: {network: [n1], channel: [c1, c2], competitor_channel: [r1]}}
+        budget_sec: 1.0
+      expect:
+        ok: true
+        data: {within_budget: true, overlapped: true, tools_seen: true}

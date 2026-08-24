@@ -135,7 +135,12 @@ def create_server() -> tuple[Engine, Transport, Firewall]:
     state_manager = StateManager(WORKSPACE_PATH)
 
     # state_manager передаётся в engine для логирования facts в _SESSION_LOG.
-    engine = Engine(reactions=reactions, state_manager=state_manager)
+    # Объявление ресурсов: какие вызовы уходят с цикла событий. Не загрузили — тяжёлое снова
+    # морозит сервер целиком, поэтому отсутствие файла не молчит, а видно в консоли.
+    resources = _load_yaml(CONFIG_PATH / "resources.yaml")
+    if not resources:
+        print("⚠ config/resources.yaml не прочитан — тяжёлые вызовы идут в цикле событий")
+    engine = Engine(reactions=reactions, state_manager=state_manager, resources=resources)
 
     # Создаём workspace если нет
     WORKSPACE_PATH.mkdir(parents=True, exist_ok=True)
