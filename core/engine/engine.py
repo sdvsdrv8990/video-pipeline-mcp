@@ -50,7 +50,16 @@ class Engine:
         self.reactions = reactions
         self._state_manager = state_manager
         self._log_broken = False   # об отказе журнала говорим ОДИН раз за процесс
-        self._offload = self._offload_map(resources or {})
+        declaration = resources or {}
+        self._offload = self._offload_map(declaration)
+        self._klass = {name: str(klass) for name, klass in (declaration.get("tools") or {}).items()}
+        self._limits: dict[str, asyncio.Semaphore] = {}
+        self._retry_after: dict[str, int] = {}
+        for name, body in (declaration.get("classes") or {}).items():
+            places = int((body or {}).get("max_concurrent") or 0)
+            if places > 0:
+                self._limits[str(name)] = asyncio.Semaphore(places)
+                self._retry_after[str(name)] = int((body or {}).get("retry_after_sec") or 0)
 
     @staticmethod
     def _offload_map(resources: dict) -> set[str]:
@@ -69,6 +78,16 @@ class Engine:
         сервер: пока идёт рендер, не отвечает даже `tools/list`. Поток возвращает циклу
         способность обслуживать остальных; предела одновременности здесь нет.
         """
+        # Мест в классе нет — отказываем СРАЗУ. Ожидание внутри вызова уходит за предел клиента
+        # и возвращается отказом без кода: решение о повторе принимает вызывающий, а не сервер.
+        limit = self._limits.get(self._klass.get(tool.name, ""))
+        if limit is not None and limit.locked():
+            klass = self._klass[tool.name]
+            wait = self._retry_after.get(klass, 0)
+            return self._error("RESOURCE_BUSY",
+                               f"Класс ресурса '{klass}' занят: свободных мест нет, "
+                               f"повтор не раньше чем через {wait} с.",
+                               Recovery(reason=f"Повтори не раньше чем через {wait} с либо займись другой задачей."))
         if tool.name not in self._offload:
             return await tool.handler(**params)
         # `handler` объявлен как Awaitable, а не Coroutine: обёртка делает из любого ожидаемого
@@ -78,7 +97,10 @@ class Engine:
         async def _run() -> ToolResult:
             return await awaitable
 
-        return await asyncio.to_thread(lambda: asyncio.run(_run()))
+        if limit is None:
+            return await asyncio.to_thread(lambda: asyncio.run(_run()))
+        async with limit:
+            return await asyncio.to_thread(lambda: asyncio.run(_run()))
 
     def _error(self, code: str, message: str, recovery: "Recovery") -> ToolResult:
         """Сборка ошибки: через реестр реакций, если он подключён.

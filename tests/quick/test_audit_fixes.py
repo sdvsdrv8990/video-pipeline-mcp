@@ -42,6 +42,12 @@ def xcheck(name, desired_ok, fnum, note=""):
         xopen.append("open")
 
 
+def _reactions_registry():
+    """Реестр реакций боевого сервера — иначе класс отказа будет `unknown`, а не из yaml."""
+    from core.reactions import Reactions
+    return Reactions(ROOT / "config" / "server_reactions.yaml")
+
+
 async def main():
     engine, transport, firewall = S.create_server()
 
@@ -413,6 +419,41 @@ async def main():
     check("ctx.safe ловит базу, а не перечень зон",
           "except ContractError" in (ROOT / "tools" / "_context.py").read_text(encoding="utf-8")
           and _CE is not None)
+
+    # Предел одновременности: перебор обязан вернуть КОД, а не ждать за пределом клиента.
+    from core.contracts import ToolResult as _ToolResult
+    from core.engine.engine import Engine as _Engine
+    _busy_res = {"default": "inline",
+                 "classes": {"пробный": {"offload": True, "max_concurrent": 1, "retry_after_sec": 7}},
+                 "tools": {"занятой": "пробный"}}
+
+    async def _slow():
+        await asyncio.sleep(0.2)
+        return _ToolResult(status="success", data={})
+
+    _eng = _Engine(reactions=_reactions_registry(), resources=_busy_res)
+    _eng.register("занятой", "проба предела", {"type": "object", "properties": {}}, _slow)
+    _running = asyncio.create_task(_eng.call("занятой", {}))
+    await asyncio.sleep(0.05)
+    _refused = await _eng.call("занятой", {})
+    check("перебор предела отвечает RESOURCE_BUSY, а не ждёт",
+          _refused.status == "error" and _refused.error.code == "RESOURCE_BUSY",
+          _refused.error.code if _refused.error else "успех")
+    check("отказ несёт класс из реестра и срок повтора",
+          _refused.error.reaction_class == "server_recoverable" and "7 с" in _refused.error.message,
+          f"{_refused.error.reaction_class} · {_refused.error.message[:60]}")
+    await _running
+    _after = await _eng.call("занятой", {})
+    check("место освобождается после вызова", _after.status == "success",
+          _after.error.code if _after.error else "")
+    _no_limit = _Engine(resources={"default": "inline", "classes": {"свободный": {"offload": True}},
+                                   "tools": {"занятой": "свободный"}})
+    _no_limit.register("занятой", "проба", {"type": "object", "properties": {}}, _slow)
+    _t = asyncio.create_task(_no_limit.call("занятой", {}))
+    await asyncio.sleep(0.05)
+    check("класс без max_concurrent не отказывает — предел объявляется, а не подразумевается",
+          (await _no_limit.call("занятой", {})).status == "success")
+    await _t
 
     print()
     passed = sum(results)

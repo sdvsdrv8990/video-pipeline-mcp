@@ -224,6 +224,13 @@ PROVIDER_EXHAUSTED:
     suggested_tool: table_update
     reason: "Подними daily_limit, обнули current_usage или добавь ещё одного провайдера строкой — это данные канала, правятся без перезапуска сервера."
 
+RESOURCE_BUSY:
+  class: server_recoverable
+  message_template: "Класс ресурса занят: свободных мест нет."
+  recovery:
+    suggested_tool: "tools/list"
+    reason: "Ждать в вызове нельзя — ожидание за пределом клиента даёт отказ без кода. Займись другой задачей и повтори позже; через сколько — сказано в сообщении отказа. Если задача обязана встать в очередь, это решение человека, а не сервера."
+
 PROVIDER_TIMEOUT:
   class: server_recoverable
   message_template: "Задача провайдера не завершилась за отведённое время."

@@ -134,7 +134,7 @@ ok(len(enum_without_values(make({"config/templates/tables/x.schema.yaml": SCHEMA
 
 print("\n== объявление ресурсов против инвентаря ==")
 INV = '{"montage_render_scene": {}, "media_generate": {}}'
-RES_OK = "default: inline\nclasses:\n  inline: {offload: false}\n  gpu: {offload: true}\ntools:\n  media_generate: gpu\n"
+RES_OK = "default: inline\nclasses:\n  inline: {offload: false}\n  gpu: {offload: true, max_concurrent: 1}\ntools:\n  media_generate: gpu\n"
 RES_GHOST = "default: inline\nclasses:\n  inline: {offload: false}\ntools:\n  montage_render_sceen: inline\n"
 RES_CLASS = "default: inline\nclasses:\n  inline: {offload: false}\ntools:\n  media_generate: gpuu\n"
 RES_DEFAULT = "default: inlien\nclasses:\n  inline: {offload: false}\ntools: {}\n"
@@ -149,6 +149,9 @@ ok(len(resources_off_inventory(make({"config/resources.yaml": RES_DEFAULT, INV_P
    "опечатка в `default` — умолчание указывает в несуществующий класс")
 ok(not resources_off_inventory(make({"config/x.yaml": "y: 1"})),
    "объявления нет вовсе — не выдумываем нарушение")
+RES_NOLIMIT = "default: inline\nclasses:\n  inline: {offload: false}\n  gpu: {offload: true}\ntools:\n  media_generate: gpu\n"
+ok(len(resources_off_inventory(make({"config/resources.yaml": RES_NOLIMIT, INV_PATH: INV}))) == 1,
+   "класс снимается с цикла без предела — сто вызовов поднимут сто потоков")
 
 print("\n== статус находки мимо реестра ==")
 REG = "| ~~F1~~ | ✅ | закрыта |\n| F2 | 🟠 | открыта |\n"

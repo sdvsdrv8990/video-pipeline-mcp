@@ -39,6 +39,7 @@ KNOWN_ERROR_CODES = {
     "PROVIDER_NOT_CONFIGURED", "PROVIDER_EXHAUSTED",
     "PROVIDER_TIMEOUT", "DOWNLOAD_INCOMPLETE", "DOWNLOAD_FORBIDDEN",
     "PROVIDER_ADAPTER_MISSING", "LOCAL_MODEL_MISSING", "USAGE_UNIT_UNKNOWN",
+    "RESOURCE_BUSY",
     # Объявлены в server_reactions.yaml и реально бросаются, но выпали отсюда —
     # ErrorDetail предупреждал «код не в реестре» на штатных отказах поиска и пересчёта
     "PATH_NOT_FOUND", "QUERY_NOT_FOUND", "RECALC_UNAVAILABLE",

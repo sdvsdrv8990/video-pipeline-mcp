@@ -295,6 +295,12 @@ def resources_off_inventory(root: Path = ROOT) -> list[str]:
     default = str(data.get("default") or "")
     if default and default not in classes:
         notes.append(f"config/resources.yaml: `default: {default}` не объявлен в `classes`")
+    for name, body in (data.get("classes") or {}).items():
+        # Класс, снимаемый с цикла, без предела одновременности: сто тяжёлых вызовов поднимут
+        # сто потоков, и заморозка вернётся с другой стороны.
+        if (body or {}).get("offload") and not (body or {}).get("max_concurrent"):
+            notes.append(f"config/resources.yaml: класс `{name}` снимается с цикла, но предела "
+                         "одновременности не объявлено")
     return notes
 
 
