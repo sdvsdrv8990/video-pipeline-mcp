@@ -1,0 +1,47 @@
+# Живучесть: отказ инструмента — это ОТВЕТ, а не смерть сервера. Директива владельца 2026-08-24:
+# отказ API в любом виде не повод закрывать сервер; упасть он вправе только на очень серьёзном
+# (зависание, гибель процесса ядра). Каждый шаг заодно требует, чтобы в консоли не было трейса:
+# ответ клиенту при сломавшемся внутри сервере — это не живучесть, а её видимость.
+
+- scenario: res_refusals_do_not_kill_server
+  why: батарея отказов подряд обязана оставить сервер обслуживающим — иначе клиент теряет сессию из-за своей же ошибки
+  given:
+    files:
+      notes/ok.txt: живой файл
+  when:
+    - call: нет_такого_инструмента
+      expect: {ok: false, code: TOOL_NOT_FOUND, class: ai_recoverable, console_absent: Traceback}
+    - call: fs_read_file
+      with: {path: "../../../etc/passwd"}
+      expect: {ok: false, code: PATH_ESCAPE, class: ai_recoverable, console_absent: Traceback}
+    - call: fs_read_file
+      with: {path: notes/нет-такого.txt}
+      expect: {ok: false, code: FILE_NOT_FOUND, console_absent: Traceback}
+    - call: table_get_row
+      with: {table: nowhere, sheet: META, row_id: X}
+      expect: {ok: false, code: TABLE_NOT_FOUND, console_absent: Traceback}
+    - call: excel_read_range
+      with: {path: notes/ok.txt, sheet: META, cell_range: A1:B2}
+      # Сегодня приходит INTERNAL_ERROR — «зови человека» на то, что ИИ исправил бы сам.
+      expect: {ok: false, code: WORKBOOK_NOT_FOUND, open: F138}
+  then:
+    - call: fs_read_file
+      with: {path: notes/ok.txt}
+      expect:
+        ok: true
+        data: {content.trust: untrusted}
+        data_contains: {content.value: живой}
+        console_absent: Traceback
+
+- scenario: res_malformed_input_is_answered
+  why: кривой ввод от ИИ — обычное дело; сервер обязан объяснить, а не молчать и не падать
+  when:
+    - call: table_set
+      with: {table: nowhere}
+      expect: {ok: false, code: VALIDATION_ERROR, class: ai_recoverable, recovery: true, console_absent: Traceback}
+    - call: structure_create
+      with: {type: не_бывает_такого_типа, name: x}
+      expect: {ok: false, code: VALIDATION_ERROR, class: ai_recoverable, console_absent: Traceback}
+  then:
+    - call: structure_status
+      expect: {ok: true, console_absent: Traceback}

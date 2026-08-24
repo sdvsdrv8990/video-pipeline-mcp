@@ -26,7 +26,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SCENARIO_KEYS = {"scenario", "why", "given", "when", "then"}
 GIVEN_KEYS = {"files"}
 STEP_KEYS = {"call", "python", "with", "as", "expect"}
-EXPECT_KEYS = {"ok", "code", "class", "recovery", "facts", "data", "data_contains", "console"}
+EXPECT_KEYS = {"ok", "code", "class", "recovery", "facts", "data", "data_contains",
+               "console", "console_absent", "open"}
 
 _REF = re.compile(r"\$\{([A-Za-z_][\w]*)\.([\w.]+)\}")
 
@@ -66,6 +67,8 @@ class Expectation:
     data: dict[str, Any] = field(default_factory=dict)
     data_contains: dict[str, str] = field(default_factory=dict)
     console: str = ""
+    console_absent: str = ""
+    open: str = ""                         # адрес ОТКРЫТОЙ находки: ждём желаемого, сегодня его нет
 
 
 @dataclass
@@ -117,6 +120,8 @@ def _expect(raw: dict, vocab: Vocabulary, where: str) -> Expectation:
         data=dict(raw.get("data") or {}),
         data_contains=dict(raw.get("data_contains") or {}),
         console=str(raw.get("console") or ""),
+        console_absent=str(raw.get("console_absent") or ""),
+        open=str(raw.get("open") or ""),
     )
 
 
@@ -293,6 +298,14 @@ class Runner:
         tag = f"{step.index}. {step.name}"
         out: list[Check] = []
 
+        if exp.open:
+            # Объявлено ЖЕЛАЕМОЕ поведение при открытой находке: сегодня его нет, и это baseline.
+            # Совпало — значит находка закрыта, и прогон обязан покраснеть, иначе реестр отстанет.
+            matched = got["code"] == exp.code if exp.code else got["ok"] == exp.ok
+            return [Check(scenario.id, f"{tag} → [ОТКРЫТО {exp.open}] ждём {exp.code or 'успеха'}", not matched,
+                          f"поведение сошлось с желаемым (пришло {got['code'] or 'успех'}) — находка "
+                          f"{exp.open} закрыта: сними `open` и обнови docs/roadmap/02_findings.md")]
+
         # Исход и причина: при расхождении печатается ФАКТИЧЕСКИЙ код и сообщение сервера.
         if exp.ok:
             out.append(Check(scenario.id, f"{tag} → успех", got["ok"],
@@ -322,4 +335,10 @@ class Runner:
             out.append(Check(scenario.id, f"{tag} → консоль /{exp.console}/",
                              re.search(exp.console, console, re.I | re.M) is not None,
                              f"вывод шага: {console[-300:] or 'пусто'}"))
+        if exp.console_absent:
+            # Отказ обязан быть ОТВЕТОМ, а не падением: трейс в выводе означает, что сервер
+            # сломался внутри, даже если клиенту что-то вернулось.
+            found = re.search(exp.console_absent, console, re.I | re.M)
+            out.append(Check(scenario.id, f"{tag} → в консоли НЕТ /{exp.console_absent}/", found is None,
+                             f"нашлось: {found.group(0) if found else ''} … {console[-300:]}"))
         return out
