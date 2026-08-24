@@ -1,0 +1,146 @@
+# E-D (`docs/roadmap/03_testing_plan.md`): деструктив над таблицами — что сервер ОТВЕЧАЕТ клиенту.
+# Коды выбраны намерением; реестр реакций даёт только словарь, иначе ожидание — тавтология.
+
+- scenario: ed1_computed_readonly
+  why: вычисляемый столбец нельзя перезаписать, и отказ обязан нести рецепт — иначе ИИ будет долбиться
+  given:
+    files:
+      videos/v1/read.json: |
+        {"META": {"schema": {
+            "title": {"type": "string", "writable": true},
+            "status": {"type": "enum", "enum": ["draft", "ready", "published"], "writable": true},
+            "score": {"type": "float", "computed": true, "writable": false}},
+          "rows": {"VID_1": {"title": "Hook", "status": "draft", "score": 0.0}}}}
+  when:
+    - call: table_set
+      with: {table: videos/v1, sheet: META, row_id: VID_1, column: score, value: 9.9}
+      expect: {ok: false, code: COMPUTED_READONLY, class: ai_recoverable, recovery: true}
+    - call: table_get_row
+      with: {table: videos/v1, sheet: META, row_id: VID_1}
+      expect: {ok: true, data: {row.score: 0.0}}
+
+- scenario: ed2_enum_violation
+  why: значение вне перечня отвергается ДО очереди, а не оседает в ней до применения
+  given:
+    files:
+      videos/v2/read.json: |
+        {"META": {"schema": {
+            "status": {"type": "enum", "enum": ["draft", "ready"], "writable": true}},
+          "rows": {"VID_1": {"status": "draft"}}}}
+  when:
+    - call: table_set
+      with: {table: videos/v2, sheet: META, row_id: VID_1, column: status, value: bogus}
+      expect: {ok: false, code: ENUM_VIOLATION, class: ai_recoverable, recovery: true}
+    - call: json_execute_queue
+      with: {table: videos/v2}
+      expect: {ok: true, data: {applied: 0}}
+
+- scenario: ed4_last_sheet
+  why: книга без единого листа — битый файл; удаление последнего обязано упереться в guard
+  when:
+    - call: excel_create_workbook
+      with: {path: books/single.xlsx, sheet: DATA}
+      expect: {ok: true}
+    - call: excel_delete_sheet
+      with: {path: books/single.xlsx, sheet: DATA}
+      expect: {ok: false, code: LAST_SHEET, class: ai_recoverable, recovery: true}
+
+- scenario: ed5_delete_column_under_formula
+  why: удаление столбца под формулой корраптит книгу молча — отказ обязан назвать зависимые ячейки
+  when:
+    - call: excel_create_workbook
+      with: {path: books/plan.xlsx, sheet: DATA}
+      expect: {ok: true}
+    - call: excel_add_column
+      with: {path: books/plan.xlsx, sheet: DATA, column: price}
+      expect: {ok: true, data: {index: 1}}
+    - call: excel_add_column
+      with: {path: books/plan.xlsx, sheet: DATA, column: qty}
+      expect: {ok: true, data: {index: 2}}
+    - call: excel_add_column
+      with: {path: books/plan.xlsx, sheet: DATA, column: total, formula: "=A2*B2"}
+      expect: {ok: true, data: {index: 3}}
+    - call: excel_find_dependents
+      with: {path: books/plan.xlsx, sheet: DATA, column: price}
+      expect: {ok: true, data: {count: 1, dependents.0.cell: C2}}
+    - call: excel_delete_column
+      with: {path: books/plan.xlsx, sheet: DATA, column: price}
+      expect: {ok: false, code: COLUMN_HAS_DEPENDENTS, class: ai_recoverable, recovery: true}
+    - call: excel_read_range
+      with: {path: books/plan.xlsx, sheet: DATA, cell_range: A1:C1}
+      expect: {ok: true, data: {values.0.0: price}}
+    - call: excel_delete_column
+      with: {path: books/plan.xlsx, sheet: DATA, column: price, force: true}
+      expect: {ok: true, data: {broken_formulas.0.cell: C2}}
+
+- scenario: ed6_move_column_under_formula
+  why: перенос столбца сдвигает данные под формулой и даёт валидную-но-неверную ссылку, а не "#REF!"
+  when:
+    - call: excel_create_workbook
+      with: {path: books/move.xlsx, sheet: DATA}
+      expect: {ok: true}
+    - call: excel_add_column
+      with: {path: books/move.xlsx, sheet: DATA, column: price}
+      expect: {ok: true}
+    - call: excel_add_column
+      with: {path: books/move.xlsx, sheet: DATA, column: qty}
+      expect: {ok: true}
+    - call: excel_add_column
+      with: {path: books/move.xlsx, sheet: DATA, column: total, formula: "=A2*B2"}
+      expect: {ok: true}
+    - call: excel_move_column
+      with: {path: books/move.xlsx, sheet: DATA, column: qty, to_index: 1}
+      expect: {ok: false, code: COLUMN_HAS_DEPENDENTS, class: ai_recoverable, recovery: true}
+
+- scenario: ed7_delete_row_through_queue
+  why: удаление строки идёт очередью, и до применения снапшот обязан остаться прежним
+  given:
+    files:
+      videos/v3/read.json: |
+        {"META": {"schema": {"title": {"type": "string", "writable": true}},
+          "rows": {"VID_1": {"title": "Hook"}, "VID_2": {"title": "Act2"}}}}
+  when:
+    - call: table_delete
+      with: {table: videos/v3, sheet: META, row_id: VID_2}
+      expect: {ok: true}
+    - call: table_get_row
+      with: {table: videos/v3, sheet: META, row_id: VID_2}
+      expect: {ok: true, data: {row.title: Act2}}
+    - call: json_execute_queue
+      with: {table: videos/v3}
+      expect: {ok: true, data: {applied: 1}}
+    - call: table_get_row
+      with: {table: videos/v3, sheet: META, row_id: VID_2}
+      expect: {ok: false, code: ROW_NOT_FOUND, class: ai_recoverable}
+
+- scenario: ed8_registered_file_delete
+  why: снос книги, стоящей в реестре, требует подтверждения, а осознанный — снимает и запись
+  when:
+    - call: structure_create
+      with: {type: niche, name: ed8, children: {network: [net], channel: [ch]}}
+      as: tree
+      expect: {ok: true, facts: [NodeCreated]}
+    - call: fs_delete
+      with: {path: "${tree.tables_materialized.0.path}"}
+      expect: {ok: false, code: CONFIRM_REQUIRED, class: ai_recoverable, recovery: true}
+    - call: fs_delete
+      with: {path: "${tree.tables_materialized.0.path}", force: true}
+      expect: {ok: true, data: {entities_dropped.0.type: table_file}}
+    - call: structure_check_integrity
+      expect: {ok: true, data: {issues_count: 0}}
+
+- scenario: ed8b_file_vanished_outside_tools
+  why: книга, исчезнувшая мимо инструментов, обязана всплыть как расхождение реестра с диском
+  when:
+    - call: structure_create
+      with: {type: niche, name: ed8b, children: {network: [net], channel: [ch]}}
+      as: tree
+      expect: {ok: true}
+    - python: remove_path
+      with: {path: "${tree.tables_materialized.0.path}"}
+      expect: {ok: true}
+  then:
+    - call: structure_check_integrity
+      expect:
+        ok: true
+        data: {issues_count: 1, issues.0.type: missing_path, issues.0.entity_type: table_file}
