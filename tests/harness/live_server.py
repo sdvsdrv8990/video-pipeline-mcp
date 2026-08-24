@@ -70,9 +70,23 @@ class LiveServer:
 
     # ═══ Жизненный цикл ═══
 
+    def _command(self) -> list[str]:
+        """Команда запуска. При `VPM_SERVER_COVERAGE` — под покрытием: карта радиуса обязана мерить код,
+        который исполняет ЗАПРОС (серверный процесс), а не процесс набора. `sigterm` в rc нужен потому,
+        что сервер останавливается сигналом, и без него данные не сохранились бы вовсе."""
+        script = [str(ROOT / "server.py"), "--port", str(self.port)]
+        outdir = os.environ.get("VPM_SERVER_COVERAGE")
+        if not outdir:
+            return [sys.executable, *script]
+        rc = Path(outdir) / "coveragerc"
+        rc.parent.mkdir(parents=True, exist_ok=True)
+        rc.write_text("[run]\nsource = core,tools,server\nparallel = True\nsigterm = True\n"
+                      f"data_file = {Path(outdir) / '.coverage'}\n", encoding="utf-8")
+        return [sys.executable, "-m", "coverage", "run", f"--rcfile={rc}", *script]
+
     def start(self) -> "LiveServer":
         self.proc = subprocess.Popen(
-            [sys.executable, str(ROOT / "server.py"), "--port", str(self.port)],
+            self._command(),
             cwd=str(ROOT), env=self._env(), text=True, bufsize=1,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         self.console = Console(self.proc.stdout, echo=self.echo)

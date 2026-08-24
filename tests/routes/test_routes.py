@@ -74,8 +74,11 @@ def anchors_exist(routes: list[dict]) -> None:
     print("\n== Рубежи маршрутов существуют на диске ==")
     for route in routes:
         for target in dict.fromkeys([route["decided_by"]] + [h["at"] for h in route["hops"]]):
-            if "/" not in target:
-                continue                       # рубеж-описание («конверт MCP», «консоль сервера»)
+            # Рубеж-описание («конверт MCP», «консоль сервера») пути не имеет; всё остальное —
+            # путь, и он обязан существовать. Проверять по косой черте нельзя: `server.py` её
+            # не содержит и молча выпадал бы из проверки.
+            if " " in target or target.endswith(("MCP content", "structuredContent")):
+                continue
             ok((ROOT / target).exists(), f"{route['route']}: рубеж {target}", "файла нет — объявление отстало")
 
 

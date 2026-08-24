@@ -53,10 +53,12 @@ def main() -> int:
                     print(f"\n— {scenario.id}: {scenario.why}")
                     for check in runner.run(scenario):
                         total += 1
+                        # Метка всегда с именем сценария: по ней сравниваются ДВА прогона
+                        # (diff поведения), а шаговые метки в разных сценариях совпадают.
                         if check.ok:
-                            print(f"  ✓ {check.label}")
+                            print(f"  ✓ {check.scenario} · {check.label}")
                         else:
-                            print(f"  ✗ {check.label}  → {check.detail}")
+                            print(f"  ✗ {check.scenario} · {check.label}  → {check.detail}")
                             fails.append(f"{check.scenario} · {check.label} → {check.detail}")
         for path in maps:
             total, fails = _walk_map(path, vocab, journal, total, fails)

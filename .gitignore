@@ -64,3 +64,4 @@ bin/cloudflared
 # Может содержать tunnel_token — НЕ коммитить
 config/tunnel.yaml
 tests/.journal/
+tests/.blast/
