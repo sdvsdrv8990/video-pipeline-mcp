@@ -41,8 +41,10 @@ def main() -> int:
                 print(f"\n══ {path.name}: ОБЪЯВЛЕНИЕ НЕ ЗАГРУЖЕНО ══\n  {exc}")
                 fails.append(f"{path.name}: {exc}")
                 continue
-            only = os.environ.get("VPM_SCENARIO", "")
-            scenarios = [s for s in scenarios if only in s.id] if only else scenarios
+            # Отбор — список через запятую: точечный прогон задетой правкой части
+            # (`blast_radius --affected` печатает готовую строку).
+            only = [part for part in os.environ.get("VPM_SCENARIO", "").split(",") if part]
+            scenarios = [s for s in scenarios if any(part in s.id for part in only)] if only else scenarios
             if not scenarios:
                 continue
             print(f"\n══ {path.name}: сценариев {len(scenarios)} ══")

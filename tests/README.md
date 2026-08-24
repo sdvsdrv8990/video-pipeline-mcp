@@ -69,6 +69,23 @@ Docstring теста — **одна строка**: что проверяет (+
 Туда же запрещено **состояние процесса**: статус находки (`OPEN-CONFIRMED`, `⬜→🟢`), напоминания реестру,
 номера сессий — хозяин статуса один, и это реестр (§H).
 
+## Машинерия: что звать и когда
+
+```bash
+python3 scripts/blast_radius.py --query core/paths.py:42   # ДО правки: что держит это место
+python3 scripts/blast_radius.py --affected                 # правка в дереве: задетые сценарии + команда
+VPM_SCENARIO='a,b' python3 tests/scenarios/test_scenarios.py   # точечный прогон (секунды)
+python3 tests/routes/test_routes.py                        # доезжает ли значение до клиента
+python3 scripts/blast_radius.py --check-routes             # рубеж маршрута ИСПОЛНЯЕТСЯ, а не «есть»
+python3 scripts/what_if.py --intent intent.yaml            # реальность против ожиданий, в worktree
+python3 scripts/blast_radius.py --build                    # пересобрать карту (медленно, вручную)
+```
+
+Поведение описывается ОБЪЯВЛЕНИЕМ, а не новым набором-скриптом: сценарий → `scenarios/<тема>.yaml`,
+карта состояний → `scenarios/<тема>.map.yaml`, шаг-помощник → `scenarios/steps.py`, поток →
+`routes/routes.yaml`. «Строк без единого сценария» в выводе `--affected` — не повод пропустить, а
+повод сначала написать сценарий. Выходной Stop-гейт проверяет это механически.
+
 ## Жёсткие правила
 
 - **Живой сервер** для поведенческих: `aiohttp` POST JSON-RPC 2.0 на `http://127.0.0.1:$MCP_SERVER_PORT/mcp`.

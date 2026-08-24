@@ -8,6 +8,7 @@
     python3 scripts/blast_radius.py --build                 # собрать карту
     python3 scripts/blast_radius.py --query core/paths.py:42
     python3 scripts/blast_radius.py --changed               # по незакоммиченной правке
+    python3 scripts/blast_radius.py --affected              # какие сценарии гнать ИМЕННО сейчас
     python3 scripts/blast_radius.py --check-routes          # рубеж маршрута реально ИСПОЛНЯЛСЯ
 """
 import argparse
@@ -142,6 +143,43 @@ def changed() -> None:
         print("  В незакоммиченной правке нет строк Python — радиус считать не по чему.")
 
 
+def affected() -> int:
+    """Сценарии, задетые ТЕКУЩЕЙ правкой, и строки, за которыми не стоит ни один сценарий.
+
+    Печатает готовую команду точечного прогона: полная матрица идёт минуты, задетая часть — секунды.
+    """
+    diff = subprocess.run(["git", "diff", "-U0", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout
+    radius, current = _load(), ""
+    hit: set[str] = set()
+    blind: list[str] = []
+    for row in diff.splitlines():
+        if row.startswith("+++ b/"):
+            current = row[len("+++ b/"):]
+        head = HUNK.match(row)
+        if not (head and current.endswith(".py")):
+            continue
+        measured = current.startswith(("core/", "tools/")) or current == "server.py"
+        if not measured:
+            continue
+        covered = radius.get(str(Path(current))) or {}
+        start, count = int(head.group(1)), int(head.group(2) or 1)
+        for line in range(start, start + max(count, 1)):
+            names = {name for name, lines in covered.items() if line in lines}
+            hit |= names
+            if not names:
+                blind.append(f"{current}:{line}")
+    if blind:
+        print(f"  ⚠ строк без единого сценария: {len(blind)} — {', '.join(blind[:5])}"
+              + (" …" if len(blind) > 5 else ""))
+        print("    правка в зоне, которую тесты не исполняют: сначала сценарий, потом код")
+    if hit:
+        print(f"  задетые сценарии ({len(hit)}): {', '.join(sorted(hit))}")
+        print(f"    точечный прогон: VPM_SCENARIO='{','.join(sorted(hit))}' python3 tests/scenarios/test_scenarios.py")
+    if not hit and not blind:
+        print("  Правка не касается измеряемой зоны (core/, tools/, server.py) — прогонять нечего.")
+    return 1 if blind else 0
+
+
 def check_routes() -> int:
     """Рубеж маршрута обязан ИСПОЛНЯТЬСЯ его опорой, а не просто существовать на диске."""
     radius = _load()
@@ -171,6 +209,7 @@ def main() -> int:
     parser.add_argument("--query", metavar="ФАЙЛ[:СТРОКА]")
     parser.add_argument("--changed", action="store_true")
     parser.add_argument("--check-routes", action="store_true")
+    parser.add_argument("--affected", action="store_true")
     args = parser.parse_args()
     if args.build:
         build()
@@ -178,9 +217,11 @@ def main() -> int:
         query(args.query)
     if args.changed:
         changed()
+    if args.affected:
+        return affected()
     if args.check_routes:
         return check_routes()
-    if not any([args.build, args.query, args.changed, args.check_routes]):
+    if not any([args.build, args.query, args.changed, args.check_routes, args.affected]):
         parser.print_help()
     return 0
 
