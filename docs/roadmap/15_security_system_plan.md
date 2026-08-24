@@ -32,7 +32,7 @@
 |---|---|---|
 | origin-лимиты | F36 🟠 | per-IP rate бесполезен за туннелем (G18) → нужен identity-rate; нет slowloris-таймаутов, нет `client_max_size` (проверено 2026-08-12: `grep client_max_size\|ClientTimeout` в `server.py`/`core/transport` → ∅), edge-настройки Cloudflare не зафиксированы |
 | no-root — без регрессии | F35 🟠 | baseline чист, но теста «не root / нет exec-sinks» нет: держится на честном слове |
-| красная команда | F32 🔴 | 36 паттернов в `patterns.yaml` без раннера — защита не проверяется под смесью honest+attacker |
+| красная команда | F32 ✅ | раннер роя построен S24: паттерны исполняются, смесь honest+attacker идёт в одном прогоне |
 | анти-rug-pull не полон | F32-смеж. 🟠 | эталон ловит правку описания в git (M10), но инварианта «hot-reload конфига НЕ двигает `tools/list`» нет: `grep inventory\|tools/list tests/config_change/` → ∅ (проверено 2026-08-12) |
 
 ⚠️ **Проектное ограничение (не нарушать):** `destructiveHint: true` **намеренно не назначен** ни одному

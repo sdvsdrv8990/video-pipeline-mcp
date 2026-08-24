@@ -31,6 +31,8 @@ TESTS = ("tests",)
 CI = (".github", "workflows", "ci.yml")
 REGISTRY = ("config", "server_reactions.yaml")
 RESOURCES = ("config", "resources.yaml")
+ROADMAP = ("docs", "roadmap")
+FINDINGS = ("docs", "roadmap", "02_findings.md")
 INVENTORY = ("tests", "quick", "tools_inventory.golden.json")
 
 
@@ -235,6 +237,40 @@ def codes_outside_registry(root: Path = ROOT, known: set[str] | None = None) -> 
     return notes
 
 
+# Статус ВПЛОТНУЮ к номеру находки — единственная форма, где смысл однозначен: это поле, а не
+# проза. Разбирать прозу бессмысленно (замер дал от 17 до 370 ложных срабатываний), а поле точно.
+STATUS_NEAR = re.compile(r"(F\d{1,3})\s*(✅|🔴|🟠|🟡|🟢)|(✅|🔴|🟠|🟡|🟢)\s*(F\d{1,3})")
+REGISTRY_ROW = re.compile(r"\|\s*(~~)?\*{0,2}(F\d+)\*{0,2}(~~)?\s*\|\s*([^|]*)\|")
+
+
+def status_off_registry(root: Path = ROOT) -> list[str]:
+    """Статус находки в плане разошёлся с реестром — хозяин факта один, копии разъезжаются молча.
+
+    Журнал сессий и сам реестр исключены: история обязана хранить прежние статусы, а в реестре
+    ниже канонической строки лежат таблицы переформулировок с тем же номером.
+    """
+    registry_file = _at(root, FINDINGS)
+    if not registry_file.exists():
+        return []
+    registry: dict[str, str] = {}
+    for line in registry_file.read_text(encoding="utf-8").splitlines():
+        row = REGISTRY_ROW.match(line)
+        if row and row.group(2) not in registry:          # первая строка — каноническая
+            closed = bool(row.group(1)) or "✅" in row.group(4) or "🟢" in row.group(4)
+            registry[row.group(2)] = "закрыт" if closed else "открыт"
+    notes = []
+    for path in sorted(_at(root, ROADMAP).glob("*.md")) + [root / "tests" / "CATALOG.md"]:
+        if not path.exists() or path.name in ("02_findings.md", "_sessions.md"):
+            continue
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for m in STATUS_NEAR.finditer(line):
+                ident, mark = m.group(1) or m.group(4), m.group(2) or m.group(3)
+                says = "закрыт" if mark in "✅🟢" else "открыт"
+                if ident in registry and says != registry[ident]:
+                    notes.append(f"{path.name}:{n} — {ident} показан «{says}», в реестре «{registry[ident]}»")
+    return notes
+
+
 def resources_off_inventory(root: Path = ROOT) -> list[str]:
     """Инструмент объявлен тяжёлым, а такого инструмента нет — снятие с цикла молча не действует.
 
@@ -265,7 +301,8 @@ def resources_off_inventory(root: Path = ROOT) -> list[str]:
 HARD = (("пропуск набора без покрытия в CI", skips_without_ci),
         ("имя используется до объявления", used_before_declared),
         ("код отказа мимо реестра", codes_outside_registry),
-        ("объявление ресурсов мимо инвентаря", resources_off_inventory))
+        ("объявление ресурсов мимо инвентаря", resources_off_inventory),
+        ("статус находки мимо реестра", status_off_registry))
 
 
 def ratchet(notes: list[str]) -> tuple[int, int]:

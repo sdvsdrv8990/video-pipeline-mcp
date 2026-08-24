@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 from invariants import (  # noqa: E402
     codes_outside_registry, enum_without_values, resources_off_inventory, skips_without_ci,
-    used_before_declared,
+    status_off_registry, used_before_declared,
 )
 
 _checks = 0
@@ -149,6 +149,21 @@ ok(len(resources_off_inventory(make({"config/resources.yaml": RES_DEFAULT, INV_P
    "опечатка в `default` — умолчание указывает в несуществующий класс")
 ok(not resources_off_inventory(make({"config/x.yaml": "y: 1"})),
    "объявления нет вовсе — не выдумываем нарушение")
+
+print("\n== статус находки мимо реестра ==")
+REG = "| ~~F1~~ | ✅ | закрыта |\n| F2 | 🟠 | открыта |\n"
+ok(not status_off_registry(make({"docs/roadmap/02_findings.md": REG,
+                                 "docs/roadmap/plan.md": "шаг зависит от F2 🟠 и ждёт"})),
+   "план повторяет статус ВЕРНО — молчим")
+ok(len(status_off_registry(make({"docs/roadmap/02_findings.md": REG,
+                                 "docs/roadmap/plan.md": "шаг упирается в F1 🔴 — узкое место"}))) == 1,
+   "план показывает закрытую находку открытой — копия разъехалась с хозяином")
+ok(not status_off_registry(make({"docs/roadmap/02_findings.md": REG,
+                                 "docs/roadmap/_sessions.md": "тогда F1 был 🔴 и блокировал"})),
+   "журнал сессий хранит ПРЕЖНИЙ статус — это история, а не расхождение")
+ok(not status_off_registry(make({"docs/roadmap/02_findings.md": REG,
+                                 "docs/roadmap/plan.md": "смотри F1 и F2 — статуса тут нет"})),
+   "упоминание находки без статуса — не утверждение, молчим")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
