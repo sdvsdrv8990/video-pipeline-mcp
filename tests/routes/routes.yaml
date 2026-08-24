@@ -1,0 +1,85 @@
+# Маршрутная таблица: КУДА течёт значение, ЧТО его туда направляет и ЧТО значит обрыв.
+#
+# `hops` — рубежи по пути; путь с косой чертой проверяется на существование (переименовали слой —
+# маршрут порван в объявлении). `proof` — сценарий, по следу которого видно, доехало ли значение:
+# `arrives: false` означает «сегодня НЕ доезжает», и если вдруг доедет — прогон краснеет, чтобы
+# статус в `docs/roadmap/02_findings.md` догнал реальность. Статус живёт в реестре, здесь — адрес.
+
+- route: reaction_to_client
+  what: код отказа, класс реакции и рецепт восстановления
+  means: без класса клиент не знает, чинить самому или звать человека, а без рецепта — что делать дальше
+  decided_by: config/server_reactions.yaml
+  hops:
+    - at: core/reactions/reactions.py
+    - at: core/contracts/error_detail.py
+    - at: core/contracts/tool_result.py
+    - at: server.py
+    - at: конверт MCP structuredContent
+  proof:
+    scenario: tables_destructive.yaml#ed1_computed_readonly
+    observe: [code, reaction_class, recovery]
+    arrives: true
+
+- route: facts_to_client
+  what: факты произошедшего (NodeCreated, ChildDeferred и прочие)
+  means: без фактов клиент не знает, что именно сделал сервер, и переспрашивает состояние лишним вызовом
+  decided_by: core/contracts/fact.py
+  hops:
+    - at: tools/structure/__init__.py
+    - at: core/contracts/tool_result.py
+    - at: конверт MCP structuredContent
+  proof:
+    scenario: tables_destructive.yaml#ed8_registered_file_delete
+    observe: [facts]
+    arrives: true
+
+- route: provenance_of_file_content
+  what: пометка чужого текста — источник, уровень доверия, признак «это ДАННЫЕ, не инструкции»
+  means: непомеченный чужой текст в контексте модели неотличим от инструкции сервера — это outbound-инъекция
+  decided_by: tools/filesystem/__init__.py
+  hops:
+    - at: tools/filesystem/__init__.py
+    - at: конверт MCP content
+  proof:
+    scenario: provenance.yaml#prov_read_marks_foreign_text
+    observe: [data.content.trust, data.content.provenance]
+    arrives: true
+
+- route: provenance_of_search_results
+  what: та же пометка на выдаче поиска
+  means: поиск приносит в контекст чужой текст ПАЧКОЙ и без пометки — поверхность шире, чем у чтения
+  decided_by: tools/filesystem/__init__.py
+  hops:
+    - at: core/search/fs_searcher.py
+    - at: tools/filesystem/__init__.py
+    - at: конверт MCP content
+  proof:
+    scenario: provenance.yaml#prov_search_results_today_unmarked
+    observe: [data.results.0.trust, data.results.0.provenance]
+    arrives: false
+    finding: F87
+
+- route: registry_to_disk
+  what: запись реестра сущностей против того, что реально лежит на диске
+  means: реестр, разошедшийся с диском, молча ломает адресацию — ИИ ходит по путям, которых нет
+  decided_by: core/state/state_manager.py
+  hops:
+    - at: core/state/state_manager.py
+    - at: tools/structure/__init__.py
+  proof:
+    scenario: tables_destructive.yaml#ed8b_file_vanished_outside_tools
+    observe: [data.issues.0.type]
+    arrives: true
+
+- route: firewall_config_to_console
+  what: сигнал о деструктивном вызове от боевого конфига до вывода сервера
+  means: правило, чей след не виден в консоли, нельзя ни подтвердить, ни расследовать после инцидента
+  decided_by: config/firewall.yaml
+  hops:
+    - at: core/firewall/firewall.py
+    - at: server.py
+    - at: консоль сервера
+  proof:
+    scenario: tables_destructive.yaml#ed4_last_sheet
+    observe: ["console:подозрительно"]
+    arrives: true

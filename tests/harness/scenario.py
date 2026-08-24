@@ -236,6 +236,7 @@ class Runner:
         self.srv = srv
         self.journal = journal
         self.steps = steps or {}
+        self.trace: list[dict] = []            # тот же след в памяти: по нему проверяются маршруты
 
     def run(self, scenario: Scenario) -> list[Check]:
         checks: list[Check] = []
@@ -271,10 +272,13 @@ class Runner:
         if step.alias:
             results[step.alias] = observed["data"]
         console = self.srv.console.lines[console_from:]
+        entry = {"scenario": scenario.id, "step": step.index, "tool": step.name, "args": args,
+                 "ok": observed["ok"], "code": observed["code"], "message": observed["message"],
+                 "reaction_class": observed["reaction_class"], "recovery": observed["recovery"],
+                 "facts": observed["facts"], "data": observed["data"], "console": console}
+        self.trace.append(entry)
         if self.journal:
-            self.journal.write(scenario=scenario.id, step=step.index, tool=step.name, args=args,
-                               ok=observed["ok"], code=observed["code"], message=observed["message"],
-                               facts=observed["facts"], console=console)
+            self.journal.write(**entry)
         return self._verify(scenario, step, observed, "\n".join(console))
 
     def _verify(self, scenario: Scenario, step: Step, got: dict, console: str) -> list[Check]:
