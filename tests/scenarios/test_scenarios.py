@@ -31,6 +31,7 @@ def main() -> int:
         return 1
 
     vocab = Vocabulary()
+    ran: set[str] = set()
     journal = Journal(JOURNAL_DIR / f"scenarios-{time.strftime('%Y%m%d-%H%M%S')}.jsonl")
     total, fails = 0, []
     try:
@@ -52,6 +53,7 @@ def main() -> int:
                 srv.rpc.timeout = 180.0        # предел КЛИЕНТА: под coverage дерево с книгами идёт дольше
                 runner = Runner(srv, journal, STEPS)
                 for scenario in scenarios:
+                    ran.add(scenario.id)
                     print(f"\n— {scenario.id}: {scenario.why}")
                     for check in runner.run(scenario):
                         total += 1
@@ -63,8 +65,9 @@ def main() -> int:
                             print(f"  ✗ {check.scenario} · {check.label}  → {check.detail}")
                             fails.append(f"{check.scenario} · {check.label} → {check.detail}")
         for path in maps:
-            total, fails = _walk_map(path, vocab, journal, total, fails)
+            total, fails = _walk_map(path, vocab, journal, total, fails, ran)
     finally:
+        journal.verdict(ok=not fails, total=total, failed=len(fails), scenarios=sorted(ran))
         journal.close()
 
     print(f"\n{'=' * 50}\nРЕЗУЛЬТАТ: {total - len(fails)}/{total} прошло · журнал: {journal.path}")
@@ -87,7 +90,7 @@ def _routes() -> dict[str, list[str]]:
             if r.get("proof", {}).get("arrives")}
 
 
-def _walk_map(path: Path, vocab: Vocabulary, journal: Journal, total: int, fails: list):
+def _walk_map(path: Path, vocab: Vocabulary, journal: Journal, total: int, fails: list, ran: set):
     """Карта: сначала РАЗБОР (что из неё следует), потом обход, покрывающий каждый переход."""
     try:
         smap = load_map(path, vocab)
@@ -104,6 +107,7 @@ def _walk_map(path: Path, vocab: Vocabulary, journal: Journal, total: int, fails
     print(f"  обход покрывает каждый переход: путей {len(paths)}, шагов {sum(len(p) for p in paths)}")
     for i, route in enumerate(paths, 1):
         print(f"    путь{i}: " + " → ".join([smap.start] + [smap.transitions[e].target for e in route]))
+    ran.add(smap.id)
     total += 1
     if notes:
         fails.append(f"{smap.id}: карта не сходится — {notes[0]}")

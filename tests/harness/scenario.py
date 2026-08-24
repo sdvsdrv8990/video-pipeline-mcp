@@ -235,6 +235,14 @@ class Journal:
         self.file.write(json.dumps({"ts": round(time.time(), 3), **entry}, ensure_ascii=False) + "\n")
         self.file.flush()
 
+    def verdict(self, ok: bool, total: int, failed: int, scenarios: list[str]) -> None:
+        """Итог прогона последней строкой: журнал обязан отвечать сам, без стенограммы и без слов.
+
+        Сторож не должен верить утверждению «прогнал» — он читает артефакт: что гонялось, чем
+        кончилось и когда. Улика, которой нет, считается провалом (контракт «по умолчанию ПРОВАЛ»).
+        """
+        self.write(scenario="__run__", ok=ok, total=total, failed=failed, scenarios=sorted(scenarios))
+
     def close(self) -> None:
         self.file.close()
 
