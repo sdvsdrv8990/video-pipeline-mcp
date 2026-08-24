@@ -22,20 +22,27 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE = Path(__file__).with_name("invariants_baseline.txt")
-TABLES = ROOT / "config" / "templates" / "tables"
-TESTS = ROOT / "tests"
-CI = ROOT / ".github" / "workflows" / "ci.yml"
-REGISTRY = ROOT / "config" / "server_reactions.yaml"
+
+# Пути НЕ зашиты: корень приходит параметром, иначе сторожа нельзя проверить, не насорив в
+# репозитории, — а проверка, требующая мусора, делается редко.
+TABLES = ("config", "templates", "tables")
+TESTS = ("tests",)
+CI = (".github", "workflows", "ci.yml")
+REGISTRY = ("config", "server_reactions.yaml")
+
+
+def _at(root: Path, parts: tuple[str, ...]) -> Path:
+    return root.joinpath(*parts)
 
 # Код отказа бросают либо исключением зоны, либо обёрткой контекста.
 RAISED_CODE = re.compile(r'(?:Error|\berr|_err|err_path)\(\s*\n?\s*"([A-Z][A-Z_0-9]{3,})"')
 WHICH = re.compile(r'shutil\.which\(\s*"([^"]+)"\s*\)')
 
 
-def enum_without_values() -> list[str]:
+def enum_without_values(root: Path = ROOT) -> list[str]:
     """`type: enum` без перечня значений — не enum, а строка с обещанием: писать можно что угодно."""
     notes = []
-    for schema in sorted(TABLES.glob("*.schema.yaml")):
+    for schema in sorted(_at(root, TABLES).glob("*.schema.yaml")):
         data = yaml.safe_load(schema.read_text(encoding="utf-8")) or {}
         for sheet in data.get("sheets") or []:
             for column in sheet.get("columns") or []:
@@ -45,17 +52,18 @@ def enum_without_values() -> list[str]:
     return notes
 
 
-def skips_without_ci() -> list[str]:
+def skips_without_ci(root: Path = ROOT) -> list[str]:
     """Набор пропускает проверки без бинаря — значит в CI бинарь ставится ИЛИ пропуск запрещён.
 
     Иначе половина набора в CI не исполняется, а зелёный цвет означает «не проверяли»: замер по
     трём наборам монтажа дал 166 проверок с бинарём и 60 без него.
     """
-    if not CI.exists():
+    ci_file, tests_dir = _at(root, CI), _at(root, TESTS)
+    if not ci_file.exists():
         return []
     # Ищем в КОМАНДАХ и переменных джоб, а не в тексте файла: упоминание в комментарии — не
     # установка, и поиск по сырому тексту принял бы объяснение за механизм (поймано мутацией).
-    workflow = yaml.safe_load(CI.read_text(encoding="utf-8")) or {}
+    workflow = yaml.safe_load(ci_file.read_text(encoding="utf-8")) or {}
     commands, env_names = [], set()
     for job in (workflow.get("jobs") or {}).values():
         for step in job.get("steps") or []:
@@ -65,14 +73,14 @@ def skips_without_ci() -> list[str]:
         env_names |= set(job.get("env") or {})
     ci_run = "\n".join(commands)
     notes = []
-    for suite in sorted(TESTS.rglob("test_*.py")):
+    for suite in sorted(tests_dir.rglob("test_*.py")):
         text = suite.read_text(encoding="utf-8")
         required = {name for name in re.findall(r'os\.environ\.get\("([A-Z_]*REQUIRED)"\)', text)
                     if name in env_names}
         for binary in sorted(set(WHICH.findall(text))):
             if binary in ci_run or required:
                 continue
-            notes.append(f"{suite.relative_to(ROOT)} — пропускается без `{binary}`, а в CI он не "
+            notes.append(f"{suite.relative_to(root)} — пропускается без `{binary}`, а в CI он не "
                          f"ставится и пропуск не запрещён флагом *_REQUIRED")
     return notes
 
@@ -144,18 +152,18 @@ def _bound(part: ast.AST) -> set[str]:
     return names
 
 
-def used_before_declared() -> list[str]:
+def used_before_declared(root: Path = ROOT) -> list[str]:
     """Имя, объявленное НИЖЕ по набору, ловится только исполнением: набор — линейный скрипт.
 
     `ruff` молчит (имя определено, просто позже), `mypy` тоже, а если блок лежит в пропускаемой
     ветке, ошибка доживёт до первого локального прогона — гейт её не увидит.
     """
     notes = []
-    for suite in sorted(TESTS.rglob("test_*.py")):
+    for suite in sorted(_at(root, TESTS).rglob("test_*.py")):
         try:
             tree = ast.parse(suite.read_text(encoding="utf-8"))
         except SyntaxError as exc:
-            notes.append(f"{suite.relative_to(ROOT)} — не разбирается: {exc}")
+            notes.append(f"{suite.relative_to(root)} — не разбирается: {exc}")
             continue
         known = set(dir(builtins)) | {"__file__", "__name__", "__doc__", "__spec__"}
         # Имена функций и классов известны заранее: тела их не исполняются до вызова.
@@ -163,7 +171,7 @@ def used_before_declared() -> list[str]:
                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
 
         def flag(name: ast.Name) -> None:
-            note = (f"{suite.relative_to(ROOT)}:{name.lineno} — `{name.id}` используется до "
+            note = (f"{suite.relative_to(root)}:{name.lineno} — `{name.id}` используется до "
                     f"объявления (набор идёт сверху вниз)")
             if note not in notes:
                 notes.append(note)
@@ -202,22 +210,23 @@ def used_before_declared() -> list[str]:
     return notes
 
 
-def codes_outside_registry() -> list[str]:
+def codes_outside_registry(root: Path = ROOT, known: set[str] | None = None) -> list[str]:
     """Брошенный код отказа обязан быть и в реестре реакций, и в `KNOWN_ERROR_CODES`."""
-    sys.path.insert(0, str(ROOT))
-    from core.contracts.error_detail import KNOWN_ERROR_CODES
+    if known is None:
+        sys.path.insert(0, str(root))
+        from core.contracts.error_detail import KNOWN_ERROR_CODES as known
 
-    registry = set(yaml.safe_load(REGISTRY.read_text(encoding="utf-8")) or {})
+    registry = set(yaml.safe_load(_at(root, REGISTRY).read_text(encoding="utf-8")) or {})
     notes = []
-    for source in sorted(list((ROOT / "core").rglob("*.py")) + list((ROOT / "tools").rglob("*.py"))):
+    for source in sorted(list((root / "core").rglob("*.py")) + list((root / "tools").rglob("*.py"))):
         if "__pycache__" in str(source):
             continue
         for code in sorted(set(RAISED_CODE.findall(source.read_text(encoding="utf-8")))):
-            where = source.relative_to(ROOT)
+            where = source.relative_to(root)
             if code not in registry:
                 notes.append(f"{where} — код `{code}` не объявлен в server_reactions.yaml: "
                              f"клиент получит его без класса и без рекавери")
-            elif code not in KNOWN_ERROR_CODES:
+            elif code not in known:
                 notes.append(f"{where} — код `{code}` не в KNOWN_ERROR_CODES: контракт предупредит "
                              f"о неизвестном коде на боевом пути")
     return notes
