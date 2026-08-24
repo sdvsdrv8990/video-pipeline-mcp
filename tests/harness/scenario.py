@@ -14,6 +14,7 @@ tests/harness/scenario.py — исполнитель ОБЪЯВЛЕННЫХ сц
 
 import json
 import re
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +31,15 @@ EXPECT_KEYS = {"ok", "code", "class", "recovery", "facts", "data", "data_contain
                "console", "console_absent", "open"}
 
 _REF = re.compile(r"\$\{([A-Za-z_][\w]*)\.([\w.]+)\}")
+
+
+def known_findings() -> set[str]:
+    """Номера находок из реестра: адрес `F###` в объявлении обязан вести в существующую строку."""
+    try:
+        text = (ROOT / "docs" / "roadmap" / "02_findings.md").read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    return set(re.findall(r"\bF\d+\b", text))
 
 
 class ScenarioError(Exception):
@@ -113,6 +123,11 @@ def _expect(raw: dict, vocab: Vocabulary, where: str) -> Expectation:
         raise ScenarioError(f"{where}.expect: отказ без `code` — «просто упало» не является ожиданием")
     if code:
         vocab.validate(code, str(raw.get("class") or "") or None, f"{where}.expect")
+    address = str(raw.get("open") or "")
+    known = known_findings()
+    if address and known and address not in known:
+        raise ScenarioError(f"{where}.expect: находки {address} нет в docs/roadmap/02_findings.md — "
+                            "адрес ведёт в пустоту, и «известная дыра» становится необоснованной")
     return Expectation(
         ok=ok, code=code, reaction_class=str(raw.get("class") or ""),
         recovery=raw.get("recovery"),
@@ -223,6 +238,18 @@ def _lookup(alias: str, path: str, results: dict[str, Any]) -> Any:
     return found
 
 
+def _revision() -> tuple[str, bool]:
+    """Ревизия и чистота дерева: улика обязана говорить, ЧТО именно она проверяла."""
+    try:
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
+                              text=True, timeout=10).stdout.strip()
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True,
+                                text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return "", True
+    return head, bool(status)
+
+
 class Journal:
     """Журнал прогона: запрос → ответ → код → строки консоли, одна строка JSON на шаг."""
 
@@ -235,13 +262,16 @@ class Journal:
         self.file.write(json.dumps({"ts": round(time.time(), 3), **entry}, ensure_ascii=False) + "\n")
         self.file.flush()
 
-    def verdict(self, ok: bool, total: int, failed: int, scenarios: list[str]) -> None:
+    def verdict(self, ok: bool, total: int, failed: int, scenarios: list[str],
+                crashed: bool = False) -> None:
         """Итог прогона последней строкой: журнал обязан отвечать сам, без стенограммы и без слов.
 
         Сторож не должен верить утверждению «прогнал» — он читает артефакт: что гонялось, чем
         кончилось и когда. Улика, которой нет, считается провалом (контракт «по умолчанию ПРОВАЛ»).
         """
-        self.write(scenario="__run__", ok=ok, total=total, failed=failed, scenarios=sorted(scenarios))
+        head, dirty = _revision()
+        self.write(scenario="__run__", ok=bool(ok) and not crashed, crashed=crashed,
+                   total=total, failed=failed, scenarios=sorted(scenarios), head=head, dirty=dirty)
 
     def close(self) -> None:
         self.file.close()

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import builtins
 import re
 import sys
@@ -29,6 +30,8 @@ TABLES = ("config", "templates", "tables")
 TESTS = ("tests",)
 CI = (".github", "workflows", "ci.yml")
 REGISTRY = ("config", "server_reactions.yaml")
+RESOURCES = ("config", "resources.yaml")
+INVENTORY = ("tests", "quick", "tools_inventory.golden.json")
 
 
 def _at(root: Path, parts: tuple[str, ...]) -> Path:
@@ -232,9 +235,37 @@ def codes_outside_registry(root: Path = ROOT, known: set[str] | None = None) -> 
     return notes
 
 
+def resources_off_inventory(root: Path = ROOT) -> list[str]:
+    """Инструмент объявлен тяжёлым, а такого инструмента нет — снятие с цикла молча не действует.
+
+    Переименовали инструмент — строка в `resources.yaml` осталась указывать в пустоту, вызов снова
+    исполняется в цикле событий и морозит сервер, и НИ ОДНА проверка об этом не скажет: сценарий
+    живучести бьёт единственным именем. Тот же класс — класс ресурса, которого нет в `classes`:
+    инструмент тихо падает в `default`.
+    """
+    declaration, inventory = _at(root, RESOURCES), _at(root, INVENTORY)
+    if not declaration.exists() or not inventory.exists():
+        return []
+    data = yaml.safe_load(declaration.read_text(encoding="utf-8")) or {}
+    known_tools = set(json.loads(inventory.read_text(encoding="utf-8")))
+    classes = set((data.get("classes") or {}))
+    notes = []
+    for tool, klass in (data.get("tools") or {}).items():
+        if tool not in known_tools:
+            notes.append(f"config/resources.yaml: инструмента `{tool}` нет в инвентаре — строка указывает в пустоту")
+        if str(klass) not in classes:
+            notes.append(f"config/resources.yaml: у `{tool}` класс `{klass}`, которого нет в `classes` — "
+                         "вызов молча падает в default")
+    default = str(data.get("default") or "")
+    if default and default not in classes:
+        notes.append(f"config/resources.yaml: `default: {default}` не объявлен в `classes`")
+    return notes
+
+
 HARD = (("пропуск набора без покрытия в CI", skips_without_ci),
         ("имя используется до объявления", used_before_declared),
-        ("код отказа мимо реестра", codes_outside_registry))
+        ("код отказа мимо реестра", codes_outside_registry),
+        ("объявление ресурсов мимо инвентаря", resources_off_inventory))
 
 
 def ratchet(notes: list[str]) -> tuple[int, int]:

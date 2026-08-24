@@ -15,7 +15,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT))
 
 from invariants import (  # noqa: E402
-    codes_outside_registry, enum_without_values, skips_without_ci, used_before_declared,
+    codes_outside_registry, enum_without_values, resources_off_inventory, skips_without_ci,
+    used_before_declared,
 )
 
 _checks = 0
@@ -130,6 +131,24 @@ ok(not enum_without_values(make({"config/templates/tables/x.schema.yaml": SCHEMA
    "enum с перечнем значений — молчим")
 ok(len(enum_without_values(make({"config/templates/tables/x.schema.yaml": SCHEMA_BAD}))) == 1,
    "enum без значений — находка: проверить запись нечем")
+
+print("\n== объявление ресурсов против инвентаря ==")
+INV = '{"montage_render_scene": {}, "media_generate": {}}'
+RES_OK = "default: inline\nclasses:\n  inline: {offload: false}\n  gpu: {offload: true}\ntools:\n  media_generate: gpu\n"
+RES_GHOST = "default: inline\nclasses:\n  inline: {offload: false}\ntools:\n  montage_render_sceen: inline\n"
+RES_CLASS = "default: inline\nclasses:\n  inline: {offload: false}\ntools:\n  media_generate: gpuu\n"
+RES_DEFAULT = "default: inlien\nclasses:\n  inline: {offload: false}\ntools: {}\n"
+INV_PATH = "tests/quick/tools_inventory.golden.json"
+ok(not resources_off_inventory(make({"config/resources.yaml": RES_OK, INV_PATH: INV})),
+   "имена и классы сходятся — молчим")
+ok(len(resources_off_inventory(make({"config/resources.yaml": RES_GHOST, INV_PATH: INV}))) == 1,
+   "инструмент переименован — строка указывает в пустоту, снятие с цикла молча не действует")
+ok(len(resources_off_inventory(make({"config/resources.yaml": RES_CLASS, INV_PATH: INV}))) == 1,
+   "класс не объявлен — вызов тихо падает в default, а сервер снова морозится")
+ok(len(resources_off_inventory(make({"config/resources.yaml": RES_DEFAULT, INV_PATH: INV}))) == 1,
+   "опечатка в `default` — умолчание указывает в несуществующий класс")
+ok(not resources_off_inventory(make({"config/x.yaml": "y: 1"})),
+   "объявления нет вовсе — не выдумываем нарушение")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

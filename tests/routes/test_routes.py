@@ -15,7 +15,8 @@ sys.path.insert(0, str(ROOT))
 import yaml
 
 from tests.harness import live_server
-from tests.harness.scenario import Runner, ScenarioError, Vocabulary, dig, load, scenario_files
+from tests.harness.scenario import (Runner, ScenarioError, Vocabulary, dig, known_findings, load,
+                                    scenario_files)
 from tests.scenarios.steps import STEPS
 
 ROUTES = Path(__file__).with_name("routes.yaml")
@@ -66,6 +67,10 @@ def load_routes() -> list[dict]:
         if not proof["arrives"] and not proof.get("finding"):
             raise ScenarioError(
                 f"routes.yaml:{name}.proof: разрыв без адреса находки — «не доезжает» обязано ссылаться на F#")
+        known = known_findings()
+        if proof.get("finding") and known and str(proof["finding"]) not in known:
+            raise ScenarioError(f"routes.yaml:{name}.proof: находки {proof['finding']} нет в реестре — "
+                                "адрес разрыва ведёт в пустоту")
     return raw
 
 

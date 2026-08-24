@@ -64,11 +64,20 @@ def main() -> int:
                         else:
                             print(f"  ✗ {check.scenario} · {check.label}  → {check.detail}")
                             fails.append(f"{check.scenario} · {check.label} → {check.detail}")
+        only = [part for part in os.environ.get("VPM_SCENARIO", "").split(",") if part]
         for path in maps:
+            # Отбор применяется и к картам: иначе «точечный прогон» тянул всю карту целиком.
+            if only and not any(part.split("#")[0] in path.stem for part in only):
+                continue
             total, fails = _walk_map(path, vocab, journal, total, fails, ran)
-    finally:
-        journal.verdict(ok=not fails, total=total, failed=len(fails), scenarios=sorted(ran))
+    except BaseException:
+        # Авария (сервер не поднялся, порт занят, харнесс упал) — это НЕ зелёный прогон.
+        # Улика, объявляющая успех тому, чего не было, хуже отсутствия улики.
+        journal.verdict(ok=False, total=total, failed=len(fails), scenarios=sorted(ran), crashed=True)
         journal.close()
+        raise
+    journal.verdict(ok=not fails, total=total, failed=len(fails), scenarios=sorted(ran))
+    journal.close()
 
     print(f"\n{'=' * 50}\nРЕЗУЛЬТАТ: {total - len(fails)}/{total} прошло · журнал: {journal.path}")
     if fails:
@@ -107,7 +116,6 @@ def _walk_map(path: Path, vocab: Vocabulary, journal: Journal, total: int, fails
     print(f"  обход покрывает каждый переход: путей {len(paths)}, шагов {sum(len(p) for p in paths)}")
     for i, route in enumerate(paths, 1):
         print(f"    путь{i}: " + " → ".join([smap.start] + [smap.transitions[e].target for e in route]))
-    ran.add(smap.id)
     total += 1
     if notes:
         fails.append(f"{smap.id}: карта не сходится — {notes[0]}")
@@ -116,6 +124,7 @@ def _walk_map(path: Path, vocab: Vocabulary, journal: Journal, total: int, fails
     for number, route in enumerate(paths, 1):
         with live_server() as srv:            # свой сервер на путь: см. walk_path
             srv.rpc.timeout = 180.0
+            ran.add(smap.id)                  # в улику попадает пройденное, а не запланированное
             for check in walker.walk_path(smap, route, number, Runner(srv, journal, STEPS)):
                 total += 1
                 if check.ok:

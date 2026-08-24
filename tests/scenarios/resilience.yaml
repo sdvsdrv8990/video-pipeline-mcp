@@ -20,6 +20,11 @@
     - call: table_get_row
       with: {table: nowhere, sheet: META, row_id: X}
       expect: {ok: false, code: TABLE_NOT_FOUND, console_absent: Traceback}
+    - call: fs_delete
+      with: {path: notes/ok.txt}
+      # Деструктивный вызов обязан оставить след в консоли: правило, которого не видно,
+      # нельзя ни подтвердить, ни расследовать после инцидента.
+      expect: {ok: false, code: CONFIRM_REQUIRED, console: "подозрительно", console_absent: Traceback}
     - call: excel_read_range
       with: {path: notes/ok.txt, sheet: META, cell_range: A1:B2}
       # Сегодня приходит INTERNAL_ERROR — «зови человека» на то, что ИИ исправил бы сам.
