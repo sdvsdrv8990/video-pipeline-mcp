@@ -67,12 +67,25 @@ class JsonRpc:
         return JsonRpc._result(envelope).get("structuredContent") or {}
 
     @staticmethod
+    def protocol_error(envelope: dict) -> dict:
+        """Отказ УРОВНЯ ПРОТОКОЛА (`error` вместо `result`): файрвол, разбор запроса, транспорт.
+
+        Такой конверт не несёт `result`, поэтому чтение только его превращало громкий отказ
+        сервера («Rate limit exceeded») в тихий успех с пустыми данными — тестовая форма немого
+        отказа: набор, упершийся в лимит, зеленел бы, ничего не проверив.
+        """
+        return envelope["error"] if "result" not in envelope and isinstance(envelope.get("error"), dict) else {}
+
+    @staticmethod
     def is_error(envelope: dict) -> bool:
         """Роль `status` на проводе играет родное `isError` — так велит спека MCP."""
-        return bool(JsonRpc._result(envelope).get("isError"))
+        return bool(JsonRpc._result(envelope).get("isError")) or bool(JsonRpc.protocol_error(envelope))
 
     @staticmethod
     def text(envelope: dict) -> str:
+        failure = JsonRpc.protocol_error(envelope)
+        if failure:
+            return f"JSON-RPC {failure.get('code')}: {failure.get('message')}"
         content = JsonRpc._result(envelope).get("content") or []
         return "".join(str(i.get("text") or "") for i in content if i.get("type") == "text")
 
@@ -88,6 +101,9 @@ class JsonRpc:
     @staticmethod
     def error_code(envelope: dict) -> str:
         """Код реакции — по нему тест и ассертит, а не по тексту сообщения."""
+        failure = JsonRpc.protocol_error(envelope)
+        if failure:
+            return f"RPC_{failure.get('code')}"
         return str(JsonRpc.structured(envelope).get("code") or "")
 
     @staticmethod

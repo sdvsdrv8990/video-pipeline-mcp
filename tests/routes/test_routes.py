@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 import yaml
 
 from tests.harness import live_server
-from tests.harness.scenario import Runner, ScenarioError, Vocabulary, dig, load
+from tests.harness.scenario import Runner, ScenarioError, Vocabulary, dig, load, scenario_files
 from tests.scenarios.steps import STEPS
 
 ROUTES = Path(__file__).with_name("routes.yaml")
@@ -152,7 +152,7 @@ def main() -> int:
                    f"{proof['finding']} в docs/roadmap/02_findings.md и переверни `arrives`")
 
     served = {str(r["proof"]["scenario"]).partition("#")[2] for r in routes}
-    all_ids = {s.id for path in sorted(SCENARIO_DIR.glob("*.yaml")) for s in load(path, vocab)}
+    all_ids = {s.id for path in scenario_files(SCENARIO_DIR) for s in load(path, vocab)}
     idle = sorted(all_ids - served)
     print(f"\nСценариев всего {len(all_ids)}, опорой маршрута служат {len(served)}; "
           f"остальные проверяют контракт, а не поток: {idle}")

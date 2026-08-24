@@ -1,0 +1,123 @@
+# Карта роста структуры. Путь по ней и есть сценарий: новый переход даёт новые сценарии без кода.
+# Состояние — предикат над живым сервером; предикаты попарно различимы по (types, orphans, childless),
+# иначе «переход» ничего не менял бы, а карта описывала бы вымысел.
+
+map: structure_growth
+why: к связанному дереву ведут разные порядки вызовов, и любой из них обязан приводить в одно состояние
+context: {niche: grow}
+start: empty
+
+states:
+  empty:
+    means: ветка пуста — ИИ ещё ничего не заводил
+    check:
+      - python: branch_state
+        with: {niche: "${ctx.niche}"}
+        expect: {ok: true, data: {types: [], orphans: [], childless: []}}
+
+  niche_only:
+    means: ниша есть, глубже сервер сам не полез
+    check:
+      - python: branch_state
+        with: {niche: "${ctx.niche}"}
+        expect: {ok: true, data: {types: [niche], orphans: [], childless: []}}
+
+  with_network:
+    means: ниша и сетка; ни своих каналов, ни конкурентов
+    check:
+      - python: branch_state
+        with: {niche: "${ctx.niche}"}
+        expect: {ok: true, data: {types: [network, niche], orphans: [], childless: []}}
+
+  orphan_pending:
+    means: конкурент заведён раньше нашего канала — висит и ждёт якоря
+    check:
+      - python: branch_state
+        with: {niche: "${ctx.niche}"}
+        expect: {ok: true, data: {types: [competitor_channel, network, niche], orphans: [rv], childless: []}}
+
+  with_channel:
+    means: наш канал есть, конкурента нет — сервер напоминает мягко
+    check:
+      - python: branch_state
+        with: {niche: "${ctx.niche}"}
+        expect: {ok: true, data: {types: [channel, network, niche], orphans: [], childless: [ch]}}
+
+  two_channels:
+    means: в сетке два наших канала — владелец растит сетку, а не один канал
+    terminal: true      # лист этой карты: дальше растёт уже конкурентная ветка
+    check:
+      - python: branch_state
+        with: {niche: "${ctx.niche}"}
+        expect: {ok: true, data: {types: [channel, network, niche], orphans: [], childless: [ch, ch2]}}
+
+  linked:
+    means: дерево связано целиком — ни висящих, ни одиноких
+    terminal: true
+    check:
+      - python: branch_state
+        with: {niche: "${ctx.niche}"}
+        expect:
+          ok: true
+          data: {types: [channel, competitor_channel, network, niche], orphans: [], childless: []}
+
+transitions:
+  - from: empty
+    to: niche_only
+    carries: [facts_to_client]
+    via:
+      - call: structure_create
+        with: {type: niche, name: "${ctx.niche}"}
+        expect: {ok: true, facts: [NodeCreated]}
+
+  - from: niche_only
+    to: with_network
+    via:
+      - call: structure_create
+        with: {type: network, name: net, parent_path: "niches/${ctx.niche}/networks/"}
+        expect: {ok: true, facts: [NodeCreated]}
+
+  - from: with_network
+    to: orphan_pending
+    via:
+      - call: structure_create
+        with: {type: competitor_channel, name: rv,
+               parent_path: "niches/${ctx.niche}/networks/net/competitors/"}
+        expect: {ok: true, facts: [EntityOrphaned]}
+
+  - from: orphan_pending
+    to: linked
+    via:
+      - call: structure_create
+        with: {type: channel, name: ch, parent_path: "niches/${ctx.niche}/networks/net/channels/"}
+        expect: {ok: true}
+      - call: structure_reconcile
+        with: {anchor_name: ch}
+        expect: {ok: true, data: {entities_moved: 1}}
+
+  - from: with_network
+    to: with_channel
+    via:
+      - call: structure_create
+        with: {type: channel, name: ch, parent_path: "niches/${ctx.niche}/networks/net/channels/"}
+        expect: {ok: true, facts: [NodeCreated]}
+
+  - from: with_channel
+    to: linked
+    via:
+      - call: structure_create
+        with: {type: competitor_channel, name: rv,
+               parent_path: "niches/${ctx.niche}/networks/net/competitors/"}
+        expect: {ok: true}
+      - call: structure_reconcile
+        with: {anchor_name: ch}
+        expect: {ok: true, data: {entities_moved: 1}}
+
+  - from: with_channel
+    to: two_channels
+    via:
+      - call: structure_create
+        with: {type: channel, name: ch2, parent_path: "niches/${ctx.niche}/networks/net/channels/"}
+        expect: {ok: true, facts: [NodeCreated]}
+
+walk: {budget: 24}

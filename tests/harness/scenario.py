@@ -137,6 +137,11 @@ def _steps(raw: list, vocab: Vocabulary, where: str) -> list[Step]:
     return out
 
 
+def scenario_files(directory: Path) -> list[Path]:
+    """Файлы сценариев каталога. Карты (`*.map.yaml`) — другой формат и другой загрузчик."""
+    return [p for p in sorted(directory.glob("*.yaml")) if not p.name.endswith(".map.yaml")]
+
+
 def load(path: Path, vocab: Vocabulary) -> list[Scenario]:
     """Сценарии файла. Кривое объявление падает ЗДЕСЬ — до сервера, до первого вызова."""
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))

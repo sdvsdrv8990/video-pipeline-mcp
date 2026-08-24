@@ -12,8 +12,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+import yaml
+
 from tests.harness import live_server
-from tests.harness.scenario import Journal, Runner, ScenarioError, Vocabulary, load
+from tests.harness.scenario import Journal, Runner, ScenarioError, Vocabulary, load, scenario_files
+from tests.harness.scenario_map import MapRunner, analyse, load_map, plan
 from tests.scenarios.steps import STEPS
 
 HERE = Path(__file__).parent
@@ -21,8 +24,9 @@ JOURNAL_DIR = Path(__file__).resolve().parents[1] / ".journal"
 
 
 def main() -> int:
-    files = sorted(HERE.glob("*.yaml"))
-    if not files:
+    files = scenario_files(HERE)
+    maps = sorted(HERE.glob("*.map.yaml"))
+    if not files and not maps:
         print("Нет ни одного файла сценариев — пустой прогон зелёным не считается.")
         return 1
 
@@ -54,6 +58,8 @@ def main() -> int:
                         else:
                             print(f"  ✗ {check.label}  → {check.detail}")
                             fails.append(f"{check.scenario} · {check.label} → {check.detail}")
+        for path in maps:
+            total, fails = _walk_map(path, vocab, journal, total, fails)
     finally:
         journal.close()
 
@@ -65,6 +71,51 @@ def main() -> int:
         return 1
     print("ВСЁ ЗЕЛЁНОЕ ✅")
     return 0
+
+
+def _routes() -> dict[str, list[str]]:
+    """Селекторы маршрутов: переход карты объявляет, ЧТО обязан донести, а список полей — у маршрута."""
+    declared = ROOT / "tests" / "routes" / "routes.yaml"
+    if not declared.exists():
+        return {}
+    return {r["route"]: list(r["proof"]["observe"])
+            for r in yaml.safe_load(declared.read_text(encoding="utf-8"))
+            if r.get("proof", {}).get("arrives")}
+
+
+def _walk_map(path: Path, vocab: Vocabulary, journal: Journal, total: int, fails: list):
+    """Карта: сначала РАЗБОР (что из неё следует), потом обход, покрывающий каждый переход."""
+    try:
+        smap = load_map(path, vocab)
+    except ScenarioError as exc:
+        print(f"\n══ {path.name}: КАРТА НЕ ЗАГРУЖЕНА ══\n  {exc}")
+        return total + 1, fails + [f"{path.name}: {exc}"]
+
+    print(f"\n══ карта {smap.id}: {smap.why} ══")
+    notes = analyse(smap)
+    print(f"  состояний {len(smap.states)}, переходов {len(smap.transitions)}")
+    for note in notes:
+        print(f"  ⚠ {note}")
+    paths = plan(smap)
+    print(f"  обход покрывает каждый переход: путей {len(paths)}, шагов {sum(len(p) for p in paths)}")
+    for i, route in enumerate(paths, 1):
+        print(f"    путь{i}: " + " → ".join([smap.start] + [smap.transitions[e].target for e in route]))
+    total += 1
+    if notes:
+        fails.append(f"{smap.id}: карта не сходится — {notes[0]}")
+
+    walker = MapRunner(_routes())
+    for number, route in enumerate(paths, 1):
+        with live_server() as srv:            # свой сервер на путь: см. walk_path
+            srv.rpc.timeout = 180.0
+            for check in walker.walk_path(smap, route, number, Runner(srv, journal, STEPS)):
+                total += 1
+                if check.ok:
+                    print(f"  ✓ {check.scenario} · {check.label}")
+                else:
+                    print(f"  ✗ {check.scenario} · {check.label}  → {check.detail}")
+                    fails.append(f"{check.scenario} · {check.label} → {check.detail}")
+    return total, fails
 
 
 def test_scenarios_suite():

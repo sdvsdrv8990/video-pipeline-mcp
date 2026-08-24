@@ -115,7 +115,7 @@ attackers_inbound:
     expect: лимит размера/очереди; таймаут; backpressure
     mitigation: max_body_size, лимит очереди/книги
     extends: cache_overflow
-    status: xfail-spec   # явных лимитов нет (F36)
+    status: implemented  # отбивает ДЕФОЛТ aiohttp (client_max_size = 1 МиБ), не наша политика — F36
   - id: atk_insecure_deser
     ref: IN8
     surface: конфиг hot-reload, table_* json
