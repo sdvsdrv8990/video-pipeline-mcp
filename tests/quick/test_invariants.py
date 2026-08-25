@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 from invariants import (  # noqa: E402
     codes_outside_registry, enum_without_values, resources_off_inventory, skips_without_ci,
-    status_off_registry, used_before_declared,
+    status_off_registry, suites_off_catalog, used_before_declared,
 )
 
 _checks = 0
@@ -167,6 +167,40 @@ ok(not status_off_registry(make({"docs/roadmap/02_findings.md": REG,
 ok(not status_off_registry(make({"docs/roadmap/02_findings.md": REG,
                                  "docs/roadmap/plan.md": "смотри F1 и F2 — статуса тут нет"})),
    "упоминание находки без статуса — не утверждение, молчим")
+
+print("\n== набор мимо каталога зон ==")
+# Гейт кладётся в корень НАСТОЯЩИМ файлом: сторож обязан считать наборы тем же кодом, что и гейт,
+# иначе списки разъедутся молча — а именно это он и стережёт.
+GATE_SRC = (ROOT / "tests" / "test_suites.py").read_text(encoding="utf-8")
+ZONE_ROW = "| Тест | Зона |\n|---|---|\n| `test_a.py` | зона A |\n"
+
+ok(not suites_off_catalog(make({"tests/test_suites.py": GATE_SRC,
+                                "tests/quick/test_a.py": "x = 1\n",
+                                "tests/CATALOG.md": ZONE_ROW})),
+   "набор объявлен строкой-зоной — молчим")
+ok(len(suites_off_catalog(make({"tests/test_suites.py": GATE_SRC,
+                                "tests/quick/test_a.py": "x = 1\n",
+                                "tests/quick/test_b.py": "x = 1\n",
+                                "tests/CATALOG.md": ZONE_ROW}))) == 1,
+   "новый набор без зоны — находка: так тесты и плодятся")
+ok(len(suites_off_catalog(make({"tests/test_suites.py": GATE_SRC,
+                                "tests/quick/test_a.py": "x = 1\n",
+                                "tests/quick/test_b.py": "x = 1\n",
+                                "tests/CATALOG.md": ZONE_ROW + "\nрой уходит в `test_b.py` когда-нибудь\n"}))) == 1,
+   "имя названо в ПРОЗЕ, а не строкой таблицы — зоной не считается (сторож смотрит на вещь, не на след)")
+ok(len(suites_off_catalog(make({"tests/test_suites.py": GATE_SRC,
+                                "tests/CATALOG.md": ZONE_ROW}))) == 1,
+   "зона объявлена, а набора нет — расширять предлагается пустоту")
+ok(not suites_off_catalog(make({"tests/quick/test_a.py": "x = 1\n", "tests/CATALOG.md": ZONE_ROW})),
+   "гейта в корне нет — не выдумываем нарушение")
+ok(not suites_off_catalog(make({"tests/test_suites.py": GATE_SRC,
+                                "tests/sim_zone/test_c.py": "x = 1\n",
+                                "tests/CATALOG.md": "| Набор | Зона |\n|---|---|\n| `sim_zone/` | зона C |\n"})),
+   "набор-каталог объявлен ключом `dir/` — молчим")
+ok(not suites_off_catalog(make({"tests/test_suites.py": GATE_SRC,
+                                "tests/harness/test_helper.py": "x = 1\n",
+                                "tests/CATALOG.md": "| Тест | Зона |\n|---|---|\n| `нет` | — |\n"})),
+   "харнесс — библиотека, а не набор: гейт его пропускает, сторож обязан пропустить тоже")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

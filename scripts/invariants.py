@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import builtins
 import re
@@ -34,6 +35,8 @@ RESOURCES = ("config", "resources.yaml")
 ROADMAP = ("docs", "roadmap")
 FINDINGS = ("docs", "roadmap", "02_findings.md")
 INVENTORY = ("tests", "quick", "tools_inventory.golden.json")
+CATALOG = ("tests", "CATALOG.md")
+GATE = ("tests", "test_suites.py")
 
 
 def _at(root: Path, parts: tuple[str, ...]) -> Path:
@@ -304,11 +307,73 @@ def resources_off_inventory(root: Path = ROOT) -> list[str]:
     return notes
 
 
+
+def _gate_suites(root: Path) -> list[Path] | None:
+    """Список наборов берём у САМОГО гейта, а не заводим второй: разошлись бы молча.
+
+    Модуль грузится по пути, поэтому его `ROOT` считается от переданного корня — сторож
+    проверяется на временном каталоге, не мусоря в репозитории.
+    """
+    gate = _at(root, GATE)
+    if not gate.exists():
+        return None
+    spec = importlib.util.spec_from_file_location(f"_vpm_gate_{abs(hash(str(gate)))}", gate)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return list(module._discover())
+
+
+def _catalog_zones(root: Path) -> set[str]:
+    """Зона объявлена ПЕРВОЙ ячейкой строки таблицы. Упоминание в прозе зоной не считается:
+    сторож, которого удовлетворяет любое упоминание имени, проверяет след, а не вещь."""
+    path = _at(root, CATALOG)
+    if not path.exists():
+        return set()
+    zones = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("|"):
+            cell = line.split("|")[1].strip().strip("*").strip("`").strip()
+            if cell:
+                zones.add(cell)
+    return zones
+
+
+SUITE_ZONE = re.compile(r"^(?:[a-z_0-9]+/)?test_[a-z_0-9]+\.py$")
+
+
+def suites_off_catalog(root: Path = ROOT) -> list[str]:
+    """Набор гоняется гейтом, а зоны ответственности в каталоге у него нет — так тесты и плодятся.
+
+    Обратная сторона тоже красная: строка про набор, которого нет, отправляет расширять пустоту.
+    """
+    suites = _gate_suites(root)
+    if suites is None:
+        return []
+    zones = _catalog_zones(root)
+    if not zones:
+        return []
+    notes = []
+    have: set[str] = set()
+    for path in suites:
+        keys = {path.name, f"{path.parent.name}/", f"{path.parent.name}/{path.name}"}
+        have |= keys
+        if not (keys & zones):
+            notes.append(f"{path.relative_to(root)} — набор в гейте без строки-зоны в tests/CATALOG.md: "
+                         "сначала расширь хозяина по его запасу; заводишь свой — объяви зону и запас")
+    for zone in sorted(zones):
+        if SUITE_ZONE.match(zone) and zone not in have:
+            notes.append(f"tests/CATALOG.md: зона `{zone}` объявлена, а набора нет — "
+                         "расширять предлагается несуществующее")
+    return notes
+
 HARD = (("пропуск набора без покрытия в CI", skips_without_ci),
         ("имя используется до объявления", used_before_declared),
         ("код отказа мимо реестра", codes_outside_registry),
         ("объявление ресурсов мимо инвентаря", resources_off_inventory),
-        ("статус находки мимо реестра", status_off_registry))
+        ("статус находки мимо реестра", status_off_registry),
+        ("набор мимо каталога зон", suites_off_catalog))
 
 
 def ratchet(notes: list[str]) -> tuple[int, int]:
