@@ -26,6 +26,7 @@ sys.path.insert(0, str(ROOT))
 
 # Импорты ниже корня: харнесс живёт в `tests/`, и путь к нему добавляется выше.
 import yaml  # noqa: E402
+from coverage.parser import PythonParser  # noqa: E402
 
 from tests.harness import live_server  # noqa: E402
 from tests.harness.scenario import Runner, Vocabulary, load, scenario_files  # noqa: E402
@@ -34,6 +35,7 @@ from tests.scenarios.steps import STEPS  # noqa: E402
 
 SCENARIOS = ROOT / "tests" / "scenarios"
 RADIUS = ROOT / "tests" / ".blast" / "radius.json"
+BLIND_BASELINE = Path(__file__).with_name("blast_blind_baseline.txt")
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 
@@ -203,6 +205,52 @@ def check_routes() -> int:
     return 1 if bad else 0
 
 
+def _statements(rel: str) -> set[int]:
+    """Исполнимые строки файла СТАТИЧЕСКИ: опись из сборки не годится — новый код в неё не попал бы,
+    и сторож молчал бы ровно там, где обязан кричать."""
+    parser = PythonParser(text=(ROOT / rel).read_text(encoding="utf-8"), filename=rel)
+    parser.parse_source()
+    return set(parser.statements)
+
+
+def _measured_files() -> list[str]:
+    files = [str(p.relative_to(ROOT)) for p in (ROOT / "core").rglob("*.py")]
+    files += [str(p.relative_to(ROOT)) for p in (ROOT / "tools").rglob("*.py")]
+    return sorted(f for f in files + ["server.py"] if "__pycache__" not in f)
+
+
+def blind() -> int:
+    """Строки сервера, которых не исполняет НИ ОДИН сценарий, — размер молчания карты.
+
+    Храповик: вниз можно, вверх нет. Новый непокрытый путь растит число, и гейт краснеет — иначе
+    карта молчит именно о том, чего в неё не положили.
+    """
+    radius = _load()
+    worst: list[tuple[int, str]] = []
+    total = 0
+    for rel in _measured_files():
+        covered: set[int] = set()
+        for executed in (radius.get(rel) or {}).values():
+            covered.update(executed)
+        missed = len(_statements(rel) - covered)
+        total += missed
+        if missed:
+            worst.append((missed, rel))
+    limit = int(BLIND_BASELINE.read_text(encoding="utf-8").strip()) if BLIND_BASELINE.exists() else total
+    print(f"── строк вне всех сценариев: {total} при потолке {limit}")
+    for missed, rel in sorted(worst, reverse=True)[:8]:
+        print(f"   {missed:5d}  {rel}")
+    if "--bless" in sys.argv:
+        BLIND_BASELINE.write_text(f"{total}\n", encoding="utf-8")
+        print(f"   потолок опущен до {total}")
+        return 0
+    if total > limit:
+        print(f"   ✗ молчание выросло на {total - limit}: правка добавила код, который не исполняет "
+              "ни один сценарий — объяви сценарий или сузь правку")
+        return 1
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", action="store_true")
@@ -210,6 +258,8 @@ def main() -> int:
     parser.add_argument("--changed", action="store_true")
     parser.add_argument("--check-routes", action="store_true")
     parser.add_argument("--affected", action="store_true")
+    parser.add_argument("--blind", action="store_true")
+    parser.add_argument("--bless", action="store_true")
     args = parser.parse_args()
     if args.build:
         build()
@@ -221,7 +271,9 @@ def main() -> int:
         return affected()
     if args.check_routes:
         return check_routes()
-    if not any([args.build, args.query, args.changed, args.check_routes, args.affected]):
+    if args.blind:
+        return blind()
+    if not any([args.build, args.query, args.changed, args.check_routes, args.affected, args.blind]):
         parser.print_help()
     return 0
 

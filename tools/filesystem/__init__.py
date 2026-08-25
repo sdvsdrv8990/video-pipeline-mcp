@@ -396,7 +396,18 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                     created.append({"name": name, "type": "file"})
             except ValueError:
                 skipped.append({"reason": "path escape", "name": name})
-        return ToolResult(status="success", data={"created": created, "skipped": skipped}, facts=[Fact(type="StructureCreated", data={"template": template, "created": len(created), "skipped": len(skipped)})])
+        # Создано ноль при непустом списке — это отказ, а не успех с примечанием: клиент читает
+        # `status` и считает структуру созданной, а туда же молча уходит и ЗАПРЕТ записи.
+        if skipped and not created:
+            причины = ", ".join(f"{s.get('name') or '(без имени)'}: {s.get('reason')}" for s in skipped)
+            return ctx.err("VALIDATION_ERROR", f"Не создано ни одного фрагмента: {причины}",
+                           reason="У фрагмента обязано быть поле `name`; запрещённый тип файла не пишется.")
+        facts = [Fact(type="StructureCreated", data={"template": template, "created": len(created),
+                                                     "skipped": len(skipped)})]
+        # Частичный отказ — отдельное СОБЫТИЕ, а не поле в данных: полем его не заметят.
+        if skipped:
+            facts.append(Fact(type="FragmentsSkipped", data={"skipped": skipped}))
+        return ToolResult(status="success", data={"created": created, "skipped": skipped}, facts=facts)
 
     # Формат кортежа: (name, title, description, schema, handler, annotations).
     # title — человекочитаемая подпись для UI Claude; префикс «Файлы:» делает

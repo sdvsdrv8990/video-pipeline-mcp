@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 SCENARIO_KEYS = {"scenario", "why", "given", "when", "then"}
 GIVEN_KEYS = {"files"}
-STEP_KEYS = {"call", "python", "rpc", "headers", "token", "with", "as", "expect"}
+STEP_KEYS = {"call", "python", "rpc", "headers", "token", "repeat", "with", "as", "expect"}
 EXPECT_KEYS = {"ok", "code", "class", "recovery", "facts", "data", "data_contains",
                "console", "console_absent", "open", "http"}
 
@@ -95,6 +95,7 @@ class Step:
     tool: str = ""
     python: str = ""
     rpc: str = ""
+    repeat: int = 1
     headers: dict = field(default_factory=dict)
     token: str | None = None
     args: dict = field(default_factory=dict)
@@ -165,7 +166,8 @@ def _steps(raw: list, vocab: Vocabulary, where: str) -> list[Step]:
         expect = item.get("expect")
         out.append(Step(
             index=i, tool=str(item.get("call") or ""), python=str(item.get("python") or ""),
-            rpc=str(item.get("rpc") or ""), headers=dict(item.get("headers") or {}),
+            rpc=str(item.get("rpc") or ""), repeat=int(item.get("repeat") or 1),
+            headers=dict(item.get("headers") or {}),
             token=None if item.get("token") is None else str(item.get("token")),
             args=dict(item.get("with") or {}), alias=str(item.get("as") or ""),
             expect=_expect(expect, vocab, f"{where}[{i}]") if expect is not None else None,
@@ -316,6 +318,43 @@ class Runner:
         return checks
 
     def _step(self, scenario: Scenario, step: Step, results: dict[str, Any]) -> list[Check]:
+        if step.repeat > 1:
+            return self._repeat(scenario, step, results)
+        return self._once(scenario, step, results)
+
+    def _repeat(self, scenario: Scenario, step: Step, results: dict[str, Any]) -> list[Check]:
+        """Повтор вызова: предмет проверки — не отдельный ответ, а ПОВЕДЕНИЕ РЯДА.
+
+        Без него зона частоты объявлением не берётся: один вызов предела не достигает, а писать
+        цикл питоном значит вернуть набор туда, откуда его убирали. В журнал идёт одна запись со
+        сводкой — тысяча строк на шквал сделала бы улику нечитаемой.
+        """
+        single = Step(index=step.index, tool=step.tool, python=step.python, rpc=step.rpc,
+                      headers=step.headers, token=step.token, args=step.args, alias=step.alias)
+        ok_count, first_refusal, last = 0, None, None
+        for attempt in range(1, step.repeat + 1):
+            last = self._once(scenario, single, results, return_observed=True)
+            if last["ok"]:
+                ok_count += 1
+            elif first_refusal is None:
+                first_refusal = attempt
+        summary = {"times": step.repeat, "ok_count": ok_count, "first_refusal": first_refusal}
+        if isinstance(last.get("data"), dict):
+            last["data"] = {**last["data"], "_repeat": summary}
+        else:
+            last["data"] = {"_repeat": summary}
+        entry = {"scenario": scenario.id, "step": step.index, "tool": f"{step.name} ×{step.repeat}",
+                 "args": _resolve(step.args, results), "ok": last["ok"], "code": last["code"],
+                 "message": last["message"], "reaction_class": last["reaction_class"],
+                 "recovery": last["recovery"], "facts": last["facts"], "data": last["data"],
+                 "console": []}
+        self.trace.append(entry)
+        if self.journal:
+            self.journal.write(**entry)
+        return self._verify(scenario, step, last, "")
+
+    def _once(self, scenario: Scenario, step: Step, results: dict[str, Any],
+              return_observed: bool = False):
         args = _resolve(step.args, results)
         console_from = len(self.srv.console.lines)
         if step.python:
@@ -360,6 +399,8 @@ class Runner:
                  "ok": observed["ok"], "code": observed["code"], "message": observed["message"],
                  "reaction_class": observed["reaction_class"], "recovery": observed["recovery"],
                  "facts": observed["facts"], "data": observed["data"], "console": console}
+        if return_observed:
+            return observed
         self.trace.append(entry)
         if self.journal:
             self.journal.write(**entry)

@@ -665,8 +665,9 @@ ok(call("fs_create_python_script", path=f"{V2}/build.py",
         description="сборка сцен").status == "success", "обычный скрипт создаётся")
 _frag = call("fs_create_project_structure",
              fragments=[{"name": f"{V2}/frag.md", "type": "file", "content": "#!/bin/sh\necho x"}])
-ok(_frag.data["created"] == [] and
-   _frag.data["skipped"][0]["reason"] == "FILE_TYPE_FORBIDDEN", "фрагмент структуры тоже проверяется")
+ok(_frag.status == "error" and _frag.error.code == "VALIDATION_ERROR"
+   and "FILE_TYPE_FORBIDDEN" in (_frag.error.message or ""),
+   "фрагмент структуры проверяется, и запрет приходит ГРОМКИМ отказом, а не полем в успехе")
 _sigs = _fw_cfg.get("forbidden_content") or []
 ok(any(s.get("starts_with") == "#!" for s in _sigs) and any(s.get("starts_with_hex") for s in _sigs),
    "сигнатуры объявлены в firewall.yaml, а не в коде")

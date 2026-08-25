@@ -76,6 +76,7 @@ python3 scripts/blast_radius.py --affected                 # правка в д�
 VPM_SCENARIO='a,b' python3 tests/scenarios/test_scenarios.py   # точечный прогон (секунды)
 python3 tests/routes/test_routes.py                        # доезжает ли значение до клиента
 python3 scripts/blast_radius.py --check-routes             # рубеж маршрута ИСПОЛНЯЕТСЯ, а не «есть»
+python3 scripts/blast_radius.py --blind                    # размер МОЛЧАНИЯ карты (храповик, вниз можно)
 python3 scripts/what_if.py --intent intent.yaml            # реальность против ожиданий, в worktree
 python3 scripts/blast_radius.py --build                    # пересобрать карту (медленно, вручную)
 ```

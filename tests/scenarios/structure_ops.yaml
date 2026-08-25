@@ -62,7 +62,15 @@
       with:
         fragments:
           - {type: file, content: фрагмент без имени}
-      expect: {ok: false, code: VALIDATION_ERROR, open: F145}
+      expect: {ok: false, code: VALIDATION_ERROR, class: ai_recoverable, recovery: true}
+    - call: fs_create_project_structure
+      with:
+        fragments:
+          - {name: проекты/новый/годный.md, type: file, content: этот пройдёт}
+          - {name: проекты/новый/бинарь.exe, type: file, content: этот запрещён}
+      expect:
+        ok: true
+        facts: [StructureCreated, FragmentsSkipped]
 
 - scenario: str_memory_write_is_readable_back
   why: память проекта — канал решений; запись, которой не видит чтение, теряет обоснование навсегда

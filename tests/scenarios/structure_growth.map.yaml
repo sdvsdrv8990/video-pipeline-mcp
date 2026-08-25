@@ -120,4 +120,4 @@ transitions:
         with: {type: channel, name: ch2, parent_path: "niches/${ctx.niche}/networks/net/channels/"}
         expect: {ok: true, facts: [NodeCreated]}
 
-walk: {budget: 24}
+walk: {budget: 40, coverage: pairs}   # порядок вызовов — отдельный источник поведения

@@ -21,7 +21,7 @@ from .scenario import Check, Scenario, ScenarioError, Vocabulary, _reject_unknow
 MAP_KEYS = {"map", "why", "context", "start", "states", "transitions", "walk"}
 STATE_KEYS = {"means", "check", "terminal"}
 TRANSITION_KEYS = {"from", "to", "via", "carries"}
-WALK_KEYS = {"budget"}
+WALK_KEYS = {"budget", "coverage"}
 
 
 @dataclass
@@ -53,6 +53,13 @@ class ScenarioMap:
     states: dict[str, State]
     transitions: list[Transition]
     budget: int
+    coverage: str = "edges"
+
+
+def _coverage_level(value: str, where: str) -> str:
+    if value not in ("edges", "pairs"):
+        raise ScenarioError(f"{where}.walk.coverage: только `edges` или `pairs`, получено {value!r}")
+    return value
 
 
 def load_map(path: Path, vocab: Vocabulary) -> ScenarioMap:
@@ -99,7 +106,8 @@ def load_map(path: Path, vocab: Vocabulary) -> ScenarioMap:
     _reject_unknown(walk, WALK_KEYS, f"{where}.walk")
     return ScenarioMap(id=name, why=str(raw["why"]).strip(), context=dict(raw.get("context") or {}),
                        start=str(raw["start"]), states=states, transitions=transitions,
-                       budget=int(walk.get("budget") or 40))
+                       budget=int(walk.get("budget") or 40),
+                       coverage=_coverage_level(str(walk.get("coverage") or "edges"), where))
 
 
 # ═══ Разбор карты ДО прогона: что вообще из неё следует ═══
@@ -127,8 +135,20 @@ def analyse(smap: ScenarioMap) -> list[str]:
     return notes
 
 
+def _pairs(smap: ScenarioMap) -> list[tuple[int, int]]:
+    """Пары соседних переходов: `a` привёл в состояние, из которого делается `b`.
+
+    Порядок вызовов — отдельный источник поведения: покрытие каждого перехода по разу его не
+    видит, потому что каждый переход в нём встречается ровно в одном окружении.
+    """
+    return [(i, j) for i, a in enumerate(smap.transitions)
+            for j, b in enumerate(smap.transitions) if a.target == b.source]
+
+
 def plan(smap: ScenarioMap) -> list[list[int]]:
-    """Пути, покрывающие КАЖДЫЙ переход хотя бы раз. Префикс переиспользуется — путей меньше шагов."""
+    """Пути обхода. `coverage: edges` — каждый переход по разу; `pairs` — каждая ПАРА соседних."""
+    if smap.coverage == "pairs":
+        return _plan_pairs(smap)
     uncovered = set(range(len(smap.transitions)))
     paths: list[list[int]] = []
     while uncovered:
@@ -144,6 +164,26 @@ def plan(smap: ScenarioMap) -> list[list[int]]:
                                 "сузь карту или подними бюджет осознанно")
         paths.append(path)
         uncovered -= set(path)
+    return paths
+
+
+def _plan_pairs(smap: ScenarioMap) -> list[list[int]]:
+    """Путь на каждую непокрытую пару: префикс до её начала плюс сама пара."""
+    uncovered = set(_pairs(smap))
+    paths: list[list[int]] = []
+    spent = 0
+    for first, second in sorted(uncovered):
+        if (first, second) in {(p[k], p[k + 1]) for p in paths for k in range(len(p) - 1)}:
+            continue
+        prefix = _route_to(smap, smap.transitions[first].source)
+        if prefix is None:
+            raise ScenarioError(f"карта {smap.id}: до {smap.transitions[first].source!r} нет пути от старта")
+        path = prefix + [first, second]
+        spent += len(path)
+        if spent > smap.budget:
+            raise ScenarioError(f"карта {smap.id}: обход пар не влезает в бюджет {smap.budget} шагов — "
+                                "подними `walk.budget` осознанно или вернись к `coverage: edges`")
+        paths.append(path)
     return paths
 
 
