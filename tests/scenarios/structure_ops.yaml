@@ -120,3 +120,25 @@
       with: {pending: "${tree.tables_deferred}"}
       expect:
         ok: true
+
+- scenario: str_find_answers_which_id_to_address
+  why: адресация по ID начинается с поиска; пустой ответ на существующее имя отправляет ИИ обходить дерево руками
+  when:
+    - call: structure_create
+      with: {type: niche, name: находка, children: {network: [сетка]}}
+      expect: {ok: true}
+    - call: structure_find
+      with: {text: наход}
+      expect:
+        ok: true
+        data:
+          # Подстрока ищется и в ПУТИ, поэтому по имени ниши приходят четверо: сама ниша,
+          # сетка и ДВЕ материализованные книги. Меняет то, что ИИ возьмёт первым результатом.
+          count: 4
+          found.0.type: niche
+          found.1.type: network
+          found.2.type: table_file
+          found.0.label.trust: untrusted
+    - call: structure_find
+      with: {text: такого-имени-нет}
+      expect: {ok: true, data: {count: 0}}

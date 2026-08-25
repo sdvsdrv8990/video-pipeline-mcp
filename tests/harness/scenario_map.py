@@ -14,10 +14,9 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import yaml
 
 from .scenario import (ROOT, Check, Scenario, ScenarioError, Vocabulary, _reject_unknown, _steps,
-                       dig)
+                       dig, read_yaml)
 
 MAP_KEYS = {"map", "why", "context", "start", "states", "transitions", "walk"}
 STATE_KEYS = {"means", "check", "terminal"}
@@ -138,7 +137,7 @@ def _coverage_level(value: str, where: str) -> str:
 
 
 def load_map(path: Path, vocab: Vocabulary) -> ScenarioMap:
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    raw = read_yaml(path)
     if not isinstance(raw, dict):
         raise ScenarioError(f"{path.name}: карта — словарь, получено {type(raw).__name__}")
     name = str(raw.get("map") or "")

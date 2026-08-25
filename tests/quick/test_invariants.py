@@ -15,7 +15,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT))
 
 from invariants import (  # noqa: E402
-    codes_outside_registry, enum_without_values, resources_off_inventory, skips_without_ci,
+    codes_outside_registry, codes_without_emitter, declared_but_unscripted, enum_without_values,
+    resources_off_inventory, scenario_calls_unknown_tool, skips_without_ci,
     dispatch_by_value, status_off_registry, suites_off_catalog, used_before_declared,
 )
 
@@ -229,6 +230,52 @@ ok(not dispatch_by_value(make({"core/z.py": TWO})),
    "две ветки — выбор, а не таблица: молчим")
 ok(not dispatch_by_value(make({"core/z.py": MIXED})),
    "ветки по РАЗНЫМ именам — не диспетчеризация, молчим")
+
+print("\n== объявление сценария против описи и реестра ==")
+REGISTRY_TWO = ("ALIVE_CODE:\n  class: ai_recoverable\n"
+                "ORPHAN_CODE:\n  class: ai_recoverable\n")
+EMITTER = 'def f():\n    raise Err("ALIVE_CODE", "текст")\n'
+INVENTORY_TWO = '{"инстр_а": {}, "инстр_б": {}}'
+COVERS_ALL = ('- scenario: s\n  why: w\n  when:\n'
+              '    - call: инстр_а\n      expect: {ok: true}\n'
+              '    - call: инстр_б\n      expect: {ok: false, code: ALIVE_CODE}\n')
+
+ok(len(scenario_calls_unknown_tool(make({
+    "tests/quick/tools_inventory.golden.json": INVENTORY_TWO,
+    "tests/scenarios/a.yaml": '- scenario: s\n  why: w\n  when:\n    - call: снесённый\n      expect: {ok: true}\n',
+}))) == 1, "сценарий зовёт инструмент мимо описи — переименование оставило объявление в пустоту")
+ok(not scenario_calls_unknown_tool(make({
+    "tests/quick/tools_inventory.golden.json": INVENTORY_TWO,
+    "tests/scenarios/a.yaml": ('- scenario: s\n  why: w\n  when:\n    - call: нет_такого\n'
+                              '      expect: {ok: false, code: TOOL_NOT_FOUND}\n'),
+})), "несуществующее имя, когда ждут TOOL_NOT_FOUND, — предмет проверки, а не опечатка")
+
+ok(len(codes_without_emitter(make({"config/server_reactions.yaml": REGISTRY_TWO,
+                                   "core/z.py": EMITTER}))) == 1,
+   "код объявлен клиенту, а бросить его некому — обещание без держателя")
+ok(not codes_without_emitter(make({"config/server_reactions.yaml": "ALIVE_CODE:\n  class: ai_recoverable\n",
+                                   "core/z.py": EMITTER})),
+   "каждый объявленный код кто-то бросает — молчим")
+ok(len(codes_without_emitter(make({"config/server_reactions.yaml": REGISTRY_TWO,
+                                   "core/z.py": EMITTER,
+                                   "core/contracts/error_detail.py": 'KNOWN = ("ORPHAN_CODE",)\n'}))) == 1,
+   "код назван ТОЛЬКО в перечне контракта — он объявляет коды, а не бросает: находка остаётся")
+
+ok(not declared_but_unscripted(make({"config/server_reactions.yaml": REGISTRY_TWO,
+                                     "core/z.py": EMITTER,
+                                     "tests/quick/tools_inventory.golden.json": INVENTORY_TWO,
+                                     "tests/scenarios/a.yaml": COVERS_ALL})),
+   "оба инструмента позваны, живой код ожидается — сирота считается соседним сторожем, молчим")
+ok(len(declared_but_unscripted(make({"config/server_reactions.yaml": REGISTRY_TWO,
+                                     "core/z.py": EMITTER,
+                                     "tests/quick/tools_inventory.golden.json": INVENTORY_TWO,
+                                     "tests/scenarios/a.yaml": COVERS_ALL.replace("инстр_б", "инстр_а")}))) == 1,
+   "инструмент из описи не зовёт ни один сценарий — слепота выросла молча")
+ok(len(declared_but_unscripted(make({"config/server_reactions.yaml": REGISTRY_TWO,
+                                     "core/z.py": EMITTER,
+                                     "tests/quick/tools_inventory.golden.json": INVENTORY_TWO,
+                                     "tests/scenarios/a.yaml": COVERS_ALL.replace("ALIVE_CODE", "FOREIGN_CODE")}))) == 1,
+   "бросаемый код не ждёт ни один сценарий — новый код отказа без объявления")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

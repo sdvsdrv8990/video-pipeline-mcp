@@ -89,3 +89,23 @@
       expect:
         ok: true
         data: {sheet_count: 1}
+
+- scenario: xls_duplicate_sheet_is_refused_by_name
+  why: "повторный лист под тем же именем — не успех и не общий отказ: ИИ обязан узнать причину и не потерять книгу"
+  when:
+    - call: excel_create_workbook
+      with: {path: books/dup.xlsx, sheet: DATA}
+      expect: {ok: true}
+    - call: excel_add_sheet
+      with: {path: books/dup.xlsx, sheet: NOTES}
+      expect: {ok: true, facts: [SheetAdded]}
+    - call: excel_add_sheet
+      with: {path: books/dup.xlsx, sheet: NOTES}
+      expect: {ok: false, code: SHEET_EXISTS, class: ai_recoverable, console_absent: Traceback}
+    - call: excel_add_sheet
+      with: {path: books/нет-такой.xlsx, sheet: NOTES}
+      expect: {ok: false, code: WORKBOOK_NOT_FOUND, console_absent: Traceback}
+  then:
+    - call: inspect_file
+      with: {path: books/dup.xlsx}
+      expect: {ok: true, data: {sheet_count: 2}}

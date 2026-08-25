@@ -25,6 +25,8 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE = Path(__file__).with_name("invariants_baseline.txt")
 DISPATCH_BASELINE = Path(__file__).with_name("dispatch_baseline.txt")
+UNSCRIPTED_BASELINE = Path(__file__).with_name("unscripted_baseline.txt")
+ORPHAN_BASELINE = Path(__file__).with_name("orphan_codes_baseline.txt")
 # Две ветки — это выбор, три и больше по одному значению — уже таблица.
 DISPATCH_LIMIT = 3
 
@@ -34,12 +36,15 @@ TABLES = ("config", "templates", "tables")
 TESTS = ("tests",)
 CI = (".github", "workflows", "ci.yml")
 REGISTRY = ("config", "server_reactions.yaml")
+CONTRACT = ("core", "contracts", "error_detail.py")
 RESOURCES = ("config", "resources.yaml")
 ROADMAP = ("docs", "roadmap")
 FINDINGS = ("docs", "roadmap", "02_findings.md")
 INVENTORY = ("tests", "quick", "tools_inventory.golden.json")
 CATALOG = ("tests", "CATALOG.md")
 GATE = ("tests", "test_suites.py")
+SCENARIOS = ("tests", "scenarios")
+ROUTES = ("tests", "routes")
 
 
 def _at(root: Path, parts: tuple[str, ...]) -> Path:
@@ -429,18 +434,133 @@ def dispatch_by_value(root: Path = ROOT) -> list[str]:
     return notes
 
 
+def _scenario_declarations(root: Path) -> tuple[dict[str, set[str]], set[str]]:
+    """Что объявления сценариев ЗОВУТ (инструмент → ожидаемые от него коды) и какие коды ЖДУТ.
+
+    Разбор YAML, а не грепом: ожидание пишут и блоком, и потоком (`{ok: false, code: X}`), и на
+    втором виде греп теряет строку молча — покрытие мерялось бы меньше настоящего. Ожидание
+    хранится ПРИ инструменте, потому что вызов несуществующего имени бывает и предметом проверки.
+    """
+    calls: dict[str, set[str]] = {}
+    codes: set[str] = set()
+
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            if isinstance(node.get("call"), str):
+                expect = node.get("expect") or {}
+                want = str(expect.get("code") or "") if isinstance(expect, dict) else ""
+                calls.setdefault(node["call"], set()).add(want)
+            if isinstance(node.get("code"), str):
+                codes.add(node["code"])
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    for path in sorted(_at(root, SCENARIOS).glob("*.yaml")) + sorted(_at(root, ROUTES).glob("*.yaml")):
+        walk(yaml.safe_load(path.read_text(encoding="utf-8")))
+    return calls, codes
+
+
+def scenario_calls_unknown_tool(root: Path = ROOT) -> list[str]:
+    """Сценарий зовёт инструмент, которого нет в описи: переименование оставляет объявление
+    указывать в пустоту, и узнаётся это только на многоминутном прогоне против живого сервера.
+
+    Исключение — шаг, который ЖДЁТ `TOOL_NOT_FOUND`: там несуществующее имя и есть предмет.
+    """
+    inventory = _at(root, INVENTORY)
+    if not inventory.exists():
+        return []
+    known = set(json.loads(inventory.read_text(encoding="utf-8")))
+    calls, _ = _scenario_declarations(root)
+    return [f"tests/scenarios: сценарий зовёт `{tool}`, которого нет в описи инструментов"
+            for tool, wanted in sorted(calls.items())
+            if tool not in known and "TOOL_NOT_FOUND" not in wanted]
+
+
+QUOTED_CODE = re.compile(r'["\']([A-Z][A-Z_0-9]{3,})["\']')
+
+
+def _emitted_codes(root: Path) -> set[str]:
+    """Коды, которые сервер вообще способен бросить.
+
+    Перечень контракта `error_detail.py` исключён: он коды ОБЪЯВЛЯЕТ, и с ним живым выглядит
+    каждый. Берётся любая упомянутая в кавычках строка, а не одна форма вызова: `RAISED_CODE`
+    видит 61 код из 66, и сторож на нём обвинял бы живые пути — ложное обвинение выключают
+    быстрее, чем отсутствие сторожа.
+    """
+    sources = [p for p in sorted(list((root / "core").rglob("*.py")) + list((root / "tools").rglob("*.py")))
+               if "__pycache__" not in str(p) and p != _at(root, CONTRACT)]
+    if (root / "server.py").exists():
+        sources.append(root / "server.py")
+    found: set[str] = set()
+    for source in sources:
+        found |= set(QUOTED_CODE.findall(source.read_text(encoding="utf-8")))
+    return found
+
+
+def codes_without_emitter(root: Path = ROOT) -> list[str]:
+    """Код объявлен клиенту реестром — а бросить его некому: обещание, которого никто не держит.
+
+    Обратная сторона `codes_outside_registry`, и она молчала: ИИ читает реестр как перечень
+    возможных отказов и строит на нём восстановление, а такой отказ не придёт никогда.
+    """
+    registry = _at(root, REGISTRY)
+    if not registry.exists():
+        return []
+    declared = {k for k, v in (yaml.safe_load(registry.read_text(encoding="utf-8")) or {}).items()
+                if isinstance(v, dict)}
+    return [f"код `{code}` объявлен в server_reactions.yaml, но ни один путь сервера его не бросает"
+            for code in sorted(declared - _emitted_codes(root))]
+
+
+def declared_but_unscripted(root: Path = ROOT) -> list[str]:
+    """Сервер умеет ответить, но НИ ОДНО объявление сценария этого не ждёт.
+
+    Слепота растёт молча: новый код отказа попадает в реестр, новый инструмент — в опись, а
+    покрытие остаётся вчерашним. Храповик держит потолок, и долг закрывается ОБЪЯВЛЕНИЕМ в
+    `tests/scenarios/*.yaml` — python-скрипт на новый код писать не нужно.
+    """
+    calls, codes = _scenario_declarations(root)
+    notes = []
+    registry = _at(root, REGISTRY)
+    if registry.exists():
+        declared = {k for k, v in (yaml.safe_load(registry.read_text(encoding="utf-8")) or {}).items()
+                    if isinstance(v, dict)}
+        # Код, который бросить некому, сценарием не закрывается в принципе — он у соседнего
+        # сторожа, и считать его здесь значило бы требовать невозможного.
+        notes += [f"код отказа `{code}` сервер бросает, но ни один сценарий его не ждёт"
+                  for code in sorted((declared & _emitted_codes(root)) - codes)]
+    inventory = _at(root, INVENTORY)
+    if inventory.exists():
+        notes += [f"инструмент `{tool}` есть в описи, но ни один сценарий его не зовёт"
+                  for tool in sorted(set(json.loads(inventory.read_text(encoding="utf-8"))) - set(calls))]
+    return notes
+
+
 HARD = (("пропуск набора без покрытия в CI", skips_without_ci),
         ("имя используется до объявления", used_before_declared),
         ("код отказа мимо реестра", codes_outside_registry),
         ("объявление ресурсов мимо инвентаря", resources_off_inventory),
         ("статус находки мимо реестра", status_off_registry),
-        ("набор мимо каталога зон", suites_off_catalog))
+        ("набор мимо каталога зон", suites_off_catalog),
+        ("сценарий зовёт инструмент мимо описи", scenario_calls_unknown_tool))
 
-
-def ratchet(notes: list[str]) -> tuple[int, int]:
-    """Долг по `enum` без значений: вниз можно, вверх нет. Потолок — рядом, в baseline."""
-    limit = int(BASELINE.read_text(encoding="utf-8").strip()) if BASELINE.exists() else len(notes)
-    return len(notes), limit
+# Храповик: вниз можно, вверх нет. Потолок — в файле рядом, совет — как долг закрывается.
+RATCHETS = (
+    ("enum без значений", enum_without_values, BASELINE,
+     "Долг вырос. Почини столбцы выше или объясни в ревью: --bless"),
+    ("ветвление по значению вместо таблицы", dispatch_by_value, DISPATCH_BASELINE,
+     "Новая цепочка ветвления: объяви таблицу (config/*.yaml → генерик в core/) "
+     "или опусти потолок осознанно — --bless"),
+    ("объявлено клиенту, но бросить некому", codes_without_emitter, ORPHAN_BASELINE,
+     "Реестр обещает клиенту отказ, которого не бывает: либо путь, который его бросает, "
+     "либо снять строку из server_reactions.yaml и KNOWN_ERROR_CODES"),
+    ("объявлено сервером, но сценарием не покрыто", declared_but_unscripted, UNSCRIPTED_BASELINE,
+     "Новое объявление без сценария. Покрытие пишется ОБЪЯВЛЕНИЕМ в tests/scenarios/*.yaml "
+     "(`call` + `expect.code`), новый python-скрипт для этого не нужен — либо --bless с объяснением"),
+)
 
 
 def main() -> int:
@@ -459,36 +579,20 @@ def main() -> int:
         failed = failed or bool(notes)
 
     bless = "--bless" in sys.argv
-
-    notes = enum_without_values()
-    count, limit = ratchet(notes)
-    if not quiet or count > limit:
-        print(f"── enum без значений: {count} при потолке {limit}")
-    if bless:
-        BASELINE.write_text(f"{count}\n", encoding="utf-8")
-        print(f"   потолок записан: {count}")
-    elif count > limit:
-        for note in notes:
-            print(f"   ✗ {note}")
-        print("   Долг вырос. Почини столбцы выше или объясни в ревью: --bless")
-        failed = True
-
-    chains = dispatch_by_value()
-    ceiling = (int(DISPATCH_BASELINE.read_text(encoding="utf-8").strip())
-               if DISPATCH_BASELINE.exists() else len(chains))
-    if not quiet or len(chains) > ceiling:
-        print(f"── ветвление по значению вместо таблицы: {len(chains)} при потолке {ceiling}")
-    if bless:
-        DISPATCH_BASELINE.write_text(f"{len(chains)}\n", encoding="utf-8")
-        print(f"   потолок записан: {len(chains)}")
-        return 0
-    if len(chains) > ceiling:
-        for note in chains:
-            print(f"   ✗ {note}")
-        print("   Новая цепочка ветвления: объяви таблицу (config/*.yaml → генерик в core/) "
-              "или опусти потолок осознанно — --bless")
-        failed = True
-    return 1 if failed else 0
+    for title, check, baseline, advice in RATCHETS:
+        notes = check()
+        limit = int(baseline.read_text(encoding="utf-8").strip()) if baseline.exists() else len(notes)
+        if not quiet or len(notes) > limit:
+            print(f"── {title}: {len(notes)} при потолке {limit}")
+        if bless:
+            baseline.write_text(f"{len(notes)}\n", encoding="utf-8")
+            print(f"   потолок записан: {len(notes)}")
+        elif len(notes) > limit:
+            for note in notes:
+                print(f"   ✗ {note}")
+            print(f"   {advice}")
+            failed = True
+    return 0 if bless else (1 if failed else 0)
 
 
 if __name__ == "__main__":

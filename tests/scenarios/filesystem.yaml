@@ -91,3 +91,16 @@
       expect:
         ok: true
         facts: [FsSearchYaml]
+
+- scenario: fs_refusals_of_creation_paths_are_named
+  why: пути создания отказывают своими кодами, а не общим INTERNAL_ERROR — иначе ИИ не знает, что чинить
+  when:
+    - call: fs_create_python_script
+      with: {path: scripts/не-скрипт.txt, description: расширение мимо каркаса}
+      expect: {ok: false, code: INVALID_EXTENSION, class: ai_recoverable, console_absent: Traceback}
+    - call: fs_create_project_structure
+      with: {}
+      expect: {ok: false, code: NO_FRAGMENTS, class: ai_recoverable, console_absent: Traceback}
+    - call: fs_create_project_structure
+      with: {template: нет-такого-шаблона}
+      expect: {ok: false, code: TEMPLATE_NOT_FOUND, console_absent: Traceback}

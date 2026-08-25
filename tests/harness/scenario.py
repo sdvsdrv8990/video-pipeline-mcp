@@ -175,6 +175,19 @@ def _steps(raw: list, vocab: Vocabulary, where: str) -> list[Step]:
     return out
 
 
+def read_yaml(path: Path) -> Any:
+    """Кривой YAML — дефект ОБЪЯВЛЕНИЯ наравне с неизвестным ключом.
+
+    Без перехвата разборщик валит весь прогон трейсом, в котором файл-виновник не назван, а самая
+    частая причина — двоеточие с пробелом внутри незакавыченной строки (`why`, `means`).
+    """
+    try:
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ScenarioError(f"{path.name}: не разбирается как YAML — {exc}. Двоеточие с пробелом "
+                            "внутри строки требует кавычек") from exc
+
+
 def scenario_files(directory: Path) -> list[Path]:
     """Файлы сценариев каталога. Карты (`*.map.yaml`) — другой формат и другой загрузчик."""
     return [p for p in sorted(directory.glob("*.yaml")) if not p.name.endswith(".map.yaml")]
@@ -182,7 +195,7 @@ def scenario_files(directory: Path) -> list[Path]:
 
 def load(path: Path, vocab: Vocabulary) -> list[Scenario]:
     """Сценарии файла. Кривое объявление падает ЗДЕСЬ — до сервера, до первого вызова."""
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    raw = read_yaml(path)
     if not isinstance(raw, list):
         raise ScenarioError(f"{path.name}: файл — список сценариев, получено {type(raw).__name__}")
     out = []
@@ -231,6 +244,49 @@ def dig(data: Any, path: str) -> Any:
         else:
             return "_НЕТ_"
     return node
+
+
+def _shape(node: Any) -> str:
+    """Фраза для строки провала (не имя типа): ключи словаря, длина списка, тип и значение прочего."""
+    if isinstance(node, dict):
+        return f"словарь с ключами {sorted(node)}"
+    if isinstance(node, list):
+        return f"список из {len(node)}, первый — {_shape(node[0]) if node else 'пусто'}"
+    return f"{type(node).__name__} = {node!r}"
+
+
+def _where_it_broke(data: Any, path: str) -> str:
+    """На каком колене путь оборвался и что там лежит; пусто — значит путь целый.
+
+    Форму ответа не угадывают, её показывают: иначе промах по полю читается как отказ сервера,
+    хотя почти всегда неверно объявлено ожидание.
+    """
+    node, walked = data, []                    # type: Any, list[str]
+    for part in path.split("."):
+        step = dig(node, part)
+        if step == "_НЕТ_":
+            return f"путь оборвался на `{'.'.join(walked) or 'корне ответа'}` — там {_shape(node)}"
+        walked.append(part)
+        node = step
+    return ""
+
+
+def _advice(data: Any, path: str, found: Any) -> str:
+    """Совет добавляется, только когда поля НЕ НАШЛОСЬ: при несовпавшем значении подсказывать нечего."""
+    return f" · совет: {_where_it_broke(data, path)}" if found == "_НЕТ_" else ""
+
+
+_VOCAB: Vocabulary | None = None
+
+
+def vocabulary() -> Vocabulary:
+    """Реестр реакций — он же словарь советов."""
+    global _VOCAB
+    if _VOCAB is None:
+        # Читается один раз на процесс: второй читатель реестра разошёлся бы с первым,
+        # а правка YAML посреди прогона не подхватывается намеренно.
+        _VOCAB = Vocabulary()
+    return _VOCAB
 
 
 def _resolve(value: Any, results: dict[str, Any]) -> Any:
@@ -303,6 +359,26 @@ class Runner:
         self.journal = journal
         self.steps = steps or {}
         self.trace: list[dict] = []            # тот же след в памяти: по нему проверяются маршруты
+        self.vocab = vocabulary()
+
+    def _hint(self, arrived: str, expected: str) -> str:
+        """Совет при расхождении кода: что реестр говорит о ПРИШЕДШЕМ и куда смотреть дальше.
+
+        Провал обязан называть следующий шаг: «пришло не то» без адреса стоит того же разбора
+        заново на каждом прогоне.
+        """
+        if not arrived:
+            return ("отказ не наступил вовсе — условие шага не создано (аргументы, `given.files`) "
+                    "либо путь перестал быть запретным")
+        entry = self.vocab.codes.get(arrived) or {}
+        recovery = entry.get("recovery") or {}
+        said = f"реестр о {arrived}: класс {entry.get('class') or '—'}"
+        if recovery.get("suggested_tool"):
+            said += f", рецепт ведёт в `{recovery['suggested_tool']}`"
+        if not expected:
+            return said
+        return (f"{said}. Прав сервер — поправь `code:` в объявлении; прав сценарий — "
+                f"ищи, кто бросает {expected}: grep -rn '\"{expected}\"' core tools")
 
     def run(self, scenario: Scenario) -> list[Check]:
         checks: list[Check] = []
@@ -428,14 +504,20 @@ class Runner:
         # Исход и причина: при расхождении печатается ФАКТИЧЕСКИЙ код и сообщение сервера.
         if exp.ok:
             out.append(Check(scenario.id, f"{tag} → успех", got["ok"],
-                             f"вместо успеха {got['code'] or '(без кода)'}: {got['message']}"))
+                             f"вместо успеха {got['code'] or '(без кода)'}: {got['message']} · "
+                             f"совет: {self._hint(got['code'], '')}"))
         else:
             out.append(Check(scenario.id, f"{tag} → {exp.code}", got["code"] == exp.code,
-                             f"пришло {got['code'] or 'УСПЕХ'}: {got['message']}"))
+                             f"пришло {got['code'] or 'УСПЕХ'}: {got['message']} · "
+                             f"совет: {self._hint(got['code'], exp.code)}"))
             if exp.reaction_class:
+                # Класс объявлен реестром: если на проводе другой, теряется он по дороге,
+                # а не «сценарий ошибся» — это разрыв паритета контракта, а не опечатка.
+                declared = (self.vocab.codes.get(got["code"]) or {}).get("class") or "—"
                 out.append(Check(scenario.id, f"{tag} → класс {exp.reaction_class}",
                                  got["reaction_class"] == exp.reaction_class,
-                                 f"класс на проводе: {got['reaction_class'] or 'НЕ ДОЕХАЛ'}"))
+                                 f"класс на проводе: {got['reaction_class'] or 'НЕ ДОЕХАЛ'} · "
+                                 f"совет: реестр объявляет для {got['code'] or '—'} класс {declared}"))
             if exp.recovery is not None:
                 has = bool(got["recovery"] and (got["recovery"].get("reason") or got["recovery"].get("suggested_tool")))
                 out.append(Check(scenario.id, f"{tag} → рецепт восстановления", has == exp.recovery,
@@ -445,11 +527,13 @@ class Runner:
                              f"факты ответа: {got['facts']}"))
         for path, want in exp.data.items():
             found = dig(got["data"], path)
-            out.append(Check(scenario.id, f"{tag} → {path} = {want!r}", found == want, f"пришло {found!r}"))
+            out.append(Check(scenario.id, f"{tag} → {path} = {want!r}", found == want,
+                             f"пришло {found!r}{_advice(got['data'], path, found)}"))
         for path, part in exp.data_contains.items():
             found = dig(got["data"], path)
             out.append(Check(scenario.id, f"{tag} → {path} содержит {part!r}",
-                             isinstance(found, str) and part in found, f"пришло {found!r}"))
+                             isinstance(found, str) and part in found,
+                             f"пришло {found!r}{_advice(got['data'], path, found)}"))
         if exp.console:
             out.append(Check(scenario.id, f"{tag} → консоль /{exp.console}/",
                              re.search(exp.console, console, re.I | re.M) is not None,
