@@ -1,0 +1,44 @@
+# Весов моделей у гейта нет и не будет — гигабайты в CI не возят. Поэтому здесь проверяется то, что
+# от весов НЕ зависит: опись, статусы и КОНТРАКТ ОТКАЗА. Отказ обязан быть громким и с кодом реестра;
+# честный стаб, отвечающий успехом на невыполненную работу, — худшее, что может сделать этот слой.
+
+- scenario: media_inventory_and_status_answer_without_weights
+  why: опись и статусы — единственный способ ИИ узнать, чем он вообще располагает, до попытки генерации
+  when:
+    - call: media_models
+      with: {scope: spec}
+      expect:
+        ok: true
+    - call: media_install_status
+      with: {}
+      expect:
+        ok: true
+    - call: media_runner
+      with: {action: status}
+      expect:
+        ok: true
+
+- scenario: media_refusal_is_loud_and_coded
+  why: отсутствующая модель обязана давать код реестра, а не пустой успех — иначе ИИ ждёт файла, которого не будет
+  given:
+    files:
+      videos/med/read.json: |
+        {"SCENES": {"schema": {
+            "prompt": {"type": "string", "writable": true},
+            "status": {"type": "string", "writable": true}},
+          "rows": {"SC_1": {"prompt": "кадр с котом", "status": "draft"}}}}
+  when:
+    - call: media_provider_status
+      with: {table: videos/med}
+      expect:
+        ok: true
+    - call: media_model_install
+      with: {model_id: несуществующая-модель, kind: image}
+      expect:
+        ok: false
+        code: CONFIRM_REQUIRED
+    - call: media_generate
+      with: {table: videos/med, resource_type: image, input: кадр с котом, scene_id: SC_1}
+      expect:
+        ok: false
+        code: PROVIDER_NOT_CONFIGURED

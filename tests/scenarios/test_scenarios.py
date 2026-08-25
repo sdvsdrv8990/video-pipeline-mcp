@@ -41,6 +41,7 @@ def main() -> int:
                 scenarios = load(path, vocab)
             except ScenarioError as exc:
                 print(f"\n══ {path.name}: ОБЪЯВЛЕНИЕ НЕ ЗАГРУЖЕНО ══\n  {exc}")
+                total += 1
                 fails.append(f"{path.name}: {exc}")
                 continue
             # Отбор — список через запятую: точечный прогон задетой правкой части

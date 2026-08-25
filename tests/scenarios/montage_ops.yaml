@@ -1,0 +1,21 @@
+# Монтаж (план `19`) проверяется здесь ЦЕПОЧКОЙ ОТКАЗОВ: каждый называет ровно ту недостающую
+# часть, без которой сборка невозможна. Это и есть контракт, с которым ИИ встречается на неготовом
+# проекте, — и он обязан быть адресным, а не «не получилось». Рендер с настоящими ассетами требует
+# бинаря и весов, поэтому happy-path живёт в наборе монтажа, а здесь — то, что от них не зависит.
+- scenario: mnt_refusals_name_what_is_missing
+  why: рендер пустой сцены обязан сказать, ЧЕГО нет, а не молчать или падать
+  given:
+    files:
+      ch1/v1/read.json: |
+        {"SCENES": {"schema": {"scene_id": {"type": "string", "writable": true}},
+          "rows": {"S01": {"scene_id": "S01"}}}}
+  when:
+    - call: montage_render_scene
+      with: {table: ch1/v1, scene_id: S01}
+      expect: {ok: false, code: RENDER_PROFILE_INVALID}
+    - call: montage_scene_script
+      with: {table: ch1/v1, scene_id: S01}
+      expect: {ok: false, code: RENDER_PROFILE_INVALID}
+    - call: montage_generate_scene
+      with: {table: ch1/v1, scene_id: S01, template_id: несуществующий}
+      expect: {ok: false, code: TEMPLATE_NOT_FOUND}

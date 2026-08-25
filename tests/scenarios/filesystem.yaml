@@ -40,3 +40,54 @@
         facts: [DirectoryTree]
         data:
           вложенная/: {глубже.txt: {size: 3}}
+
+- scenario: fs_move_and_rename_keep_registry_in_sync
+  why: переезд файла, о котором знает диск, но не знает реестр, делает адресацию по ID ложью
+  when:
+    - call: fs_write_file
+      with: {path: notes/переезд.txt, content: содержимое до переезда}
+      expect:
+        ok: true
+        facts: [FileWritten]
+    - call: fs_move
+      with: {source: notes/переезд.txt, destination: docs/переехал.txt}
+      expect:
+        ok: true
+        facts: [FileMoved]
+    - call: fs_read_file
+      with: {path: docs/переехал.txt}
+      expect:
+        ok: true
+        data_contains: {content.value: содержимое до переезда}
+    - call: fs_rename
+      with: {path: docs/переехал.txt, new_name: итог.txt}
+      expect:
+        ok: true
+        facts: [FileRenamed]
+    - call: fs_read_file
+      with: {path: docs/итог.txt}
+      expect:
+        ok: true
+        data_contains: {content.value: содержимое до переезда}
+
+- scenario: fs_script_skeleton_and_yaml_search
+  why: каркас скрипта и YAML-поиск — отдельные пути записи и чтения, мимо обычного создания файла
+  when:
+    - call: fs_create_python_script
+      with: {path: scripts/пример.py, description: разбор витрины}
+      expect:
+        ok: true
+        facts: [FileCreated]
+    - call: fs_read_file
+      with: {path: scripts/пример.py}
+      expect:
+        ok: true
+        data_contains: {content.value: разбор витрины}
+    - call: fs_search_yaml
+      with:
+        yaml_query: |
+          root: scripts
+          name_pattern: пример
+      expect:
+        ok: true
+        facts: [FsSearchYaml]

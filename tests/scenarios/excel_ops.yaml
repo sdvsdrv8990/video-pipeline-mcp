@@ -1,0 +1,91 @@
+# Правки книги проверяются ОСМОТРОМ той же книги следующим вызовом: openpyxl молча принимает почти
+# всё, и отчёт «успех» здесь ничего не значит, пока состав листов и ячеек не прочитан обратно.
+
+- scenario: xls_sheets_added_renamed_reordered
+  why: лист, о котором отчитались, но которого нет в книге, — потеря данных, видимая только пользователю
+  when:
+    - call: excel_create_workbook
+      with: {path: books/sheets.xlsx, sheet: DATA}
+      expect: {ok: true}
+    - call: excel_add_sheet
+      with: {path: books/sheets.xlsx, sheet: NOTES}
+      expect:
+        ok: true
+        facts: [SheetAdded]
+    - call: inspect_file
+      with: {path: books/sheets.xlsx}
+      expect:
+        ok: true
+        data: {sheet_count: 2}
+    - call: excel_rename_sheet
+      with: {path: books/sheets.xlsx, sheet: NOTES, new_name: REMARKS}
+      expect:
+        ok: true
+        facts: [SheetRenamed]
+    - call: get_sheet_info
+      with: {path: books/sheets.xlsx, sheet: REMARKS}
+      expect:
+        ok: true
+        facts: [SheetInfoRead]
+    - call: excel_reorder_sheets
+      with: {path: books/sheets.xlsx, order: [REMARKS, DATA]}
+      expect:
+        ok: true
+        facts: [SheetsReordered]
+    - call: inspect_file
+      with: {path: books/sheets.xlsx}
+      expect:
+        ok: true
+        data: {sheet_count: 2}
+
+- scenario: xls_formula_inserted_and_validated
+  why: формула-мусор, принятая без проверки, ломает книгу тихо — отказ обязан прийти на проверке, а не у пользователя
+  when:
+    - call: excel_create_workbook
+      with: {path: books/form.xlsx, sheet: DATA}
+      expect: {ok: true}
+    - call: excel_add_column
+      with: {path: books/form.xlsx, sheet: DATA, column: price}
+      expect: {ok: true}
+    - call: excel_add_column
+      with: {path: books/form.xlsx, sheet: DATA, column: qty}
+      expect: {ok: true}
+    - call: excel_insert_formula
+      with: {path: books/form.xlsx, sheet: DATA, cell: C2, formula: "=A2*B2"}
+      expect:
+        ok: true
+        facts: [FormulaInserted]
+    - call: excel_validate_formulas
+      with: {path: books/form.xlsx}
+      expect:
+        ok: true
+        facts: [FormulasValidated]
+    - call: excel_read_range
+      with: {path: books/form.xlsx, sheet: DATA, cell_range: C2:C2}
+      expect:
+        ok: true
+
+- scenario: xls_formatting_and_validation_applied
+  why: оформление и перечень допустимых значений — часть контракта книги для пользователя, а не украшение
+  when:
+    - call: excel_create_workbook
+      with: {path: books/fmt.xlsx, sheet: DATA}
+      expect: {ok: true}
+    - call: excel_add_column
+      with: {path: books/fmt.xlsx, sheet: DATA, column: status}
+      expect: {ok: true}
+    - call: excel_apply_formatting
+      with: {path: books/fmt.xlsx, sheet: DATA, target: A1, bold: true}
+      expect:
+        ok: true
+        facts: [FormattingApplied]
+    - call: excel_set_validation
+      with: {path: books/fmt.xlsx, sheet: DATA, column: status, allowed: [draft, ready]}
+      expect:
+        ok: true
+        facts: [ValidationSet]
+    - call: inspect_file
+      with: {path: books/fmt.xlsx}
+      expect:
+        ok: true
+        data: {sheet_count: 1}

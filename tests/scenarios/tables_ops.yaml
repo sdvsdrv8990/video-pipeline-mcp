@@ -1,0 +1,95 @@
+# Запись в таблицу ОТЛОЖЕНА: append/update/delete кладутся в очередь и становятся видимыми только
+# после `json_execute_queue`. Поэтому проверка «позвал и сразу прочитал» здесь ничего не доказывает —
+# цепочка обязана пройти через применение очереди, иначе она подтвердит ровно противоположное.
+
+- scenario: tbl_write_is_queued_then_visible
+  why: клиент должен знать, что запись отложена; «успех» без применения очереди читается как «сохранено»
+  given:
+    files:
+      videos/ops/read.json: |
+        {"META": {"schema": {
+            "title": {"type": "string", "writable": true},
+            "status": {"type": "string", "writable": true}},
+          "rows": {"VID_1": {"title": "Hook", "status": "draft"}}}}
+  when:
+    - call: table_append
+      with: {table: videos/ops, sheet: META, data: {title: Intro, status: draft}, id_prefix: VID}
+      expect:
+        ok: true
+        facts: [RowAppended]
+    - call: table_find_row
+      with: {table: videos/ops, sheet: META, where: {status: draft}}
+      expect:
+        ok: true
+        facts: [RowsFound]
+        data: {count: 1}
+    - call: json_execute_queue
+      with: {table: videos/ops}
+      expect:
+        ok: true
+        data: {applied: 1}
+    - call: table_find_row
+      with: {table: videos/ops, sheet: META, where: {status: draft}}
+      expect:
+        ok: true
+        data: {count: 2}
+    - call: table_get_column
+      with: {table: videos/ops, sheet: META, column: status}
+      expect:
+        ok: true
+        facts: [ColumnRead]
+    - call: table_update
+      with: {table: videos/ops, sheet: META, row_id: VID_1, data: {status: ready}}
+      expect:
+        ok: true
+        facts: [RowUpdated]
+    - call: json_execute_queue
+      with: {table: videos/ops}
+      expect:
+        ok: true
+        data: {applied: 1}
+    - call: table_find_row
+      with: {table: videos/ops, sheet: META, where: {status: draft}}
+      expect:
+        ok: true
+        data: {count: 1}
+
+- scenario: tbl_queue_push_is_really_queued
+  why: очередь, принявшая действие и потерявшая его, неотличима от очереди, которая его применила
+  given:
+    files:
+      videos/queue/read.json: |
+        {"META": {"schema": {"status": {"type": "string", "writable": true}},
+          "rows": {"VID_1": {"status": "draft"}}}}
+  when:
+    - call: json_push_to_queue
+      with:
+        table: videos/queue
+        action: {action: set, sheet: META, row_id: VID_1, column: status, value: ready}
+      expect:
+        ok: true
+        facts: [QueuePushed]
+    - call: json_read_snapshot
+      with: {table: videos/queue}
+      expect:
+        ok: true
+        facts: [SnapshotRead]
+    - call: json_clear_queue
+      with: {table: videos/queue}
+      expect:
+        ok: true
+        facts: [QueueCleared]
+        data: {cleared: 1}
+
+- scenario: tbl_uniqueness_answers_through_the_wire
+  why: слой уникальности обязан отвечать контрактом, а не молчанием — «нет данных» это не «ноль»
+  given:
+    files:
+      videos/uniq/read.json: |
+        {"META": {"schema": {"title": {"type": "string", "writable": true}},
+          "rows": {"VID_1": {"title": "Hook"}}}}
+  when:
+    - call: uniqueness_check
+      with: {table: videos/uniq, row_id: VID_1}
+      expect:
+        ok: true

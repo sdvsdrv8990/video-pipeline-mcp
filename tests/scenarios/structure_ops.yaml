@@ -1,0 +1,114 @@
+# Адресация здесь живёт в ДВУХ местах — на диске и в реестре связей, — и расходятся они молча.
+# Поэтому каждый шаг, меняющий структуру, проверяется чтением реестра, а не своим же ответом.
+
+- scenario: str_preview_create_and_registry_agree
+  why: предпросмотр обещает цепочку, создание её выдаёт; разойдясь, они делают адресацию по ID ложью
+  when:
+    - call: structure_resolve
+      with: {path: niches/проба}
+      expect:
+        ok: true
+    - call: structure_create
+      with: {type: niche, name: проба, children: {channel: [наш]}}
+      as: tree
+      expect:
+        ok: true
+    - call: structure_resolve
+      with: {path: niches/проба}
+      expect:
+        ok: true
+    - call: structure_status
+      with: {}
+      expect:
+        ok: true
+
+- scenario: str_remember_customize_link_reach_the_registry
+  why: ярлык, правка шаблона и связь — три разных пути записи в один реестр; молчащий путь теряет знание
+  when:
+    - call: structure_create
+      with: {type: niche, name: связи, children: {channel: [канал]}}
+      expect:
+        ok: true
+    - call: structure_remember
+      with: {path: niches/связи, label: рабочая ниша}
+      expect:
+        ok: true
+    - call: structure_customize
+      with: {path: niches/связи}
+      expect:
+        ok: true
+    - call: structure_status
+      with: {}
+      expect:
+        ok: true
+
+- scenario: str_project_structure_from_template
+  why: материализация по шаблону — отдельный путь создания, мимо structure_create
+  when:
+    - call: fs_create_project_structure
+      with:
+        fragments:
+          - {name: проекты/новый/сырьё, type: directory}
+          - {name: проекты/новый/заметки.md, type: file, content: черновик проекта}
+      expect:
+        ok: true
+        facts: [StructureCreated]
+    - call: fs_read_file
+      with: {path: проекты/новый/заметки.md}
+      expect:
+        ok: true
+        data_contains: {content.value: черновик проекта}
+    - call: fs_create_project_structure
+      with:
+        fragments:
+          - {type: file, content: фрагмент без имени}
+      expect: {ok: false, code: VALIDATION_ERROR, open: F145}
+
+- scenario: str_memory_write_is_readable_back
+  why: память проекта — канал решений; запись, которой не видит чтение, теряет обоснование навсегда
+  when:
+    - call: memory_write
+      with:
+        path: memory/решения.md
+        entry_date: "2026-08-25"
+        title: пробное решение
+        decision: пишем сценариями, а не наборами
+        reason: проводку видно только через провод
+      expect:
+        ok: true
+    - call: memory_read
+      with: {path: memory/решения.md}
+      expect:
+        ok: true
+        data: {exists: true}
+
+- scenario: str_link_migrate_index_and_materialize
+  why: связь, переезд, индексация памяти и отложенные книги — четыре разных пути записи в один реестр
+  given:
+    files:
+      memory/решения.md: |
+        # Решения
+        ## 2026-08-25 — пробное
+        Решение: проверить индексацию памяти.
+  when:
+    - call: structure_create
+      with: {type: niche, name: м1, children: {network: [сеть], channel: [канал]}}
+      as: tree
+      expect:
+        ok: true
+    - call: structure_link
+      with: {child_type: channel, child_name: канал, parent_type: niche, parent_name: м1}
+      expect:
+        ok: true
+    - call: structure_migrate
+      with: {entity_id: "${tree.entities.0.id}", new_path: niches/переехавшая}
+      expect:
+        ok: true
+    - call: structure_index_memory
+      with: {path: memory/решения.md}
+      expect:
+        ok: true
+    - call: structure_materialize_tables
+      with: {pending: "${tree.tables_deferred}"}
+      expect:
+        ok: true
