@@ -11,6 +11,7 @@
     python3 scripts/blast_radius.py --affected              # какие сценарии гнать ИМЕННО сейчас
     python3 scripts/blast_radius.py --check-routes          # рубеж маршрута реально ИСПОЛНЯЛСЯ
 """
+import ast
 import argparse
 import json
 import os
@@ -36,6 +37,7 @@ from tests.scenarios.steps import STEPS  # noqa: E402
 SCENARIOS = ROOT / "tests" / "scenarios"
 RADIUS = ROOT / "tests" / ".blast" / "radius.json"
 BLIND_BASELINE = Path(__file__).with_name("blast_blind_baseline.txt")
+COVERED = ROOT / "tests" / ".blast" / "covered_functions.json"
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 
@@ -92,7 +94,13 @@ def build() -> dict:
 
     RADIUS.parent.mkdir(parents=True, exist_ok=True)
     RADIUS.write_text(json.dumps(radius, ensure_ascii=False), encoding="utf-8")
-    print(f"\nКарта радиуса: {RADIUS} · файлов {len(radius)}")
+    # Строки живут ровно до следующей правки: сдвинулись номера — число стало мусором. Поэтому
+    # исполненное переводится в ИМЕНА функций здесь, где код и строки ещё согласованы.
+    covered = {rel: sorted(_functions_hit(rel, {n for lines in by.values() for n in lines}))
+               for rel, by in radius.items() if rel in set(_measured_files())}
+    COVERED.write_text(json.dumps(covered, ensure_ascii=False), encoding="utf-8")
+    print(f"\nКарта радиуса: {RADIUS} · файлов {len(radius)}; исполненных функций: "
+          f"{sum(len(v) for v in covered.values())}")
     return radius
 
 
@@ -205,6 +213,29 @@ def check_routes() -> int:
     return 1 if bad else 0
 
 
+def _functions(rel: str) -> dict[str, tuple[int, int]]:
+    """Имя функции → диапазон строк. Имя переживает правки, номер строки — нет."""
+    tree = ast.parse((ROOT / rel).read_text(encoding="utf-8"))
+    out: dict[str, tuple[int, int]] = {}
+
+    def walk(node, prefix: str):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                name = f"{prefix}{child.name}"
+                out[name] = (child.lineno, getattr(child, "end_lineno", child.lineno))
+                walk(child, f"{name}.")
+            elif isinstance(child, ast.ClassDef):
+                walk(child, f"{prefix}{child.name}.")
+    walk(tree, "")
+    return out
+
+
+def _functions_hit(rel: str, lines: set[int]) -> set[str]:
+    """Функции, которых коснулось исполнение: хотя бы одна строка тела внутри диапазона."""
+    return {name for name, (start, end) in _functions(rel).items()
+            if any(start <= n <= end for n in lines)}
+
+
 def _statements(rel: str) -> set[int]:
     """Исполнимые строки файла СТАТИЧЕСКИ: опись из сборки не годится — новый код в неё не попал бы,
     и сторож молчал бы ровно там, где обязан кричать."""
@@ -220,33 +251,36 @@ def _measured_files() -> list[str]:
 
 
 def blind() -> int:
-    """Строки сервера, которых не исполняет НИ ОДИН сценарий, — размер молчания карты.
+    """Функции сервера, которых не исполняет НИ ОДИН сценарий, — размер молчания карты.
 
-    Храповик: вниз можно, вверх нет. Новый непокрытый путь растит число, и гейт краснеет — иначе
-    карта молчит именно о том, чего в неё не положили.
+    Считаем ИМЕНА, а не строки: номера сдвигаются от любой правки, и построчное число живёт ровно до
+    следующего касания файла — такой улике верить нельзя. Имя переживает правку, а новая непокрытая
+    функция всё так же растит счёт. Код 2 — улики нет (карта не собрана), это не то же самое, что
+    «молчание выросло»: ложное обвинение выключает сторожа быстрее, чем его отсутствие.
     """
-    radius = _load()
+    if not COVERED.exists():
+        print(f"── улики нет: {COVERED} не собран. Пересобери карту — `--build`.")
+        return 2
+    covered = json.loads(COVERED.read_text(encoding="utf-8"))
     worst: list[tuple[int, str]] = []
     total = 0
     for rel in _measured_files():
-        covered: set[int] = set()
-        for executed in (radius.get(rel) or {}).values():
-            covered.update(executed)
-        missed = len(_statements(rel) - covered)
-        total += missed
-        if missed:
-            worst.append((missed, rel))
+        silent = set(_functions(rel)) - set(covered.get(rel) or [])
+        total += len(silent)
+        if silent:
+            worst.append((len(silent), rel))
     limit = int(BLIND_BASELINE.read_text(encoding="utf-8").strip()) if BLIND_BASELINE.exists() else total
-    print(f"── строк вне всех сценариев: {total} при потолке {limit}")
+    print(f"── функций вне всех сценариев: {total} при потолке {limit}")
     for missed, rel in sorted(worst, reverse=True)[:8]:
-        print(f"   {missed:5d}  {rel}")
+        print(f"   {missed:4d}  {rel}")
     if "--bless" in sys.argv:
         BLIND_BASELINE.write_text(f"{total}\n", encoding="utf-8")
         print(f"   потолок опущен до {total}")
         return 0
     if total > limit:
-        print(f"   ✗ молчание выросло на {total - limit}: правка добавила код, который не исполняет "
-              "ни один сценарий — объяви сценарий или сузь правку")
+        print(f"   ✗ молчание выросло на {total - limit}: появились функции, которых не исполняет "
+              "ни один сценарий. Объяви сценарий, потом пересобери карту (`--build`) и опусти "
+              "потолок (`--blind --bless`) — до пересборки новая функция и должна числиться молчащей")
         return 1
     return 0
 
