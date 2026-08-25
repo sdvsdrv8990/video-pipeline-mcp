@@ -183,7 +183,7 @@ attackers_outbound:
     technique: обманутая (через OUT1) модель бьёт по данным клиента
     expect: destructiveHint gate на КАЖДОМ; containment на write/move/delete; force-confirm
     mitigation: destructiveHint везде + containment + подтверждение
-    extends: render_draft_final (деструктив-сторона)
+    extends: tests/scenarios/filesystem.yaml (деструктив-сторона)
     status: implemented   # S24: containment подтверждён роем на delete/move/write;
                           # destructiveHint снят ОСОЗНАННО (у Claude AI Web это калитка авторизации)
   - id: atk_exfil_via_param

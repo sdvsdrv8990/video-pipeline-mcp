@@ -366,6 +366,11 @@ def suites_off_catalog(root: Path = ROOT) -> list[str]:
         if SUITE_ZONE.match(zone) and zone not in have:
             notes.append(f"tests/CATALOG.md: зона `{zone}` объявлена, а набора нет — "
                          "расширять предлагается несуществующее")
+        # Судим по наборам, а не по каталогу: `git rm` уносит файлы, но каталог остаётся жив
+        # из-за `__pycache__`, и зона по существованию каталога считалась бы живой после сноса.
+        elif zone.endswith("/") and not any(k.startswith(zone) for k in have):
+            notes.append(f"tests/CATALOG.md: зона `{zone}` объявлена, а наборов в ней нет — "
+                         "снесённый набор продолжает числиться живым")
     return notes
 
 HARD = (("пропуск набора без покрытия в CI", skips_without_ci),

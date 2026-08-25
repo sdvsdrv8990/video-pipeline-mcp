@@ -27,7 +27,6 @@ tests/
 │   └── tools_inventory.golden.json — эталон инвентаря (обновляется только --bless)
 ├── bot_army/ · cache_injection/ · cache_overflow/ · config_change/ · virus_injection/
 │                                — adversarial-симуляции (Security/System)
-├── render_draft_final/          — workflow-набор (провайдеры = честные стабы)
 └── agent_swarm/                 — patterns.yaml (36 паттернов); раннер — этап T6
 ```
 

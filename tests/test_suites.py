@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LIVE: set[str] = set()
 # Adversarial-симуляции: маркер для селекции (`-m sim`), в гейте участвуют наравне.
 SIM_DIRS = {"virus_injection", "cache_injection", "cache_overflow", "bot_army", "config_change",
-            "render_draft_final", "agent_swarm"}
+            "agent_swarm"}
 # Не наборы: этот раннер и его инфраструктура.
 SKIP_FILES = {"test_suites.py", "conftest.py"}
 # Не наборы: харнесс — библиотека для наборов, а не набор (в нём нет своих проверок).

@@ -197,6 +197,15 @@ ok(not suites_off_catalog(make({"tests/test_suites.py": GATE_SRC,
                                 "tests/sim_zone/test_c.py": "x = 1\n",
                                 "tests/CATALOG.md": "| Набор | Зона |\n|---|---|\n| `sim_zone/` | зона C |\n"})),
    "набор-каталог объявлен ключом `dir/` — молчим")
+ok(len(suites_off_catalog(make({"tests/test_suites.py": GATE_SRC,
+                                "tests/quick/test_a.py": "x = 1\n",
+                                "tests/CATALOG.md": ZONE_ROW + "| `снесённый/` | зона D |\n"}))) == 1,
+   "зона-каталог объявлена, а каталога нет — снесённый набор числится живым")
+ok(len(suites_off_catalog(make({"tests/test_suites.py": GATE_SRC,
+                                "tests/quick/test_a.py": "x = 1\n",
+                                "tests/снесённый/__pycache__/старое.pyc": "мусор",
+                                "tests/CATALOG.md": ZONE_ROW + "| `снесённый/` | зона D |\n"}))) == 1,
+   "каталог зоны жив мусором (`__pycache__`), наборов в нём нет — зона всё равно мертва")
 ok(not suites_off_catalog(make({"tests/test_suites.py": GATE_SRC,
                                 "tests/harness/test_helper.py": "x = 1\n",
                                 "tests/CATALOG.md": "| Тест | Зона |\n|---|---|\n| `нет` | — |\n"})),

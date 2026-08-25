@@ -1,0 +1,42 @@
+# Файловые инструменты держат слово: что записали ЧЕРЕЗ ИНСТРУМЕНТ — то и прочли через инструмент.
+# Остальные сценарии кладут файлы фикстурой `given.files` прямо на диск, поэтому путь записи в них
+# не исполняется вовсе — замена вызова на фикстуру здесь снимает единственное покрытие записи.
+
+- scenario: fs_write_read_roundtrip
+  why: молча потерянное содержимое неотличимо от успеха — клиент получил «создано» и пустой файл
+  when:
+    - call: fs_create_file
+      with:
+        path: notes/roundtrip.txt
+        content: |
+          первая строка заметки
+          ХВОСТ-МАРКЕР-КОНЦА
+      expect:
+        ok: true
+        facts: [FileCreated]
+    - call: fs_read_file
+      with: {path: notes/roundtrip.txt}
+      expect:
+        ok: true
+        facts: [FileRead]
+        data:
+          content.trust: untrusted
+          content.provenance: workspace:notes/roundtrip.txt
+        data_contains:
+          content.value: ХВОСТ-МАРКЕР-КОНЦА
+
+- scenario: fs_written_file_appears_in_tree
+  why: запись, которой не видно в обходе каталога, оставляет клиента с неверной картой области
+  when:
+    - call: fs_create_file
+      with: {path: notes/вложенная/глубже.txt, content: abc}
+      expect:
+        ok: true
+        facts: [FileCreated]
+    - call: fs_get_directory_tree
+      with: {path: notes}
+      expect:
+        ok: true
+        facts: [DirectoryTree]
+        data:
+          вложенная/: {глубже.txt: {size: 3}}

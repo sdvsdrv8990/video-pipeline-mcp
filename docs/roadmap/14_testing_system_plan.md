@@ -26,7 +26,7 @@
 | `quick/test_structure.py` | 35/35 | скрипт | ✅ |
 | `quick/test_tables.py` | 33/33 | скрипт | ✅ |
 | `quick/test_table_materializer.py` | 30/30 | скрипт | ✅ |
-| `virus_injection` · `cache_injection` · `bot_army` · `cache_overflow` · `config_change` · `render_draft_final` | 5·5·22·4·11·15 = 62 | скрипты (in-process `Firewall`/`create_server`) | ✅ |
+| `virus_injection` · `cache_injection` · `bot_army` · `cache_overflow` · `config_change` | 5·5·22·4·11 = 47 | скрипты (in-process `Firewall`/`create_server`) | ✅ |
 | `quick/test_tunnel.py` | 20/20 | скрипт, **работает оффлайн** | ❌ исключён как «нужен туннель» |
 | `quick/test_firewall.py` | 4 теста | нужен живой сервер `:8080` | ❌ |
 
