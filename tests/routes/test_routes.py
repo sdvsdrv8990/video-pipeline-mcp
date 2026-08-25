@@ -102,6 +102,14 @@ def _filled(value) -> bool:
     return value not in (None, "", [], {}, "_НЕТ_", False)
 
 
+def _parent(selector: str) -> str | None:
+    """`data.results.0.trust` → `data.results.0`; у верхнеуровневого и у `console:` родителя нет."""
+    if selector.startswith("console:"):
+        return None
+    head, sep, _ = selector.rpartition(".")
+    return head if sep else None
+
+
 def main() -> int:
     routes = load_routes()
     print(f"Маршрутов объявлено: {len(routes)}")
@@ -154,6 +162,16 @@ def main() -> int:
                 ok(arrived, f"{route['route']}: {selector} доезжает",
                    f"ни на одном шаге {scenario_id} значения нет ({[v for v in seen if _filled(v)] or 'пусто везде'})")
             else:
+                # Отсутствие значения доказывает разрыв только там, где значение вообще может
+                # появиться: у опечатки в селекторе следа не бывает НИКОГДА, и «разрыв подтверждён»
+                # зеленело бы вечно — в том числе после починки разрыва.
+                parent = _parent(selector)
+                observable = parent is None or any(_filled(observe(e, parent)) for e in steps)
+                if not observable:
+                    ok(False, f"{route['route']}: {selector} наблюдаем",
+                       f"ни на одном шаге {scenario_id} нет даже родителя `{parent}` — "
+                       "это опечатка в объявлении, а не подтверждённый разрыв")
+                    continue
                 ok(not arrived,
                    f"{route['route']}: {selector} НЕ доезжает — разрыв {proof['finding']} подтверждён",
                    f"значение появилось ({[v for v in seen if _filled(v)]}) — разрыв закрыт, обнови "
