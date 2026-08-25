@@ -1,0 +1,82 @@
+# Три табличных поиска — это ТРИ ПРЕСЕТА одного `QueryPlan` (один `execute_plan`), поэтому сценарии
+# ниже похожи друг на друга. Различается ровно проводка: какой пресет собрал хендлер и какой факт
+# уехал клиенту, — а этого не видно ни одному тесту, работающему с движком напрямую.
+
+- scenario: srch_quick_filters_one_table
+  why: быстрый поиск обещает «одно чтение с фильтром» — если фильтр не доехал до плана, ИИ получит всё
+  given:
+    files:
+      videos/srch/read.json: |
+        {"META": {"schema": {
+            "title": {"type": "string", "writable": true},
+            "status": {"type": "string", "writable": true}},
+          "rows": {
+            "VID_1": {"title": "Hook", "status": "draft"},
+            "VID_2": {"title": "Intro", "status": "draft"},
+            "VID_3": {"title": "Outro", "status": "ready"}}}}
+  when:
+    - call: search_quick
+      with: {table: videos/srch, sheet: META, filter_col: status, filter_op: eq, filter_val: draft}
+      expect:
+        ok: true
+        facts: [QuickSearch]
+        data: {metadata.total_rows: 2}
+
+- scenario: srch_smart_query_through_dict
+  why: умный поиск разбирает объявленный запрос — потеря чтения даёт пустой ответ вместо отказа
+  given:
+    files:
+      videos/smart/read.json: |
+        {"META": {"schema": {"status": {"type": "string", "writable": true}},
+          "rows": {"VID_1": {"status": "draft"}, "VID_2": {"status": "ready"}}}}
+  when:
+    - call: search_tables
+      with:
+        query_dict:
+          name: smart
+          reads: [{table: videos/smart, sheet: META, columns: [], filter: {}}]
+          limit: 10
+      expect:
+        ok: true
+        facts: [SearchCompleted]
+        data: {metadata.total_rows: 2}
+
+- scenario: srch_multi_joins_two_tables
+  why: поиск с объединением — единственный, кто умеет JOIN; потеря ключа даёт тихо пустой ответ
+  given:
+    files:
+      videos/left/read.json: |
+        {"META": {"schema": {"vid": {"type": "string", "writable": true},
+                             "title": {"type": "string", "writable": true}},
+          "rows": {"R1": {"vid": "V1", "title": "Hook"}, "R2": {"vid": "V2", "title": "Intro"}}}}
+      videos/right/read.json: |
+        {"META": {"schema": {"vid": {"type": "string", "writable": true},
+                             "views": {"type": "int", "writable": true}},
+          "rows": {"R1": {"vid": "V1", "views": 100}, "R2": {"vid": "V2", "views": 200}}}}
+  when:
+    - call: search_multi
+      with:
+        tables:
+          - {table: videos/left, sheet: META, columns: [], filter: {}}
+          - {table: videos/right, sheet: META, columns: [], filter: {}}
+        join_key: vid
+      expect:
+        ok: true
+        facts: [MultiSearch]
+
+- scenario: srch_fs_multi_runs_every_declared_query
+  why: многозадачный поиск обязан отчитаться по КАЖДОМУ запросу — потерянная задача выглядит как «не нашлось»
+  given:
+    files:
+      docs/один.md: первый документ
+      docs/два.md: второй документ
+  when:
+    - call: fs_search_multi
+      with:
+        queries:
+          - {root: docs, name_pattern: один}
+          - {root: docs, name_pattern: два}
+      expect:
+        ok: true
+        facts: [FsSearchMulti]
+        data: {total_tasks: 2}

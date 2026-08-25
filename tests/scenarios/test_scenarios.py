@@ -34,6 +34,7 @@ def main() -> int:
     ran: set[str] = set()
     journal = Journal(JOURNAL_DIR / f"scenarios-{time.strftime('%Y%m%d-%H%M%S')}.jsonl")
     total, fails = 0, []
+    matched: set[str] = set()
     try:
         for path in files:
             try:
@@ -45,7 +46,9 @@ def main() -> int:
             # Отбор — список через запятую: точечный прогон задетой правкой части
             # (`blast_radius --affected` печатает готовую строку).
             only = [part for part in os.environ.get("VPM_SCENARIO", "").split(",") if part]
-            scenarios = [s for s in scenarios if any(part in s.id for part in only)] if only else scenarios
+            if only:
+                scenarios = [s for s in scenarios if any(part in s.id for part in only)]
+                matched |= {part for part in only for s in scenarios if part in s.id}
             if not scenarios:
                 continue
             print(f"\n══ {path.name}: сценариев {len(scenarios)} ══")
@@ -69,6 +72,7 @@ def main() -> int:
             # Отбор применяется и к картам: иначе «точечный прогон» тянул всю карту целиком.
             if only and not any(part.split("#")[0] in path.stem for part in only):
                 continue
+            matched |= {part for part in only if part.split("#")[0] in path.stem}
             total, fails = _walk_map(path, vocab, journal, total, fails, ran)
     except BaseException:
         # Авария (сервер не поднялся, порт занят, харнесс упал) — это НЕ зелёный прогон.
@@ -76,6 +80,16 @@ def main() -> int:
         journal.verdict(ok=False, total=total, failed=len(fails), scenarios=sorted(ran), crashed=True)
         journal.close()
         raise
+    # Прогон, ничего не отобравший, — не зелёный, а неизмеренный: опечатка в имени иначе
+    # выглядит как проверенная правка, и точечный прогон становится ритуалом.
+    requested = [part for part in os.environ.get("VPM_SCENARIO", "").split(",") if part]
+    for part in sorted(set(requested) - matched):
+        total += 1
+        fails.append(f"отбор `{part}` не совпал НИ С ОДНИМ сценарием или картой — прогон его не проверял")
+    if not any(True for _ in ran):
+        total += 1
+        fails.append("прогон не выполнил ни одного сценария — измерять нечем, зелёным это быть не может")
+
     journal.verdict(ok=not fails, total=total, failed=len(fails), scenarios=sorted(ran))
     journal.close()
 

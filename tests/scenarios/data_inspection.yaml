@@ -1,0 +1,88 @@
+# Инструменты осмотра данных проверяются ЧЕРЕЗ ПРОВОД, и в этом вся разница: юнит-покрытие движка
+# ничего не говорит о проводке инструмента — схеме, хендлере, контракте и факте. Свернуть их в
+# юнит-тест значит снова оставить проводку непроверенной.
+
+- scenario: insp_workbook_structure_readable
+  why: осмотр книги — первое, что делает ИИ с чужим файлом; молчащий осмотр уводит его гадать
+  when:
+    - call: excel_create_workbook
+      with: {path: books/insp.xlsx, sheet: DATA}
+      expect: {ok: true}
+    - call: excel_add_column
+      with: {path: books/insp.xlsx, sheet: DATA, column: price}
+      expect: {ok: true}
+    - call: excel_add_column
+      with: {path: books/insp.xlsx, sheet: DATA, column: qty}
+      expect: {ok: true}
+    - call: inspect_file
+      with: {path: books/insp.xlsx}
+      expect:
+        ok: true
+        facts: [FileInspected]
+        data: {sheet_count: 1}
+    - call: get_column_names
+      with: {path: books/insp.xlsx, sheet: DATA}
+      expect:
+        ok: true
+        facts: [ColumnNamesRead]
+        data: {count: 2}
+    - call: get_sheet_info
+      with: {path: books/insp.xlsx, sheet: DATA}
+      expect:
+        ok: true
+        facts: [SheetInfoRead]
+        data: {column_count: 2}
+
+- scenario: insp_copy_sheet_really_adds_sheet
+  why: копия листа, о которой отчитались, но которой нет, — молчаливая потеря работы пользователя
+  when:
+    - call: excel_create_workbook
+      with: {path: books/copy.xlsx, sheet: DATA}
+      expect: {ok: true}
+    - call: excel_copy_sheet
+      with: {path: books/copy.xlsx, sheet: DATA, new_name: DATA_BACKUP}
+      expect:
+        ok: true
+        facts: [SheetCopied]
+    - call: inspect_file
+      with: {path: books/copy.xlsx}
+      expect:
+        ok: true
+        data: {sheet_count: 2}
+
+- scenario: insp_duplicates_and_nulls_are_found
+  why: «дубликатов нет» на данных с дубликатами — ответ, по которому ИИ примет неверное решение
+  given:
+    files:
+      videos/insp/read.json: |
+        {"META": {"schema": {
+            "title": {"type": "string", "writable": true},
+            "status": {"type": "string", "writable": true}},
+          "rows": {
+            "VID_1": {"title": "Hook", "status": "draft"},
+            "VID_2": {"title": "Hook", "status": "draft"},
+            "VID_3": {"title": "", "status": "ready"}}}}
+  when:
+    - call: find_duplicates
+      with: {table: videos/insp, sheet: META, columns: [title]}
+      expect:
+        ok: true
+        facts: [DuplicatesFound]
+        data: {duplicate_groups: 1}
+    - call: find_nulls
+      with: {table: videos/insp, sheet: META}
+      expect:
+        ok: true
+        facts: [NullsFound]
+    - call: get_unique_values
+      with: {table: videos/insp, sheet: META, column: status}
+      expect:
+        ok: true
+        facts: [UniqueValuesRead]
+        data: {count: 2}
+    - call: get_value_counts
+      with: {table: videos/insp, sheet: META, column: status}
+      expect:
+        ok: true
+        facts: [ValueCountsRead]
+        data: {total: 3}
