@@ -44,3 +44,26 @@
       expect:
         ok: false
         code: RPC_-32601
+
+- scenario: prm_foreign_origin_and_host_are_refused
+  why: запрос из чужой вкладки и обращение к чужому имени хоста — это браузерный обход, а не клиент
+  when:
+    - call: fs_get_directory_tree
+      with: {path: ""}
+      headers: {Origin: "https://evil.example"}
+      expect:
+        ok: false
+        code: RPC_-32002
+    - call: fs_get_directory_tree
+      with: {path: ""}
+      headers: {Host: "evil.example"}
+      expect:
+        ok: false
+        code: RPC_-32002
+    - call: fs_get_directory_tree
+      with: {path: ""}
+      headers: {Content-Type: text/plain}
+      expect:
+        ok: false
+        code: RPC_-32600
+        http: 415
