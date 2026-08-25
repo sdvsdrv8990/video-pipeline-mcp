@@ -215,6 +215,15 @@ def analyse(smap: ScenarioMap) -> list[str]:
     for edge in smap.transitions:
         if edge.source not in reachable:
             notes.append(f"переход {edge.name} недостижим: до {edge.source!r} не дойти")
+    seen: dict[str, str] = {}
+    for name, state in smap.states.items():
+        # Два состояния с ОДНИМ предикатом различить нечем ни одному прогону: это видно
+        # без сервера, и говорить об этом надо до обхода, а не после часа ожидания.
+        key = repr([(s.name, s.args, s.expect) for s in state.check])
+        if key in seen:
+            notes.append(f"состояния {seen[key]!r} и {name!r} объявлены ОДНИМ предикатом — "
+                         "различить их не сможет ни один обход")
+        seen[key] = name
     return notes
 
 
@@ -308,10 +317,36 @@ class MapRunner:
             edge = smap.transitions[index]
             checks += self._edge(edge, trip, context)
             checks += self._state(smap, edge.target, trip, context, f"после {edge.name}")
-            if edge.source != edge.target:
-                checks.append(self._left_previous(smap, current, trip, context, edge))
+            checks += self._only_target_holds(smap, edge, current, trip, context)
             current = edge.target
         return checks
+
+    def _only_target_holds(self, smap: ScenarioMap, edge: Transition, previous: str,
+                           trip: str, context: dict) -> list[Check]:
+        """На прибытии спрашиваем ВСЕ предикаты, а не только целевой.
+
+        Срабатывание ЧУЖОГО предиката читается двояко, и оба чтения — находки: либо состояния
+        неразличимы, либо мы стоим в нём, а связи к нему не объявлено (забытое ребро). Прогон
+        безопасен: предикат по контракту только наблюдает и ничего не двигает.
+        """
+        out: list[Check] = []
+        declared = {e.target for e in smap.transitions if e.source == edge.target}
+        for name in smap.states:
+            if name == edge.target:
+                continue
+            holds = not [c for c in self._run(smap.states[name].check, trip, context) if not c.ok]
+            if name == previous and previous != edge.target:
+                out.append(Check(trip, f"{edge.name}: наблюдаемое изменилось (вышли из {previous})",
+                                 not holds, f"предикат {previous} держится и после перехода — "
+                                            "состояния неразличимы"))
+            elif holds:
+                gap = ("связи к нему из этого состояния НЕ объявлено — похоже на забытое ребро"
+                       if name not in declared else
+                       "связь объявлена, но предикаты не различают эти состояния")
+                out.append(Check(trip, f"{edge.name}: чужой предикат {name} не держится", False,
+                                 f"стоим в {edge.target}, а предикат {name} ({smap.states[name].means}) "
+                                 f"тоже выполняется — {gap}"))
+        return out
 
     def _run(self, steps, trip: str, context: dict) -> list[Check]:
         pseudo = Scenario(id=trip, why="", files={}, when=steps, then=[], source=Path(trip))
@@ -343,13 +378,6 @@ class MapRunner:
                                  any(v not in (None, "", [], {}, "_НЕТ_", False) for v in seen),
                                  f"на переходе значения нет ({seen})"))
         return out
-
-    def _left_previous(self, smap: ScenarioMap, previous: str, trip: str,
-                       context: dict, edge: Transition) -> Check:
-        """Переход обязан менять наблюдаемое: иначе состояния — ярлыки, а карта — вымысел."""
-        still = [c for c in self._run(smap.states[previous].check, trip, context) if not c.ok]
-        return Check(trip, f"{edge.name}: наблюдаемое изменилось (вышли из {previous})", bool(still),
-                     f"предикат {previous} держится и после перехода — состояния неразличимы")
 
 
 def _observe(entry: dict, selector: str):
