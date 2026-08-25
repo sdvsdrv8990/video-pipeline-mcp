@@ -16,11 +16,14 @@ from pathlib import Path
 
 import yaml
 
-from .scenario import Check, Scenario, ScenarioError, Vocabulary, _reject_unknown, _steps, dig
+from .scenario import (ROOT, Check, Scenario, ScenarioError, Vocabulary, _reject_unknown, _steps,
+                       dig)
 
 MAP_KEYS = {"map", "why", "context", "start", "states", "transitions", "walk"}
 STATE_KEYS = {"means", "check", "terminal"}
-TRANSITION_KEYS = {"from", "to", "via", "carries"}
+TRANSITION_KEYS = {"from", "to", "router", "via", "carries"}
+# `by`, а не `on`: YAML читает `on:` как булево True, и ключ роутера пропадал бы молча.
+ROUTER_KEYS = {"by", "table", "covers", "skip"}
 WALK_KEYS = {"budget", "coverage"}
 
 
@@ -38,10 +41,11 @@ class Transition:
     target: str
     via: list
     carries: list[str] = field(default_factory=list)
+    route: str = ""
 
     @property
     def name(self) -> str:
-        return f"{self.source}→{self.target}"
+        return f"{self.source}→{self.target}" + (f" [{self.route}]" if self.route else "")
 
 
 @dataclass
@@ -54,6 +58,77 @@ class ScenarioMap:
     transitions: list[Transition]
     budget: int
     coverage: str = "edges"
+
+
+def _routes_of(body: dict, states: dict, where: str) -> list[tuple[str, str, dict, list]]:
+    """Исходы перехода: один у обычного, по строке таблицы у роутера.
+
+    Роутер — не «if покрасивее»: `if` ветвится ВНУТРИ одного пути, а таблица обязана быть пройдена
+    ЦЕЛИКОМ — каждая строка становится своей веткой обхода. Забытая строка видна как непройденный
+    переход, забытая ветка `if` не видна никак.
+    """
+    if not body.get("router"):
+        target = str(body["to"])
+        if target not in states:
+            raise ScenarioError(f"{where}: состояние {target!r} не объявлено — обрыв в карте")
+        return [("", target, {}, [])]
+    router = body["router"]
+    _reject_unknown(router or {}, ROUTER_KEYS, f"{where}.router")
+    table = (router or {}).get("table") or {}
+    if not router.get("by") or not table:
+        raise ScenarioError(f"{where}.router: нужны `by` (что выбирает маршрут) и непустая `table`")
+    _check_table_is_complete(router, table, where)
+    out = []
+    for key, row in table.items():
+        # Строка таблицы — либо просто исход, либо исход со своими значениями: ветки роутера
+        # отличаются не только именем маршрута, и подмена одного `${route}` их не выражает.
+        target = str(row.get("to") or "") if isinstance(row, dict) else str(row)
+        overrides = dict(row.get("with") or {}) if isinstance(row, dict) else {}
+        facts = list(row.get("facts") or []) if isinstance(row, dict) else []
+        if target not in states:
+            raise ScenarioError(f"{where}.router.table[{key!r}]: состояние {target!r} не объявлено")
+        out.append((str(key), target, overrides, facts))
+    return out
+
+
+def _check_table_is_complete(router: dict, table: dict, where: str) -> None:
+    """Таблица роутера сверяется с ОБЪЯВЛЕННЫМ перечнем: забытая строка иначе просто не пойдёт в
+    обход и промолчит — та же слепота, ради которой роутер и заводился.
+
+    Пропуск разрешён, но только ИМЕНОВАННЫЙ: `skip: {значение: почему}` — умолчание «не покрываем»
+    возвращает молчание через заднюю дверь.
+    """
+    source = str(router.get("covers") or "")
+    if not source:
+        return
+    expected = {p.name.split(".")[0] for p in sorted(ROOT.glob(source))}
+    if not expected:
+        raise ScenarioError(f"{where}.router.covers: по {source!r} не нашлось ни одного объявления — "
+                            "перечень пуст, и полнота таблицы ничем не проверяется")
+    skip = dict(router.get("skip") or {})
+    missing = sorted(expected - set(table) - set(skip))
+    if missing:
+        raise ScenarioError(f"{where}.router.table: перечень {source!r} даёт {sorted(expected)}, "
+                            f"а в таблице нет {missing} — либо строка, либо `skip` с причиной")
+    unknown = sorted((set(table) | set(skip)) - expected)
+    if unknown:
+        raise ScenarioError(f"{where}.router.table: {unknown} нет в перечне {source!r} — опечатка "
+                            "либо перечень назван неверно")
+
+
+def _substitute(via: list, key: str) -> list:
+    """`${route}` в объявлении перехода — значение строки таблицы; подстановка статическая."""
+    if not key:
+        return via
+    def walk(node):
+        if isinstance(node, dict):
+            return {k: walk(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [walk(v) for v in node]
+        if isinstance(node, str):
+            return node.replace("${route}", key)
+        return node
+    return walk(via)
 
 
 def _coverage_level(value: str, where: str) -> str:
@@ -91,16 +166,25 @@ def load_map(path: Path, vocab: Vocabulary) -> ScenarioMap:
     transitions = []
     for i, body in enumerate(raw["transitions"], 1):
         _reject_unknown(body or {}, TRANSITION_KEYS, f"{where}.transitions[{i}]")
-        source, target = str(body.get("from") or ""), str(body.get("to") or "")
-        for edge in (source, target):
-            if edge not in states:
-                raise ScenarioError(f"{where}.transitions[{i}]: состояние {edge!r} не объявлено — обрыв в карте")
+        source = str(body.get("from") or "")
+        if source not in states:
+            raise ScenarioError(f"{where}.transitions[{i}]: состояние {source!r} не объявлено — обрыв в карте")
         if not body.get("via"):
             raise ScenarioError(f"{where}.transitions[{i}]: нет `via` — переход без вызовов не переход")
-        transitions.append(Transition(
-            source=source, target=target,
-            via=_steps(body["via"], vocab, f"{where}.transitions[{i}].via"),
-            carries=list(body.get("carries") or [])))
+        if bool(body.get("to")) == bool(body.get("router")):
+            raise ScenarioError(f"{where}.transitions[{i}]: переход объявляет либо `to` (один исход), "
+                                "либо `router` (таблица вход→исход), но не оба и не ни одного")
+        for key, target, overrides, facts in _routes_of(body, states, f"{where}.transitions[{i}]"):
+            via = _substitute(body["via"], key)
+            if overrides or facts:
+                via = [dict(step) for step in via]
+                via[0]["with"] = {**(via[0].get("with") or {}), **overrides}
+                if facts:
+                    via[0]["expect"] = {**(via[0].get("expect") or {}), "facts": facts}
+            transitions.append(Transition(
+                source=source, target=target,
+                via=_steps(via, vocab, f"{where}.transitions[{i}].via"),
+                carries=list(body.get("carries") or []), route=key))
 
     walk = raw.get("walk") or {}
     _reject_unknown(walk, WALK_KEYS, f"{where}.walk")

@@ -24,6 +24,9 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE = Path(__file__).with_name("invariants_baseline.txt")
+DISPATCH_BASELINE = Path(__file__).with_name("dispatch_baseline.txt")
+# Две ветки — это выбор, три и больше по одному значению — уже таблица.
+DISPATCH_LIMIT = 3
 
 # Пути НЕ зашиты: корень приходит параметром, иначе сторожа нельзя проверить, не насорив в
 # репозитории, — а проверка, требующая мусора, делается редко.
@@ -373,6 +376,59 @@ def suites_off_catalog(root: Path = ROOT) -> list[str]:
                          "снесённый набор продолжает числиться живым")
     return notes
 
+
+def _chain(node: ast.If) -> list[ast.Compare]:
+    """Цепочка `if/elif`: в питоне `elif` — это вложенный `If` в `orelse`."""
+    out, current = [], node
+    while True:
+        if not (isinstance(current.test, ast.Compare) and len(current.test.ops) == 1
+                and isinstance(current.test.ops[0], ast.Eq)
+                and len(current.test.comparators) == 1
+                and isinstance(current.test.comparators[0], ast.Constant)
+                and isinstance(current.test.comparators[0].value, str)):
+            break
+        out.append(current.test)
+        if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
+            current = current.orelse[0]
+            continue
+        break
+    return out
+
+
+def dispatch_by_value(root: Path = ROOT) -> list[str]:
+    """Ветвление по значению длиннее порога — это таблица, а не ветки.
+
+    `if` уместен там, где ветки разной природы; когда одно и то же ВЫЧИСЛЯЕТСЯ по значению, механизм
+    обязан приходить из объявления, иначе новый случай добавляется правкой кода, а не строкой конфига,
+    и о забытой ветке никто не узнает. Храповик: вниз можно, вверх нет.
+    """
+    notes = []
+    for source in sorted(list((root / "core").rglob("*.py")) + list((root / "tools").rglob("*.py"))
+                         + [root / "server.py"]):
+        if "__pycache__" in str(source) or not source.exists():
+            continue
+        try:
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        seen: set[int] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If) or id(node) in seen:
+                continue
+            chain = _chain(node)
+            if len(chain) < DISPATCH_LIMIT:
+                continue
+            subject = ast.unparse(chain[0].left)
+            if any(ast.unparse(c.left) != subject for c in chain):
+                continue
+            for extra in ast.walk(node):
+                seen.add(id(extra))
+            values = [c.comparators[0].value for c in chain]
+            notes.append(f"{source.relative_to(root)}:{node.lineno} — ветвление по `{subject}` на "
+                         f"{len(chain)} значений {values}: механизм из объявления, политика кодом")
+    return notes
+
+
 HARD = (("пропуск набора без покрытия в CI", skips_without_ci),
         ("имя используется до объявления", used_before_declared),
         ("код отказа мимо реестра", codes_outside_registry),
@@ -402,18 +458,35 @@ def main() -> int:
             print(f"   ✗ {note}")
         failed = failed or bool(notes)
 
+    bless = "--bless" in sys.argv
+
     notes = enum_without_values()
     count, limit = ratchet(notes)
     if not quiet or count > limit:
         print(f"── enum без значений: {count} при потолке {limit}")
-    if "--bless" in sys.argv:
+    if bless:
         BASELINE.write_text(f"{count}\n", encoding="utf-8")
         print(f"   потолок записан: {count}")
-        return 0
-    if count > limit:
+    elif count > limit:
         for note in notes:
             print(f"   ✗ {note}")
         print("   Долг вырос. Почини столбцы выше или объясни в ревью: --bless")
+        failed = True
+
+    chains = dispatch_by_value()
+    ceiling = (int(DISPATCH_BASELINE.read_text(encoding="utf-8").strip())
+               if DISPATCH_BASELINE.exists() else len(chains))
+    if not quiet or len(chains) > ceiling:
+        print(f"── ветвление по значению вместо таблицы: {len(chains)} при потолке {ceiling}")
+    if bless:
+        DISPATCH_BASELINE.write_text(f"{len(chains)}\n", encoding="utf-8")
+        print(f"   потолок записан: {len(chains)}")
+        return 0
+    if len(chains) > ceiling:
+        for note in chains:
+            print(f"   ✗ {note}")
+        print("   Новая цепочка ветвления: объяви таблицу (config/*.yaml → генерик в core/) "
+              "или опусти потолок осознанно — --bless")
         failed = True
     return 1 if failed else 0
 

@@ -77,13 +77,6 @@ transitions:
         with: {type: network, name: net, parent_path: "niches/${ctx.niche}/networks/"}
         expect: {ok: true, facts: [NodeCreated]}
 
-  - from: with_network
-    to: orphan_pending
-    via:
-      - call: structure_create
-        with: {type: competitor_channel, name: rv,
-               parent_path: "niches/${ctx.niche}/networks/net/competitors/"}
-        expect: {ok: true, facts: [EntityOrphaned]}
 
   - from: orphan_pending
     to: linked
@@ -95,12 +88,30 @@ transitions:
         with: {anchor_name: ch}
         expect: {ok: true, data: {entities_moved: 1}}
 
+  # Один вызов ведёт в РАЗНЫЕ состояния по типу ребёнка. Таблица, а не ветка: забытая строка видна
+  # как непройденный переход, забытая ветка `if` не видна никак.
   - from: with_network
-    to: with_channel
+    router:
+      by: тип создаваемого ребёнка
+      covers: config/templates/workspace/*.tpl.yaml
+      skip:
+        niche: корень ветки, а не её ребёнок
+        network: уровень выше — заводится предыдущим переходом
+        video: лист канала, рост ветки на нём не продолжается
+        competitor_video: лист конкурента, там же
+      table:
+        channel:
+          to: with_channel
+          with: {type: channel, name: ch, parent_path: "niches/${ctx.niche}/networks/net/channels/"}
+          facts: [NodeCreated]
+        competitor_channel:
+          to: orphan_pending
+          with: {type: competitor_channel, name: rv,
+                 parent_path: "niches/${ctx.niche}/networks/net/competitors/"}
+          facts: [EntityOrphaned]
     via:
       - call: structure_create
-        with: {type: channel, name: ch, parent_path: "niches/${ctx.niche}/networks/net/channels/"}
-        expect: {ok: true, facts: [NodeCreated]}
+        expect: {ok: true}
 
   - from: with_channel
     to: linked

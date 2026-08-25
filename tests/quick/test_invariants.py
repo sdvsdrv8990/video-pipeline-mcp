@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 from invariants import (  # noqa: E402
     codes_outside_registry, enum_without_values, resources_off_inventory, skips_without_ci,
-    status_off_registry, suites_off_catalog, used_before_declared,
+    dispatch_by_value, status_off_registry, suites_off_catalog, used_before_declared,
 )
 
 _checks = 0
@@ -210,6 +210,25 @@ ok(not suites_off_catalog(make({"tests/test_suites.py": GATE_SRC,
                                 "tests/harness/test_helper.py": "x = 1\n",
                                 "tests/CATALOG.md": "| Тест | Зона |\n|---|---|\n| `нет` | — |\n"})),
    "харнесс — библиотека, а не набор: гейт его пропускает, сторож обязан пропустить тоже")
+
+print("\n== ветвление по значению вместо таблицы ==")
+THREE = ('def f(kind):\n'
+         '    if kind == "a":\n        return 1\n'
+         '    elif kind == "b":\n        return 2\n'
+         '    elif kind == "c":\n        return 3\n'
+         '    return 0\n')
+TWO = 'def f(kind):\n    if kind == "a":\n        return 1\n    elif kind == "b":\n        return 2\n    return 0\n'
+MIXED = ('def f(a, b, c):\n'
+         '    if a == "x":\n        return 1\n'
+         '    elif b == "y":\n        return 2\n'
+         '    elif c == "z":\n        return 3\n'
+         '    return 0\n')
+ok(len(dispatch_by_value(make({"core/z.py": THREE}))) == 1,
+   "три ветки по одному значению — это таблица, а не выбор")
+ok(not dispatch_by_value(make({"core/z.py": TWO})),
+   "две ветки — выбор, а не таблица: молчим")
+ok(not dispatch_by_value(make({"core/z.py": MIXED})),
+   "ветки по РАЗНЫМ именам — не диспетчеризация, молчим")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
