@@ -15,7 +15,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT))
 
 from invariants import (  # noqa: E402
-    codes_outside_registry, codes_without_emitter, declared_but_unscripted, enum_without_values,
+    codes_outside_registry, codes_without_emitter, dead_recovery_in_engine,
+    declared_but_unscripted, enum_without_values,
     resources_off_inventory, scenario_calls_unknown_tool, skips_without_ci,
     dispatch_by_value, status_off_registry, suites_off_catalog, used_before_declared,
 )
@@ -276,6 +277,29 @@ ok(len(declared_but_unscripted(make({"config/server_reactions.yaml": REGISTRY_TW
                                      "tests/quick/tools_inventory.golden.json": INVENTORY_TWO,
                                      "tests/scenarios/a.yaml": COVERS_ALL.replace("ALIVE_CODE", "FOREIGN_CODE")}))) == 1,
    "бросаемый код не ждёт ни один сценарий — новый код отказа без объявления")
+
+print("\n== рецепт движка, который клиент не увидит ==")
+REG_REC = ("BAD_PROFILE:\n  class: ai_recoverable\n  recovery:\n    suggested_tool: table_get_row\n"
+           "NO_TOOL:\n  class: ai_recoverable\n  recovery:\n    reason: почини строку\n")
+SAME = 'def f():\n    raise ZoneError("BAD_PROFILE", "текст", "почему", "table_get_row")\n'
+OTHER = 'def f():\n    raise ZoneError("BAD_PROFILE", "текст", "почему", "table_set")\n'
+KWARG = 'def f():\n    raise ZoneError("BAD_PROFILE", "текст", suggested_tool="table_set")\n'
+SILENT = 'def f():\n    raise ZoneError("NO_TOOL", "текст", "почему", "media_models")\n'
+NO_RECIPE = 'def f():\n    raise ZoneError("BAD_PROFILE", "текст")\n'
+
+ok(not dead_recovery_in_engine(make({"config/server_reactions.yaml": REG_REC, "core/z.py": SAME})),
+   "совет движка совпал с реестром — клиент получит то же самое, молчим")
+ok(len(dead_recovery_in_engine(make({"config/server_reactions.yaml": REG_REC, "core/z.py": OTHER}))) == 1,
+   "движок советует другой инструмент — до клиента доедет реестровый, текст в коде мёртв")
+ok(len(dead_recovery_in_engine(make({"config/server_reactions.yaml": REG_REC, "core/z.py": KWARG}))) == 1,
+   "именованный `suggested_tool` — та же форма: обе в ходу, и обе обязаны ловиться")
+ok(len(dead_recovery_in_engine(make({"config/server_reactions.yaml": REG_REC, "core/z.py": SILENT}))) == 1,
+   "у реестра рецепт без инструмента — совет движка пропадает, и это тоже находка")
+ok(not dead_recovery_in_engine(make({"config/server_reactions.yaml": REG_REC, "core/z.py": NO_RECIPE})),
+   "движок не советует ничего — перекрывать нечего, молчим")
+ok(not dead_recovery_in_engine(make({"config/server_reactions.yaml": REG_REC,
+                                     "core/z.py": 'def f():\n    raise ZoneError("ЧУЖОЙ_КОД", "т", "п", "table_set")\n'})),
+   "код вне реестра — рецепт движка ЕДИНСТВЕННЫЙ и доезжает: обвинять нельзя")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

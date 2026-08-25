@@ -79,7 +79,7 @@ class Expectation:
     ok: bool
     code: str = ""
     reaction_class: str = ""
-    recovery: bool | None = None
+    recovery: bool | str | None = None     # `true/false` — есть ли рецепт; имя — КУДА он ведёт
     facts: list[str] = field(default_factory=list)
     data: dict[str, Any] = field(default_factory=dict)
     data_contains: dict[str, str] = field(default_factory=dict)
@@ -518,7 +518,16 @@ class Runner:
                                  got["reaction_class"] == exp.reaction_class,
                                  f"класс на проводе: {got['reaction_class'] or 'НЕ ДОЕХАЛ'} · "
                                  f"совет: реестр объявляет для {got['code'] or '—'} класс {declared}"))
-            if exp.recovery is not None:
+            if isinstance(exp.recovery, str):
+                # Рецепт, который ВЕДЁТ не туда, — это не «рецепт есть»: клиент делает следующий
+                # вызов по этому имени, поэтому имя и есть предмет проверки.
+                went = str((got["recovery"] or {}).get("suggested_tool") or "")
+                out.append(Check(scenario.id, f"{tag} → рецепт ведёт в {exp.recovery}",
+                                 went == exp.recovery,
+                                 f"рецепт ведёт в {went or 'НИКУДА'} · совет: рецепт объявлен в "
+                                 f"config/server_reactions.yaml → {got['code']}.recovery, "
+                                 "аргумент `suggested_tool` в движке его не перекрывает"))
+            elif exp.recovery is not None:
                 has = bool(got["recovery"] and (got["recovery"].get("reason") or got["recovery"].get("suggested_tool")))
                 out.append(Check(scenario.id, f"{tag} → рецепт восстановления", has == exp.recovery,
                                  f"recovery: {got['recovery'] or 'пусто'}"))

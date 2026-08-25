@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 BASELINE = Path(__file__).with_name("invariants_baseline.txt")
 DISPATCH_BASELINE = Path(__file__).with_name("dispatch_baseline.txt")
 UNSCRIPTED_BASELINE = Path(__file__).with_name("unscripted_baseline.txt")
+DEAD_RECOVERY_BASELINE = Path(__file__).with_name("dead_recovery_baseline.txt")
 ORPHAN_BASELINE = Path(__file__).with_name("orphan_codes_baseline.txt")
 # Две ветки — это выбор, три и больше по одному значению — уже таблица.
 DISPATCH_LIMIT = 3
@@ -539,6 +540,62 @@ def declared_but_unscripted(root: Path = ROOT) -> list[str]:
     return notes
 
 
+def _raise_sites(root: Path) -> list[tuple[str, str, str]]:
+    """Места `ЗонаError(код, …, suggested_tool=…)`: (адрес, код, советуемый инструмент).
+
+    Рецепт у зонного исключения — третий позиционный аргумент или именованный; обе формы в ходу.
+    """
+    out = []
+    sources = [p for p in sorted(list((root / "core").rglob("*.py")) + list((root / "tools").rglob("*.py")))
+               if "__pycache__" not in str(p)]
+    for source in sources:
+        try:
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if not name.endswith("Error") or not isinstance(node.args[0], ast.Constant):
+                continue
+            code = node.args[0].value
+            tool = None
+            if len(node.args) > 3 and isinstance(node.args[3], ast.Constant):
+                tool = node.args[3].value
+            for kw in node.keywords:
+                if kw.arg == "suggested_tool" and isinstance(kw.value, ast.Constant):
+                    tool = kw.value.value
+            if isinstance(code, str) and isinstance(tool, str):
+                out.append((f"{source.relative_to(root)}:{node.lineno}", code, tool))
+    return out
+
+
+def dead_recovery_in_engine(root: Path = ROOT) -> list[str]:
+    """Движок советует инструмент, а клиент получает совет реестра: половина написана в мёртвую.
+
+    `ctx.err` отдаёт приоритет реестру для любого кода, который в нём объявлен, а жёсткая проверка
+    `codes_outside_registry` доказывает, что других кодов нет, — значит `suggested_tool` из кода до
+    клиента не доезжает НИКОГДА. Хуже мёртвого текста только текст, вводящий в заблуждение
+    читающего: один код бросается с тремя разными советами, а уезжает четвёртый.
+    """
+    registry = _at(root, REGISTRY)
+    if not registry.exists():
+        return []
+    reactions = yaml.safe_load(registry.read_text(encoding="utf-8")) or {}
+    notes = []
+    for where, code, tool in _raise_sites(root):
+        entry = reactions.get(code)
+        if not isinstance(entry, dict):
+            continue
+        declared = ((entry.get("recovery") or {}).get("suggested_tool")) or None
+        if tool != declared:
+            notes.append(f"{where} — код `{code}` советует `{tool}`, а клиент получит "
+                         f"{('`' + declared + '`') if declared else 'реестровый рецепт без инструмента'}")
+    return notes
+
+
 HARD = (("пропуск набора без покрытия в CI", skips_without_ci),
         ("имя используется до объявления", used_before_declared),
         ("код отказа мимо реестра", codes_outside_registry),
@@ -557,6 +614,9 @@ RATCHETS = (
     ("объявлено клиенту, но бросить некому", codes_without_emitter, ORPHAN_BASELINE,
      "Реестр обещает клиенту отказ, которого не бывает: либо путь, который его бросает, "
      "либо снять строку из server_reactions.yaml и KNOWN_ERROR_CODES"),
+    ("рецепт движка, который клиент не увидит", dead_recovery_in_engine, DEAD_RECOVERY_BASELINE,
+     "Совет из кода перекрывается реестром и до клиента не доезжает: либо снять аргумент "
+     "`suggested_tool`, либо поправить рецепт в config/server_reactions.yaml"),
     ("объявлено сервером, но сценарием не покрыто", declared_but_unscripted, UNSCRIPTED_BASELINE,
      "Новое объявление без сценария. Покрытие пишется ОБЪЯВЛЕНИЕМ в tests/scenarios/*.yaml "
      "(`call` + `expect.code`), новый python-скрипт для этого не нужен — либо --bless с объяснением"),

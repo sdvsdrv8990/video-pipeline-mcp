@@ -12,7 +12,7 @@
   when:
     - call: montage_render_scene
       with: {table: ch1/v1, scene_id: S01}
-      expect: {ok: false, code: RENDER_PROFILE_INVALID}
+      expect: {ok: false, code: RENDER_PROFILE_INVALID, recovery: table_get_row}
     - call: montage_scene_script
       with: {table: ch1/v1, scene_id: S01}
       expect: {ok: false, code: RENDER_PROFILE_INVALID}
