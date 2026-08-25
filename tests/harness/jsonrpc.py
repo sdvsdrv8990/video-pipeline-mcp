@@ -48,6 +48,14 @@ class JsonRpc:
         except ValueError:
             return {"_http_status": response.status_code, "_text": response.text[:500]}
 
+    def raw_with_status(self, method: str, params: dict | None = None, **kw) -> tuple[dict, int]:
+        """Конверт И код HTTP: отказ авторизации живёт в статусе, а не в теле, и телом его не поймать."""
+        response = self.request(method, params, **kw)
+        try:
+            return response.json(), response.status_code
+        except ValueError:
+            return {"_text": response.text[:500]}, response.status_code
+
     def tools_list(self, **kw) -> list[dict]:
         return (self.call_raw("tools/list", {}, **kw).get("result") or {}).get("tools") or []
 

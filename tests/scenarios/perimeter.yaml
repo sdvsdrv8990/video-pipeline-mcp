@@ -1,0 +1,46 @@
+# Периметр — единственная зона, где предмет проверки лежит НЕ в теле ответа: ключ проверяется до
+# разбора тела, чужой `Origin` отбивается на конверте, а состав манифеста клиент читает вообще без
+# вызова инструмента. Поэтому здесь объявляются транспортные условия шага, а не только аргументы.
+
+- scenario: prm_manifest_is_readable_and_sane
+  why: манифест — первое, что видит клиент; инструмент, пропавший из описи, ломает его молча
+  when:
+    - rpc: tools/list
+      with: {}
+      expect:
+        ok: true
+        http: 200
+    - rpc: tools/list
+      with: {}
+      token: ""
+      expect:
+        ok: false
+        code: RPC_-32001
+        http: 401
+
+- scenario: prm_key_is_checked_before_the_body
+  why: без ключа сервер обязан отказать статусом, а не разбирать тело — иначе периметр держится на теле
+  when:
+    - call: fs_read_file
+      with: {path: notes/нет.txt}
+      token: ""
+      expect:
+        ok: false
+        code: RPC_-32001
+        http: 401
+    - call: fs_read_file
+      with: {path: notes/нет.txt}
+      token: definitely-wrong-key
+      expect:
+        ok: false
+        code: RPC_-32001
+        http: 401
+
+- scenario: prm_unknown_method_is_answered_by_protocol
+  why: неизвестный метод обязан получить ответ протокола, а не молчание и не трейс
+  when:
+    - rpc: несуществующий/метод
+      with: {}
+      expect:
+        ok: false
+        code: RPC_-32601

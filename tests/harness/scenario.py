@@ -26,9 +26,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 SCENARIO_KEYS = {"scenario", "why", "given", "when", "then"}
 GIVEN_KEYS = {"files"}
-STEP_KEYS = {"call", "python", "with", "as", "expect"}
+STEP_KEYS = {"call", "python", "rpc", "headers", "token", "with", "as", "expect"}
 EXPECT_KEYS = {"ok", "code", "class", "recovery", "facts", "data", "data_contains",
-               "console", "console_absent", "open"}
+               "console", "console_absent", "open", "http"}
 
 _REF = re.compile(r"\$\{([A-Za-z_][\w]*)\.([\w.]+)\}")
 
@@ -56,6 +56,13 @@ class Vocabulary:
         self.codes: dict[str, dict] = {k: v for k, v in (raw or {}).items() if isinstance(v, dict)}
 
     def validate(self, code: str, declared_class: str | None, where: str) -> None:
+        # `RPC_-32601` и родня — словарь ПРОТОКОЛА, а не наш реестр реакций: отказ уровня конверта
+        # приходит без `result`, и реакции у него нет и быть не может.
+        if code.startswith("RPC_"):
+            if declared_class:
+                raise ScenarioError(f"{where}: у протокольного отказа {code} нет класса реакции — "
+                                    "конверт без `result` не проходит через реестр")
+            return
         if code not in self.codes:
             raise ScenarioError(f"{where}: код {code!r} не объявлен в config/server_reactions.yaml")
         actual = str(self.codes[code].get("class") or "")
@@ -79,6 +86,7 @@ class Expectation:
     console: str = ""
     console_absent: str = ""
     open: str = ""                         # адрес ОТКРЫТОЙ находки: ждём желаемого, сегодня его нет
+    http: int | None = None                # код HTTP: отказ авторизации живёт в статусе, не в теле
 
 
 @dataclass
@@ -86,13 +94,16 @@ class Step:
     index: int
     tool: str = ""
     python: str = ""
+    rpc: str = ""
+    headers: dict = field(default_factory=dict)
+    token: str | None = None
     args: dict = field(default_factory=dict)
     alias: str = ""
     expect: Expectation | None = None
 
     @property
     def name(self) -> str:
-        return self.tool or f"python:{self.python}"
+        return self.tool or self.rpc or f"python:{self.python}"
 
 
 @dataclass
@@ -137,6 +148,7 @@ def _expect(raw: dict, vocab: Vocabulary, where: str) -> Expectation:
         console=str(raw.get("console") or ""),
         console_absent=str(raw.get("console_absent") or ""),
         open=str(raw.get("open") or ""),
+        http=None if raw.get("http") is None else int(raw["http"]),
     )
 
 
@@ -146,11 +158,15 @@ def _steps(raw: list, vocab: Vocabulary, where: str) -> list[Step]:
         if not isinstance(item, dict):
             raise ScenarioError(f"{where}[{i}]: шаг должен быть словарём, а не {type(item).__name__}")
         _reject_unknown(item, STEP_KEYS, f"{where}[{i}]")
-        if bool(item.get("call")) == bool(item.get("python")):
-            raise ScenarioError(f"{where}[{i}]: шаг — либо `call` (инструмент), либо `python` (шаг-помощник)")
+        kinds = [k for k in ("call", "python", "rpc") if item.get(k)]
+        if len(kinds) != 1:
+            raise ScenarioError(f"{where}[{i}]: шаг — ровно одно из `call` (инструмент), "
+                                f"`rpc` (метод протокола), `python` (шаг-помощник); указано {kinds or 'ничего'}")
         expect = item.get("expect")
         out.append(Step(
             index=i, tool=str(item.get("call") or ""), python=str(item.get("python") or ""),
+            rpc=str(item.get("rpc") or ""), headers=dict(item.get("headers") or {}),
+            token=None if item.get("token") is None else str(item.get("token")),
             args=dict(item.get("with") or {}), alias=str(item.get("as") or ""),
             expect=_expect(expect, vocab, f"{where}[{i}]") if expect is not None else None,
         ))
@@ -310,13 +326,33 @@ class Runner:
                         "message": str(outcome.get("message") or ""), "data": outcome.get("data") or {},
                         "reaction_class": "", "recovery": {}, "facts": []}
         else:
-            env = self.srv.rpc.call_tool(step.tool, args)
-            structured = self.srv.rpc.structured(env["envelope"])
-            observed = {"ok": not env["is_error"], "code": env["code"] or "",
-                        "message": self.srv.rpc.text(env["envelope"])[:400], "data": env["data"] or {},
-                        "reaction_class": str(structured.get("reaction_class") or ""),
-                        "recovery": structured.get("recovery") or {},
-                        "facts": [str(f.get("type") or "") for f in (env["facts"] or [])]}
+            # Транспортные условия объявляются шагом: подменённый `Origin`, чужой `Host`, пустой
+            # ключ. Без них периметр (файрвол, авторизация) декларацией недостижим вовсе.
+            kw = {}
+            if step.headers:
+                kw["extra_headers"] = step.headers
+            if step.token is not None:
+                kw["token"] = step.token
+            method = "tools/call" if step.tool else step.rpc
+            params = {"name": step.tool, "arguments": args} if step.tool else args
+            envelope, status = self.srv.rpc.raw_with_status(method, params, **kw)
+            rpc = self.srv.rpc
+            if step.tool:
+                observed = {"ok": not rpc.is_error(envelope), "code": rpc.error_code(envelope) or "",
+                            "message": rpc.text(envelope)[:400], "data": rpc.data(envelope) or {},
+                            "reaction_class": str((rpc.structured(envelope) or {}).get("reaction_class") or ""),
+                            "recovery": (rpc.structured(envelope) or {}).get("recovery") or {},
+                            "facts": [str(f.get("type") or "") for f in (rpc.facts(envelope) or [])]}
+            else:
+                # Ответ протокола — это конверт целиком: у `tools/list` нет ни фактов, ни рекавери,
+                # и подставлять их пустыми честнее, чем притворяться вызовом инструмента.
+                failure = rpc.protocol_error(envelope)
+                observed = {"ok": not failure and "result" in envelope,
+                            "code": rpc.error_code(envelope),
+                            "message": str(failure.get("message", ""))[:400],
+                            "data": envelope.get("result") or {},
+                            "reaction_class": "", "recovery": {}, "facts": []}
+            observed["http"] = status
         if step.alias:
             results[step.alias] = observed["data"]
         console = self.srv.console.lines[console_from:]
@@ -335,6 +371,10 @@ class Runner:
             return []
         tag = f"{step.index}. {step.name}"
         out: list[Check] = []
+
+        if exp.http is not None:
+            out.append(Check(scenario.id, f"{tag} → HTTP {exp.http}", got.get("http") == exp.http,
+                             f"пришёл {got.get('http')}"))
 
         if exp.open:
             # Объявлено ЖЕЛАЕМОЕ поведение при открытой находке: сегодня его нет, и это baseline.
