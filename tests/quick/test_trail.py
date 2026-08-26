@@ -1,6 +1,9 @@
 """
 tests/quick/test_trail.py — след вызовов сервера: удержание, предел, отказ записи.
 
+Здесь же синтезатор `scripts/guards/reproduce.py` — он читает ту же запись, и разъехавшийся
+формат ломает обе половины сразу; проверять их порознь значит не заметить расхождения.
+
 Standalone-прогон:  python tests/quick/test_trail.py
 Поведение «отказ попал в след» и «секрет не попал» проверяют сценарии `observability.yaml` по
 живому серверу. Здесь — то, что сценарием не выразить: прополка старых файлов, предел на файл,
@@ -14,6 +17,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from core.observability import Trail  # noqa: E402
+
+sys.path.insert(0, str(ROOT / "scripts" / "guards"))
+from reproduce import _entries, as_steps, pick, render  # noqa: E402
 
 _checks = 0
 _fails: list[str] = []
@@ -83,6 +89,42 @@ broken.write("fs_read_file", {"path": "a"}, _Result())
 ok(not broken.enabled, "отказ записи гасит след")
 broken.write("fs_read_file", {"path": "b"}, _Result())
 ok(True, "второй вызов после отказа НЕ падает: ломается наблюдение, а не работа владельца")
+
+
+print("\n== синтез: запись → объявление ==")
+import yaml as _yaml  # noqa: E402
+
+REC = Path(tempfile.mkdtemp(prefix="vpm-rep-")) / "trail-x.jsonl"
+REC.write_text("\n".join([
+    json.dumps({"scenario": "__run__", "ok": True, "total": 1}),
+    "не-json",
+    json.dumps({"tool": "fs_create_file", "args": {"path": "a.txt"}, "ok": True, "facts": ["FileCreated"]}),
+    json.dumps({"tool": "fs_read_file", "args": {"path": "нет.txt"}, "ok": False, "code": "FILE_NOT_FOUND"}),
+]) + "\n", encoding="utf-8")
+
+rows = _entries(REC)
+ok(len(rows) == 2, "итог прогона и битая строка в шаги не попадают — воспроизводят вызовы, а не сводку")
+ok(pick(rows, None, None) == 1, "берётся ПОСЛЕДНИЙ отказ: свежий интереснее старого")
+ok(pick(rows, "fs_read_file", "FILE_NOT_FOUND") == 1, "отбор по инструменту и коду находит его же")
+try:
+    pick(rows, "fs_read_file", "ЧУЖОЙ_КОД")
+    ok(False, "отказа под условия нет — обязан быть громкий отказ, а не пустой сценарий")
+except SystemExit:
+    ok(True, "отказа под условия нет — синтезатор говорит это, а не рожает пустышку")
+
+steps = as_steps(rows)
+ok(steps[0]["expect"] == {"ok": True, "facts": ["FileCreated"]}, "успех проверяется фактами")
+ok(steps[1]["expect"] == {"ok": False, "code": "FILE_NOT_FOUND"},
+   "отказ проверяется кодом — «просто упало» харнесс не принимает")
+
+text = render("rep_проба", "почему", steps)
+parsed = _yaml.safe_load(text)
+ok(isinstance(parsed, list) and parsed[0]["scenario"] == "rep_проба",
+   "порождённое объявление разбирается как YAML, а не только выглядит им")
+ok(parsed[0]["when"][1]["call"] == "fs_read_file"
+   and parsed[0]["when"][1]["expect"]["code"] == "FILE_NOT_FOUND",
+   "шаг отказа доезжает до объявления вместе со своим кодом")
+ok(parsed[0]["when"][0]["with"] == {"path": "a.txt"}, "аргументы доезжают — без них воспроизводить нечем")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
