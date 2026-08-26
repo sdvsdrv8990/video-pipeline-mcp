@@ -124,19 +124,19 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
-      # Без установки пакета: сторож на stdlib. Потолок — scripts/comment_guard_baseline.txt,
+      # Без установки пакета: сторож на stdlib. Потолок — scripts/guards/comment_guard_baseline.txt,
       # снижается только через --bless, поэтому падение долга видно в diff ревью.
       - name: comment guard (ratchet)
-        run: python scripts/comment_guard.py --check
+        run: python scripts/guards/comment_guard.py --check
       # Инварианты МЕЖДУ файлами: пропуск набора без установки бинаря в CI, имя до объявления в
       # линейном наборе, код отказа мимо реестра реакций, `enum` без значений. Ни один из них не
       # виден ни линтеру, ни типам, ни прогону: разрыв живёт между двумя файлами.
       - name: invariants (межфайловые)
-        run: python scripts/invariants.py --check
+        run: python scripts/guards/invariants.py --check
 
       # Тот же класс: документ, который называет число, обязан сходиться со своим перечнем.
       - name: findings registry count
-        run: python scripts/findings_count.py --check
+        run: python scripts/guards/findings_count.py --check
 
   gitleaks:
     name: gitleaks (secrets)

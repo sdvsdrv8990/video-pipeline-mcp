@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""scripts/what_if.py — реальность против ожиданий: что даст правка, ДО того как её принять.
+"""scripts/guards/what_if.py — реальность против ожиданий: что даст правка, ДО того как её принять.
 
 Намерение (`intent.yaml`) объявляет, что меняем, где, зачем и какие сценарии обязаны сменить цвет.
 Кандидатный патч раскатывается в ОТДЕЛЬНОМ worktree, матрица гоняется дважды — на `HEAD` и на
@@ -10,8 +10,8 @@
 Третья колонка ловит «фикс не работает», вторая — «фикс задел соседнее». Предсказать поведение
 ненаписанного кода нельзя ничем; здесь оно ИЗМЕРЯЕТСЯ на кандидате, пока он не в основной ветке.
 
-    python3 scripts/what_if.py --intent intent.yaml            # патч = незакоммиченная правка
-    python3 scripts/what_if.py --intent intent.yaml --patch fix.diff
+    python3 scripts/guards/what_if.py --intent intent.yaml            # патч = незакоммиченная правка
+    python3 scripts/guards/what_if.py --intent intent.yaml --patch fix.diff
 """
 import argparse
 import re
@@ -23,7 +23,7 @@ from pathlib import Path
 
 import yaml
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 LINE = re.compile(r"^\s{2}([✓✗]) (.+?)(?:\s{2}→ .*)?$")
 INTENT_KEYS = {"intent", "where", "why", "expect"}
 EXPECT_KEYS = {"scenario", "becomes", "why"}

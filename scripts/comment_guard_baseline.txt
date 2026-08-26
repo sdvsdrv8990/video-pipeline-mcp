@@ -1,3 +1,0 @@
-# Потолок замечаний сторожа текста в коде (scripts/comment_guard.py --check).
-# Вниз можно, вверх — нет: превышение красит джобу comment-guard в CI.
-# После прополки: python3 scripts/comment_guard.py --bless. Сейчас всего: 0.

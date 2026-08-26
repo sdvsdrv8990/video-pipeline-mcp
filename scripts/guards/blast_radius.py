@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""scripts/blast_radius.py — что висит на этом месте кода: карта «строка → сценарии».
+"""scripts/guards/blast_radius.py — что висит на этом месте кода: карта «строка → сценарии».
 
 Отвечает ДО правки: «собираюсь тронуть вот здесь — что это заденет и чем это проверено». Покрытие
 снимается по одному сценарию на сервер, поэтому строка знает своих сценариев поимённо, а не
 «покрыта вообще». Сборка медленная и в гейт не входит — инструмент запускается руками.
 
-    python3 scripts/blast_radius.py --build                 # собрать карту
-    python3 scripts/blast_radius.py --query core/paths.py:42
-    python3 scripts/blast_radius.py --changed               # по незакоммиченной правке
-    python3 scripts/blast_radius.py --affected              # какие сценарии гнать ИМЕННО сейчас
-    python3 scripts/blast_radius.py --check-routes          # рубеж маршрута реально ИСПОЛНЯЛСЯ
+    python3 scripts/guards/blast_radius.py --build                 # собрать карту
+    python3 scripts/guards/blast_radius.py --query core/paths.py:42
+    python3 scripts/guards/blast_radius.py --changed               # по незакоммиченной правке
+    python3 scripts/guards/blast_radius.py --affected              # какие сценарии гнать ИМЕННО сейчас
+    python3 scripts/guards/blast_radius.py --check-routes          # рубеж маршрута реально ИСПОЛНЯЛСЯ
 """
 import ast
 import argparse
@@ -22,7 +22,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 # Импорты ниже корня: харнесс живёт в `tests/`, и путь к нему добавляется выше.
@@ -106,7 +106,7 @@ def build() -> dict:
 
 def _load() -> dict:
     if not RADIUS.exists():
-        sys.exit(f"Карты нет: {RADIUS}. Собери её — `python3 scripts/blast_radius.py --build`.")
+        sys.exit(f"Карты нет: {RADIUS}. Собери её — `python3 scripts/guards/blast_radius.py --build`.")
     return json.loads(RADIUS.read_text(encoding="utf-8"))
 
 

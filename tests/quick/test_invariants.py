@@ -11,14 +11,15 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "scripts" / "guards"))
 sys.path.insert(0, str(ROOT))
 
 from invariants import (  # noqa: E402
     codes_outside_registry, codes_without_emitter, dead_recovery_in_engine,
     declared_but_unscripted, enum_without_values,
     resources_off_inventory, scenario_calls_unknown_tool, skips_without_ci,
-    dispatch_by_value, mirrored_declaration, status_off_registry, suites_off_catalog,
+    dispatch_by_value, guards_off_catalog, mirrored_declaration, status_off_registry,
+    suites_off_catalog,
     used_before_declared,
 )
 
@@ -348,6 +349,26 @@ ok(len(mirrored_declaration(make({"config/f.yaml": DECL_LIST,
                                   "core/z.py": 'DEFAULT_BAD_PATTERNS = frozenset({"ты теперь", "забудь всё"})\n'}))) == 1,
    "запасной перечень СОВПАЛ — это копия, и она разойдётся при следующей правке декларации")
 
+
+print("\n== сторож мимо каталога зон ==")
+GUARD_ROW = "| `alpha.py` | зона | улика | запас | никогда |\n"
+ok(not guards_off_catalog(make({"scripts/guards/alpha.py": "x = 1\n",
+                                "scripts/guards/CATALOG.md": GUARD_ROW})),
+   "сторож объявлен строкой-зоной — молчим")
+ok(len(guards_off_catalog(make({"scripts/guards/alpha.py": "x = 1\n",
+                                "scripts/guards/beta.py": "y = 2\n",
+                                "scripts/guards/CATALOG.md": GUARD_ROW}))) == 1,
+   "новый скрипт без зоны — так сторожа и плодятся мимо запаса существующих")
+ok(len(guards_off_catalog(make({"scripts/guards/CATALOG.md": GUARD_ROW}))) == 1,
+   "зона объявлена, а сторожа нет — расширять предлагается пустоту")
+ok(len(guards_off_catalog(make({"scripts/guards/alpha.py": "x = 1\n"}))) == 1,
+   "каталога зон нет вовсе — правило «не плодить» держится дисциплиной, то есть не держится")
+ok(not guards_off_catalog(make({"core/z.py": "x = 1\n"})),
+   "каталога сторожей в дереве нет — событие не наше, молчим")
+ok(not guards_off_catalog(make({"scripts/guards/alpha.py": "x = 1\n",
+                                "scripts/guards/__init__.py": "\n",
+                                "scripts/guards/CATALOG.md": GUARD_ROW})),
+   "служебный `__init__.py` сторожем не считается и зоны не требует")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

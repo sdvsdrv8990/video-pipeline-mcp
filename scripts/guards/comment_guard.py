@@ -29,7 +29,7 @@ from pygments.lexers import get_lexer_for_filename
 from pygments.token import Comment
 from pygments.util import ClassNotFound
 
-PROJECT = Path(__file__).resolve().parent.parent
+PROJECT = Path(__file__).resolve().parents[2]
 BASELINE = Path(__file__).with_name("comment_guard_baseline.txt")
 
 MODULE_DOC_MAX = 15          # шапка модуля: роль + неочевидное, а не пересказ подсистемы
@@ -311,9 +311,9 @@ def cmd_bless() -> int:
     total = sum(len(n) for n in found.values())
     body = "".join(f"{p} {len(n)}\n" for p, n in sorted(found.items()) if n)
     BASELINE.write_text(
-        "# Потолок замечаний сторожа текста в коде (scripts/comment_guard.py --check).\n"
+        "# Потолок замечаний сторожа текста в коде (scripts/guards/comment_guard.py --check).\n"
         "# Вниз можно, вверх — нет: превышение красит джобу comment-guard в CI.\n"
-        f"# После прополки: python3 scripts/comment_guard.py --bless. Сейчас всего: {total}.\n"
+        f"# После прополки: python3 scripts/guards/comment_guard.py --bless. Сейчас всего: {total}.\n"
         + body, encoding="utf-8")
     print(f"Потолок переписан: {total} замечаний в {sum(1 for n in found.values() if n)} файлах → {BASELINE}")
     return 0
@@ -333,7 +333,7 @@ def cmd_check() -> int:
     if grown:
         print(f"\nХраповик: {total} замечаний при потолке {cap}. Мусор ИИ в коде растёт — "
               f"почисти файлы выше или объясни в ревью, почему потолок поднимается "
-              f"(scripts/comment_guard.py --bless).")
+              f"(scripts/guards/comment_guard.py --bless).")
         return 1
     if dropped or stale:
         print(f"↓ прополото: {', '.join(dropped + stale) or '—'} — опусти потолок: --bless")

@@ -1,4 +1,4 @@
-"""scripts/invariants.py — межфайловые инварианты: то, что живёт в двух местах и обязано совпадать.
+"""scripts/guards/invariants.py — межфайловые инварианты: то, что живёт в двух местах и обязано совпадать.
 
 ## Назначение
 Ни `ruff`, ни `mypy`, ни `pytest` не видят разрыв МЕЖДУ файлами: пропуск набора и установка бинаря
@@ -22,7 +22,7 @@ from pathlib import Path
 
 import yaml
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 BASELINE = Path(__file__).with_name("invariants_baseline.txt")
 DISPATCH_BASELINE = Path(__file__).with_name("dispatch_baseline.txt")
 UNSCRIPTED_BASELINE = Path(__file__).with_name("unscripted_baseline.txt")
@@ -44,6 +44,8 @@ ROADMAP = ("docs", "roadmap")
 FINDINGS = ("docs", "roadmap", "02_findings.md")
 INVENTORY = ("tests", "quick", "tools_inventory.golden.json")
 CATALOG = ("tests", "CATALOG.md")
+GUARDS = ("scripts", "guards")
+GUARDS_CATALOG = ("scripts", "guards", "CATALOG.md")
 GATE = ("tests", "test_suites.py")
 SCENARIOS = ("tests", "scenarios")
 ROUTES = ("tests", "routes")
@@ -711,12 +713,53 @@ def mirrored_declaration(root: Path = ROOT) -> list[str]:
     return notes
 
 
+
+def _zones_of(path: Path) -> set[str]:
+    """Зоны, объявленные строками таблицы в этом каталоге."""
+    if not path.exists():
+        return set()
+    zones = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("|"):
+            cell = line.split("|")[1].strip().strip("*").strip("`").strip()
+            if cell:
+                zones.add(cell)
+    return zones
+
+
+def guards_off_catalog(root: Path = ROOT) -> list[str]:
+    """Сторож без объявленной зоны — и правило «не плодить» перестаёт действовать на сторожей.
+
+    Тот же механизм, что у наборов: у скриптов он нужен ровно потому, что слепую зону тянет
+    закрыть НОВЫМ скриптом, хотя почти всегда она ложится в запас существующего. Обратная сторона
+    так же красная: строка про сторожа, которого нет, отправляет расширять пустоту.
+    """
+    directory = _at(root, GUARDS)
+    if not directory.is_dir():
+        return []
+    scripts = sorted(p for p in directory.glob("*.py") if not p.name.startswith("_"))
+    zones = _zones_of(_at(root, GUARDS_CATALOG))
+    if not zones:
+        return [f"{'/'.join(GUARDS_CATALOG)} — каталога зон нет, а сторожа есть: "
+                "правило «не плодить» держится дисциплиной, то есть не держится"]
+    notes = []
+    have = {p.name for p in scripts}
+    for name in sorted(have - zones):
+        notes.append(f"scripts/guards/{name} — сторож без строки-зоны в scripts/guards/CATALOG.md: "
+                     "сначала расширь хозяина по его запасу; заводишь свой — объяви зону и улику")
+    for zone in sorted(zones - have):
+        if zone.endswith(".py"):
+            notes.append(f"scripts/guards/CATALOG.md: зона `{zone}` объявлена, а сторожа нет — "
+                         "расширять предлагается несуществующее")
+    return notes
+
 HARD = (("пропуск набора без покрытия в CI", skips_without_ci),
         ("имя используется до объявления", used_before_declared),
         ("код отказа мимо реестра", codes_outside_registry),
         ("объявление ресурсов мимо инвентаря", resources_off_inventory),
         ("статус находки мимо реестра", status_off_registry),
         ("набор мимо каталога зон", suites_off_catalog),
+        ("сторож мимо каталога зон", guards_off_catalog),
         ("сценарий зовёт инструмент мимо описи", scenario_calls_unknown_tool))
 
 # Храповик: вниз можно, вверх нет. Потолок — в файле рядом, совет — как долг закрывается.

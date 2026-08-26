@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "scripts" / "guards"))
 
 import comment_guard as G
 
@@ -101,9 +101,9 @@ with tempfile.TemporaryDirectory() as tmp:
         ok("файл вне репозитория просканирован без падения", False, f"{type(e).__name__}: {e}")
 
 # Сторож не ловит сам себя — таблица шаблонов внутри него это КОД, а не текст.
-guard_src = (ROOT / "scripts" / "comment_guard.py").read_text(encoding="utf-8")
-ok("сторож на себе самом чист", G.review("scripts/comment_guard.py", guard_src) == [],
-   G.review("scripts/comment_guard.py", guard_src))
+guard_src = (ROOT / "scripts" / "guards" / "comment_guard.py").read_text(encoding="utf-8")
+ok("сторож на себе самом чист", G.review("scripts/guards/comment_guard.py", guard_src) == [],
+   G.review("scripts/guards/comment_guard.py", guard_src))
 
 # ─── Координата задачи в тексте: ловится по классам, но НЕ ценой ложных срабатываний ───
 # Строки-образцы держим здесь, в КОДЕ теста: те же образцы в комментарии сделали бы файл

@@ -1,4 +1,4 @@
-"""scripts/findings_count.py — счёт реестра находок по самим его строкам.
+"""scripts/guards/findings_count.py — счёт реестра находок по самим его строкам.
 
 ## Назначение
 Шапка `docs/roadmap/02_findings.md` называет числа, а перечень ниже их опровергал: последние
@@ -16,7 +16,7 @@ import re
 import sys
 from pathlib import Path
 
-REGISTRY = Path(__file__).resolve().parent.parent / "docs" / "roadmap" / "02_findings.md"
+REGISTRY = Path(__file__).resolve().parents[2] / "docs" / "roadmap" / "02_findings.md"
 ROW = re.compile(r"^\| (~~)?\*{0,2}(F\d+)\*{0,2}(?:~~)?\s*\|([^|]*)\|")
 HEADER = re.compile(r"(\d+) наход\w+, (\d+) закрыт\w+, (\d+) открыт\w+")  # окончания склоняются по числу
 
