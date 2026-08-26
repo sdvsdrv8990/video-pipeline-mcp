@@ -1,6 +1,7 @@
 """tests/scenarios/steps.py — шаги-помощники: то, чего вызовом инструмента не выразить."""
 
 import json
+import socket
 import threading
 import time
 from pathlib import Path
@@ -69,7 +70,7 @@ def busy_server_still_answers(srv, heavy: str, heavy_args: dict,
     }}
 
 
-def trail_says(srv, tool: str) -> dict:
+def trail_says(srv, tool: str = "", level: str = "", code: str = "") -> dict:
     """Что сервер записал о вызове `tool` в свой след.
 
     Наблюдать след через инструмент нельзя — ни один его не читает, а сценарий обязан судить по
@@ -88,15 +89,57 @@ def trail_says(srv, tool: str) -> dict:
                 entry = json.loads(row)
             except ValueError:
                 continue
-            if entry.get("tool") == tool and float(entry.get("ts") or 0) >= fresh:
-                return {"ok": True, "data": {"tool": entry.get("tool"), "code": entry.get("code"),
-                                             "ok_flag": entry.get("ok"), "args": entry.get("args") or {},
-                                             "step": entry.get("step")}}
+            if float(entry.get("ts") or 0) < fresh:
+                continue
+            if tool and entry.get("tool") != tool:
+                continue
+            if level and entry.get("level") != level:
+                continue
+            if code and entry.get("code") != code:
+                continue
+            return {"ok": True, "data": {"tool": entry.get("tool", ""), "code": entry.get("code"),
+                                         "level": entry.get("level", ""), "rpc": entry.get("rpc", ""),
+                                         "ok_flag": entry.get("ok"), "args": entry.get("args") or {},
+                                         "step": entry.get("step")}}
+    искали = ", ".join(f"{k}={v}" for k, v in
+                       (("tool", tool), ("level", level), ("code", code)) if v) or "любую запись"
     return {"ok": False, "code": "MISSING_TARGET_FILE",
-            "message": f"в следе сервера нет СВЕЖЕЙ записи о вызове {tool}: "
+            "message": f"в следе сервера нет СВЕЖЕЙ записи ({искали}): "
                        f"сервер не пишет то, чем воспроизводят"}
+
+
+def speak_garbage(srv, payload: str, ждать: bool = True) -> dict:
+    """Сказать серверу то, что HTTP не является. Ниже этого уровня наблюдать уже нечего.
+
+    Инструментом такое не выразить: предмет проверки — реакция на байты, до всякого разбора запроса.
+    """
+    conn = socket.create_connection(("127.0.0.1", srv.port), timeout=5)
+    try:
+        conn.sendall(payload.encode("utf-8", errors="replace"))
+        answer = conn.recv(200).decode("utf-8", errors="replace") if ждать else ""
+    except OSError as exc:
+        return {"ok": False, "code": "CONNECTION_FAILED", "message": str(exc)}
+    finally:
+        conn.close()
+    return {"ok": True, "data": {"первая_строка": answer.split("\r\n")[0]}}
+
+
+def hold_connections(srv, count: int, seconds: float = 2.5) -> dict:
+    """Открыть соединения и молчать. Так выглядят скан портов и медленное исчерпание."""
+    held = []
+    try:
+        for _ in range(int(count)):
+            held.append(socket.create_connection(("127.0.0.1", srv.port), timeout=5))
+        time.sleep(float(seconds))
+    except OSError as exc:
+        return {"ok": False, "code": "CONNECTION_FAILED", "message": str(exc)}
+    finally:
+        for conn in held:
+            conn.close()
+    return {"ok": True, "data": {"держали": len(held)}}
 
 
 STEPS = {"remove_path": remove_path, "branch_state": branch_state,
          "busy_server_still_answers": busy_server_still_answers,
-         "trail_says": trail_says}
+         "trail_says": trail_says, "speak_garbage": speak_garbage,
+         "hold_connections": hold_connections}

@@ -42,7 +42,9 @@ def _entries(path: Path) -> list[dict]:
             entry = json.loads(row)
         except ValueError:
             continue
-        if entry.get("scenario") != "__run__" and entry.get("tool"):
+        # Отказ до диспетчера не несёт имени инструмента вовсе — отбор по `tool` выбрасывал бы
+        # ровно те строки, ради которых вторая точка записи и ставилась.
+        if entry.get("scenario") != "__run__" and (entry.get("tool") or entry.get("rpc") or entry.get("level")):
             out.append(entry)
     return out
 
@@ -64,6 +66,10 @@ def pick(entries: list[dict], tool: str | None, code: str | None) -> int:
         entry = entries[i]
         if entry.get("ok"):
             continue
+        # Удержание соединений — УЛИКА, а не воспроизводимый отказ: запросом его не повторить,
+        # и сделать вид, что повторили, значит выдать другой сценарий за этот.
+        if entry.get("level") == "socket":
+            continue
         if tool and entry.get("tool") != tool:
             continue
         if code and entry.get("code") != code:
@@ -72,8 +78,17 @@ def pick(entries: list[dict], tool: str | None, code: str | None) -> int:
     raise SystemExit("в записи нет отказа под эти условия — воспроизводить нечего")
 
 
+# Заголовки, которыми воспроизводится отказ периметра. Ключ сюда не попадает: он замаскирован
+# в самой записи, и подставлять вместо него что-то своё значит воспроизводить другой отказ.
+PERIMETER_HEADERS = ("Host", "Origin", "Content-Type")
+
+
 def as_steps(entries: list[dict]) -> list[dict]:
-    """Записи → шаги объявления. Успех проверяется фактами, отказ — кодом: «просто упало» не ожидание."""
+    """Записи → шаги объявления. Успех проверяется фактами, отказ — кодом: «просто упало» не ожидание.
+
+    Уровень решает ФОРМУ шага: до диспетчера инструмента нет, и воспроизводится такой отказ
+    конвертом — методом протокола и заголовками, а не вызовом.
+    """
     steps = []
     for entry in entries:
         expect: dict = {"ok": bool(entry.get("ok"))}
@@ -82,7 +97,23 @@ def as_steps(entries: list[dict]) -> list[dict]:
                 expect["facts"] = list(entry["facts"])
         else:
             expect["code"] = entry.get("code") or "UNKNOWN_ERROR"
-        steps.append({"call": entry["tool"], "with": entry.get("args") or {}, "expect": expect})
+        level = entry.get("level") or "engine"
+        if level == "socket":
+            raise SystemExit("удержание соединений шагом не воспроизводится: это наблюдение нижнего "
+                             "слоя, а не запрос — возьми отказ уровнем выше")
+        if level == "engine":
+            steps.append({"call": entry["tool"], "with": entry.get("args") or {}, "expect": expect})
+            continue
+        args = entry.get("args") or {}
+        step = {"rpc": entry.get("rpc") or "tools/list", "with": {}, "expect": expect}
+        headers = {k: args[k] for k in PERIMETER_HEADERS if args.get(k)}
+        if headers:
+            step["headers"] = headers
+        if level == "identity":
+            # Ключ в записи замаскирован — воспроизводим отсутствием, а не выдумкой. Отказ тот же
+            # по коду, но это ДРУГАЯ его причина, и знать об этом читающему обязательно.
+            step["token"] = ""
+        steps.append(step)
     return steps
 
 
@@ -90,12 +121,17 @@ def render(name: str, why: str, steps: list[dict]) -> str:
     """Объявление в стиле проекта. Пишем руками, а не yaml.dump: тот ломает порядок и кавычит всё."""
     lines = [f"- scenario: {name}", f"  why: {why}", "  when:"]
     for step in steps:
-        lines.append(f"    - call: {step['call']}")
+        kind = "call" if "call" in step else "rpc"
+        lines.append(f"    - {kind}: {step[kind]}")
         lines.append("      with:")
         for key, value in (step["with"] or {}).items():
             lines.append(f"        {key}: {json.dumps(value, ensure_ascii=False)}")
         if not step["with"]:
             lines[-1] = "      with: {}"
+        if step.get("headers"):
+            lines.append(f"      headers: {json.dumps(step['headers'], ensure_ascii=False)}")
+        if "token" in step:
+            lines.append(f"      token: {json.dumps(step['token'], ensure_ascii=False)}")
         lines.append("      expect:")
         for key, value in step["expect"].items():
             lines.append(f"        {key}: {json.dumps(value, ensure_ascii=False)}")
@@ -295,9 +331,11 @@ def main() -> int:
         raise SystemExit(f"{record}: ни одной записи о вызове")
     at = pick(entries, a.tool, a.code)
     entry = entries[at]
-    name = a.name or f"rep_{entry['tool']}_{(entry.get('code') or 'refusal')}".lower()
-    why = (f"отказ {entry.get('code')} на {entry['tool']} уже случался — "
-           f"воспроизведён из записи {record.name}")
+    # Предмет отказа: инструмент, если он был; иначе конверт — метод протокола и уровень.
+    subject = entry.get("tool") or f"{entry.get('level') or 'perimeter'}_{entry.get('rpc') or 'конверт'}"
+    name = a.name or f"rep_{subject}_{entry.get('code') or 'refusal'}".lower().replace("/", "_")
+    why = (f"отказ {entry.get('code')} на уровне {entry.get('level') or 'engine'} ({subject}) "
+           f"уже случался — воспроизведён из записи {record.name}")
 
     print(f"запись: {record}\nотказ: {entry['tool']} → {entry.get('code')} (шаг {at + 1} из {len(entries)})",
           file=sys.stderr)

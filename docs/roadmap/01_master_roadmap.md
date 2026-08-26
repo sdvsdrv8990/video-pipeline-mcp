@@ -62,7 +62,7 @@
 | `core/providers/<provider>/` — каталог на провайдера (`stt`, `tts`, `img`, `ffmpeg`) | способность = адаптер за единым интерфейсом | 🔨 реестр адаптеров + опись моделей + проба железа готовы; локальные адаптеры исполняют. Облачных нет, и заглушек под них тоже — снесены S24 (`F3`), отказ даёт живой `PROVIDER_ADAPTER_MISSING`. Каталог `ffmpeg` снят как призрак: движок заводится планом [`19`](19_montage_subsystem_plan.md) | **P1–P4** |
 | `tools/media/` (`media_*`) · `tools/video/` (монтаж) | тонкие обёртки над `core/providers` | 🔨 `media` ✅ · монтаж поедет в `tools/montage/` по плану [`19`](19_montage_subsystem_plan.md) (`tools/video/` снесён как призрак) | **P7** (video) |
 | `pipeline/entry_points/` + `pipeline/steps/` | входы не копируют воркфлоу; шаги переиспользуются | 🔲 в git каталога нет вовсе | **P5**, **P6** |
-| `scripts/` — утилиты вне рантайма | только `scripts/`, не `core`/`pipeline` | ✅ `spec_to_schema.py`, `config_to_schema.py`, `models.py`, `set_provider_key.py` | **A1′** ✅ |
+| `scripts/` — утилиты вне рантайма | только `scripts/`, не `core`/`pipeline` | ✅ `spec_to_schema.py`, `models.py`, `set_provider_key.py`; сторожа отдельным этажом `scripts/guards/`. `config_to_schema.py` снят S25 — одноразовый перенос завершён | **A1′** ✅ |
 | Публикуемые architecture/API-доки | доки рядом-параллельно коду | 🔲 (`docs/dev/` удалён; документация проекта = `docs/roadmap/`) | **I8** |
 | `config/ops/*.ops.yaml` | реестр операций tool-категорий | ❌ **снят** (S22): слой упразднён; каталог снесён S24 (F83) | **A3** ❌ |
 | ~~`config/model_routing.yaml`~~, media-ops | выбор media-модели | ❌ **не строим** (S8): модель = per-channel `RESOURCE_LIMITS` в листе книги (см. [`05`](05_data_template_media_system.md) §1) | — |

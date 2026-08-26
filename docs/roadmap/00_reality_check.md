@@ -64,7 +64,7 @@
 | Нет `.github/workflows/` | ✅ закрыто (I3): CI, сегодня 6 джоб — состав в §1 |
 | Нет `pyproject.toml`, зависимости не запинены | ✅ закрыто: `pyproject.toml` + `requirements.lock` |
 | Нет `mypy`/`ruff` | ✅ закрыто: оба в `[dev]` и в CI |
-| `scripts/` пусто | ✅ закрыто: `config_to_schema.py`, `spec_to_schema.py`, `models.py`, `set_provider_key.py` |
+| `scripts/` пусто | ✅ закрыто: `spec_to_schema.py`, `models.py`, `set_provider_key.py` + этаж сторожей `scripts/guards/`. `config_to_schema.py` снят S25 по завершении переноса |
 | Провайдеры = сплошной `NotImplementedError` | 🟠 частично: локальные подняты и измерены; облачных нет, и заглушек под них тоже нет — см. §2 |
 | App-level auth отсутствует | ✅ есть `core/auth.py` (токен + отпечаток); за туннелем один клиент, IP-гранулярность по-прежнему бесполезна (G18) |
 | `config/ops/` пуст → «ops-слой не существует» | ℹ️ переквалифицировано: слой **упразднён намеренно**, не сломан |

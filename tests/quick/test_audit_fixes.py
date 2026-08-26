@@ -158,6 +158,16 @@ async def main():
                                       params={"name": "fs_delete"}, timestamp=3000.0))
     check("fs_delete ПРОПУЩЕН файрволом (log-only, не глухой блок)", resd.decision.value == "allow", resd.reason)
     check("fs_delete ПОСЧИТАН как сигнал (get_stats)", _fwd.get_stats()["anomalies_detected"] == 1)
+    # Санитизатор: имя ключа сравнивается БЕЗ разделителей — заголовок через дефис тот же ключ.
+    from core.contracts.error_detail import redact as _redact
+    for _h in ("X-Api-Key", "x-api-key", "Api-Key", "API_KEY", "Authorization", "Set-Cookie",
+               "X-Auth-Token", "bearer_token"):
+        check(f"секрет в {_h} маскируется", _redact({_h: "живой-токен"})[_h] == "***REDACTED***")
+    for _h in ("path", "Host", "Origin", "Content-Type", "content"):
+        check(f"{_h} НЕ трогается — маска не должна съедать полезное", _redact({_h: "значение"})[_h] == "значение")
+    check("вложенный секрет маскируется тоже",
+          _redact({"headers": {"X-Api-Key": "живой"}})["headers"]["X-Api-Key"] == "***REDACTED***")
+
     check("без декларации детектор не следит ни за чем и говорит об этом",
           Firewall({}).get_stats()["dangerous_tools_watched"] == 0)
     check("с декларацией под наблюдением весь объявленный список",

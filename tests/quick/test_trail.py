@@ -127,6 +127,45 @@ ok(parsed[0]["when"][1]["call"] == "fs_read_file"
 ok(parsed[0]["when"][0]["with"] == {"path": "a.txt"}, "аргументы доезжают — без них воспроизводить нечем")
 
 
+print("\n== уровень решает форму шага ==")
+PERIM = {"level": "perimeter", "tool": "", "rpc": "", "ok": False, "code": "RPC_-32002",
+         "args": {"Host": "evil.example", "Content-Type": "application/json", "X-Api-Key": "***REDACTED***"}}
+IDENT = {"level": "identity", "tool": "", "rpc": "tools/list", "ok": False, "code": "RPC_-32001",
+         "args": {"Host": "127.0.0.1", "Authorization": "***REDACTED***"}}
+
+perim_step = as_steps([PERIM])[0]
+ok("call" not in perim_step and perim_step["rpc"] == "tools/list",
+   "до диспетчера инструмента НЕТ — шаг конвертный, а не вызов")
+ok(perim_step["headers"] == {"Host": "evil.example", "Content-Type": "application/json"},
+   "воспроизводят заголовки, которыми отказ вызван")
+ok("X-Api-Key" not in perim_step["headers"],
+   "замаскированный ключ в шаг не переносится — подставлять маску вместо ключа значит врать")
+
+ident_step = as_steps([IDENT])[0]
+ok(ident_step.get("token") == "" and ident_step["rpc"] == "tools/list",
+   "ключа в записи нет по построению — отказ воспроизводится ОТСУТСТВИЕМ ключа, а не выдумкой")
+
+REC2 = Path(tempfile.mkdtemp(prefix="vpm-lvl-")) / "trail-y.jsonl"
+REC2.write_text(json.dumps(PERIM) + "\n", encoding="utf-8")
+ok(len(_entries(REC2)) == 1,
+   "строка без имени инструмента доезжает до отбора — ради неё вторая точка записи и ставилась")
+
+text = render("rep_периметр", "почему", [perim_step])
+back = _yaml.safe_load(text)[0]["when"][0]
+ok(back["rpc"] == "tools/list" and back["headers"]["Host"] == "evil.example",
+   "конвертный шаг разбирается как YAML вместе с заголовками")
+
+SOCK = {"level": "socket", "tool": "", "rpc": "", "ok": False, "code": "SOCKET_HELD",
+        "args": {"held": 12, "threshold": 8}}
+ok(pick([SOCK, PERIM], None, None) == 1,
+   "удержание соединений пропускается при выборе отказа — запросом его не повторить")
+try:
+    as_steps([SOCK])
+    ok(False, "шаг из наблюдения нижнего слоя строиться не должен")
+except SystemExit as exc:
+    ok("уровнем выше" in str(exc),
+       "отказ строить шаг называет причину: улика нижнего слоя не воспроизводится запросом")
+
 print("\n== повышение до карты ==")
 OBS = _yaml.safe_load((ROOT / "tests" / "harness" / "observations.yaml").read_text(encoding="utf-8"))
 

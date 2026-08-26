@@ -87,6 +87,14 @@ SENSITIVE_KEYS = frozenset({"authorization", "api_key", "token", "set-cookie",
                             "cookie", "secret", "password"})
 
 
+def _bare(name: object) -> str:
+    """Имя без разделителей: `X-Api-Key`, `api_key` и `apikey` — одно и то же имя.
+
+    Сравнение по сырой строке пропускает заголовок ЧЕРЕЗ ДЕФИС, а именно им сервер принимает ключ.
+    """
+    return str(name).lower().replace("-", "").replace("_", "").replace(" ", "")
+
+
 def redact(value: dict | None) -> dict | None:
     """Маскировка секретов по имени ключа. Единственная реализация на весь сервер: второй
     набор ключей разошёлся бы с этим молча, и разошлась бы ровно та половина, что пишет на диск."""
@@ -94,7 +102,7 @@ def redact(value: dict | None) -> dict | None:
         return None
     out: dict = {}
     for key, item in value.items():
-        if any(s in str(key).lower() for s in SENSITIVE_KEYS):
+        if any(_bare(s) in _bare(key) for s in SENSITIVE_KEYS):
             out[key] = "***REDACTED***"
         elif isinstance(item, dict):
             out[key] = redact(item)

@@ -25,7 +25,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent))
 
 from core.engine import Engine
-from core.observability import Trail
+from core.observability import Trail, wire
 from core.firewall import Firewall, FirewallRequest, FirewallDecision
 from core.transport import Transport
 from core.reactions import Reactions
@@ -248,6 +248,26 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
 
     from aiohttp import web
 
+    def _refuse(level: str, rpc_code: int, message: str, status: int, request: "web.Request",
+                request_id=None, rpc: str = "", headers: dict | None = None) -> "web.Response":
+        """Отказ до диспетчера: пишем в след и отвечаем. Одна точка на все уровни.
+
+        Веток отказа тут почти десяток, и запись в каждой держалась бы дисциплиной — десятую
+        допишут без неё. Уровень записывается явно: на периметре сервер ещё не понял запрос как
+        MCP, и воспроизводится такой отказ формой соединения, а не именем инструмента.
+        """
+        if engine.trail is not None:
+            engine.trail.refusal(level, f"RPC_{rpc_code}", message, rpc=rpc, args={
+                "Host": request.headers.get("Host", ""),
+                "Origin": request.headers.get("Origin", ""),
+                "Content-Type": request.headers.get("Content-Type", ""),
+                "Authorization": request.headers.get("Authorization", ""),
+                "X-Api-Key": request.headers.get("X-Api-Key", ""),
+                "ip": request.remote or "",
+            })
+        return web.json_response(_jsonrpc_error(request_id, rpc_code, message),
+                                 status=status, headers=headers or {})
+
     async def handle_jsonrpc(request: "web.Request") -> "web.Response":
         """Обработка JSON-RPC запросов: Origin → Auth → Firewall → Transport."""
         # Host — первым, до всего остального. Чужое имя хоста означает, что до нас
@@ -257,7 +277,7 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
         # значит верить отправителю в выборе, какое из имён считать нашим.
         if "," in host or (host.rsplit(":", 1)[0].strip("[]") not in {h.strip("[]") for h in ALLOWED_HOSTS}
                            and host not in ALLOWED_HOSTS):
-            return web.json_response(_jsonrpc_error(None, -32002, "Forbidden host"), status=403)
+            return _refuse("perimeter", -32002, "Forbidden host", 403, request)
 
         # Origin проверяется всегда, когда он есть. Отсутствие заголовка = не браузер:
         # кросс-доменный запрос без Origin браузер отправить не может, а CSRF простым запросом
@@ -265,24 +285,23 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
         origin = request.headers.get("Origin")
         if origin is not None and not _origin_allowed(origin):
             _report_origin(origin)
-            return web.json_response(_jsonrpc_error(None, -32002, "Forbidden origin"), status=403)
+            return _refuse("perimeter", -32002, "Forbidden origin", 403, request)
 
         # Чужой тип тела = запрос, который браузер отправляет без preflight.
         if request.content_type != JSON_CONTENT_TYPE:
-            return web.json_response(
-                _jsonrpc_error(None, -32600, f"Unsupported Media Type: {JSON_CONTENT_TYPE} required"),
-                status=415)
+            return _refuse("perimeter", -32600,
+                           f"Unsupported Media Type: {JSON_CONTENT_TYPE} required", 415, request)
 
         try:
             raw_request = await request.text()
         except Exception:
-            return web.json_response(_jsonrpc_error(None, -32700, "Cannot read body"), status=400)
+            return _refuse("perimeter", -32700, "Cannot read body", 400, request)
 
         # Fail-closed — не можем распарсить/проверить → блокируем, а не пропускаем.
         try:
             req_data = json.loads(raw_request)
         except json.JSONDecodeError as e:
-            return web.json_response(_jsonrpc_error(None, -32700, f"Parse error: {e}"), status=400)
+            return _refuse("perimeter", -32700, f"Parse error: {e}", 400, request)
 
         # Аутентификация ДО файрвола. Принимаем оба заголовка из allowlist коннектора
         # Claude AI Web (Authorization: Bearer / X-Api-Key) — иначе клиент не сможет прислать ключ.
@@ -291,11 +310,9 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
             if deny:
                 hint = ("Требуется заголовок Authorization: Bearer <token> или X-Api-Key: <token>"
                         if deny == "AUTH_REQUIRED" else "Неверный токен аутентификации")
-                return web.json_response(
-                    _jsonrpc_error(req_data.get("id") if isinstance(req_data, dict) else None,
-                                   -32001, f"{deny}: {hint}"),
-                    status=401
-                )
+                return _refuse("identity", -32001, f"{deny}: {hint}", 401, request,
+                               request_id=req_data.get("id") if isinstance(req_data, dict) else None,
+                               rpc=req_data.get("method", "") if isinstance(req_data, dict) else "")
 
         if firewall:
             try:
@@ -311,32 +328,24 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
                 # Причина сбоя — в консоль владельца; наружу только факт отказа, иначе
                 # клиент получает текст внутреннего исключения (имена типов, значения полей).
                 print(f"⛔ [firewall] сбой проверки, запрос отклонён: {e!r}")
-                return web.json_response(
-                    _jsonrpc_error(req_data.get("id") if isinstance(req_data, dict) else None,
-                                   -32000, "Firewall error (blocked)"),
-                    status=403
-                )
+                return _refuse("firewall", -32000, "Firewall error (blocked)", 403, request,
+                               request_id=req_data.get("id") if isinstance(req_data, dict) else None,
+                               rpc=req_data.get("method", "") if isinstance(req_data, dict) else "")
 
             # RATE_LIMIT и BLOCK — разные HTTP-коды, чтобы Claude различал.
             if fw_result.decision == FirewallDecision.BLOCK:
-                return web.json_response(
-                    _jsonrpc_error(req_data.get("id") if isinstance(req_data, dict) else None,
-                                   -32000, f"Blocked: {fw_result.reason}"),
-                    status=403
-                )
+                return _refuse("firewall", -32000, f"Blocked: {fw_result.reason}", 403, request,
+                               request_id=req_data.get("id") if isinstance(req_data, dict) else None,
+                               rpc=fw_request.method)
             if fw_result.decision == FirewallDecision.RATE_LIMIT:
-                return web.json_response(
-                    _jsonrpc_error(req_data.get("id") if isinstance(req_data, dict) else None,
-                                   -32001, f"Rate limit exceeded: {fw_result.reason}"),
-                    status=429,
-                    headers={"Retry-After": "5"}
-                )
+                return _refuse("firewall", -32001, f"Rate limit exceeded: {fw_result.reason}", 429,
+                               request,
+                               request_id=req_data.get("id") if isinstance(req_data, dict) else None,
+                               rpc=fw_request.method, headers={"Retry-After": "5"})
             if fw_result.decision != FirewallDecision.ALLOW:
-                return web.json_response(
-                    _jsonrpc_error(req_data.get("id") if isinstance(req_data, dict) else None,
-                                   -32000, f"Blocked: {fw_result.reason}"),
-                    status=403
-                )
+                return _refuse("firewall", -32000, f"Blocked: {fw_result.reason}", 403, request,
+                               request_id=req_data.get("id") if isinstance(req_data, dict) else None,
+                               rpc=fw_request.method)
             # Пропуск С причиной = сигнал log-only (деструктивный инструмент). Печатаем его:
             # иначе сигнал живёт только в счётчике, который в проде не читает никто.
             if fw_result.reason:
@@ -372,7 +381,11 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
 
     # Только POST: GET/OPTIONS отвечают 405 без CORS-заголовков, и preflight чужой страницы
     # проваливается — это и запрещает браузеру читать наши ответы (спека транспорта MCP).
-    app = web.Application(middlewares=[security_headers])
+    # Отказ маршрутизатора (чужой метод, неизвестный путь) наш обработчик не видит вовсе —
+    # замер показал, что такие запросы уходили бесследно. Слушатель разбора протокола ловит то,
+    # что отвергнуто ещё раньше: битый HTTP, разбухший заголовок.
+    wire.attach(engine.trail)
+    app = web.Application(middlewares=[security_headers, wire.route_watch(engine.trail)])
     app.router.add_post("/", handle_jsonrpc)
     app.router.add_post("/mcp", handle_jsonrpc)
 
@@ -380,6 +393,7 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
     await runner.setup()
     site = web.TCPSite(runner, host, port)
     await site.start()
+    socket_task = wire.start_socket_watch(runner, engine.trail, _load_yaml(CONFIG_PATH / "observability.yaml"))
 
     print(f"Сервер запущен на http://{host}:{port}")
     print(f"JSON-RPC endpoint: http://{host}:{port}/mcp")
@@ -499,6 +513,7 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
     finally:
         if tunnel:
             tunnel.stop()
+        await wire.stop_socket_watch(socket_task)
         await runner.cleanup()
 
 

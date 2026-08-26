@@ -48,7 +48,7 @@ class Engine:
         self.reactions = reactions
         self._state_manager = state_manager
         self._log_broken = False   # об отказе журнала говорим ОДИН раз за процесс
-        self._trail = trail
+        self.trail = trail
         declaration = resources or {}
         self._offload = self._offload_map(declaration)
         self._klass = {name: str(klass) for name, klass in (declaration.get("tools") or {}).items()}
@@ -146,8 +146,8 @@ class Engine:
             ToolResult с результатом
         """
         result = await self._dispatch(name, params)
-        if self._trail is not None:
-            self._trail.write(name, params, result)
+        if self.trail is not None:
+            self.trail.write(name, params, result)
         return result
 
     async def _dispatch(self, name: str, params: dict) -> ToolResult:

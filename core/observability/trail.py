@@ -84,6 +84,7 @@ class Trail:
             "ts": round(time.time(), 3),
             "scenario": f"trail-{self.run}",
             "step": self._step,
+            "level": "engine",
             "tool": tool,
             "args": redact(args) if self.record_args else {},
             "ok": getattr(result, "status", "") == "success",
@@ -94,6 +95,39 @@ class Trail:
             "facts": [f.type for f in (getattr(result, "facts", None) or [])],
             "data": redact(getattr(result, "data", None)) or {},
         }
+        self._append(entry)
+
+    def refusal(self, level: str, code: str, message: str, rpc: str = "", args: dict | None = None) -> None:
+        """Отказ ДО диспетчера: периметр, личность, файрвол.
+
+        Инструмента на этих уровнях ещё нет — на раннем из них сервер даже не понял запрос как MCP,
+        и защищаться приходится формой соединения. Поэтому предмет записи здесь `rpc` и заголовки,
+        а не имя инструмента: воспроизводится такой отказ шагом `rpc`, а не `call`.
+        """
+        if not self.enabled:
+            return
+        if self.max_bytes and self._written >= self.max_bytes:
+            return
+        self._step += 1
+        self._append({
+            "ts": round(time.time(), 3),
+            "scenario": f"trail-{self.run}",
+            "step": self._step,
+            "level": level,
+            "tool": "",
+            "rpc": rpc,
+            "args": redact(args or {}) if self.record_args else {},
+            "ok": False,
+            "code": code,
+            "message": message,
+            "reaction_class": "",
+            "recovery": {},
+            "facts": [],
+            "data": {},
+        })
+
+    def _append(self, entry: dict) -> None:
+        """Единственное место записи на диск: два места разошлись бы по обработке отказа."""
         try:
             path = self._open()
             assert path is not None
@@ -109,6 +143,8 @@ class Trail:
 
 
 def _recovery(error) -> dict:
+
+
     """Рецепт как данные: сценарий сверяет с реестром, а не с текстом сообщения."""
     recovery = getattr(error, "recovery", None)
     if recovery is None:

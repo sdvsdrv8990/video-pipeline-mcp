@@ -33,3 +33,111 @@
         ok: true
         data:
           args.api_key: "***REDACTED***"
+
+- scenario: obs_perimeter_refusal_lands_in_trail_with_its_level
+  why: на периметре сервер ещё не понял запрос как MCP — воспроизводить такой отказ можно только
+       формой соединения, и без записи её взять негде
+  when:
+    - rpc: tools/list
+      with: {}
+      headers: {Host: "evil.example"}
+      expect:
+        ok: false
+        code: RPC_-32002
+        http: 403
+    - python: trail_says
+      with: {level: perimeter, code: RPC_-32002}
+      expect:
+        ok: true
+        data:
+          level: perimeter
+          ok_flag: false
+        data_contains:
+          args.Host: evil.example
+
+- scenario: obs_identity_refusal_lands_in_trail_without_the_key
+  why: отказ по ключу обязан быть виден в следе, а сам ключ в нём нет — файл переживает сессию
+  when:
+    - rpc: tools/list
+      with: {}
+      token: definitely-wrong-key
+      expect:
+        ok: false
+        code: RPC_-32001
+        http: 401
+    - python: trail_says
+      with: {level: identity}
+      expect:
+        ok: true
+        data:
+          level: identity
+          args.Authorization: "***REDACTED***"
+
+- scenario: obs_firewall_refusal_lands_in_trail_at_its_own_level
+  why: шквал отбивается ДО диспетчера, поэтому в следе вызовов его нет — а воспроизводить надо
+  when:
+    - rpc: tools/list
+      with: {}
+      repeat: 120
+      expect:
+        ok: false
+        code: RPC_-32000
+    - python: trail_says
+      with: {level: firewall}
+      expect:
+        ok: true
+        data:
+          level: firewall
+          ok_flag: false
+
+- scenario: obs_wrong_route_lands_in_trail_before_our_handler
+  why: чужой метод отбивает маршрутизатор, и наш обработчик такого запроса не видит вовсе —
+       без записи он уходит бесследно
+  when:
+    - python: speak_garbage
+      with: {payload: "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"}
+      expect:
+        ok: true
+        data_contains:
+          первая_строка: "405"
+    - python: trail_says
+      with: {level: route}
+      expect:
+        ok: true
+        data:
+          level: route
+          code: HTTP_405
+
+- scenario: obs_malformed_bytes_land_in_trail_at_wire_level
+  why: сервер, ещё не понявший запрос как MCP, уязвим для подмены пакета — и именно это уходило
+       бесследно до самого разбора
+  when:
+    - python: speak_garbage
+      with: {payload: "\u0001NOT-HTTP-AT-ALL\r\n\r\n"}
+      expect:
+        ok: true
+        data_contains:
+          первая_строка: "400"
+    - python: trail_says
+      with: {level: wire}
+      expect:
+        ok: true
+        data:
+          level: wire
+
+- scenario: obs_held_connections_land_in_trail_at_socket_level
+  why: соединение без обмена библиотека наружу не считает — наблюдаемо ЧИСЛО удерживаемых, и так
+       выглядят скан портов и медленное исчерпание
+  when:
+    - python: hold_connections
+      with: {count: 12, seconds: 3.0}
+      expect:
+        ok: true
+        data: {держали: 12}
+    - python: trail_says
+      with: {level: socket}
+      expect:
+        ok: true
+        data:
+          level: socket
+          code: SOCKET_HELD
