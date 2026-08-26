@@ -101,7 +101,8 @@ def test_anomaly_detection():
               res.decision.value == "allow", f"decision={res.decision.value}")
 
     # Деструктивный инструмент: ПРОПУЩЕН (log-only), но ПОСЧИТАН.
-    fw2 = Firewall({})
+    import yaml as _y
+    fw2 = Firewall(_y.safe_load((ROOT / "config" / "firewall.yaml").read_text(encoding="utf-8")))
     resd = fw2.check(FirewallRequest(
         ip="198.51.100.6", method="tools/call",
         params={"name": "fs_delete"}, timestamp=3100.0

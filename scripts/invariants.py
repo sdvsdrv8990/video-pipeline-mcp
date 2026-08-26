@@ -28,6 +28,7 @@ DISPATCH_BASELINE = Path(__file__).with_name("dispatch_baseline.txt")
 UNSCRIPTED_BASELINE = Path(__file__).with_name("unscripted_baseline.txt")
 DEAD_RECOVERY_BASELINE = Path(__file__).with_name("dead_recovery_baseline.txt")
 ORPHAN_BASELINE = Path(__file__).with_name("orphan_codes_baseline.txt")
+MIRROR_BASELINE = Path(__file__).with_name("mirror_baseline.txt")
 # Две ветки — это выбор, три и больше по одному значению — уже таблица.
 DISPATCH_LIMIT = 3
 
@@ -596,6 +597,120 @@ def dead_recovery_in_engine(root: Path = ROOT) -> list[str]:
     return notes
 
 
+
+# Имя короче этого совпадает с ключом объявления по случайности: `mode`, `type`, `path`.
+MIRROR_NAME = 6
+
+
+def _singular_declarations(root: Path) -> dict[str, tuple[str, object]]:
+    """Ключи config/*.yaml, называющие РОВНО ОДНО значение на всё дерево: {ключ: (путь, значение)}."""
+    seen: dict[str, dict[str, object]] = {}
+
+    def walk(node, key: str, origin: str, path: str) -> None:
+        if isinstance(node, dict):
+            for k, v in node.items():
+                walk(v, str(k), origin, f"{path}.{k}")
+        elif isinstance(node, list):
+            # Перечень скаляров — ОДНО объявление под своим именем. Спуск по элементам дал бы
+            # тому же ключу N значений, и ключ переставал считаться единственным.
+            if key and all(not isinstance(v, (dict, list)) for v in node):
+                seen.setdefault(key.lower(), {})[f"{origin}:{path}"] = list(node)
+            else:
+                for i, v in enumerate(node):
+                    walk(v, key, origin, f"{path}[{i}]")
+        elif node is not None and not isinstance(node, bool):
+            seen.setdefault(key.lower(), {})[f"{origin}:{path}"] = node
+
+    for declaration in sorted((root / "config").glob("*.yaml")):
+        walk(yaml.safe_load(declaration.read_text(encoding="utf-8")) or {}, "", declaration.name, "")
+    return {k: next(iter(v.items())) for k, v in seen.items()
+            if len(v) == 1 and len(k) >= MIRROR_NAME}
+
+
+def _named_literals(tree: ast.AST) -> list[tuple[str, ast.AST, int]]:
+    """Что код связывает с ИМЕНЕМ: присваивание, дефолт параметра, именованный аргумент."""
+    out: list[tuple[str, ast.AST, int]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    out.append((target.id, node.value, node.lineno))
+                elif isinstance(target, ast.Attribute):
+                    out.append((target.attr, node.value, node.lineno))
+        elif isinstance(node, ast.AnnAssign) and node.value is not None and isinstance(node.target, ast.Name):
+            out.append((node.target.id, node.value, node.lineno))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            positional = node.args.posonlyargs + node.args.args
+            for arg, default in zip(positional[len(positional) - len(node.args.defaults):], node.args.defaults):
+                out.append((arg.arg, default, default.lineno))
+            for arg, default in zip(node.args.kwonlyargs, node.args.kw_defaults):
+                if default is not None:
+                    out.append((arg.arg, default, default.lineno))
+        elif isinstance(node, ast.keyword) and node.arg:
+            out.append((node.arg, node.value, node.value.lineno))
+    return out
+
+
+def _same_fact(value: object, declared: object) -> bool:
+    """Одно ли это значение. Перечень сравнивается по составу: `frozenset` в коде против списка
+    в декларации — тот же факт, а не другой, и порядок в YAML ничего не значит."""
+    kinds = (list, set, frozenset, tuple)
+    if isinstance(value, kinds) and isinstance(declared, kinds):
+        return sorted(map(repr, value)) == sorted(map(repr, declared))
+    if isinstance(value, kinds) or isinstance(declared, kinds):
+        return False
+    # `2` в YAML и `2.0` в коде — одно значение; строка и число — нет.
+    if isinstance(value, str) != isinstance(declared, str):
+        return False
+    return value == declared
+
+
+def mirrored_declaration(root: Path = ROOT) -> list[str]:
+    """Код держит ВТОРУЮ копию объявленного факта: то же имя, то же значение.
+
+    Литерал сам по себе не улика: поиск по одному лишь равенству значений тонет в шуме. Уликой его
+    делает второй ИМЕНОВАННЫЙ источник: ключ, называющий одно-единственное значение во всех
+    декларациях, и то же имя в коде под тем же значением. Расхождение имён при равном значении —
+    совпадение (`status` = 403 против столбца таблицы), поэтому обвиняется только полное совпадение.
+    """
+    singular = _singular_declarations(root)
+    if not singular:
+        return []
+    notes = []
+    sources = [p for p in sorted(list((root / "core").rglob("*.py")) + list((root / "tools").rglob("*.py"))
+                                 + [root / "server.py"]) if "__pycache__" not in str(p) and p.exists()]
+    for source in sources:
+        try:
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for name, node, line in _named_literals(tree):
+            bare = name.lower().strip("_")
+            fallback = any(bare.startswith(pre) for pre in ("default_", "fallback_"))
+            for prefix in ("default_", "fallback_"):
+                if bare.startswith(prefix):
+                    bare = bare[len(prefix):]
+            if bare not in singular:
+                continue
+            # `frozenset({...})` — перечень, а не вызов: literal_eval его не берёт, и запасной
+            # список молча уходил бы от сторожа именно в той форме, в какой его чаще всего пишут.
+            inner = node.args[0] if (isinstance(node, ast.Call) and len(node.args) == 1
+                                     and getattr(node.func, "id", "") in ("frozenset", "set", "tuple", "list")) else node
+            try:
+                value = ast.literal_eval(inner)
+            except (ValueError, SyntaxError, TypeError):
+                continue
+            path, declared = singular[bare]
+            same = _same_fact(value, declared)
+            if fallback and not same:
+                notes.append(f"{source.relative_to(root)}:{line} — запасное `{name}` = {value!r:.60} УЖЕ "
+                             f"разошлось с объявлением {path} = {declared!r:.60}")
+            elif same:
+                notes.append(f"{source.relative_to(root)}:{line} — `{name}` = {value!r:.60} повторяет "
+                             f"объявление {path}: правка декларации молча разойдётся с кодом")
+    return notes
+
+
 HARD = (("пропуск набора без покрытия в CI", skips_without_ci),
         ("имя используется до объявления", used_before_declared),
         ("код отказа мимо реестра", codes_outside_registry),
@@ -617,6 +732,9 @@ RATCHETS = (
     ("рецепт движка, который клиент не увидит", dead_recovery_in_engine, DEAD_RECOVERY_BASELINE,
      "Совет из кода перекрывается реестром и до клиента не доезжает: либо снять аргумент "
      "`suggested_tool`, либо поправить рецепт в config/server_reactions.yaml"),
+    ("копия объявления в коде", mirrored_declaration, MIRROR_BASELINE,
+     "Значение объявлено в config/*.yaml и продублировано в коде под тем же именем: читай "
+     "декларацию вместо копии — либо опусти потолок осознанно, --bless"),
     ("объявлено сервером, но сценарием не покрыто", declared_but_unscripted, UNSCRIPTED_BASELINE,
      "Новое объявление без сценария. Покрытие пишется ОБЪЯВЛЕНИЕМ в tests/scenarios/*.yaml "
      "(`call` + `expect.code`), новый python-скрипт для этого не нужен — либо --bless с объяснением"),

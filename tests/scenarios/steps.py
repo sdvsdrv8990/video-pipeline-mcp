@@ -1,5 +1,6 @@
 """tests/scenarios/steps.py — шаги-помощники: то, чего вызовом инструмента не выразить."""
 
+import json
 import threading
 import time
 from pathlib import Path
@@ -68,5 +69,34 @@ def busy_server_still_answers(srv, heavy: str, heavy_args: dict,
     }}
 
 
+def trail_says(srv, tool: str) -> dict:
+    """Что сервер записал о вызове `tool` в свой след.
+
+    Наблюдать след через инструмент нельзя — ни один его не читает, а сценарий обязан судить по
+    тому, что видно снаружи. Поэтому шаг читает файл сервера напрямую.
+
+    Принимается только запись СВОЕГО сервера — с момента его старта. Окно по часам не годится:
+    файлы следа переживают прогон, и на замере выключенный след зеленел на записи прошлого прогона.
+    """
+    directory = Path(__file__).resolve().parents[2] / "logs" / "trail"
+    fresh = float(getattr(srv, "started", 0.0)) or time.time()
+    files = sorted(directory.glob("trail-*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
+    for path in files[:3]:
+        rows = [r for r in path.read_text(encoding="utf-8", errors="replace").splitlines() if r.strip()]
+        for row in reversed(rows):
+            try:
+                entry = json.loads(row)
+            except ValueError:
+                continue
+            if entry.get("tool") == tool and float(entry.get("ts") or 0) >= fresh:
+                return {"ok": True, "data": {"tool": entry.get("tool"), "code": entry.get("code"),
+                                             "ok_flag": entry.get("ok"), "args": entry.get("args") or {},
+                                             "step": entry.get("step")}}
+    return {"ok": False, "code": "MISSING_TARGET_FILE",
+            "message": f"в следе сервера нет СВЕЖЕЙ записи о вызове {tool}: "
+                       f"сервер не пишет то, чем воспроизводят"}
+
+
 STEPS = {"remove_path": remove_path, "branch_state": branch_state,
-         "busy_server_still_answers": busy_server_still_answers}
+         "busy_server_still_answers": busy_server_still_answers,
+         "trail_says": trail_says}

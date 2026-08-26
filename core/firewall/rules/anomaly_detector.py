@@ -35,16 +35,11 @@ class AnomalyDetector:
         dangerous_tools: Множество деструктивных инструментов
     """
 
-    # Дефолтный список. Перекрывается декларацией firewall.yaml →
-    # anomaly_detection.dangerous_tools (её читает core/firewall/firewall.py).
-    DEFAULT_DANGEROUS_TOOLS = frozenset({
-        "fs_delete", "fs_remove", "fs_move_outside",
-        "config_delete", "system_shutdown", "system_restart",
-    })
-
     def __init__(self, dangerous_tools: set[str] | None = None):
-        # Конфигурируемый список вместо хардкода.
-        self.dangerous_tools = set(dangerous_tools) if dangerous_tools is not None else set(self.DEFAULT_DANGEROUS_TOOLS)
+        # Запасного списка тут НЕТ намеренно: копия разошлась с декларацией и следила за
+        # инструментами, которых у сервера нет. Без объявления детектор не следит ни за чем —
+        # это состояние видно в статистике файрвола, а не выглядит рабочим.
+        self.dangerous_tools = set(dangerous_tools or ())
         self._detected = 0
 
     def check(self, request: FirewallRequest) -> AnomalyResult:

@@ -36,20 +36,19 @@ class Engine:
         tools: Реестр инструментов
     """
 
-    def __init__(self, reactions=None, state_manager=None, resources=None):
+    def __init__(self, reactions=None, state_manager=None, resources=None, trail=None):
         """Инициализация движка.
 
-        Args:
-            reactions: Реестр реакций — если задан, ошибки движка
-                собираются через server_reactions.yaml, а не хардкодом.
-            state_manager: Менеджер состояния — для логирования facts в _SESSION_LOG.
-            resources: Объявление ресурсов (`config/resources.yaml`) — какие вызовы уходят
-                с цикла событий. Без него всё исполняется inline.
+        Каждая зависимость необязательна, и отсутствие каждой МЕНЯЕТ поведение, а не отключает
+        удобство: без `reactions` отказ уходит клиенту без класса и рецепта, без `resources`
+        тяжёлый вызов морозит цикл событий, без `trail` сервер не оставляет после себя условий,
+        по которым отказ воспроизводят. Что именно объявлено — в `config/`, не здесь.
         """
         self.tools: dict[str, ToolDefinition] = {}
         self.reactions = reactions
         self._state_manager = state_manager
         self._log_broken = False   # об отказе журнала говорим ОДИН раз за процесс
+        self._trail = trail
         declaration = resources or {}
         self._offload = self._offload_map(declaration)
         self._klass = {name: str(klass) for name, klass in (declaration.get("tools") or {}).items()}
@@ -134,7 +133,10 @@ class Engine:
         )
 
     async def call(self, name: str, params: dict) -> ToolResult:
-        """Вызов инструмента.
+        """Вызов инструмента. След пишется здесь, а не в ветках `_dispatch`.
+
+        У диспетчера пять путей возврата (нет инструмента, невалидные параметры, успех, TypeError,
+        внутренняя ошибка), и запись в каждом держалась бы дисциплиной: шестой путь допишут без неё.
 
         Args:
             name: Имя инструмента
@@ -143,6 +145,13 @@ class Engine:
         Returns:
             ToolResult с результатом
         """
+        result = await self._dispatch(name, params)
+        if self._trail is not None:
+            self._trail.write(name, params, result)
+        return result
+
+    async def _dispatch(self, name: str, params: dict) -> ToolResult:
+        """Разбор вызова: реестр, валидация схемы, исполнение, перевод исключений в отказы."""
         if name not in self.tools:
             return self._error(
                 "TOOL_NOT_FOUND",

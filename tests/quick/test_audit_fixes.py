@@ -151,11 +151,18 @@ async def main():
             ad_hit = True
     check("/ many distinct benign tool names NOT blocked (event-based only)", not ad_hit)
     # Log-only — деструктивный инструмент ПРОПУСКАЕТСЯ (не блок), но СЧИТАЕТСЯ.
-    _fwd = Firewall({})
+    import yaml as _y_fw
+    _decl_fw = _y_fw.safe_load((ROOT / "config" / "firewall.yaml").read_text(encoding="utf-8"))
+    _fwd = Firewall(_decl_fw)
     resd = _fwd.check(FirewallRequest(ip="198.51.100.2", method="tools/call",
                                       params={"name": "fs_delete"}, timestamp=3000.0))
     check("fs_delete ПРОПУЩЕН файрволом (log-only, не глухой блок)", resd.decision.value == "allow", resd.reason)
     check("fs_delete ПОСЧИТАН как сигнал (get_stats)", _fwd.get_stats()["anomalies_detected"] == 1)
+    check("без декларации детектор не следит ни за чем и говорит об этом",
+          Firewall({}).get_stats()["dangerous_tools_watched"] == 0)
+    check("с декларацией под наблюдением весь объявленный список",
+          _fwd.get_stats()["dangerous_tools_watched"]
+          == len(_decl_fw["anomaly_detection"]["dangerous_tools"]))
 
     # FsSearcher.root traversal — escape-root должен давать PATH_ESCAPE.
     from core.search.fs_searcher import FsSearcher, FsSearchTask, FsSearchError as _FsErr

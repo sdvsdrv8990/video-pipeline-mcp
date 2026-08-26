@@ -60,7 +60,8 @@ class Firewall:
             auto_ban=config.get("ip_blocklist", {}).get("auto_ban", True),
             ban_duration_hours=Firewall._num(config, "ip_blocklist", "ban_duration_hours", 24)
         )
-        # dangerous_tools из конфига (None → дефолт); детекция event-based.
+        # Единственный источник списка — декларация: запасной копии в коде нет, в отличие от
+        # соседних правил; ноль под наблюдением виден в get_stats, а не притворяется работой.
         anomaly_detector = AnomalyDetector(
             dangerous_tools=config.get("anomaly_detection", {}).get("dangerous_tools", None)
         )
@@ -161,5 +162,6 @@ class Firewall:
             "blocked_ips": self.ip_blocklist.get_blocked_count(),
             "rate_limit_violations": self.rate_limiter.get_violations(),
             "injection_attempts": self.injection_detector.get_attempts(),
-            "anomalies_detected": self.anomaly_detector.get_detected()
+            "anomalies_detected": self.anomaly_detector.get_detected(),
+            "dangerous_tools_watched": len(self.anomaly_detector.dangerous_tools)
         }

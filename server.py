@@ -25,6 +25,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent))
 
 from core.engine import Engine
+from core.observability import Trail
 from core.firewall import Firewall, FirewallRequest, FirewallDecision
 from core.transport import Transport
 from core.reactions import Reactions
@@ -140,7 +141,10 @@ def create_server() -> tuple[Engine, Transport, Firewall]:
     resources = _load_yaml(CONFIG_PATH / "resources.yaml")
     if not resources:
         print("⚠ config/resources.yaml не прочитан — тяжёлые вызовы идут в цикле событий")
-    engine = Engine(reactions=reactions, state_manager=state_manager, resources=resources)
+    # След вызовов: без него отказ в живой сессии не оставляет условий, по которым его повторяют.
+    trail = Trail.from_declaration(_load_yaml(CONFIG_PATH / "observability.yaml"), BASE_PATH)
+    engine = Engine(reactions=reactions, state_manager=state_manager, resources=resources,
+                    trail=trail)
 
     # Создаём workspace если нет
     WORKSPACE_PATH.mkdir(parents=True, exist_ok=True)

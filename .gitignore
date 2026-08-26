@@ -64,4 +64,7 @@ bin/cloudflared
 # Может содержать tunnel_token — НЕ коммитить
 config/tunnel.yaml
 tests/.journal/
+
+# logs/trail — след вызовов сервера (рантайм), из него собирают сценарий; не исходник
+logs/
 tests/.blast/

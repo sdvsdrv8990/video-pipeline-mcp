@@ -52,6 +52,7 @@ class LiveServer:
         self.ready_timeout = ready_timeout
         self.echo = echo
         self.proc: subprocess.Popen | None = None
+        self.started = 0.0        # отметка старта: по ней сценарий отличает свою запись от прошлой
         self.console: Console | None = None
         self.rpc = JsonRpc(self.url, self.token)
 
@@ -85,6 +86,7 @@ class LiveServer:
         return [sys.executable, "-m", "coverage", "run", f"--rcfile={rc}", *script]
 
     def start(self) -> "LiveServer":
+        self.started = time.time()
         self.proc = subprocess.Popen(
             self._command(),
             cwd=str(ROOT), env=self._env(), text=True, bufsize=1,

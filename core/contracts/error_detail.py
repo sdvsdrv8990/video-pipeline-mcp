@@ -82,6 +82,27 @@ KNOWN_ERROR_CODES = {
 }
 
 
+
+SENSITIVE_KEYS = frozenset({"authorization", "api_key", "token", "set-cookie",
+                            "cookie", "secret", "password"})
+
+
+def redact(value: dict | None) -> dict | None:
+    """Маскировка секретов по имени ключа. Единственная реализация на весь сервер: второй
+    набор ключей разошёлся бы с этим молча, и разошлась бы ровно та половина, что пишет на диск."""
+    if value is None:
+        return None
+    out: dict = {}
+    for key, item in value.items():
+        if any(s in str(key).lower() for s in SENSITIVE_KEYS):
+            out[key] = "***REDACTED***"
+        elif isinstance(item, dict):
+            out[key] = redact(item)
+        else:
+            out[key] = item
+    return out
+
+
 class ErrorDetail(BaseModel):
     """Детали ошибки для Claude."""
 
@@ -104,15 +125,4 @@ class ErrorDetail(BaseModel):
     @classmethod
     def _sanitize_raw_response(cls, v: dict | None) -> dict | None:
         """Маскируем секреты в raw_response перед передачей Claude."""
-        if v is None:
-            return None
-        SENSITIVE_KEYS = {"authorization", "api_key", "token", "set-cookie", "cookie", "secret", "password"}
-        sanitized: dict = {}
-        for key, value in v.items():
-            if any(s in key.lower() for s in SENSITIVE_KEYS):
-                sanitized[key] = "***REDACTED***"
-            elif isinstance(value, dict):
-                sanitized[key] = cls._sanitize_raw_response(value)
-            else:
-                sanitized[key] = value
-        return sanitized
+        return redact(v)

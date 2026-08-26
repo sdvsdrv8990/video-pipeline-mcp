@@ -1,0 +1,35 @@
+# След вызовов — единственное, из чего воспроизводят отказ, случившийся в живой сессии.
+# Сценарий судит его СНАРУЖИ: инструмента, читающего след, нет и заводить его незачем.
+
+- scenario: obs_refusal_lands_in_trail_with_its_code
+  why: отказ без записи невоспроизводим — «условия неизвестны и взять их негде» начинается здесь
+  when:
+    - call: fs_read_file
+      with: {path: нет-такого-файла.txt}
+      expect:
+        ok: false
+        code: FILE_NOT_FOUND
+    - python: trail_says
+      with: {tool: fs_read_file}
+      expect:
+        ok: true
+        data:
+          tool: fs_read_file
+          ok_flag: false
+        data_contains:
+          args.path: нет-такого-файла
+
+- scenario: obs_secret_in_args_never_reaches_the_trail
+  why: след пишется на диск, и попавший в него ключ переживает сессию, которая его породила
+  when:
+    - call: fs_create_file
+      with: {path: следовой/секрет.txt, content: тело, api_key: sk-НЕ-ДОЛЖЕН-ПОПАСТЬ}
+      expect:
+        ok: false
+        code: VALIDATION_ERROR
+    - python: trail_says
+      with: {tool: fs_create_file}
+      expect:
+        ok: true
+        data:
+          args.api_key: "***REDACTED***"

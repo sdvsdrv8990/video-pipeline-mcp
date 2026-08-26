@@ -18,7 +18,8 @@ from invariants import (  # noqa: E402
     codes_outside_registry, codes_without_emitter, dead_recovery_in_engine,
     declared_but_unscripted, enum_without_values,
     resources_off_inventory, scenario_calls_unknown_tool, skips_without_ci,
-    dispatch_by_value, status_off_registry, suites_off_catalog, used_before_declared,
+    dispatch_by_value, mirrored_declaration, status_off_registry, suites_off_catalog,
+    used_before_declared,
 )
 
 _checks = 0
@@ -300,6 +301,53 @@ ok(not dead_recovery_in_engine(make({"config/server_reactions.yaml": REG_REC, "c
 ok(not dead_recovery_in_engine(make({"config/server_reactions.yaml": REG_REC,
                                      "core/z.py": 'def f():\n    raise ZoneError("ЧУЖОЙ_КОД", "т", "п", "table_set")\n'})),
    "код вне реестра — рецепт движка ЕДИНСТВЕННЫЙ и доезжает: обвинять нельзя")
+
+print("\n== копия объявления в коде ==")
+DECL_ONE = "ip_blocklist:\n  ban_duration_hours: 24\n"
+DECL_TWICE = "ip_blocklist:\n  ban_duration_hours: 24\nother:\n  ban_duration_hours: 48\n"
+DECL_SHORT = "limits:\n  ttl: 24\n"
+DECL_LIST = "injection:\n  bad_patterns:\n    - забудь всё\n    - ты теперь\n"
+
+ok(len(mirrored_declaration(make({"config/f.yaml": DECL_ONE,
+                                  "core/z.py": "ban_duration_hours = 24\n"}))) == 1,
+   "имя и значение совпали с единственным объявлением — второй источник того же факта")
+ok(len(mirrored_declaration(make({"config/f.yaml": DECL_ONE,
+                                  "core/z.py": "def f(ban_duration_hours: int = 24):\n    return ban_duration_hours\n"}))) == 1,
+   "дефолт параметра — та же копия: правка декларации его не тронет")
+ok(len(mirrored_declaration(make({"config/f.yaml": DECL_ONE,
+                                  "core/z.py": "DEFAULT_BAN_DURATION_HOURS = 24\n"}))) == 1,
+   "приставка DEFAULT_ не отменяет копию: запасное значение обязано совпадать с объявлением")
+ok(len(mirrored_declaration(make({"config/f.yaml": DECL_LIST,
+                                  "core/z.py": 'bad_patterns = ["ты теперь", "забудь всё"]\n'}))) == 1,
+   "список ловится по составу, а не по порядку — перестановка не прячет копию")
+ok(not mirrored_declaration(make({"config/f.yaml": DECL_ONE,
+                                  "core/z.py": "ban_duration_hours = 48\n"})),
+   "то же имя, другое значение — код НЕ копия, а своё решение: обвинять нельзя")
+ok(not mirrored_declaration(make({"config/f.yaml": DECL_ONE, "core/z.py": "retry_after = 24\n"})),
+   "то же значение под другим именем — совпадение чисел, а не второй источник")
+ok(not mirrored_declaration(make({"config/f.yaml": DECL_TWICE,
+                                  "core/z.py": "ban_duration_hours = 24\n"})),
+   "ключ называет в декларациях два разных значения — с чем именно совпало, неизвестно")
+ok(not mirrored_declaration(make({"config/f.yaml": DECL_SHORT, "core/z.py": "ttl = 24\n"})),
+   "короткое имя совпадает по случайности — порог длины держит сторожа точным")
+ok(not mirrored_declaration(make({"config/f.yaml": "flags:\n  enabled: true\n",
+                                  "core/z.py": "enabled = True\n"})),
+   "булево значение объявлено везде — уликой оно быть не может")
+ok(len(mirrored_declaration(make({"config/f.yaml": DECL_ONE,
+                                  "core/z.py": "ban_duration_hours = 24.0\n"}))) == 1,
+   "`24` в декларации и `24.0` в коде — одно значение, разный тип его не прячет")
+ok(not mirrored_declaration(make({"config/f.yaml": DECL_ONE, "core/z.py": 'ban_duration_hours = "24"\n'})),
+   "строка против числа — не то же значение: сравнение не приводит типы вслепую")
+ok(len(mirrored_declaration(make({"config/f.yaml": DECL_LIST,
+                                  "core/z.py": 'DEFAULT_BAD_PATTERNS = frozenset({"ты теперь", "забудь"})\n'}))) == 1,
+   "запасной перечень разошёлся с объявлением — та половина, что сработает при отказе загрузки")
+ok(not mirrored_declaration(make({"config/f.yaml": DECL_LIST,
+                                  "core/z.py": 'bad_patterns = ["ты теперь", "чужое"]\n'})),
+   "без пометки DEFAULT_ расхождение — не копия, а своё решение: молчим")
+ok(len(mirrored_declaration(make({"config/f.yaml": DECL_LIST,
+                                  "core/z.py": 'DEFAULT_BAD_PATTERNS = frozenset({"ты теперь", "забудь всё"})\n'}))) == 1,
+   "запасной перечень СОВПАЛ — это копия, и она разойдётся при следующей правке декларации")
+
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
