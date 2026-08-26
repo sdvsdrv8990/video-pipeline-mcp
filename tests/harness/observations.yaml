@@ -1,0 +1,31 @@
+# Чем НАБЛЮДАЮТ то, что факт объявил сделанным.
+#
+# Карта, построенная из записи, обязана спрашивать РЕАЛЬНОСТЬ: состояние без наблюдения — ярлык.
+# Факт говорит «сделано», наблюдение проверяет, что это видно снаружи; и второе не выводится из
+# первого, потому что именно расхождение между ними и есть находка.
+#
+# `identity` — где в записи лежит имя созданного (`args.<ключ>` или `data.<ключ>`).
+# `present` / `absent` — что отвечает чтение, когда созданное есть и когда его ещё нет.
+# Факта здесь нет — воспроизводитель откажется строить карту и назовёт недостающий: тихо
+# пропустить значит выдать неполную карту за полную.
+
+FileCreated:
+  identity: args.path
+  observe: fs_read_file
+  with: {path: "${identity}"}
+  present: {ok: true, facts: [FileRead]}
+  absent: {ok: false, code: FILE_NOT_FOUND}
+
+FileWritten:
+  identity: args.path
+  observe: fs_read_file
+  with: {path: "${identity}"}
+  present: {ok: true, facts: [FileRead]}
+  absent: {ok: false, code: FILE_NOT_FOUND}
+
+FileAppended:
+  identity: args.path
+  observe: fs_read_file
+  with: {path: "${identity}"}
+  present: {ok: true, facts: [FileRead]}
+  absent: {ok: false, code: FILE_NOT_FOUND}

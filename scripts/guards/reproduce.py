@@ -19,11 +19,17 @@ import argparse
 import json
 import subprocess
 import sys
+from itertools import combinations
 from pathlib import Path
+
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES = (ROOT / "logs" / "trail", ROOT / "tests" / ".journal")
 RUNNER = ROOT / "tests" / "scenarios" / "test_scenarios.py"
+OBSERVATIONS = ROOT / "tests" / "harness" / "observations.yaml"
+# Полная решётка растёт как 2^N: дальше карта нечитаема, а обход дороже пользы. Длиннее — минимизируй.
+LATTICE_LIMIT = 4
 
 
 def _entries(path: Path) -> list[dict]:
@@ -134,6 +140,142 @@ def minimize(steps: list[dict], name: str, why: str) -> list[dict]:
     return kept
 
 
+
+def _dig(entry: dict, path: str):
+    """Значение по объявленному адресу вида `args.path`. Нет — None, и это скажут вслух."""
+    where, _, key = path.partition(".")
+    return (entry.get(where) or {}).get(key)
+
+
+def artefacts(entries: list[dict], observations: dict) -> list[dict]:
+    """Что запись создала: по одному наблюдаемому предмету на успешный вызов.
+
+    Ненаблюдаемый факт — не повод построить карту молча: без предиката состояние станет ярлыком,
+    поэтому недостающее объявление называется по имени и работа останавливается.
+    """
+    out = []
+    for at, entry in enumerate(entries):
+        if not entry.get("ok"):
+            continue
+        for fact in entry.get("facts") or []:
+            rule = observations.get(fact)
+            if rule is None:
+                continue
+            name = _dig(entry, str(rule["identity"]))
+            if name is None:
+                raise SystemExit(f"шаг {at + 1} ({entry['tool']}): по адресу {rule['identity']} "
+                                 f"имени нет — наблюдать нечего, поправь объявление наблюдения")
+            out.append({"at": at, "fact": fact, "name": str(name), "rule": rule, "entry": entry})
+            break
+    return out
+
+
+def depends(earlier: dict, later: dict) -> bool:
+    """Зависит ли поздний предмет от раннего: имя раннего названо в аргументах позднего.
+
+    Проверка КОНСЕРВАТИВНА: лишняя зависимость только сузит решётку, пропущенная породит порядок,
+    невозможный на живом сервере, и обход упадёт не там, где интересно.
+    """
+    name = earlier["name"]
+    for value in (later["entry"].get("args") or {}).values():
+        if isinstance(value, str) and name in value and value != name:
+            return True
+    return name in str(later["entry"].get("with") or "")
+
+
+def _check(items: list[dict], present: set[int]) -> list[dict]:
+    """Предикат состояния: КАЖДЫЙ предмет спрашивается — и тот, что уже есть, и тот, которого нет.
+
+    Спрашивать только созданное недостаточно: два состояния тогда различались бы длиной списка, а
+    не наблюдением, и лишний предмет, появившийся не в свой черёд, остался бы невидимым.
+    """
+    steps = []
+    for i, item in enumerate(items):
+        rule = item["rule"]
+        args = {k: (item["name"] if v == "${identity}" else v) for k, v in (rule.get("with") or {}).items()}
+        steps.append({"call": rule["observe"], "with": args,
+                      "expect": dict(rule["present"] if i in present else rule["absent"])})
+    return steps
+
+
+def promote(entries: list[dict], name: str, why: str) -> str:
+    """Последовательность → карта: состояния как ИДЕАЛЫ порядка, переходы как добавление предмета.
+
+    Линейная карта повторяет записанный путь и нового не показывает. Решётка независимых вызовов
+    даёт порядки, отсутствующие в записи, — их и проверяет обход.
+    """
+    observations = yaml.safe_load(OBSERVATIONS.read_text(encoding="utf-8")) or {}
+    items = artefacts(entries, observations)
+    if not items:
+        seen = sorted({f for e in entries for f in (e.get("facts") or [])})
+        raise SystemExit("в записи нет НАБЛЮДАЕМОГО предмета: встречены факты "
+                         f"{', '.join(seen) or '(никаких)'} — объяви наблюдение в "
+                         f"{OBSERVATIONS.relative_to(ROOT)} либо возьми другую запись")
+    if len(items) > LATTICE_LIMIT:
+        raise SystemExit(f"наблюдаемых предметов {len(items)} при пределе {LATTICE_LIMIT}: "
+                         "полная решётка станет нечитаемой — сперва минимизируй (`--minimize`)")
+
+    need = {i: {j for j in range(i) if depends(items[j], items[i])} for i in range(len(items))}
+    states, ideals = {}, []
+    for size in range(len(items) + 1):
+        for combo in combinations(range(len(items)), size):
+            present = set(combo)
+            if all(need[i] <= present for i in present):
+                ideals.append(present)
+    for present in ideals:
+        # Пустое состояние именуется словом, а не пустой склейкой индексов: иначе оно совпадает
+        # по имени с состоянием, где есть предмет №0, и два разных мира становятся одним.
+        states["s_" + ("_".join(str(i) for i in sorted(present)) or "empty")] = present
+
+    lines = [f"map: {name}", f"why: {why}", "start: s_empty", "states:"]
+    for state, present in states.items():
+        have = ", ".join(items[i]["name"] for i in sorted(present)) or "ничего"
+        lines.append(f"  {state}:")
+        lines.append(f"    means: снаружи видно — {have}")
+        if len(present) == len(items):
+            lines.append("    terminal: true")
+        lines.append("    check:")
+        for step in _check(items, present):
+            lines.append(f"      - call: {step['call']}")
+            lines.append(f"        with: {json.dumps(step['with'], ensure_ascii=False)}")
+            lines.append(f"        expect: {json.dumps(step['expect'], ensure_ascii=False)}")
+    lines.append("transitions:")
+    for state, present in states.items():
+        for i, item in enumerate(items):
+            if i in present or not need[i] <= present:
+                continue
+            target = next(k for k, v in states.items() if v == present | {i})
+            lines.append(f"  - from: {state}")
+            lines.append(f"    to: {target}")
+            lines.append("    via:")
+            lines.append(f"      - call: {item['entry']['tool']}")
+            lines.append(f"        with: {json.dumps(item['entry'].get('args') or {}, ensure_ascii=False)}")
+            lines.append(f"        expect: {json.dumps({'ok': True}, ensure_ascii=False)}")
+    return "\n".join(lines) + "\n"
+
+
+
+def _reject_fiction(text: str) -> None:
+    """Порождённую карту судит СВОЙ разбор харнесса, а не наш.
+
+    Второй судья разошёлся бы с первым молча, и карта, принятая здесь, падала бы на обходе —
+    то есть через минуты ожидания вместо секунды.
+    """
+    sys.path.insert(0, str(ROOT))
+    from tests.harness.scenario import Vocabulary  # noqa: PLC0415
+    from tests.harness.scenario_map import analyse, load_map  # noqa: PLC0415
+    probe = ROOT / "tests" / "scenarios" / "_promote_probe.map.yaml"
+    probe.write_text(text, encoding="utf-8")
+    try:
+        notes = analyse(load_map(probe, Vocabulary()))
+    except Exception as exc:                       # разбор харнесса — вердикт, а не наша поломка
+        raise SystemExit(f"порождённая карта не разбирается харнессом: {exc}") from None
+    finally:
+        probe.unlink(missing_ok=True)
+    if notes:
+        raise SystemExit("порождённая карта не проходит разбор харнесса:\n  " + "\n  ".join(notes))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--record", help="файл записи; по умолчанию самый свежий из следа и журнала")
@@ -142,6 +284,8 @@ def main() -> int:
     ap.add_argument("--name", help="имя сценария; по умолчанию из инструмента и кода")
     ap.add_argument("--minimize", action="store_true",
                     help="выбрасывать шаги, пока отказ выживает (прогон на каждую попытку)")
+    ap.add_argument("--promote", action="store_true",
+                    help="карта вместо сценария: состояния из записи, переходы — решётка независимых вызовов")
     ap.add_argument("--write", help="дописать объявление в этот файл вместо вывода в stdout")
     a = ap.parse_args()
 
@@ -155,15 +299,21 @@ def main() -> int:
     why = (f"отказ {entry.get('code')} на {entry['tool']} уже случался — "
            f"воспроизведён из записи {record.name}")
 
-    steps = as_steps(entries[: at + 1])
     print(f"запись: {record}\nотказ: {entry['tool']} → {entry.get('code')} (шаг {at + 1} из {len(entries)})",
           file=sys.stderr)
-    if a.minimize:
-        before = len(steps)
-        steps = minimize(steps, name, why)
-        print(f"минимизация: {before} → {len(steps)} шагов", file=sys.stderr)
 
-    text = render(name, why, steps)
+    if a.promote:
+        text = promote(entries[: at + 1], a.name or f"rep_map_{entry['tool']}".lower(),
+                       f"порядки, которых в записи не было, обязаны приводить в то же состояние; "
+                       f"построено из {record.name}")
+        _reject_fiction(text)
+    else:
+        steps = as_steps(entries[: at + 1])
+        if a.minimize:
+            before = len(steps)
+            steps = minimize(steps, name, why)
+            print(f"минимизация: {before} → {len(steps)} шагов", file=sys.stderr)
+        text = render(name, why, steps)
     if a.write:
         target = Path(a.write)
         target.write_text((target.read_text(encoding="utf-8") + "\n" if target.exists() else "") + text,

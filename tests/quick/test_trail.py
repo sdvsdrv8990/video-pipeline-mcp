@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 from core.observability import Trail  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "scripts" / "guards"))
-from reproduce import _entries, as_steps, pick, render  # noqa: E402
+from reproduce import _entries, artefacts, as_steps, depends, pick, promote, render  # noqa: E402
 
 _checks = 0
 _fails: list[str] = []
@@ -125,6 +125,55 @@ ok(parsed[0]["when"][1]["call"] == "fs_read_file"
    and parsed[0]["when"][1]["expect"]["code"] == "FILE_NOT_FOUND",
    "шаг отказа доезжает до объявления вместе со своим кодом")
 ok(parsed[0]["when"][0]["with"] == {"path": "a.txt"}, "аргументы доезжают — без них воспроизводить нечем")
+
+
+print("\n== повышение до карты ==")
+OBS = _yaml.safe_load((ROOT / "tests" / "harness" / "observations.yaml").read_text(encoding="utf-8"))
+
+
+def _made(path, tool="fs_create_file"):
+    return {"tool": tool, "args": {"path": path, "content": "x"}, "ok": True, "facts": ["FileCreated"]}
+
+
+pair = [_made("реш/альфа.txt"), _made("реш/бета.txt")]
+found = artefacts(pair, OBS)
+ok([a["name"] for a in found] == ["реш/альфа.txt", "реш/бета.txt"],
+   "предмет наблюдения берётся по объявленному адресу, а не угадывается из имени инструмента")
+ok(not artefacts([{"tool": "fs_read_file", "args": {}, "ok": False, "code": "FILE_NOT_FOUND"}], OBS),
+   "отказ предметом не становится: наблюдать нечего")
+ok(not artefacts([{"tool": "media_generate", "args": {}, "ok": True, "facts": ["MediaGenerated"]}], OBS),
+   "необъявленный факт пропускается — карту на нём не построишь")
+
+lattice = _yaml.safe_load(promote(pair, "m_проба", "почему"))
+ok(sorted(lattice["states"]) == ["s_0", "s_0_1", "s_1", "s_empty"],
+   "два независимых предмета дают решётку из четырёх состояний, а не линию из трёх")
+ok(any(t["from"] == "s_empty" and t["to"] == "s_1" for t in lattice["transitions"]),
+   "в решётке есть порядок, которого в записи НЕ БЫЛО — ради него всё и строится")
+ok(lattice["states"]["s_empty"]["check"][0]["expect"]["ok"] is False
+   and lattice["states"]["s_0"]["check"][0]["expect"]["ok"] is True,
+   "предикат спрашивает КАЖДЫЙ предмет — и тот, что есть, и тот, которого ещё нет")
+
+chain = [_made("дом/файл.txt"),
+         {"tool": "fs_create_file", "args": {"path": "дом/файл.txt/вложенный.txt", "content": "y"},
+          "ok": True, "facts": ["FileCreated"]}]
+ok(depends(artefacts(chain, OBS)[0], artefacts(chain, OBS)[1]),
+   "имя раннего названо в аргументах позднего — это зависимость, переставлять нельзя")
+linear = _yaml.safe_load(promote(chain, "m_цепь", "почему"))
+ok(sorted(linear["states"]) == ["s_0", "s_0_1", "s_empty"],
+   "зависимые вызовы не порождают невозможный порядок: решётка сужается до цепи")
+
+try:
+    promote([{"tool": "media_generate", "args": {}, "ok": True, "facts": ["MediaGenerated"]}], "m", "п")
+    ok(False, "без наблюдаемого предмета карта строиться не должна")
+except SystemExit as exc:
+    ok("MediaGenerated" in str(exc),
+       "недостающее наблюдение называется ПО ИМЕНИ — иначе неполная карта сойдёт за полную")
+
+try:
+    promote([_made(f"много/{n}.txt") for n in range(5)], "m", "п")
+    ok(False, "за пределом решётка обязана отказать, а не родить нечитаемое")
+except SystemExit as exc:
+    ok("минимизируй" in str(exc), "отказ за пределом называет, что делать дальше")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
