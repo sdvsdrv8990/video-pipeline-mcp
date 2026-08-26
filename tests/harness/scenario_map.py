@@ -260,17 +260,37 @@ def plan(smap: ScenarioMap) -> list[list[int]]:
 
 
 def _plan_pairs(smap: ScenarioMap) -> list[list[int]]:
-    """Путь на каждую непокрытую пару: префикс до её начала плюс сама пара."""
+    """Сцепленный обход: путь тянется, пока добирает НЕПОКРЫТЫЕ пары, и только потом начинается новый.
+
+    Путь на каждую пару отдельно заставлял каждый раз заново проходить префикс от старта, а префикс —
+    это настоящие вызовы: замер дал двадцать созданий структуры на карте из семи переходов, и шесть
+    подъёмов сервера вместо одного. Сцепление к тому же ближе к правде: у клиента одна длинная сессия,
+    а не шесть коротких с общего старта.
+    """
     uncovered = set(_pairs(smap))
+    outgoing: dict[str, list[int]] = {}
+    for index, edge in enumerate(smap.transitions):
+        outgoing.setdefault(edge.source, []).append(index)
+
+    def absorb(path: list[int]) -> None:
+        uncovered.difference_update(zip(path, path[1:]))
+
     paths: list[list[int]] = []
     spent = 0
-    for first, second in sorted(uncovered):
-        if (first, second) in {(p[k], p[k + 1]) for p in paths for k in range(len(p) - 1)}:
-            continue
+    while uncovered:
+        first, _ = min(uncovered)
         prefix = _route_to(smap, smap.transitions[first].source)
         if prefix is None:
             raise ScenarioError(f"карта {smap.id}: до {smap.transitions[first].source!r} нет пути от старта")
-        path = prefix + [first, second]
+        path = prefix + [first]
+        while True:
+            последний = path[-1]
+            дальше = [j for j in outgoing.get(smap.transitions[последний].target, [])
+                      if (последний, j) in uncovered]
+            if not дальше:
+                break
+            path.append(min(дальше))
+        absorb(path)
         spent += len(path)
         if spent > smap.budget:
             raise ScenarioError(f"карта {smap.id}: обход пар не влезает в бюджет {smap.budget} шагов — "
