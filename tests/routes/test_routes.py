@@ -102,6 +102,51 @@ def _filled(value) -> bool:
     return value not in (None, "", [], {}, "_НЕТ_", False)
 
 
+DECLARES = {
+    "code": lambda e: bool(e.code),
+    "reaction_class": lambda e: bool(e.reaction_class),
+    "recovery": lambda e: e.recovery is not None,
+    "facts": lambda e: bool(e.facts),
+}
+
+
+def declares(expect, selector: str) -> bool:
+    """Объявляет ли ожидание сценария ту же наблюдаемую, что и маршрут."""
+    if expect is None:
+        return False
+    if selector.startswith("data."):
+        # Совпадать обязан ПУТЬ, а не сам факт объявления данных: «в сценарии есть какой-то data»
+        # засчитывало кандидатом почти каждый сценарий, и список переставал что-либо значить.
+        path = selector[len("data."):]
+        return any(key == path or key.startswith(path.split(".")[0] + ".") or path.startswith(key + ".")
+                   for key in list(expect.data) + list(expect.data_contains))
+    if selector.startswith("console:"):
+        return bool(expect.console)
+    return DECLARES.get(selector, lambda _: False)(expect)
+
+
+def explain(route: dict, steps: list[dict], selector: str) -> str:
+    """ГДЕ цепочка ещё цела. Без этого отказ звучит «значения нет нигде», и чинить идут в конец
+    потока, хотя оборвалось в середине: соседнее значение, доехавшее на том же шаге, показывает,
+    что конверт дошёл и потеряно ровно объявленное поле."""
+    prefix = _parent(selector)
+    while prefix:
+        where = [e["step"] for e in steps if _filled(observe(e, prefix))]
+        if where:
+            return (f"цепочка цела до `{prefix}` (шаг {where[0]}), обрывается на "
+                    f"`{selector[len(prefix) + 1:]}`")
+        prefix = _parent(prefix)
+    siblings = {other: [e["step"] for e in steps if _filled(observe(e, other))]
+                for other in route["proof"]["observe"] if other != selector}
+    arrived = {name: at for name, at in siblings.items() if at}
+    if arrived:
+        return (f"на шаге {min(min(v) for v in arrived.values())} доехали {', '.join(sorted(arrived))} — "
+                f"конверт дошёл, потеряно ровно `{selector}`: ищи между тем, кто его кладёт, и концом")
+    first = route["hops"][0]["at"] if route["hops"] else route["decided_by"]
+    return (f"ни одно объявленное значение не доехало ни на одном шаге — обрыв РАНЬШЕ первого "
+            f"рубежа `{first}`, а не в конце потока")
+
+
 def _parent(selector: str) -> str | None:
     """`data.results.0.trust` → `data.results.0`; у верхнеуровневого и у `console:` родителя нет."""
     if selector.startswith("console:"):
@@ -110,9 +155,35 @@ def _parent(selector: str) -> str | None:
     return head if sep else None
 
 
+def self_check() -> None:
+    """Локализация обрыва проверяется подставленным следом: живой прогон даёт только ЗЕЛЁНЫЙ путь,
+    а сообщение об обрыве читают именно тогда, когда всё сломано — и проверить его тогда уже нечем."""
+    print("\n== Локализация обрыва и карта опор (самопроверка) ==")
+    route = {"route": "r", "decided_by": "config/x.yaml", "hops": [{"at": "core/a.py"}],
+             "proof": {"observe": ["code", "reaction_class"]}}
+    partial = [{"step": 3, "code": "X", "reaction_class": "", "data": {}}]
+    ok("потеряно ровно `reaction_class`" in explain(route, partial, "reaction_class"),
+       "обрыв назван полем, а не «значения нет нигде»")
+    ok("шаге 3" in explain(route, partial, "reaction_class"), "назван шаг, на котором цепочка была цела")
+    nothing = [{"step": 1, "code": "", "reaction_class": "", "data": {}}]
+    ok("РАНЬШЕ первого рубежа `core/a.py`" in explain(route, nothing, "reaction_class"),
+       "пустой след указывает на начало потока, а не на конец")
+    deep = {"route": "d", "decided_by": "d", "hops": [], "proof": {"observe": ["data.a.b.c"]}}
+    ok("цела до `data.a` " in explain(deep, [{"step": 2, "data": {"a": {"x": 1}}}], "data.a.b.c"),
+       "у вложенного значения назван последний целый уровень")
+
+    class _Exp:
+        code = ""; reaction_class = ""; recovery = None; facts = []; console = ""
+        data = {"content.trust": "x"}; data_contains = {}
+    ok(declares(_Exp(), "data.content.trust"), "путь данных совпал — сценарий годится в опоры")
+    ok(not declares(_Exp(), "data.results.0.trust"), "чужой путь данных кандидатом не делает")
+    ok(not declares(None, "code"), "шаг без ожиданий кандидатом не считается")
+
+
 def main() -> int:
     routes = load_routes()
     print(f"Маршрутов объявлено: {len(routes)}")
+    self_check()
     anchors_exist(routes)
 
     by_file: dict[str, set] = {}
@@ -160,7 +231,7 @@ def main() -> int:
             arrived = any(_filled(value) for value in seen)
             if proof["arrives"]:
                 ok(arrived, f"{route['route']}: {selector} доезжает",
-                   f"ни на одном шаге {scenario_id} значения нет ({[v for v in seen if _filled(v)] or 'пусто везде'})")
+                   explain(route, steps, selector))
             else:
                 # Отсутствие значения доказывает разрыв только там, где значение вообще может
                 # появиться: у опечатки в селекторе следа не бывает НИКОГДА, и «разрыв подтверждён»
@@ -178,10 +249,25 @@ def main() -> int:
                    f"{proof['finding']} в docs/roadmap/02_findings.md и переверни `arrives`")
 
     served = {str(r["proof"]["scenario"]).partition("#")[2] for r in routes}
-    all_ids = {s.id for path in scenario_files(SCENARIO_DIR) for s in load(path, vocab)}
+    every = [s for path in scenario_files(SCENARIO_DIR) for s in load(path, vocab)]
+    all_ids = {s.id for s in every}
     idle = sorted(all_ids - served)
     print(f"\nСценариев всего {len(all_ids)}, опорой маршрута служат {len(served)}; "
           f"остальные проверяют контракт, а не поток: {idle}")
+
+    print("\n== Что ЕЩЁ может держать маршрут (по объявлению, без прогона) ==")
+    for route in routes:
+        support = str(route["proof"]["scenario"]).partition("#")[2]
+        wanted = [s for s in route["proof"]["observe"]]
+        able = sorted(s.id for s in every if s.id != support
+                      and all(any(declares(step.expect, sel) for step in s.when + s.then)
+                              for sel in wanted))
+        if able:
+            print(f"  {route['route']}: опора {support}; те же значения объявляют ещё {len(able)} — "
+                  f"{', '.join(able[:6])}{' …' if len(able) > 6 else ''}")
+        else:
+            print(f"  ⚠ {route['route']}: опора {support} ЕДИНСТВЕННАЯ — сценария, объявляющего "
+                  f"{', '.join(wanted)}, больше нет; упадёт она — поток перестанет проверяться вовсе")
 
     print(f"\n{'=' * 50}\nРЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
     if _fails:

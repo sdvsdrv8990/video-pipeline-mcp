@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """scripts/guards/what_if.py — реальность против ожиданий: что даст правка, ДО того как её принять.
 
-Намерение (`intent.yaml`) объявляет, что меняем, где, зачем и какие сценарии обязаны сменить цвет.
-Кандидатный патч раскатывается в ОТДЕЛЬНОМ worktree, матрица гоняется дважды — на `HEAD` и на
-патче, — и отчёт кладётся в три колонки:
+Намерение (`intent.yaml`) объявляет, что меняем, где, зачем и что обязано сменить цвет — сценарий
+или маршрут потока данных. Кандидатный патч раскатывается в ОТДЕЛЬНОМ worktree, ОБЕ карты гоняются
+дважды — на `HEAD` и на патче, — и отчёт кладётся в три колонки:
 
     заявленное сбылось · ИЗМЕНИЛОСЬ НЕЗАЯВЛЕННОЕ (скрытый риск) · заявленное не сбылось
 
@@ -24,22 +24,33 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
+SUITES = ("tests/scenarios/test_scenarios.py", "tests/routes/test_routes.py")
 LINE = re.compile(r"^\s{2}([✓✗]) (.+?)(?:\s{2}→ .*)?$")
 INTENT_KEYS = {"intent", "where", "why", "expect"}
 EXPECT_KEYS = {"scenario", "becomes", "why"}
 
 
 def verdicts(cwd: Path) -> dict[str, bool]:
-    """Прогон матрицы сценариев в дереве `cwd` → {метка проверки: прошла}."""
-    done = subprocess.run([sys.executable, "tests/scenarios/test_scenarios.py"],
-                          cwd=cwd, capture_output=True, text=True, timeout=3600)
+    """Прогон обеих карт в дереве `cwd` → {метка проверки: прошла}.
+
+    Карта сценариев отвечает «что делает система», карта маршрутов — «куда течёт то, что она
+    сказала клиенту». Правка умеет сломать поток, не тронув ни одного сценария, поэтому сравнение
+    до/после без маршрутов молчало бы ровно там, где дороже всего.
+    """
     out: dict[str, bool] = {}
-    for row in done.stdout.splitlines():
-        found = LINE.match(row)
-        if found:
+    for suite in SUITES:
+        if not (cwd / suite).exists():
+            continue
+        done = subprocess.run([sys.executable, suite], cwd=cwd, capture_output=True,
+                              text=True, timeout=3600)
+        rows = [found for row in done.stdout.splitlines() if (found := LINE.match(row))]
+        if not rows:
+            sys.exit(f"{suite} в {cwd} не дал ни одной проверки:\n"
+                     f"{done.stdout[-2000:]}\n{done.stderr[-1000:]}")
+        for found in rows:
             out[found.group(2).strip()] = found.group(1) == "✓"
     if not out:
-        sys.exit(f"Прогон в {cwd} не дал ни одной проверки:\n{done.stdout[-2000:]}\n{done.stderr[-1000:]}")
+        sys.exit(f"Прогон в {cwd} не дал ни одной проверки — сравнивать нечего")
     return out
 
 
@@ -81,6 +92,12 @@ def drop_tree(tree: Path) -> None:
     shutil.rmtree(tree.parent, ignore_errors=True)
 
 
+def _named(label: str) -> str:
+    """Имя, которым намерение зовёт проверку: у сценария оно до шага (` · `), у маршрута — до
+    рубежа (`: `). Одним разделителем не обойтись, а промах по имени немой."""
+    return label.split(" · ")[0].split(": ")[0]
+
+
 def report(intent: dict, before: dict[str, bool], after: dict[str, bool]) -> int:
     common = set(before) & set(after)
     turned_red = {label for label in common if before[label] and not after[label]}
@@ -90,9 +107,9 @@ def report(intent: dict, before: dict[str, bool], after: dict[str, bool]) -> int
     declared = {str(item["scenario"]): str(item["becomes"]) for item in intent["expect"]}
     got: dict[str, str] = {}
     for label in turned_red:
-        got.setdefault(label.split(" · ")[0], "red")
+        got.setdefault(_named(label), "red")
     for label in turned_green:
-        got.setdefault(label.split(" · ")[0], "green")
+        got.setdefault(_named(label), "green")
 
     print(f"\n═══ НАМЕРЕНИЕ: {intent['intent']} ═══")
     print(f"  где: {intent['where']}\n  зачем: {intent['why']}")
@@ -115,9 +132,15 @@ def report(intent: dict, before: dict[str, bool], after: dict[str, bool]) -> int
         print("  (ничего — правка задела ровно то, что заявлено)")
 
     print("\n── ЗАЯВЛЕННОЕ НЕ СБЫЛОСЬ ──")
+    gone = {_named(label) for label in vanished}
     missed = [(name, color) for name, color in declared.items() if got.get(name) != color]
     for name, color in missed:
-        print(f"  ✗ {name}: ждали {color}, получили {got.get(name) or 'без изменений'}")
+        if name in gone:
+            # Исчезнувшая проверка — не «цвет не сменился»: наблюдения не стало вовсе, и принять
+            # это за «ничего не поменялось» значит принять отсутствие улики за чистый результат.
+            print(f"  ✗ {name}: ждали {color}, а проверки ИСЧЕЗЛИ — улики нет, это не «без изменений»")
+        else:
+            print(f"  ✗ {name}: ждали {color}, получили {got.get(name) or 'без изменений'}")
     if not missed:
         print("  (ничего)")
 
