@@ -320,6 +320,97 @@ def resources_off_inventory(root: Path = ROOT) -> list[str]:
 
 
 
+NUMERAL = {"два": 2, "двух": 2, "три": 3, "трёх": 3, "четыре": 4, "четырёх": 4, "пять": 5,
+           "пяти": 5, "шесть": 6, "шести": 6, "семь": 7, "семи": 7, "восемь": 8, "восьми": 8}
+JOBS_CLAIM = re.compile(r"(\d+|" + "|".join(NUMERAL) + r")\s+джоб", re.I)
+
+
+def ci_jobs_off_docs(root: Path = ROOT) -> list[str]:
+    """Сколько джоб в гейте — сказано в `ci.yml` и повторено в доках; копия стареет молча.
+
+    Журналы исключены, и список их не зашит: роль объявляет реестр `docs/roadmap/README.md`, а
+    запись о ПРОШЛОМ состоянии («тогда джоб было пять») обязана остаться такой, какой была.
+    """
+    ci = _at(root, (".github", "workflows", "ci.yml"))
+    if not ci.exists():
+        return []
+    jobs = (yaml.safe_load(ci.read_text(encoding="utf-8")) or {}).get("jobs") or {}
+    if not jobs:
+        return []
+    registry = _at(root, ROADMAP + ("README.md",))
+    history = set()
+    if registry.exists():
+        for row in registry.read_text(encoding="utf-8").splitlines():
+            if row.startswith("|") and "журнал" in row.lower():
+                history |= set(re.findall(r"\(([\w.]+\.md)\)", row))
+    notes = []
+    for doc in sorted(_at(root, ROADMAP).glob("*.md")) + [root / "README.md"]:
+        if doc.name in history or not doc.exists():
+            continue
+        for line, text in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
+            for raw in JOBS_CLAIM.findall(text):
+                said = int(raw) if raw.isdigit() else NUMERAL[raw.lower()]
+                if said != len(jobs):
+                    notes.append(f"{doc.relative_to(root).as_posix()}:{line} — сказано «{raw} джоб», "
+                                 f"а в ci.yml их {len(jobs)}: {', '.join(jobs)}")
+    return notes
+
+
+def module_without_reader(root: Path = ROOT) -> list[str]:
+    """Модуль ядра, которого не зовёт НИ импорт, НИ объявление, — половина, которую никто не читает.
+
+    Живым модуль делает одно из двух: его импортируют либо на него указывает декларация
+    (`config/providers.yaml: img.onnx_bg:OnnxBGRemoval` — импорта нет и не будет). Считать
+    объявление чтением обязательно: иначе вся декларативная архитектура числилась бы мёртвой.
+    Пакеты и `__main__` грузятся по построению, спрашивать с них нечего.
+    """
+    def dotted(path: Path) -> str:
+        return path.relative_to(root).as_posix()[:-3].replace("/", ".").removesuffix(".__init__")
+
+    targets = {dotted(p): p for group in ("core", "tools")
+               for p in _at(root, (group,)).rglob("*.py") if "__pycache__" not in str(p)}
+    if not targets:
+        return []
+    readers: dict[str, set[str]] = {name: set() for name in targets}
+    for source in root.rglob("*.py"):
+        if {"__pycache__", ".venv", "vendor"} & set(source.parts):
+            continue
+        package = dotted(source) if source.name == "__init__.py" else dotted(source).rsplit(".", 1)[0]
+        try:
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        for node in ast.walk(tree):
+            mentions: set[str] = set()
+            if isinstance(node, ast.Import):
+                mentions |= {alias.name for alias in node.names}
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module or ""
+                if node.level:
+                    # Относительный импорт разрешается от пакета ИСТОЧНИКА: иначе `from .x import y`
+                    # не совпадёт ни с одним модулем и живой файл окажется сиротой.
+                    parts = package.split(".")
+                    base = ".".join(parts[:len(parts) - node.level + 1] + ([base] if base else []))
+                if base:
+                    mentions.add(base)
+                    mentions |= {f"{base}.{alias.name}" for alias in node.names}
+            for name in mentions:
+                if name in targets and targets[name] != source:
+                    readers[name].add(str(source))
+
+    declarations = "\n".join(p.read_text(encoding="utf-8", errors="ignore")
+                             for p in _at(root, ("config",)).rglob("*.yaml"))
+    notes = []
+    for name, path in sorted(targets.items()):
+        if path.name in ("__init__.py", "__main__.py") or readers[name]:
+            continue
+        if ".".join(name.split(".")[-2:]) in declarations or path.stem in declarations:
+            continue
+        notes.append(f"{path.relative_to(root).as_posix()} — модуль без единого читателя: ни импорта, "
+                     "ни строки в config/*.yaml. Либо он мёртв и сносится, либо потерял проводку")
+    return notes
+
+
 def _gate_suites(root: Path) -> list[Path] | None:
     """Список наборов берём у САМОГО гейта, а не заводим второй: разошлись бы молча.
 
@@ -760,6 +851,8 @@ HARD = (("пропуск набора без покрытия в CI", skips_with
         ("статус находки мимо реестра", status_off_registry),
         ("набор мимо каталога зон", suites_off_catalog),
         ("сторож мимо каталога зон", guards_off_catalog),
+        ("модуль без единого читателя", module_without_reader),
+        ("число джоб гейта мимо ci.yml", ci_jobs_off_docs),
         ("сценарий зовёт инструмент мимо описи", scenario_calls_unknown_tool))
 
 # Храповик: вниз можно, вверх нет. Потолок — в файле рядом, совет — как долг закрывается.

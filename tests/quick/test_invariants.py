@@ -18,7 +18,9 @@ from invariants import (  # noqa: E402
     codes_outside_registry, codes_without_emitter, dead_recovery_in_engine,
     declared_but_unscripted, enum_without_values,
     resources_off_inventory, scenario_calls_unknown_tool, skips_without_ci,
-    dispatch_by_value, guards_off_catalog, mirrored_declaration, status_off_registry,
+    ci_jobs_off_docs, dispatch_by_value, guards_off_catalog, mirrored_declaration,
+    module_without_reader,
+    status_off_registry,
     suites_off_catalog,
     used_before_declared,
 )
@@ -369,6 +371,45 @@ ok(not guards_off_catalog(make({"scripts/guards/alpha.py": "x = 1\n",
                                 "scripts/guards/__init__.py": "\n",
                                 "scripts/guards/CATALOG.md": GUARD_ROW})),
    "служебный `__init__.py` сторожем не считается и зоны не требует")
+
+print("\n== число джоб гейта мимо ci.yml ==")
+CI2 = "jobs:\n  lint:\n    runs-on: x\n  test:\n    runs-on: x\n"
+REGISTRY = "| [`ход.md`](ход.md) | Журнал сплошного прохода |\n"
+ok(len(ci_jobs_off_docs(make({".github/workflows/ci.yml": CI2,
+                              "docs/roadmap/a.md": "гейт — **6 джоб**\n"}))) == 1,
+   "документ называет число, которого в ci.yml нет — копия состарилась молча")
+ok(not ci_jobs_off_docs(make({".github/workflows/ci.yml": CI2,
+                              "docs/roadmap/a.md": "гейт — две джоб\n"})),
+   "словом сказанное число тоже читается, и верное не обвиняется")
+ok(not ci_jobs_off_docs(make({".github/workflows/ci.yml": CI2,
+                              "docs/roadmap/README.md": REGISTRY,
+                              "docs/roadmap/ход.md": "тогда было 8 джоб\n"})),
+   "журнал по реестру ролей — запись о прошлом, её не переписывают")
+ok(len(ci_jobs_off_docs(make({".github/workflows/ci.yml": CI2,
+                              "docs/roadmap/ход.md": "тогда было 8 джоб\n"}))) == 1,
+   "тот же файл БЕЗ строки в реестре журналом не считается — послабление не выдаётся по имени")
+ok(not ci_jobs_off_docs(make({"docs/roadmap/a.md": "**6 джоб**\n"})),
+   "ci.yml нет — сверять не с чем, молчим")
+
+print("\n== модуль без единого читателя ==")
+ok(len(module_without_reader(make({"core/lonely.py": "x = 1\n"}))) == 1,
+   "модуль без импортирующих и без объявления — мёртвая половина")
+ok(not module_without_reader(make({"core/lonely.py": "x = 1\n",
+                                   "server.py": "from core.lonely import x\n"})),
+   "абсолютный импорт — читатель найден")
+ok(not module_without_reader(make({"core/pkg/__init__.py": "from .lonely import x\n",
+                                   "core/pkg/lonely.py": "x = 1\n"})),
+   "относительный импорт из своего пакета — читатель найден, а не пропущен")
+ok(not module_without_reader(make({"core/img/onnx_bg.py": "class OnnxBGRemoval: pass\n",
+                                   "config/providers.yaml": "by_provider:\n  L: img.onnx_bg:OnnxBGRemoval\n"})),
+   "модуль жив ОБЪЯВЛЕНИЕМ — иначе вся декларативная архитектура числилась бы мёртвой")
+ok(not module_without_reader(make({"core/pkg/__init__.py": "\n", "core/runner/__main__.py": "x = 1\n"})),
+   "пакет и точка входа грузятся по построению — читателя с них не спрашиваем")
+ok(len(module_without_reader(make({"core/lonely.py": "x = 1\n",
+                                   "config/providers.yaml": "by_provider:\n  L: img.other:Other\n"}))) == 1,
+   "чужая строка в конфиге читателем не становится")
+ok(not module_without_reader(make({"docs/x.md": "text\n"})),
+   "ни core/, ни tools/ в дереве нет — событие не наше, молчим")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

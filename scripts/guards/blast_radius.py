@@ -5,6 +5,9 @@
 снимается по одному сценарию на сервер, поэтому строка знает своих сценариев поимённо, а не
 «покрыта вообще». Сборка медленная и в гейт не входит — инструмент запускается руками.
 
+У `--affected` улик две: прогон (что исполнялось) и статический граф вызовов (`_symbol_graph.py`) —
+кто зовёт тронутое место, даже если его не гоняет ни один сценарий; вторая вердикта не меняет.
+
     python3 scripts/guards/blast_radius.py --build                 # собрать карту
     python3 scripts/guards/blast_radius.py --query core/paths.py:42
     python3 scripts/guards/blast_radius.py --changed               # по незакоммиченной правке
@@ -28,6 +31,8 @@ sys.path.insert(0, str(ROOT))
 # Импорты ниже корня: харнесс живёт в `tests/`, и путь к нему добавляется выше.
 import yaml  # noqa: E402
 from coverage.parser import PythonParser  # noqa: E402
+
+import _symbol_graph  # noqa: E402
 
 from tests.harness import live_server  # noqa: E402
 from tests.harness.scenario import Runner, Vocabulary, load, scenario_files  # noqa: E402
@@ -162,6 +167,7 @@ def affected() -> int:
     radius, current = _load(), ""
     hit: set[str] = set()
     blind: list[str] = []
+    touched_lines: dict[str, set[int]] = {}
     for row in diff.splitlines():
         if row.startswith("+++ b/"):
             current = row[len("+++ b/"):]
@@ -174,6 +180,7 @@ def affected() -> int:
         covered = radius.get(str(Path(current))) or {}
         start, count = int(head.group(1)), int(head.group(2) or 1)
         for line in range(start, start + max(count, 1)):
+            touched_lines.setdefault(current, set()).add(line)
             names = {name for name, lines in covered.items() if line in lines}
             hit |= names
             if not names:
@@ -187,7 +194,56 @@ def affected() -> int:
         print(f"    точечный прогон: VPM_SCENARIO='{','.join(sorted(hit))}' python3 tests/scenarios/test_scenarios.py")
     if not hit and not blind:
         print("  Правка не касается измеряемой зоны (core/, tools/, server.py) — прогонять нечего.")
+    static_blind({(rel, name) for rel, lines in touched_lines.items()
+                  for name, (first, last) in _functions(rel, classes=True).items()
+                  if any(first <= n <= last for n in lines)})
     return 1 if blind else 0
+
+
+def static_blind(touched: set[tuple[str, str]], ask=None) -> None:
+    """Вызывающие тронутых функций, которых не исполняет НИ ОДИН сценарий.
+
+    Прогон знает только исполненное: вызывающий, которого не гоняет ни один сценарий, карте не
+    виден — а правка достаётся ему первой. Граф отвечает статикой и разрешает не все вызовы,
+    поэтому улика РАСШИРЯЕТ подозрение и не трогает вердикт: заверить безопасность она не может.
+    """
+    if not touched:
+        return
+    if not COVERED.exists():
+        print(f"  ── улики нет: {COVERED} не собран (`--build`) — статику сверять не с чем")
+        return
+    sites = (ask or _symbol_graph.callers)(name.rpartition(".")[2] for _, name in touched)
+    if sites is None:
+        print("  ── улики нет: символьный граф не отвечает (сервер не поставлен или граф не собран);"
+              " вердикт остался на прогоне")
+        return
+    covered = json.loads(COVERED.read_text(encoding="utf-8"))
+    known: dict[str, dict[str, tuple[int, int]]] = {}
+    silent: dict[str, set[str]] = {}
+    outside = 0
+    for symbol, places in sites.items():
+        for place in places:
+            rel, _, line = place.rpartition(":")
+            if not line.isdigit() or not (rel.startswith(("core/", "tools/")) or rel == "server.py"):
+                continue                      # вне области замера: тесты и скрипты не мерятся
+            if rel not in known:
+                known[rel] = _functions(rel)
+            inside = [n for n, (first, last) in known[rel].items() if first <= int(line) <= last]
+            if not inside:
+                outside += 1                  # вызов на уровне модуля: покрытие по ИМЕНАМ его не видит
+            for name in inside:
+                if name not in (covered.get(rel) or []):
+                    silent.setdefault(symbol, set()).add(f"{rel}::{name}")
+    if silent:
+        print(f"  ⚠ по графу вызовов правку получат {sum(len(v) for v in silent.values())} вызывающих, "
+              "которых не исполняет ни один сценарий:")
+        for symbol, places in sorted(silent.items()):
+            print(f"    {symbol} ← {', '.join(sorted(places))}")
+        print("    улика статическая и неполная: расширяет подозрение, обратного не доказывает")
+    else:
+        print("  по графу вызовов молчащих вызывающих у тронутых функций нет")
+    if outside:
+        print(f"  ○ точек вызова вне функций: {outside} — покрытие меряется по именам, их оно не видит")
 
 
 def check_routes() -> int:
@@ -213,8 +269,12 @@ def check_routes() -> int:
     return 1 if bad else 0
 
 
-def _functions(rel: str) -> dict[str, tuple[int, int]]:
-    """Имя функции → диапазон строк. Имя переживает правки, номер строки — нет."""
+def _functions(rel: str, classes: bool = False) -> dict[str, tuple[int, int]]:
+    """Имя функции → диапазон строк. Имя переживает правки, номер строки — нет.
+
+    `classes=True` добавляет и классы: покрытие меряется функциями, поэтому в счёт молчания они не
+    идут, но у графа вызовов спрашивать про тронутую модель нужно именно по имени класса.
+    """
     tree = ast.parse((ROOT / rel).read_text(encoding="utf-8"))
     out: dict[str, tuple[int, int]] = {}
 
@@ -225,7 +285,10 @@ def _functions(rel: str) -> dict[str, tuple[int, int]]:
                 out[name] = (child.lineno, getattr(child, "end_lineno", child.lineno))
                 walk(child, f"{name}.")
             elif isinstance(child, ast.ClassDef):
-                walk(child, f"{prefix}{child.name}.")
+                name = f"{prefix}{child.name}"
+                if classes:
+                    out[name] = (child.lineno, getattr(child, "end_lineno", child.lineno))
+                walk(child, f"{name}.")
     walk(tree, "")
     return out
 

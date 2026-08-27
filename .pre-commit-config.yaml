@@ -1,17 +1,19 @@
-# Pre-commit — линт/типы перед коммитом. Хуки=system (venv-инструменты),
-# версии совпадают с CI. Форматтер НЕ включён намеренно (не переписываем весь код).
-# Установка: pre-commit install
+# Pre-commit — линт/типы перед коммитом. Хуки=system, версии совпадают с CI.
+# Форматтер НЕ включён намеренно (не переписываем весь код). Установка: pre-commit install
+# Путь к линтеру и типам ЯВНЫЙ (`.venv/bin/…`): по имени они находились только из активированного
+# окружения, и коммит из обычного терминала падал «Executable ruff not found». Сторожа ниже
+# остаются на системном `python` намеренно — им хватает stdlib, как и в CI.
 repos:
   - repo: local
     hooks:
       - id: ruff
         name: ruff (lint)
-        entry: ruff check --fix
+        entry: .venv/bin/ruff check --fix
         language: system
         types: [python]
       - id: mypy
         name: mypy (types)
-        entry: mypy
+        entry: .venv/bin/mypy
         language: system
         types: [python]
         pass_filenames: false
