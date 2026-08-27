@@ -23,6 +23,9 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from findings_count import scan as scan_registry  # noqa: E402  разбор реестра — один на проект
+
 BASELINE = Path(__file__).with_name("invariants_baseline.txt")
 DISPATCH_BASELINE = Path(__file__).with_name("dispatch_baseline.txt")
 UNSCRIPTED_BASELINE = Path(__file__).with_name("unscripted_baseline.txt")
@@ -255,7 +258,15 @@ def codes_outside_registry(root: Path = ROOT, known: set[str] | None = None) -> 
 # Статус ВПЛОТНУЮ к номеру находки — единственная форма, где смысл однозначен: это поле, а не
 # проза. Разбирать прозу бессмысленно (замер дал от 17 до 370 ложных срабатываний), а поле точно.
 STATUS_NEAR = re.compile(r"(F\d{1,3})\s*(✅|🔴|🟠|🟡|🟢)|(✅|🔴|🟠|🟡|🟢)\s*(F\d{1,3})")
-REGISTRY_ROW = re.compile(r"\|\s*(~~)?\*{0,2}(F\d+)\*{0,2}(~~)?\s*\|\s*([^|]*)\|")
+
+
+def _registry_status(root: Path = ROOT) -> dict[str, str]:
+    """{идентификатор: «закрыт»/«открыт»} по реестру. Разбор берётся у `findings_count`."""
+    registry_file = _at(root, FINDINGS)
+    if not registry_file.exists():
+        return {}
+    rows = scan_registry(registry_file.read_text(encoding="utf-8"))
+    return {ident: "закрыт" if closed else "открыт" for ident, closed in rows.items()}
 
 
 def status_off_registry(root: Path = ROOT) -> list[str]:
@@ -264,15 +275,9 @@ def status_off_registry(root: Path = ROOT) -> list[str]:
     Журнал сессий и сам реестр исключены: история обязана хранить прежние статусы, а в реестре
     ниже канонической строки лежат таблицы переформулировок с тем же номером.
     """
-    registry_file = _at(root, FINDINGS)
-    if not registry_file.exists():
+    registry = _registry_status(root)
+    if not registry:
         return []
-    registry: dict[str, str] = {}
-    for line in registry_file.read_text(encoding="utf-8").splitlines():
-        row = REGISTRY_ROW.match(line)
-        if row and row.group(2) not in registry:          # первая строка — каноническая
-            closed = bool(row.group(1)) or "✅" in row.group(4) or "🟢" in row.group(4)
-            registry[row.group(2)] = "закрыт" if closed else "открыт"
     notes = []
     for path in sorted(_at(root, ROADMAP).glob("*.md")) + [root / "tests" / "CATALOG.md"]:
         if not path.exists() or path.name in ("02_findings.md", "_sessions.md"):

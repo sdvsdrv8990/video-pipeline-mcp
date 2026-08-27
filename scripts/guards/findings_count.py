@@ -7,8 +7,10 @@
 `invariants.status_off_registry`, который читает те же строки и на пустом наборе молча зеленеет.
 
 ## Границы
-Закрыта = идентификатор строки зачёркнут ИЛИ в колонке severity стоит галочка. Проза ячейки не
-разбирается: «ЗАКРЫТ (остаток)» встречается и у тех находок, что остались открытыми.
+Закрыта = идентификатор строки зачёркнут ИЛИ в колонке severity стоит знак закрытия (✅ или 🟢).
+Проза ячейки не разбирается: «ЗАКРЫТ (остаток)» встречается и у тех находок, что остались
+открытыми. Разбор здесь ОДИН на весь проект: `invariants.status_off_registry` зовёт `scan`, а не
+повторяет своё выражение — второй читатель того же реестра даёт второй вердикт.
 """
 
 from __future__ import annotations
@@ -20,15 +22,16 @@ from pathlib import Path
 REGISTRY = Path(__file__).resolve().parents[2] / "docs" / "roadmap" / "02_findings.md"
 FLOOR = Path(__file__).with_name("findings_count_baseline.txt")
 ROW = re.compile(r"^\| (~~)?\*{0,2}(F\d+)\*{0,2}(?:~~)?\s*\|([^|]*)\|")
+CLOSED = ("✅", "🟢")
 
 
 def scan(text: str) -> dict[str, bool]:
-    """{идентификатор: закрыта}. Один идентификатор может встретиться в нескольких прогонах."""
+    """{идентификатор: закрыта}. Первая строка каноническая: ниже лежат таблицы переформулировок."""
     rows: dict[str, bool] = {}
     for line in text.splitlines():
         if m := ROW.match(line):
-            closed = bool(m.group(1)) or "✅" in m.group(3)
-            rows[m.group(2)] = rows.get(m.group(2), False) or closed
+            closed = bool(m.group(1)) or any(mark in m.group(3) for mark in CLOSED)
+            rows.setdefault(m.group(2), closed)
     return rows
 
 
@@ -46,15 +49,25 @@ def main() -> int:
     print(f"всего: {len(rows)} · закрыты: {closed} · открытых: {len(openi)}")
     print("открытые: " + " · ".join(openi))
 
-    if "--check" not in sys.argv:
-        return 0
-    # Пол, а не потолок: реестр только растёт, поэтому падение числа — это сломанный разбор,
-    # а не закрытая находка. Поднимается вместе с новой находкой через `--bless`.
-    floor = int(FLOOR.read_text(encoding="utf-8").strip()) if FLOOR.exists() else 0
     if "--bless" in sys.argv:
         FLOOR.write_text(f"{len(rows)}\n", encoding="utf-8")
         print(f"пол поднят до {len(rows)}")
         return 0
+    if "--check" not in sys.argv:
+        return 0
+    # Пол, а не потолок: реестр только растёт, поэтому падение числа — это сломанный разбор,
+    # а не закрытая находка. Поднимается вместе с новой находкой через `--bless`.
+    # Пола нет или он нечитаем — это «улики нет», а не «чисто»: молча выключенный храповик
+    # зеленеет на любом числе строк, включая ноль.
+    if not FLOOR.exists():
+        print(f"findings_count: пола нет — {FLOOR}. Храповик выключен, замер ни с чем не сверен: "
+              "заведите пол через --bless", file=sys.stderr)
+        return 2
+    try:
+        floor = int(FLOOR.read_text(encoding="utf-8").strip())
+    except ValueError:
+        print(f"findings_count: пол не читается числом — {FLOOR}", file=sys.stderr)
+        return 2
     if len(rows) < floor:
         print(f"findings_count: разобрано {len(rows)} строк при поле {floor} — реестр ужался. "
               "Находки не удаляются, только закрываются: значит сломался разбор таблицы, и вместе "
