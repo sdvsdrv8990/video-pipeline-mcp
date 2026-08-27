@@ -17,6 +17,7 @@ import yaml
 from tests.harness import live_server
 from tests.harness.scenario import (Runner, ScenarioError, Vocabulary, dig, known_findings, load,
                                     scenario_files)
+from tests.harness.scenario_map import load_map
 from tests.scenarios.steps import STEPS
 
 ROUTES = Path(__file__).with_name("routes.yaml")
@@ -255,6 +256,13 @@ def main() -> int:
     print(f"\nСценариев всего {len(all_ids)}, опорой маршрута служат {len(served)}; "
           f"остальные проверяют контракт, а не поток: {idle}")
 
+    carried: dict[str, list[str]] = {}
+    for path in sorted(SCENARIO_DIR.glob("*.map.yaml")):
+        smap = load_map(path, vocab)
+        for edge in smap.transitions:
+            for route in edge.carries:
+                carried.setdefault(route, []).append(f"{smap.id}:{edge.name}")
+
     print("\n== Что ЕЩЁ может держать маршрут (по объявлению, без прогона) ==")
     for route in routes:
         support = str(route["proof"]["scenario"]).partition("#")[2]
@@ -268,6 +276,11 @@ def main() -> int:
         else:
             print(f"  ⚠ {route['route']}: опора {support} ЕДИНСТВЕННАЯ — сценария, объявляющего "
                   f"{', '.join(wanted)}, больше нет; упадёт она — поток перестанет проверяться вовсе")
+        # Карта порождает сценарии обходом, поэтому «маршрут несёт переход» — покрытие, которого
+        # никто не писал руками. Ноль переходов у маршрута = карта о нём не знает вовсе.
+        by_map = carried.get(route["route"]) or []
+        seen_in = ", ".join(by_map) if by_map else "⚠ ни один переход карт его не несёт (`carries:` не объявлен)"
+        print(f"      картой: {seen_in}")
 
     print(f"\n{'=' * 50}\nРЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
     if _fails:
