@@ -1,6 +1,0 @@
-# requirements.txt — делегирует в pyproject.toml (источник истины зависимостей, I2).
-# `pip install -r requirements.txt`  ≡  `pip install -e .`  (runtime-зависимости из pyproject).
-# Dev/CI:      pip install -e ".[dev]"
-# Точные пины: pip install -r requirements.lock   (репродуцируемая установка)
-# cloudflared — бинарь, ставится install.sh (D11), не pip.
--e .

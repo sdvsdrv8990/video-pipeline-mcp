@@ -1561,9 +1561,10 @@ if _bg_model:
                               input="pic/frame.png", scene_id="p1"); _first = _time.time() - _t1
     _t2 = _time.time(); _call("media_generate", table="pic", resource_type="bg_removals",
                               input="pic/frame.png", scene_id="p2"); _second = _time.time() - _t2
-    _keys15 = [r["key"] for r in _reg.pool.stats()["models"]]
-    ok(any(k.startswith("onnx|") for k in _keys15) and _second <= _first,
-       f"модель осталась поднятой между вызовами инструмента ({_first:.2f} с → {_second:.2f} с)")
+    _held15 = next((r for r in _reg.pool.stats()["models"] if r["key"].startswith("onnx|")), None)
+    ok(_held15 is not None and _held15["hits"] >= 1,
+       "модель осталась поднятой между вызовами инструмента — второй вызов ПОПАЛ в пул "
+       f"(обращений к записи: {(_held15 or {}).get('hits', '—')}; по часам {_first:.2f} с → {_second:.2f} с)")
 
 print("== 16. Кто формирует задачу и куда кладёт результат (инварианты под раннер, S24) ==")
 import re as _re16

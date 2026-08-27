@@ -37,7 +37,7 @@ repos:
         pass_filenames: false
         always_run: true
       - id: findings-count
-        name: findings_count (счёт реестра сходится с перечнем)
+        name: findings_count (реестр находок читается машиной)
         entry: python scripts/guards/findings_count.py --check
         language: system
         pass_filenames: false

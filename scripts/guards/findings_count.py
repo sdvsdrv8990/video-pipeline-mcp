@@ -1,9 +1,10 @@
-"""scripts/guards/findings_count.py — счёт реестра находок по самим его строкам.
+"""scripts/guards/findings_count.py — счёт реестра находок замером и проверка его читаемости.
 
 ## Назначение
-Шапка `docs/roadmap/02_findings.md` называет числа, а перечень ниже их опровергал: последние
-находки попадали в таблицы и не попадали в шапку. Счёт здесь считается разбором строк, чтобы
-расхождение падало командой, а не всплывало через сессию.
+Числа о реестре не пишутся прозой — они печатаются здесь. Судит же скрипт другое: строки реестра
+обязаны РАЗБИРАТЬСЯ. Находки не удаляются, только закрываются, поэтому разобранных строк не может
+стать меньше; уменьшение значит сломанный формат таблицы — а вместе с ним слепнет
+`invariants.status_off_registry`, который читает те же строки и на пустом наборе молча зеленеет.
 
 ## Границы
 Закрыта = идентификатор строки зачёркнут ИЛИ в колонке severity стоит галочка. Проза ячейки не
@@ -17,8 +18,8 @@ import sys
 from pathlib import Path
 
 REGISTRY = Path(__file__).resolve().parents[2] / "docs" / "roadmap" / "02_findings.md"
+FLOOR = Path(__file__).with_name("findings_count_baseline.txt")
 ROW = re.compile(r"^\| (~~)?\*{0,2}(F\d+)\*{0,2}(?:~~)?\s*\|([^|]*)\|")
-HEADER = re.compile(r"(\d+) наход\w+, (\d+) закрыт\w+, (\d+) открыт\w+")  # окончания склоняются по числу
 
 
 def scan(text: str) -> dict[str, bool]:
@@ -47,15 +48,19 @@ def main() -> int:
 
     if "--check" not in sys.argv:
         return 0
-    if not (m := HEADER.search(text)):
-        print("findings_count: в шапке нет строки счёта — сверять не с чем", file=sys.stderr)
+    # Пол, а не потолок: реестр только растёт, поэтому падение числа — это сломанный разбор,
+    # а не закрытая находка. Поднимается вместе с новой находкой через `--bless`.
+    floor = int(FLOOR.read_text(encoding="utf-8").strip()) if FLOOR.exists() else 0
+    if "--bless" in sys.argv:
+        FLOOR.write_text(f"{len(rows)}\n", encoding="utf-8")
+        print(f"пол поднят до {len(rows)}")
+        return 0
+    if len(rows) < floor:
+        print(f"findings_count: разобрано {len(rows)} строк при поле {floor} — реестр ужался. "
+              "Находки не удаляются, только закрываются: значит сломался разбор таблицы, и вместе "
+              "с ним ослеп status_off_registry", file=sys.stderr)
         return 1
-    claimed = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
-    actual = (len(rows), closed, len(openi))
-    if claimed != actual:
-        print(f"findings_count: шапка говорит {claimed}, строки дают {actual}", file=sys.stderr)
-        return 1
-    print("шапка сходится со строками")
+    print(f"реестр читается машиной: {len(rows)} строк при поле {floor}")
     return 0
 
 

@@ -1,13 +1,13 @@
 ---
 name: dependency-hygiene
-description: Use when touching DEPENDENCIES of the video_pipeline_mcp server — adding or bumping a package, editing pyproject.toml / requirements.lock, running pip install (especially with --extra-index-url or a non-PyPI index), evaluating whether a package is trustworthy, deciding whether a proposed library fits what the project supports (archived upstream, forbidden weight formats, a major-version rollback, a workaround around its own API — find an alternative instead of building one), reacting to a CVE/advisory, or when manifest ↔ lock ↔ .venv might disagree. Covers the upstream direction of supply chain (what we pull IN), which the server-facing security-reviewer does not: package trustworthiness, typosquatting / slopsquatting / dependency confusion, local-version pins for accelerator builds, and proving the environment where the code actually runs. Python + pip; the project keeps abstract deps in pyproject and exact pins in requirements.lock.
+description: Use when touching DEPENDENCIES of the video_pipeline_mcp server — adding or bumping a package, editing pyproject.toml or its dependency groups, running pip install (especially with --extra-index-url or a non-PyPI index), evaluating whether a package is trustworthy, deciding whether a proposed library fits what the project supports (archived upstream, forbidden weight formats, a major-version rollback, a workaround around its own API — find an alternative instead of building one), reacting to a CVE/advisory, or when the manifest and the .venv might disagree. Covers the upstream direction of supply chain (what we pull IN), which the server-facing security-reviewer does not: package trustworthiness, typosquatting / slopsquatting / dependency confusion, local-version pins for accelerator builds, and proving the environment where the code actually runs. Python + pip; pyproject.toml is the single dependency file, split into zone groups (runtime, test, scripts, dev, local, gpu-amd).
 license: MIT
 allowed-tools: Read, Grep, Glob, Edit, Bash, WebFetch, WebSearch
 metadata:
   version: "1.0.0-vpm1"
   domain: supply-chain
   project: video_pipeline_mcp
-  triggers: dependency, зависимость, pyproject, requirements.lock, pip install, extra-index-url, CVE, advisory, pip-audit, lockfile, venv, package, вендор, обновить пакет, supply chain
+  triggers: dependency, зависимость, pyproject, dependency group, pip install, extra-index-url, CVE, advisory, pip-audit, lockfile, venv, package, вендор, обновить пакет, supply chain
   role: specialist
   scope: review
   output-format: report
@@ -25,7 +25,7 @@ metadata:
 
 ## Три источника правды и их расхождение (наш класс дефектов)
 
-`pyproject.toml` (абстрактно, с полами) → `requirements.lock` (точные пины) → `.venv` (что реально исполняется). Дефект живёт в РАСХОЖДЕНИИ, а не в файле:
+`pyproject.toml` (абстрактно, с полами, разведено по зонам) → `.venv` (что реально исполняется). Дефект живёт в РАСХОЖДЕНИИ, а не в файле:
 
 - **F69:** пакет стоял в `.venv`, но отсутствовал в манифесте — на чистой машине сервер бы не поднялся.
 - **F71:** тесты гонялись системным Python (`aiohttp 3.14.1`), сервер — из `.venv` (`3.13.5`, 9 advisory). Гейт был зелёный и не значил ничего.
@@ -36,7 +36,7 @@ metadata:
 ```bash
 .venv/bin/python -m pip check                    # сломанные требования
 .venv/bin/python -m pip list --outdated | head
-diff <(.venv/bin/python -m pip freeze | sort) <(grep -v '^#' requirements.lock | sort) | head
+python tests/quick/test_dependencies.py   # манифест ↔ импорты, обе стороны
 ```
 
 ---
@@ -52,7 +52,7 @@ diff <(.venv/bin/python -m pip freeze | sort) <(grep -v '^#' requirements.lock |
 | Что | Чем задано | Перемерить |
 |---|---|---|
 | Python | `requires-python` + матрица CI | `grep -n 'requires-python\|python-version' pyproject.toml .github/workflows/ci.yml` |
-| Версии библиотек | полы в `pyproject.toml`, пины в `requirements.lock` | `.venv/bin/python -m pip list` |
+| Версии библиотек | полы в `pyproject.toml`, зона — своей группой | `.venv/bin/python -m pip list` |
 | Форматы весов | `install.allow_suffixes` / `deny_suffixes` | `grep -n -A3 allow_suffixes config/providers.yaml` |
 | Источники весов | `install.allow_sources` | там же |
 | Что сервер вправе писать | `write_allowlist.extensions` | `grep -n -A20 write_allowlist config/firewall.yaml` |
@@ -195,9 +195,9 @@ gh api repos/<OWNER>/<REPO>/releases --jq 'length'   # ноль релизов =
   доезжает до `ToolResult`, заменить нельзя без правки контракта клиента — это уже не зависимость,
   а часть публичного лица сервера. Держи такие за фасадом в `core/`.
 - **Стоимость владения.** Что он стоит КАЖДЫЙ раз: вес колеса, время установки в CI, тянет ли за
-  собой компилятор или вторую копию тяжёлой библиотеки (`torch`, `numpy`), и попадает ли в
-  `requirements.lock` (а значит — в каждый прогон гейта). `pip download --no-deps` и `du` отвечают
-  на это за минуту, впечатление — никогда.
+  собой компилятор или вторую копию тяжёлой библиотеки (`torch`, `numpy`), и в какую ГРУППУ
+  манифеста он попадёт (а значит — ставится ли в каждый прогон гейта). `pip download --no-deps`
+  и `du` отвечают на это за минуту, впечатление — никогда.
 
 Обе оси решают один спор: «своя короткая функция против пакета». Библиотечный механизм берём (ось 1a),
 но если ради одной функции приезжает мир — берём функцию, а в комментарии называем источник.
@@ -221,7 +221,24 @@ gh api repos/<OWNER>/<REPO>/releases --jq 'length'   # ноль релизов =
 
 - `--extra-index-url` **не приоритет, а объединение**: pip выбирает лучшую версию по ОБОИМ индексам. Это и есть вектор dependency confusion.
 - Наша защита — **пин локальной версии**: `torch==2.13.0+rocm7.1`. Такой строки на PyPI нет, а голое `2.13.0` (CUDA-сборка) пином не проходит. Пин здесь не педантизм, а граница.
-- **Лок не может нести машинную сборку.** `requirements.lock` один на все машины (у кого-то nvidia), поэтому группа `gpu-amd` в него не входит — в шапке лока написано, почему и какой командой доставить. Прогон по локу на этой машине молча вернёт CUDA-сборку; видно это будет в `media_models → hardware` и `media_generate → compute`.
+- **Машинная сборка живёт ОТДЕЛЬНОЙ группой, а не общим списком.** `gpu-amd` не входит ни в `dependencies`, ни в `dev`: список, общий для всех машин, на чужой карте молча вернёт CUDA-сборку, и видно это будет только в `media_models → hardware` и `media_generate → compute`. Лок-файла в проекте нет намеренно — из него никто не ставил, а расходился он молча; единственный источник зависимостей `pyproject.toml`.
+
+## Зона объявляет свои зависимости сама (директива владельца 2026-08-27)
+
+Зависимость сервера, теста и скрипта — три разные вещи, и лежать они обязаны в разных группах:
+снять зону тогда значит удалить её строку, а не выковыривать пакеты из общего списка. Агрегат
+(`dev`) собирается САМОССЫЛКОЙ на свои же группы (`имя[test,scripts]`), чтобы команда установки в
+CI не менялась при каждом разделении.
+
+**Отдельно объявляется ЗАИМСТВОВАНИЕ.** Тест или сторож, берущий проектную зависимость, создаёт у
+неё второго читателя: сняв такую строку из `dependencies`, ломаешь не только сервер — и узнать об
+этом надо ДО правки, а не по красному гейту. Поэтому заимствования перечислены в `[tool.vpm]`
+(`borrowed_by_tests` / `borrowed_by_scripts`), а обе стороны списка — незаявленное заимствование и
+заявленное, которого уже нет, — держит набор, а не дисциплина.
+
+Прежде чем делить: **померь**, а не дели по вкусу. Разделение имеет смысл ровно настолько,
+насколько зоны реально расходятся; какие пакеты у какой зоны свои, а какие общие, считает
+`tests/quick/test_dependencies.py` — он же и не даст списку состариться.
 
 Правило: **любая установка с чужого индекса идёт через объявленную группу манифеста и точный пин**, а не разовой командой в шелле. Разовая команда не переживает следующую машину.
 

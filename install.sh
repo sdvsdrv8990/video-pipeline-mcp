@@ -18,8 +18,8 @@ echo "Обновление pip..."
 pip install --upgrade pip
 
 # 4. Установка зависимостей
-echo "Установка зависимостей из requirements.txt..."
-pip install -r requirements.txt
+echo "Установка зависимостей из pyproject.toml..."
+pip install -e .
 
 # 5. Проверка FFmpeg
 echo "Проверка FFmpeg..."

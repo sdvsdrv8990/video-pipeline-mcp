@@ -39,7 +39,7 @@
 | # | Воркстрим | Статус (S23) | Зависит от | Сессий |
 |---|---|---|---|---|
 | I1 | VCS-гигиена: разгитигнорить `tests/`; стратегия `docs/dev` | ✅ закрыто: тесты в git (число — [`00` §1](00_reality_check.md); S24: +`tests/harness/`, +раннер роя); `docs/dev/` удалён владельцем, история = git | — | 1 |
-| I2 | Packaging: `pyproject.toml`, пиннинг зависимостей, `install.sh` truth-up | ✅ закрыто: `pyproject.toml` + `requirements.lock`; extra `dev`, extra `gpu-amd` (машинно-зависимый, вне лока) | I1 | 1 |
+| I2 | Packaging: `pyproject.toml`, полы зависимостей, `install.sh` truth-up | ✅ закрыто: `pyproject.toml` — единственный файл зависимостей, разведённый по зонам (сервер/тесты/скрипты/инструменты/локальные модели/машинная сборка); заимствования тестов и скриптов объявлены в `[tool.vpm]`. `requirements.txt/.lock` сняты: из них не ставил никто | I1 | 1 |
 | I3 | CI/CD: `.github/workflows` — линт+типы+тесты+security-scan | ✅ закрыто S16: `ci.yml`; состав джоб — [`00` §1](00_reality_check.md) | I1, I2, I4 | 1–2 |
 | I4 | Типизация+линт: `mypy`, `ruff`, `pre-commit` | ✅ закрыто S16 (доп. 1) | I2 | 1 |
 | I5 | Логирование+observability: `structlog`, метрики, `/health`, tracing + **audit-trail** (DIM-7) + **экон-контейнмент** (quotas/budgets на media — DIM-11) | 🔲 не начато — **последний крупный долг оси I**. Частично снят учёт расхода: `current_usage` по провайдерам (S22) | — | 1–2 |

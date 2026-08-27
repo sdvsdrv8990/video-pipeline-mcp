@@ -134,8 +134,9 @@ jobs:
       - name: invariants (межфайловые)
         run: python scripts/guards/invariants.py --check
 
-      # Тот же класс: документ, который называет число, обязан сходиться со своим перечнем.
-      - name: findings registry count
+      # Реестр находок обязан РАЗБИРАТЬСЯ: сломанный формат обнуляет и счёт, и статус-инвариант,
+      # причём обе проверки при этом молча зеленеют. Числа в прозе не живут — их печатает замер.
+      - name: findings registry readable
         run: python scripts/guards/findings_count.py --check
 
   gitleaks:

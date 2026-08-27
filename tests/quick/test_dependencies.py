@@ -87,6 +87,9 @@ def main() -> int:
     project = manifest["project"]
     declared = {bare(s) for s in project.get("dependencies", [])}
     declared |= {bare(s) for deps in (project.get("optional-dependencies") or {}).values() for s in deps}
+    # Самоссылка (`имя[test,scripts]`) объединяет СВОИ же группы и никакого пакета не объявляет:
+    # искать ей стороннего читателя значит обвинять механизм группировки.
+    declared.discard(normal(project["name"]))
     build = {bare(s) for s in (manifest.get("build-system") or {}).get("requires", [])}
 
     mapping = {mod: {normal(d) for d in dists} for mod, dists in packages_distributions().items()}
@@ -120,7 +123,19 @@ def main() -> int:
         orphan.append(dist)
     ok(not orphan, f"каждая объявленная зависимость кем-то читается; ничья: {orphan or '—'}")
 
-    print("§3 список задников не устарел")
+    print("§3 заимствования у проекта объявлены и не устарели")
+    runtime = {bare(s) for s in project.get("dependencies", [])}
+    borrowed = (manifest.get("tool") or {}).get("vpm") or {}
+    for zone, declared_names in (("tests", borrowed.get("borrowed_by_tests") or []),
+                                 ("scripts", borrowed.get("borrowed_by_scripts") or [])):
+        prefix = f"{zone}/"
+        actual = {d for m, files in third.items() for d in mapping.get(m, set())
+                  if d in runtime and any(f.startswith(prefix) for f in files)}
+        said = {normal(n) for n in declared_names}
+        ok(not (actual - said), f"[{zone}] незаявленное заимствование: {sorted(actual - said) or '—'}")
+        ok(not (said - actual), f"[{zone}] объявлено, а больше не берут: {sorted(said - actual) or '—'}")
+
+    print("§4 список задников не устарел")
     for name, why in sorted(TRANSITIVE.items()):
         ok(name in declared, f"`{name}` ({why}) всё ещё объявлен — иначе послабление стало мусором")
         ok(name not in read, f"`{name}` по-прежнему никем не импортируется — иначе послабление лишнее")
