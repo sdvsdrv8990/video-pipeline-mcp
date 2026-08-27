@@ -185,6 +185,13 @@ def affected() -> int:
             hit |= names
             if not names:
                 blind.append(f"{current}:{line}")
+    stale = sorted(rel for rel in touched_lines
+                   if RADIUS.exists() and (ROOT / rel).stat().st_mtime > RADIUS.stat().st_mtime)
+    if stale:
+        # Карта хранит НОМЕРА строк: файл, тронутый после сборки, сдвинул их, и сценарии тут
+        # называются по устаревшим координатам. Это не «чисто» и не «хуже» — это негодная улика.
+        print(f"  ⚠ карта старше кода: {len(stale)} файл(ов) правились после сборки "
+              f"({', '.join(stale[:3])}) — пересобери `--build`, иначе сценарии названы по сдвинутым строкам")
     if blind:
         print(f"  ⚠ строк без единого сценария: {len(blind)} — {', '.join(blind[:5])}"
               + (" …" if len(blind) > 5 else ""))
