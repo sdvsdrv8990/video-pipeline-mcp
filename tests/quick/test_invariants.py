@@ -17,7 +17,8 @@ sys.path.insert(0, str(ROOT))
 from invariants import (  # noqa: E402
     codes_outside_registry, codes_without_emitter, dead_recovery_in_engine,
     declared_but_unscripted, enum_without_values,
-    facts_outside_registry, facts_without_emitter, facts_without_observer,
+    facts_exempt_from_observation, facts_outside_registry, facts_without_emitter,
+    facts_without_observer, observation_incomplete,
     hooks_off_declaration,
     resources_off_inventory, scenario_calls_unknown_tool, skips_without_ci,
     ci_jobs_off_docs, dispatch_by_value, guards_off_catalog, mirrored_declaration,
@@ -434,7 +435,11 @@ ok(not facts_outside_registry(make({"tools/x/__init__.py": EMIT})),
    "реестра типов нет — сверять не с чем, молчим")
 
 ok(len(facts_without_observer(make({"tools/x/__init__.py": EMIT}))) == 1,
-   "факт объявляет сделанное, а спросить реальность нечем — наблюдателя нет")
+   "факт шлётся, а решения о наблюдении нет — ни правила, ни объявленной ненаблюдаемости")
+ok(not facts_without_observer(make({
+       "tools/x/__init__.py": EMIT,
+       "tests/harness/observations.yaml": "FileCreated: {observes: нечего, why: чтение}\n"})),
+   "объявленная ненаблюдаемость — тоже РЕШЕНИЕ: забытым факт после неё не считается")
 ok(not facts_without_observer(make({"tools/x/__init__.py": EMIT,
                                     "tests/harness/observations.yaml": OBSERVE})),
    "строка наблюдения есть — долг закрыт объявлением, без нового скрипта")
@@ -453,6 +458,24 @@ ok(len(facts_without_emitter(make({"core/contracts/fact.py": 'KNOWN_FACT_TYPES =
                                    "tests/harness/observations.yaml": OBSERVE
                                        + "FileAppended:\n  identity: args.path\n"}))) == 1,
    "наблюдатель построен на факт, которого сервер не шлёт — карта на пустоте")
+
+print("\n== объявление наблюдения: полное или никакое ==")
+ok(len(facts_exempt_from_observation(make({
+       "tests/harness/observations.yaml": "A: {observes: нечего, why: чтение}\nB: {observes: нечего, why: очередь}\n"}))) == 2,
+   "объявленная ненаблюдаемость считается: без потолка это дверь мимо наблюдения")
+ok(not facts_exempt_from_observation(make({"tests/harness/observations.yaml": OBSERVE})),
+   "правило ненаблюдаемостью не считается — оно спрашивает реальность")
+ok(len(observation_incomplete(make({
+       "tests/harness/observations.yaml": "A: {observes: нечего}\n"}))) == 1,
+   "«наблюдать нечего» без причины — это «потом разберусь», записанное как решение")
+ok(len(observation_incomplete(make({
+       "tests/harness/observations.yaml": "A:\n  identity: args.path\n  observe: fs_read_file\n"
+                                          "  with: {path: x}\n  present: {ok: true}\n"}))) == 1,
+   "правило без `absent` роняет воспроизводителя на живой записи, а до неё выглядит покрытием")
+ok(not observation_incomplete(make({"tests/harness/observations.yaml":
+       "A:\n  identity: args.path\n  observe: fs_read_file\n  with: {path: x}\n"
+       "  present: {ok: true}\n  absent: {ok: false, code: E}\n"})),
+   "полное правило не обвиняется")
 
 print("\n== хук против своего объявления ==")
 DECL = ('{"hooks": {"PreToolUse": [{"matcher": "Edit", "hooks": [{"type": "command", '

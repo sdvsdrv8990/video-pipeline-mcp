@@ -4,11 +4,17 @@
 # Факт говорит «сделано», наблюдение проверяет, что это видно снаружи; и второе не выводится из
 # первого, потому что именно расхождение между ними и есть находка.
 #
-# `identity` — где в записи лежит имя созданного (`args.<ключ>` или `data.<ключ>`).
-# `present` / `absent` — что отвечает чтение, когда созданное есть и когда его ещё нет.
-# Факта здесь нет — воспроизводитель откажется строить карту и назовёт недостающий: тихо
-# пропустить значит выдать неполную карту за полную.
+# `identity` — где в ЗАПИСИ вызова лежит имя созданного (`args.<ключ>` или `data.<ключ>`).
+# В `with` значение `${identity}` — это имя, `${args.x}`/`${data.x}` — любое другое значение из
+# той же записи: лист живёт в паре «книга + имя», столбец — в тройке, одним именем их не спросить.
+# `present` / `absent` — что отвечает наблюдатель, когда предмет есть и когда его ещё нет. Коды
+# здесь ИЗМЕРЕНЫ прогоном инструментов, а не выведены из имён.
+#
+# Факт, которого здесь нет вовсе, — забытый: сторож `invariants.py` его называет. Факт, который
+# наблюдать нечем, объявляется `observes: нечего` с причиной: решение принято и видно, а не
+# заменено молчанием. Причина — не отговорка, а адрес будущей работы.
 
+# ── Файлы: предмет назван путём, наблюдатель один и тот же ───────────────────────────────────
 FileCreated:
   identity: args.path
   observe: fs_read_file
@@ -29,3 +35,188 @@ FileAppended:
   with: {path: "${identity}"}
   present: {ok: true, facts: [FileRead]}
   absent: {ok: false, code: FILE_NOT_FOUND}
+
+# Предмет удаления — ОТСУТСТВИЕ файла, поэтому исходы зеркальны: «предмет добавлен» здесь значит
+# «файла больше нет». Без зеркала удаление наблюдалось бы как создание и всегда сходилось наоборот.
+FileDeleted:
+  identity: args.path
+  observe: fs_read_file
+  with: {path: "${identity}"}
+  present: {ok: false, code: FILE_NOT_FOUND}
+  absent: {ok: true, facts: [FileRead]}
+
+FileMoved:
+  identity: data.destination
+  observe: fs_read_file
+  with: {path: "${identity}"}
+  present: {ok: true, facts: [FileRead]}
+  absent: {ok: false, code: FILE_NOT_FOUND}
+
+FileRenamed:
+  identity: data.new_path
+  observe: fs_read_file
+  with: {path: "${identity}"}
+  present: {ok: true, facts: [FileRead]}
+  absent: {ok: false, code: FILE_NOT_FOUND}
+
+# ── Книга и лист: у книги свой код отсутствия, у листа свой ──────────────────────────────────
+WorkbookCreated:
+  identity: args.path
+  observe: inspect_file
+  with: {path: "${identity}"}
+  present: {ok: true, facts: [FileInspected]}
+  absent: {ok: false, code: WORKBOOK_NOT_FOUND}
+
+SheetAdded:
+  identity: args.sheet
+  observe: get_sheet_info
+  with: {path: "${args.path}", sheet: "${identity}"}
+  present: {ok: true, facts: [SheetInfoRead]}
+  absent: {ok: false, code: SHEET_NOT_FOUND}
+
+SheetRenamed:
+  identity: args.new_name
+  observe: get_sheet_info
+  with: {path: "${args.path}", sheet: "${identity}"}
+  present: {ok: true, facts: [SheetInfoRead]}
+  absent: {ok: false, code: SHEET_NOT_FOUND}
+
+SheetCopied:
+  identity: args.new_name
+  observe: get_sheet_info
+  with: {path: "${args.path}", sheet: "${identity}"}
+  present: {ok: true, facts: [SheetInfoRead]}
+  absent: {ok: false, code: SHEET_NOT_FOUND}
+
+SheetDeleted:
+  identity: args.sheet
+  observe: get_sheet_info
+  with: {path: "${args.path}", sheet: "${identity}"}
+  present: {ok: false, code: SHEET_NOT_FOUND}
+  absent: {ok: true, facts: [SheetInfoRead]}
+
+# Столбец спрашивается поиском зависимых: он единственный отвечает по ТРОЙКЕ книга-лист-столбец
+# и различает «столбца нет» отдельным кодом. Перечень имён на это не годится — он отвечает
+# успехом в обоих случаях, и отсутствие в нём выражается только содержимым ответа.
+ColumnAdded:
+  identity: args.column
+  observe: excel_find_dependents
+  with: {path: "${args.path}", sheet: "${args.sheet}", column: "${identity}"}
+  present: {ok: true, facts: [DependentsFound]}
+  absent: {ok: false, code: COLUMN_NOT_FOUND}
+
+ColumnDeleted:
+  identity: args.column
+  observe: excel_find_dependents
+  with: {path: "${args.path}", sheet: "${args.sheet}", column: "${identity}"}
+  present: {ok: false, code: COLUMN_NOT_FOUND}
+  absent: {ok: true, facts: [DependentsFound]}
+
+# ── Структура, память, модели, рендер ────────────────────────────────────────────────────────
+NodeCreated:
+  identity: data.path
+  observe: fs_get_directory_tree
+  with: {path: "${identity}"}
+  present: {ok: true, facts: [DirectoryTree]}
+  absent: {ok: false, code: PATH_NOT_FOUND}
+
+# Чтение памяти отвечает успехом и на несуществующий путь, поэтому предмет спрашивается ПОЛЕМ
+# ответа: код отказа здесь не приходит, а `exists` приходит всегда.
+MemoryWritten:
+  identity: args.path
+  observe: memory_read
+  with: {path: "${identity}"}
+  present: {ok: true, data: {exists: true}}
+  absent: {ok: true, data: {exists: false}}
+
+ModelInstallStarted:
+  identity: data.install_id
+  observe: media_install_status
+  with: {install_id: "${identity}"}
+  present: {ok: true, facts: [ModelInstallStatus]}
+  absent: {ok: false, code: ROW_NOT_FOUND}
+
+RenderCompleted:
+  identity: data.file_path
+  observe: fs_read_file
+  with: {path: "${identity}"}
+  present: {ok: true, facts: [FileRead]}
+  absent: {ok: false, code: FILE_NOT_FOUND}
+
+# ── Наблюдать нечего: ЧТЕНИЕ ничего не создаёт ───────────────────────────────────────────────
+# Спрашивать «существует ли прочитанное» бессмысленно: предмет существовал ДО факта и не им создан.
+FileRead:        {observes: нечего, why: чтение файла ничего не создаёт}
+DirectoryTree:   {observes: нечего, why: обход каталога ничего не создаёт}
+FileInspected:   {observes: нечего, why: осмотр книги ничего не создаёт}
+FsSearch:        {observes: нечего, why: поиск ничего не создаёт}
+FsSearchYaml:    {observes: нечего, why: поиск ничего не создаёт}
+FsSearchMulti:   {observes: нечего, why: поиск ничего не создаёт}
+SearchCompleted: {observes: нечего, why: поиск ничего не создаёт}
+QuickSearch:     {observes: нечего, why: поиск ничего не создаёт}
+MultiSearch:     {observes: нечего, why: поиск ничего не создаёт}
+SnapshotRead:    {observes: нечего, why: чтение снимка таблицы ничего не создаёт}
+RowRead:         {observes: нечего, why: чтение строки ничего не создаёт}
+RowsFound:       {observes: нечего, why: поиск строк ничего не создаёт}
+ColumnRead:      {observes: нечего, why: чтение столбца ничего не создаёт}
+ColumnNamesRead: {observes: нечего, why: перечень имён столбцов ничего не создаёт}
+SheetInfoRead:   {observes: нечего, why: сводка по листу ничего не создаёт}
+RangeRead:       {observes: нечего, why: чтение диапазона ничего не создаёт}
+DependentsFound: {observes: нечего, why: поиск зависимых ничего не создаёт}
+UniqueValuesRead: {observes: нечего, why: перечень значений ничего не создаёт}
+ValueCountsRead: {observes: нечего, why: подсчёт значений ничего не создаёт}
+DuplicatesFound: {observes: нечего, why: поиск дублей ничего не создаёт}
+NullsFound:      {observes: нечего, why: поиск пустот ничего не создаёт}
+MemoryRead:      {observes: нечего, why: чтение памяти ничего не создаёт}
+ModelsListed:    {observes: нечего, why: опись моделей ничего не создаёт}
+ModelSpecRead:   {observes: нечего, why: чтение спеки модели ничего не создаёт}
+ProviderResolved: {observes: нечего, why: выбор провайдера — решение вызова, а не предмет на диске}
+RunnerState:     {observes: нечего, why: состояние раннера спрашивается им же — предмета оно не создаёт}
+ModelInstallStatus: {observes: нечего, why: опрос установки ничего не создаёт}
+EntitiesFound:   {observes: нечего, why: поиск сущностей ничего не создаёт}
+ChainResolved:   {observes: нечего, why: разбор цепочки ничего не создаёт}
+FormulasValidated: {observes: нечего, why: проверка формул ничего не создаёт}
+IntegrityIssue:  {observes: нечего, why: замечание о целостности — вывод проверки, а не предмет}
+EntityOrphaned:  {observes: нечего, why: сирота — вывод проверки о существующем, а не новый предмет}
+
+# ── Наблюдать нечем: правка уходит в ОЧЕРЕДЬ, а очередь никто не спрашивает ──────────────────
+# Строка попадает в таблицу только после `json_execute_queue`, поэтому сразу после факта её ещё
+# нет. Инструмента «прочитай очередь» в описи нет вовсе — вот адрес работы, а не отговорка.
+RowAppended:   {observes: нечего, why: строка лежит в очереди до json_execute_queue, а очередь не читается инструментом}
+RowSet:        {observes: нечего, why: правка лежит в очереди до json_execute_queue, а очередь не читается инструментом}
+RowUpdated:    {observes: нечего, why: правка лежит в очереди до json_execute_queue, а очередь не читается инструментом}
+RowDeleted:    {observes: нечего, why: удаление лежит в очереди до json_execute_queue, а очередь не читается инструментом}
+QueuePushed:   {observes: нечего, why: предмет факта — сама очередь, а прочитать её нечем}
+QueueCleared:  {observes: нечего, why: предмет факта — сама очередь, а прочитать её нечем}
+QueueExecuted: {observes: нечего, why: применение меняет СОДЕРЖИМОЕ существующей таблицы, а не создаёт предмет}
+
+# ── Наблюдать нечем: факт приходит ПАЧКОЙ внутри чужого вызова ───────────────────────────────
+# У записи один адрес имени на вызов, а такой факт повторяется в нём по разу на каждый предмет:
+# назвать «который из них» объявление сегодня не умеет.
+FolderCreated:       {observes: нечего, why: пачка внутри structure_create — у записи один адрес имени на вызов}
+ChildDeferred:       {observes: нечего, why: пачка внутри structure_create — у записи один адрес имени на вызов}
+ChildUnfulfilled:    {observes: нечего, why: пачка внутри structure_create — у записи один адрес имени на вызов}
+TableDeferred:       {observes: нечего, why: пачка внутри structure_create — у записи один адрес имени на вызов}
+TableMaterialized:   {observes: нечего, why: пачка внутри чужого вызова — у записи один адрес имени на вызов}
+FragmentsSkipped:    {observes: нечего, why: частичный отказ — событие о НЕсозданном, предмета за ним нет}
+CreationSkipped:     {observes: нечего, why: пропуск создания — событие о НЕсозданном, предмета за ним нет}
+StructureCreated:    {observes: нечего, why: создаёт список фрагментов — у наблюдения один предмет на вызов}
+TemplatesCustomized: {observes: нечего, why: правит содержимое существующих шаблонов, предмета не создаёт}
+EntityRegistered:    {observes: нечего, why: реестр связей спрашивается по имени и пути, а по ID ответа об отсутствии не даёт}
+EntityLinked:        {observes: нечего, why: связь между сущностями отдельным предметом не спрашивается}
+EntityAdopted:       {observes: нечего, why: усыновление меняет связь, а не создаёт предмет}
+EntityAnnotated:     {observes: нечего, why: пометка меняет содержимое записи реестра}
+EntityMigrated:      {observes: нечего, why: перенос меняет путь существующей сущности}
+MemoryIndexed:       {observes: нечего, why: индексация проставляет пометки в существующем файле}
+
+# ── Наблюдать нечем: предмет факта — СОДЕРЖИМОЕ, а не существование ──────────────────────────
+# Присутствие словарь харнесса выражает (`data`), отсутствие — нет: отрицания в ожидании не бывает.
+ColumnMoved:           {observes: нечего, why: меняет порядок столбцов — предмет содержимое, а отрицание в ожидании не выражается}
+FormulaInserted:       {observes: нечего, why: меняет содержимое ячейки — отрицание в ожидании не выражается}
+FormattingApplied:     {observes: нечего, why: меняет оформление — инструмента, спрашивающего его, в описи нет}
+ValidationSet:         {observes: нечего, why: меняет правило столбца — инструмента, спрашивающего его, в описи нет}
+SheetsReordered:       {observes: нечего, why: меняет порядок листов — предмет содержимое, а не существование}
+MediaGenerated:        {observes: нечего, why: создаёт СПИСОК файлов — у наблюдения один предмет на вызов}
+UniquenessComputed:    {observes: нечего, why: счёт по существующим данным — предмета не создаёт}
+UniquenessIncomplete:  {observes: нечего, why: сообщение о неполноте входов — предмета за ним нет}
+UniquenessAlert:       {observes: нечего, why: сигнал в петлю решений — предмета за ним нет}
+UniquenessCompensated: {observes: нечего, why: пометка о компенсации — предмета за ним нет}

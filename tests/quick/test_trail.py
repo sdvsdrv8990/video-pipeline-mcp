@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 from core.observability import Trail  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "scripts" / "guards"))
-from reproduce import _entries, artefacts, as_steps, depends, pick, promote, render  # noqa: E402
+from reproduce import _entries, _fill, artefacts, as_steps, depends, pick, promote, render  # noqa: E402
 
 _checks = 0
 _fails: list[str] = []
@@ -191,6 +191,29 @@ ok(any(t["from"] == "s_empty" and t["to"] == "s_1" for t in lattice["transitions
 ok(lattice["states"]["s_empty"]["check"][0]["expect"]["ok"] is False
    and lattice["states"]["s_0"]["check"][0]["expect"]["ok"] is True,
    "предикат спрашивает КАЖДЫЙ предмет — и тот, что есть, и тот, которого ещё нет")
+
+print("\n== составное имя предмета ==")
+_sheet = {"tool": "excel_add_sheet", "args": {"path": "кн.xlsx", "sheet": "Л"},
+          "data": {"path": "кн.xlsx", "sheet": "Л"}, "ok": True, "facts": ["SheetAdded"]}
+_item = artefacts([_sheet], OBS)[0]
+ok(_item["name"] == "Л", "предмет — имя листа, а не книга: у листа своё существование")
+ok(_fill("${args.path}", _item) == "кн.xlsx",
+   "второй адрес берётся из ЗАПИСИ вызова — иначе лист в паре «книга + имя» не спросить")
+ok(_fill("${identity}", _item) == "Л" and _fill("META", _item) == "META",
+   "имя предмета и литерал различаются: подстановка только по объявленному адресу")
+try:
+    _fill("${args.нетключа}", _item)
+    ok(False, "адрес мимо записи обязан назвать себя, а не подставить пустоту")
+except SystemExit as exc:
+    ok("нетключа" in str(exc), "отказ называет НЕДОСТАЮЩИЙ адрес, а не «что-то не так»")
+_lat = _yaml.safe_load(promote([_sheet], "m_лист", "почему"))
+ok(_lat["states"]["s_0"]["check"][0]["with"] == {"path": "кн.xlsx", "sheet": "Л"},
+   "в карту уехали ОБА значения — составное имя доехало до предиката")
+
+print("\n== объявленная ненаблюдаемость ==")
+ok(not artefacts([{"tool": "table_append", "args": {"table": "т", "sheet": "л"}, "ok": True,
+                   "facts": ["RowAppended"]}], OBS),
+   "факт, объявленный ненаблюдаемым, предметом карты не становится — но и забытым не считается")
 
 chain = [_made("дом/файл.txt"),
          {"tool": "fs_create_file", "args": {"path": "дом/файл.txt/вложенный.txt", "content": "y"},

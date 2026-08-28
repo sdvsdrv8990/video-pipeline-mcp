@@ -32,8 +32,8 @@ UNSCRIPTED_BASELINE = Path(__file__).with_name("unscripted_baseline.txt")
 DEAD_RECOVERY_BASELINE = Path(__file__).with_name("dead_recovery_baseline.txt")
 ORPHAN_BASELINE = Path(__file__).with_name("orphan_codes_baseline.txt")
 MIRROR_BASELINE = Path(__file__).with_name("mirror_baseline.txt")
-FACT_OBSERVER_BASELINE = Path(__file__).with_name("fact_observers_baseline.txt")
 FACT_EMITTER_BASELINE = Path(__file__).with_name("fact_emitters_baseline.txt")
+FACT_EXEMPT_BASELINE = Path(__file__).with_name("fact_exempt_baseline.txt")
 # Две ветки — это выбор, три и больше по одному значению — уже таблица.
 DISPATCH_LIMIT = 3
 
@@ -722,12 +722,25 @@ def _facts_declared(root: Path) -> set[str]:
     return set()
 
 
-def _facts_observed(root: Path) -> set[str]:
+def _observations(root: Path) -> dict:
     path = _at(root, OBSERVATIONS)
     if not path.exists():
-        return set()
+        return {}
     declared = yaml.safe_load(path.read_text(encoding="utf-8"))
-    return set(declared) if isinstance(declared, dict) else set()
+    return {k: v for k, v in declared.items() if isinstance(v, dict)} if isinstance(declared, dict) else {}
+
+
+def _facts_observed(root: Path) -> set[str]:
+    """Факты, у которых наблюдение ОБЪЯВЛЕНО — правилом или объявленной ненаблюдаемостью.
+
+    Оба — решение. Разница в том, что правило спрашивает реальность, а `observes: нечего` называет
+    причину, по которой спрашивать нечего; забытым факт не считается ни в том, ни в другом случае.
+    """
+    return {k for k, v in _observations(root).items() if "identity" in v or "observes" in v}
+
+
+def _facts_exempt(root: Path) -> set[str]:
+    return {k for k, v in _observations(root).items() if "observes" in v}
 
 
 def facts_outside_registry(root: Path = ROOT) -> list[str]:
@@ -755,8 +768,39 @@ def facts_without_observer(root: Path = ROOT) -> list[str]:
     emitted = _facts_emitted(root)
     if not emitted:
         return []
-    return [f"факт `{name}` эмитится, а наблюдать его нечем — нет строки в {'/'.join(OBSERVATIONS)}"
+    return [f"факт `{name}` эмитится, а решения о наблюдении нет — ни правила, ни объявленной "
+            f"ненаблюдаемости в {'/'.join(OBSERVATIONS)}"
             for name in sorted(emitted - _facts_observed(root))]
+
+
+def facts_exempt_from_observation(root: Path = ROOT) -> list[str]:
+    """Объявленная ненаблюдаемость — решение с ценой: спросить реальность про этот факт нечем.
+
+    Держится храповиком именно поэтому: без потолка объявление превращается в дверь, через которую
+    любой новый факт уходит от наблюдения одной строкой.
+    """
+    return [f"факт `{name}` объявлен ненаблюдаемым: {rule.get('why') or '(без причины)'}"
+            for name, rule in sorted(_observations(root).items()) if "observes" in rule]
+
+
+def observation_incomplete(root: Path = ROOT) -> list[str]:
+    """Полуобъявленное наблюдение молчит так же, как отсутствующее, — и выглядит закрытым долгом.
+
+    Правило без любой из своих частей роняет воспроизводителя на живой записи, а ненаблюдаемость
+    без причины — это «потом разберусь», записанное как решение.
+    """
+    notes = []
+    for name, rule in sorted(_observations(root).items()):
+        if "observes" in rule:
+            if not str(rule.get("why") or "").strip():
+                notes.append(f"наблюдение `{name}`: `observes: нечего` без причины — решение без "
+                             "адреса работы неотличимо от забывчивости")
+            continue
+        missing = [k for k in ("identity", "observe", "with", "present", "absent") if k not in rule]
+        if missing:
+            notes.append(f"наблюдение `{name}`: нет {', '.join(f'`{m}`' for m in missing)} — "
+                         "воспроизводитель упадёт на живой записи, а до неё это выглядит покрытием")
+    return notes
 
 
 def facts_without_emitter(root: Path = ROOT) -> list[str]:
@@ -773,8 +817,8 @@ def facts_without_emitter(root: Path = ROOT) -> list[str]:
         return []
     notes = [f"тип `{name}` объявлен в KNOWN_FACT_TYPES, но ни один путь сервера его не шлёт"
              for name in sorted(declared - mentioned)]
-    notes += [f"наблюдатель на `{name}` объявлен в {'/'.join(OBSERVATIONS)}, а факта такого сервер "
-              "не шлёт" for name in sorted(observed - mentioned)]
+    notes += [f"наблюдение факта `{name}` объявлено в {'/'.join(OBSERVATIONS)}, а слать его сервер "
+              "не умеет" for name in sorted(observed - mentioned)]
     return notes
 
 
@@ -1042,7 +1086,9 @@ HARD = (("пропуск набора без покрытия в CI", skips_with
         ("число джоб гейта мимо ci.yml", ci_jobs_off_docs),
         ("сценарий зовёт инструмент мимо описи", scenario_calls_unknown_tool),
         ("факт мимо реестра типов", facts_outside_registry),
-        ("хук мимо объявления", hooks_off_declaration))
+        ("хук мимо объявления", hooks_off_declaration),
+        ("объявление наблюдения неполно", observation_incomplete),
+        ("факт эмитится, а решения о наблюдении нет", facts_without_observer))
 
 # Храповик: вниз можно, вверх нет. Потолок — в файле рядом, совет — как долг закрывается.
 RATCHETS = (
@@ -1063,9 +1109,9 @@ RATCHETS = (
     ("объявлено сервером, но сценарием не покрыто", declared_but_unscripted, UNSCRIPTED_BASELINE,
      "Новое объявление без сценария. Покрытие пишется ОБЪЯВЛЕНИЕМ в tests/scenarios/*.yaml "
      "(`call` + `expect.code`), новый python-скрипт для этого не нужен — либо --bless с объяснением"),
-    ("факт эмитится, а наблюдать его нечем", facts_without_observer, FACT_OBSERVER_BASELINE,
-     "Факт объявляет сделанное, а проверить это снаружи нечем. Покрытие пишется ОБЪЯВЛЕНИЕМ в "
-     "tests/harness/observations.yaml (identity + observe + present/absent) — либо --bless"),
+    ("объявлено ненаблюдаемым", facts_exempt_from_observation, FACT_EXEMPT_BASELINE,
+     "Спросить реальность про этот факт нечем — и таких стало больше. Либо наблюдатель, либо "
+     "инструмент, которого не хватает, чтобы наблюдатель стал возможен"),
     ("объявлено фактом, а слать некому", facts_without_emitter, FACT_EMITTER_BASELINE,
      "Тип обещан контрактом (или наблюдателем), а сервер его не шлёт: либо путь, который шлёт, "
      "либо снять строку из KNOWN_FACT_TYPES / tests/harness/observations.yaml"),

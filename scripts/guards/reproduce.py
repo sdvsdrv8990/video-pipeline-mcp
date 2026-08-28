@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from itertools import combinations
@@ -183,6 +184,30 @@ def _dig(entry: dict, path: str):
     return (entry.get(where) or {}).get(key)
 
 
+REF = re.compile(r"^\$\{(identity|args\.[\w.]+|data\.[\w.]+)\}$")
+
+
+def _fill(value, item: dict):
+    """`${identity}` — имя предмета, `${args.x}`/`${data.x}` — значение из ЗАПИСАННОГО вызова.
+
+    Второй адрес нужен потому, что не всякий предмет назывался одним именем: лист живёт в паре
+    «книга + имя», столбец — в тройке, и одним `identity` их не спросить.
+    """
+    if not isinstance(value, str):
+        return value
+    matched = REF.match(value)
+    if not matched:
+        return value
+    where = matched.group(1)
+    if where == "identity":
+        return item["name"]
+    got = _dig(item["entry"], where)
+    if got is None:
+        raise SystemExit(f"наблюдение факта {item['fact']}: по адресу {where} значения нет — "
+                         "поправь объявление в tests/harness/observations.yaml")
+    return got
+
+
 def artefacts(entries: list[dict], observations: dict) -> list[dict]:
     """Что запись создала: по одному наблюдаемому предмету на успешный вызов.
 
@@ -195,7 +220,9 @@ def artefacts(entries: list[dict], observations: dict) -> list[dict]:
             continue
         for fact in entry.get("facts") or []:
             rule = observations.get(fact)
-            if rule is None:
+            # Объявленная НЕнаблюдаемость — тоже решение: у такого факта нет адреса имени, и
+            # предметом карты он не становится, но и «забытым» он больше не считается.
+            if rule is None or not rule.get("identity"):
                 continue
             name = _dig(entry, str(rule["identity"]))
             if name is None:
@@ -228,7 +255,7 @@ def _check(items: list[dict], present: set[int]) -> list[dict]:
     steps = []
     for i, item in enumerate(items):
         rule = item["rule"]
-        args = {k: (item["name"] if v == "${identity}" else v) for k, v in (rule.get("with") or {}).items()}
+        args = {k: _fill(v, item) for k, v in (rule.get("with") or {}).items()}
         steps.append({"call": rule["observe"], "with": args,
                       "expect": dict(rule["present"] if i in present else rule["absent"])})
     return steps
