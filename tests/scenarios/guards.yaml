@@ -36,3 +36,65 @@
     - run: scripts/guards/comment_guard.py
       with: {args: ["--check"]}
       expect: {ok: true, exit: 0, console: "не выше"}
+
+# Переезд сторожей в объявления: до `--root` сторож умел судить только СВОЁ дерево, поэтому обе
+# его стороны были достижимы лишь из python-набора. Теперь подставное дерево кладётся фикстурой,
+# и вердикт спрашивается тем же способом, каким его спрашивает CI.
+
+- scenario: guard_invariants_judges_a_named_tree
+  why: обе стороны сторожа обязаны быть достижимы объявлением, иначе карта до него не дотянется
+  given:
+    files:
+      целое/core/жив.py: "x = 1\n"
+      целое/server.py: "from core.жив import x\n"
+      разорванное/core/сирота.py: "x = 1\n"
+  when:
+    - python: workspace_path
+      with: {path: целое}
+      as: whole
+      expect: {ok: true}
+    - run: scripts/guards/invariants.py
+      with: {args: ["--check", "--root", "${whole.path}"]}
+      expect: {ok: true, exit: 0}
+    - python: workspace_path
+      with: {path: разорванное}
+      as: torn
+      expect: {ok: true}
+    - run: scripts/guards/invariants.py
+      with: {args: ["--check", "--root", "${torn.path}"]}
+      expect: {ok: false, exit: 1, console: "модуль без единого читателя"}
+    - run: scripts/guards/invariants.py
+      with: {args: ["--bless", "--root", "${whole.path}"]}
+      expect: {ok: false, exit: 2, console: "потолок принадлежит СВОЕМУ дереву"}
+
+- scenario: guard_findings_count_judges_a_named_tree
+  why: реестр только растёт, и ужавшийся разбор обязан краснеть — на любом дереве, а не только на своём
+  given:
+    files:
+      реестр/docs/roadmap/02_findings.md: "| F1 | 🔴 | одна |\n| F2 | ✅ | две |\n"
+      реестр/scripts/guards/findings_count_baseline.txt: "2\n"
+      ужатый/docs/roadmap/02_findings.md: "| F1 | 🔴 | одна |\n"
+      ужатый/scripts/guards/findings_count_baseline.txt: "5\n"
+      безполый/docs/roadmap/02_findings.md: "| F1 | 🔴 | одна |\n"
+  when:
+    - python: workspace_path
+      with: {path: реестр}
+      as: full
+      expect: {ok: true}
+    - run: scripts/guards/findings_count.py
+      with: {args: ["--check", "--root", "${full.path}"]}
+      expect: {ok: true, exit: 0, console: "реестр читается машиной"}
+    - python: workspace_path
+      with: {path: ужатый}
+      as: shrunk
+      expect: {ok: true}
+    - run: scripts/guards/findings_count.py
+      with: {args: ["--check", "--root", "${shrunk.path}"]}
+      expect: {ok: false, exit: 1, console: "сломался разбор"}
+    - python: workspace_path
+      with: {path: безполый}
+      as: floorless
+      expect: {ok: true}
+    - run: scripts/guards/findings_count.py
+      with: {args: ["--check", "--root", "${floorless.path}"]}
+      expect: {ok: false, exit: 2, console: "пола нет"}

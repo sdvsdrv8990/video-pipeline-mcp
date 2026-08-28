@@ -16,9 +16,12 @@ def remove_path(srv, path: str) -> dict:
     return {"ok": True, "data": {"removed": path}}
 
 
-def workspace_path(srv, path: str) -> dict:
-    """Абсолютный путь файла рабочей области: команде репозитория относительный ни о чём не говорит."""
-    target = Path(srv.workspace) / path
+def workspace_path(srv, path: str = "") -> dict:
+    """Абсолютный путь в рабочей области: команде репозитория относительный ни о чём не говорит.
+
+    Пустой путь — сам корень области: сторож с `--root` судит ДЕРЕВО, а не отдельный файл.
+    """
+    target = Path(srv.workspace) / path if path else Path(srv.workspace)
     if not target.exists():
         return {"ok": False, "code": "FILE_NOT_FOUND", "message": f"в рабочей области нет: {path}"}
     return {"ok": True, "data": {"path": str(target)}}

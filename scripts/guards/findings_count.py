@@ -35,7 +35,25 @@ def scan(text: str) -> dict[str, bool]:
     return rows
 
 
+def _named_tree(argv: list[str]) -> Path | None:
+    """`--root <путь>` — судить НАЗВАННОЕ дерево, а не то, в котором лежит сам сторож.
+
+    Без флага вердикт достижим только из python-кода: объявление умеет запустить команду, но не
+    умеет передать ей корень, и обе стороны сторожа остаются недостижимы из карты.
+    """
+    for i, arg in enumerate(argv):
+        if arg == "--root" and i + 1 < len(argv):
+            return Path(argv[i + 1]).resolve()
+        if arg.startswith("--root="):
+            return Path(arg.split("=", 1)[1]).resolve()
+    return None
+
+
 def main() -> int:
+    global REGISTRY, FLOOR
+    if (named := _named_tree(sys.argv)) is not None:
+        REGISTRY = named / "docs" / "roadmap" / "02_findings.md"
+        FLOOR = named / "scripts" / "guards" / "findings_count_baseline.txt"
     if not REGISTRY.exists():
         print(f"findings_count: реестра нет — {REGISTRY}", file=sys.stderr)
         return 2

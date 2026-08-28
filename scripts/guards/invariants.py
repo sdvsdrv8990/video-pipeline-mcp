@@ -240,12 +240,19 @@ def used_before_declared(root: Path = ROOT) -> list[str]:
 
 
 def codes_outside_registry(root: Path = ROOT, known: set[str] | None = None) -> list[str]:
-    """Брошенный код отказа обязан быть и в реестре реакций, и в `KNOWN_ERROR_CODES`."""
+    """Брошенный код отказа обязан быть и в реестре реакций, и в `KNOWN_ERROR_CODES`.
+
+    Реестра нет — сверять не с чем, и это «улики нет», а не находка. Соседи по семейству молчат
+    так же; здесь проверки не было, и сторож умирал трейсом вместо вердикта.
+    """
+    registry_file = _at(root, REGISTRY)
+    if not registry_file.exists():
+        return []
     if known is None:
         sys.path.insert(0, str(root))
         from core.contracts.error_detail import KNOWN_ERROR_CODES as known
 
-    registry = set(yaml.safe_load(_at(root, REGISTRY).read_text(encoding="utf-8")) or {})
+    registry = set(yaml.safe_load(registry_file.read_text(encoding="utf-8")) or {})
     notes = []
     for source in sorted(list((root / "core").rglob("*.py")) + list((root / "tools").rglob("*.py"))):
         if "__pycache__" in str(source):
@@ -1061,6 +1068,8 @@ def guards_off_catalog(root: Path = ROOT) -> list[str]:
         return []
     scripts = sorted(p for p in directory.glob("*.py") if not p.name.startswith("_"))
     zones = _zones_of(_at(root, GUARDS_CATALOG))
+    if not scripts and not zones:
+        return []                      # ни сторожей, ни зон — обвинять некого и не в чем
     if not zones:
         return [f"{'/'.join(GUARDS_CATALOG)} — каталога зон нет, а сторожа есть: "
                 "правило «не плодить» держится дисциплиной, то есть не держится"]
@@ -1118,13 +1127,30 @@ RATCHETS = (
 )
 
 
+def _named_tree(argv: list[str]) -> Path | None:
+    """`--root <путь>` — судить НАЗВАННОЕ дерево. Корень проверки и так принимают параметром;
+    без флага он недостижим из командной строки, а значит и из объявления сценария."""
+    for i, arg in enumerate(argv):
+        if arg == "--root" and i + 1 < len(argv):
+            return Path(argv[i + 1]).resolve()
+        if arg.startswith("--root="):
+            return Path(arg.split("=", 1)[1]).resolve()
+    return None
+
+
 def main() -> int:
     # Режим хука: молчим, когда чисто. Сторож, печатающий «всё хорошо» после каждой правки,
     # превращается в шум, и его перестают читать.
     quiet = "--hook" in sys.argv
+    named = _named_tree(sys.argv)
+    root = named or ROOT
+    if named is not None and "--bless" in sys.argv:
+        print("invariants: --bless по чужому дереву запрещён — потолок принадлежит СВОЕМУ дереву, "
+              "и запись чужого числа сюда была бы тихой ложью", file=sys.stderr)
+        return 2
     failed = False
     for title, check in HARD:
-        notes = check()
+        notes = check(root)
         if not quiet:
             print(f"── {title}: {'чисто' if not notes else str(len(notes)) + ' шт.'}")
         elif notes:
@@ -1135,7 +1161,12 @@ def main() -> int:
 
     bless = "--bless" in sys.argv
     for title, check, baseline, advice in RATCHETS:
-        notes = check()
+        notes = check(root)
+        if named is not None:
+            # Потолок долга принадлежит своему дереву. Судить им чужое значит мерить чужой меркой;
+            # число печатаем, вердикт по нему не выносим.
+            print(f"── {title}: {len(notes)} (потолок не судим — дерево чужое)")
+            continue
         limit = int(baseline.read_text(encoding="utf-8").strip()) if baseline.exists() else len(notes)
         if not quiet or len(notes) > limit:
             print(f"── {title}: {len(notes)} при потолке {limit}")

@@ -133,6 +133,9 @@ ok(len(codes_outside_registry(make({"core/z.py": CODE_SRC, "config/server_reacti
                               known=set())) == 1,
    "код в реестре, но выпал из списка известных — контракт предупредит на боевом пути")
 
+ok(not codes_outside_registry(make({"core/x.py": 'raise ToolError("НЕТ_КОДА")\n'}), known=set()),
+   "реестра реакций нет — сверять не с чем: «улики нет», а не трейс вместо вердикта")
+
 print("\n== enum без перечня значений ==")
 SCHEMA_OK = "sheets:\n  - name: S\n    columns:\n      - { name: c, type: enum, enum: ['A', 'B'] }\n"
 SCHEMA_BAD = "sheets:\n  - name: S\n    columns:\n      - { name: c, type: enum }\n"
@@ -374,6 +377,9 @@ ok(not guards_off_catalog(make({"scripts/guards/alpha.py": "x = 1\n",
                                 "scripts/guards/__init__.py": "\n",
                                 "scripts/guards/CATALOG.md": GUARD_ROW})),
    "служебный `__init__.py` сторожем не считается и зоны не требует")
+
+ok(not guards_off_catalog(make({"scripts/guards/потолок.txt": "3\n"})),
+   "в каталоге сторожей нет ни одного скрипта — обвинять некого, каталог зон не нужен")
 
 print("\n== число джоб гейта мимо ci.yml ==")
 CI2 = "jobs:\n  lint:\n    runs-on: x\n  test:\n    runs-on: x\n"
