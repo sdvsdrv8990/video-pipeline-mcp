@@ -1196,6 +1196,28 @@
   },
   "title": "Таблицы: очередь → добавить"
  },
+ "json_read_queue": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Показать неприменённые операции очереди и строки, которых они коснутся.",
+  "group": "tables",
+  "input_schema": {
+   "properties": {
+    "table": {
+     "description": "Путь к таблице (сущности) относительно workspace",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table"
+   ],
+   "type": "object"
+  },
+  "title": "Таблицы: очередь → посмотреть"
+ },
  "json_read_snapshot": {
   "annotations": {
    "destructiveHint": false,

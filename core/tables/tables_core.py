@@ -341,6 +341,17 @@ class TableEngine:
             return self.append(table, sheet, action.get("data", {}), action.get("id_prefix", "ROW"))
         return self.delete(table, sheet, action["row_id"])
 
+    def read_queue(self, table: str) -> dict:
+        """Что стоит в очереди и ещё НЕ применено: до сегодня заглянуть туда было нечем.
+
+        Отвечает и списком операций, и отдельно списком затронутых строк: клиент спрашивает
+        «моя правка ещё ждёт?» по ID строки, а не по номеру операции в очереди.
+        """
+        self._load(table)
+        queued = [item.get("operation") or {} for item in self.state.read_queue(table)]
+        return {"table": table, "queued": queued, "count": len(queued),
+                "row_ids": [str(op.get("row_id")) for op in queued if op.get("row_id")]}
+
     def execute_queue(self, table: str) -> dict:
         """Применить очередь к read.json (RMW). Забирает и очищает write.json.
 

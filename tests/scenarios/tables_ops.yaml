@@ -2,6 +2,48 @@
 # после `json_execute_queue`. Поэтому проверка «позвал и сразу прочитал» здесь ничего не доказывает —
 # цепочка обязана пройти через применение очереди, иначе она подтвердит ровно противоположное.
 
+- scenario: tbl_queue_is_readable_before_it_is_applied
+  why: клиент кладёт правку в очередь и до сегодня не мог посмотреть, что в ней стоит — «отложено» было слепым
+  given:
+    files:
+      videos/очередь/read.json: |
+        {"META": {"schema": {"title": {"type": "string", "writable": true}},
+          "rows": {"VID_1": {"title": "Hook"}}}}
+  when:
+    - call: json_read_queue
+      with: {table: videos/очередь}
+      expect:
+        ok: true
+        facts: [QueueRead]
+        data: {count: 0}
+    - call: table_set
+      with: {table: videos/очередь, sheet: META, row_id: VID_1, column: title, value: Новый}
+      expect:
+        ok: true
+        facts: [RowSet]
+    - call: json_read_queue
+      with: {table: videos/очередь}
+      expect:
+        ok: true
+        data: {count: 1}
+        data_contains: {row_ids: VID_1}
+    - call: json_execute_queue
+      with: {table: videos/очередь}
+      expect:
+        ok: true
+        data: {applied: 1}
+    - call: json_read_queue
+      with: {table: videos/очередь}
+      expect:
+        ok: true
+        data: {count: 0}
+        data_absent: {row_ids: VID_1}
+    - call: json_read_queue
+      with: {table: videos/нет-такой}
+      expect:
+        ok: false
+        code: TABLE_NOT_FOUND
+
 - scenario: tbl_write_is_queued_then_visible
   why: клиент должен знать, что запись отложена; «успех» без применения очереди читается как «сохранено»
   given:

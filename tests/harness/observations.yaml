@@ -112,6 +112,23 @@ ColumnDeleted:
   present: {ok: false, code: COLUMN_NOT_FOUND}
   absent: {ok: true, facts: [DependentsFound]}
 
+# Ячейка не «существует» — она содержит или не содержит; предмет спрашивается СОДЕРЖИМЫМ, и
+# ожидаемый текст берётся из самого вызова: одно правило на все формулы, а не текст на каждую.
+FormulaInserted:
+  identity: args.cell
+  observe: excel_read_range
+  with: {path: "${args.path}", sheet: "${args.sheet}", cell_range: "${identity}:${identity}"}
+  present: {ok: true, data_contains: {values: "${args.formula}"}}
+  absent: {ok: true, data_absent: {values: "${args.formula}"}}
+
+# Один вызов родил СПИСОК файлов: `*` разворачивает его, и каждый спрашивается своим предметом.
+MediaGenerated:
+  identity: data.files.*
+  observe: fs_read_file
+  with: {path: "${identity}"}
+  present: {ok: true, facts: [FileRead]}
+  absent: {ok: false, code: FILE_NOT_FOUND}
+
 # ── Структура, память, модели, рендер ────────────────────────────────────────────────────────
 NodeCreated:
   identity: data.path
@@ -128,6 +145,13 @@ MemoryWritten:
   with: {path: "${identity}"}
   present: {ok: true, data: {exists: true}}
   absent: {ok: true, data: {exists: false}}
+
+EntityMigrated:
+  identity: data.new_path
+  observe: fs_get_directory_tree
+  with: {path: "${identity}"}
+  present: {ok: true, facts: [DirectoryTree]}
+  absent: {ok: false, code: PATH_NOT_FOUND}
 
 ModelInstallStarted:
   identity: data.install_id
@@ -178,16 +202,41 @@ FormulasValidated: {observes: нечего, why: проверка формул �
 IntegrityIssue:  {observes: нечего, why: замечание о целостности — вывод проверки, а не предмет}
 EntityOrphaned:  {observes: нечего, why: сирота — вывод проверки о существующем, а не новый предмет}
 
-# ── Наблюдать нечем: правка уходит в ОЧЕРЕДЬ, а очередь никто не спрашивает ──────────────────
-# Строка попадает в таблицу только после `json_execute_queue`, поэтому сразу после факта её ещё
-# нет. Инструмента «прочитай очередь» в описи нет вовсе — вот адрес работы, а не отговорка.
-RowAppended:   {observes: нечего, why: строка лежит в очереди до json_execute_queue, а очередь не читается инструментом}
-RowSet:        {observes: нечего, why: правка лежит в очереди до json_execute_queue, а очередь не читается инструментом}
-RowUpdated:    {observes: нечего, why: правка лежит в очереди до json_execute_queue, а очередь не читается инструментом}
-RowDeleted:    {observes: нечего, why: удаление лежит в очереди до json_execute_queue, а очередь не читается инструментом}
-QueuePushed:   {observes: нечего, why: предмет факта — сама очередь, а прочитать её нечем}
-QueueCleared:  {observes: нечего, why: предмет факта — сама очередь, а прочитать её нечем}
+# ── Очередь: правка ЖДЁТ применения, и теперь её видно ───────────────────────────────────────
+# Строка попадает в таблицу только после `json_execute_queue`, поэтому спрашивать таблицу сразу
+# после факта бессмысленно — спрашивается очередь. Предмет — строка, которой правка коснётся.
+RowAppended:
+  identity: data.row_id
+  observe: json_read_queue
+  with: {table: "${args.table}"}
+  present: {ok: true, data_contains: {row_ids: "${identity}"}}
+  absent: {ok: true, data_absent: {row_ids: "${identity}"}}
+
+RowSet:
+  identity: args.row_id
+  observe: json_read_queue
+  with: {table: "${args.table}"}
+  present: {ok: true, data_contains: {row_ids: "${identity}"}}
+  absent: {ok: true, data_absent: {row_ids: "${identity}"}}
+
+RowUpdated:
+  identity: args.row_id
+  observe: json_read_queue
+  with: {table: "${args.table}"}
+  present: {ok: true, data_contains: {row_ids: "${identity}"}}
+  absent: {ok: true, data_absent: {row_ids: "${identity}"}}
+
+RowDeleted:
+  identity: args.row_id
+  observe: json_read_queue
+  with: {table: "${args.table}"}
+  present: {ok: true, data_contains: {row_ids: "${identity}"}}
+  absent: {ok: true, data_absent: {row_ids: "${identity}"}}
+
+QueuePushed:   {observes: нечего, why: в очередь кладут и операции без строки (append), у которых имени предмета ещё нет}
+QueueCleared:  {observes: нечего, why: предмет факта — ОПУСТЕВШАЯ очередь, а пустота у всех таблиц одинакова}
 QueueExecuted: {observes: нечего, why: применение меняет СОДЕРЖИМОЕ существующей таблицы, а не создаёт предмет}
+QueueRead:     {observes: нечего, why: чтение очереди ничего не создаёт}
 
 # ── Наблюдать нечем: факт приходит ПАЧКОЙ внутри чужого вызова ───────────────────────────────
 # У записи один адрес имени на вызов, а такой факт повторяется в нём по разу на каждый предмет:
@@ -205,17 +254,14 @@ EntityRegistered:    {observes: нечего, why: реестр связей с�
 EntityLinked:        {observes: нечего, why: связь между сущностями отдельным предметом не спрашивается}
 EntityAdopted:       {observes: нечего, why: усыновление меняет связь, а не создаёт предмет}
 EntityAnnotated:     {observes: нечего, why: пометка меняет содержимое записи реестра}
-EntityMigrated:      {observes: нечего, why: перенос меняет путь существующей сущности}
 MemoryIndexed:       {observes: нечего, why: индексация проставляет пометки в существующем файле}
 
 # ── Наблюдать нечем: предмет факта — СОДЕРЖИМОЕ, а не существование ──────────────────────────
 # Присутствие словарь харнесса выражает (`data`), отсутствие — нет: отрицания в ожидании не бывает.
-ColumnMoved:           {observes: нечего, why: меняет порядок столбцов — предмет содержимое, а отрицание в ожидании не выражается}
-FormulaInserted:       {observes: нечего, why: меняет содержимое ячейки — отрицание в ожидании не выражается}
+ColumnMoved:           {observes: нечего, why: меняет ПОРЯДОК столбцов, а порядок ни один инструмент описи не отдаёт}
 FormattingApplied:     {observes: нечего, why: меняет оформление — инструмента, спрашивающего его, в описи нет}
 ValidationSet:         {observes: нечего, why: меняет правило столбца — инструмента, спрашивающего его, в описи нет}
 SheetsReordered:       {observes: нечего, why: меняет порядок листов — предмет содержимое, а не существование}
-MediaGenerated:        {observes: нечего, why: создаёт СПИСОК файлов — у наблюдения один предмет на вызов}
 UniquenessComputed:    {observes: нечего, why: счёт по существующим данным — предмета не создаёт}
 UniquenessIncomplete:  {observes: нечего, why: сообщение о неполноте входов — предмета за ним нет}
 UniquenessAlert:       {observes: нечего, why: сигнал в петлю решений — предмета за ним нет}

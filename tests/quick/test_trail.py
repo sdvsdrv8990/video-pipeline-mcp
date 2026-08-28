@@ -180,7 +180,7 @@ ok([a["name"] for a in found] == ["реш/альфа.txt", "реш/бета.txt"
    "предмет наблюдения берётся по объявленному адресу, а не угадывается из имени инструмента")
 ok(not artefacts([{"tool": "fs_read_file", "args": {}, "ok": False, "code": "FILE_NOT_FOUND"}], OBS),
    "отказ предметом не становится: наблюдать нечего")
-ok(not artefacts([{"tool": "media_generate", "args": {}, "ok": True, "facts": ["MediaGenerated"]}], OBS),
+ok(not artefacts([{"tool": "media_generate", "args": {}, "ok": True, "facts": ["ФактБезОбъявления"]}], OBS),
    "необъявленный факт пропускается — карту на нём не построишь")
 
 lattice = _yaml.safe_load(promote(pair, "m_проба", "почему"))
@@ -210,9 +210,29 @@ _lat = _yaml.safe_load(promote([_sheet], "m_лист", "почему"))
 ok(_lat["states"]["s_0"]["check"][0]["with"] == {"path": "кн.xlsx", "sheet": "Л"},
    "в карту уехали ОБА значения — составное имя доехало до предиката")
 
+print("\n== предмет-содержимое и пачка предметов ==")
+_set = {"tool": "table_set", "args": {"table": "видео/в1", "sheet": "META", "row_id": "VID_1"},
+        "data": {"queued": {"action": "set"}}, "ok": True, "facts": ["RowSet"]}
+_q = _yaml.safe_load(promote([_set], "m_очередь", "почему"))
+_step = _q["states"]["s_0"]["check"][0]
+ok(_step["call"] == "json_read_queue" and _step["with"] == {"table": "видео/в1"},
+   "правка спрашивается у ОЧЕРЕДИ: в таблице её ещё нет, и спрашивать таблицу бессмысленно")
+ok(_step["expect"]["data_contains"]["row_ids"] == "VID_1",
+   "имя предмета подставлено в ОЖИДАНИЕ — иначе одно правило проверяло бы не ту строку")
+ok(_yaml.safe_load(promote([_set], "m_о2", "п"))["states"]["s_empty"]["check"][0]["expect"]["data_absent"]["row_ids"] == "VID_1",
+   "состояние ДО правки выражено отрицанием: без него «ещё нет» неотличимо от «ответ пуст»")
+
+_media = {"tool": "media_generate", "args": {"table": "видео/в1"},
+          "data": {"files": ["готово/а.png", "готово/б.png"]}, "ok": True, "facts": ["MediaGenerated"]}
+_items = artefacts([_media], OBS)
+ok([i["name"] for i in _items] == ["готово/а.png", "готово/б.png"],
+   "один вызов родил ДВА предмета: `*` разворачивает список, а не берёт первый элемент")
+ok(len(_yaml.safe_load(promote([_media], "m_медиа", "п"))["states"]) == 4,
+   "два независимых предмета из одного вызова дают решётку, а не линию")
+
 print("\n== объявленная ненаблюдаемость ==")
-ok(not artefacts([{"tool": "table_append", "args": {"table": "т", "sheet": "л"}, "ok": True,
-                   "facts": ["RowAppended"]}], OBS),
+ok(not artefacts([{"tool": "json_push_to_queue", "args": {"table": "т"}, "ok": True,
+                   "facts": ["QueuePushed"]}], OBS),
    "факт, объявленный ненаблюдаемым, предметом карты не становится — но и забытым не считается")
 
 chain = [_made("дом/файл.txt"),
@@ -225,10 +245,10 @@ ok(sorted(linear["states"]) == ["s_0", "s_0_1", "s_empty"],
    "зависимые вызовы не порождают невозможный порядок: решётка сужается до цепи")
 
 try:
-    promote([{"tool": "media_generate", "args": {}, "ok": True, "facts": ["MediaGenerated"]}], "m", "п")
+    promote([{"tool": "media_generate", "args": {}, "ok": True, "facts": ["ФактБезОбъявления"]}], "m", "п")
     ok(False, "без наблюдаемого предмета карта строиться не должна")
 except SystemExit as exc:
-    ok("MediaGenerated" in str(exc),
+    ok("ФактБезОбъявления" in str(exc),
        "недостающее наблюдение называется ПО ИМЕНИ — иначе неполная карта сойдёт за полную")
 
 try:

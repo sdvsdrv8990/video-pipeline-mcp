@@ -179,9 +179,27 @@ def minimize(steps: list[dict], name: str, why: str) -> list[dict]:
 
 
 def _dig(entry: dict, path: str):
-    """Значение по объявленному адресу вида `args.path`. Нет — None, и это скажут вслух."""
-    where, _, key = path.partition(".")
-    return (entry.get(where) or {}).get(key)
+    """Значение по объявленному адресу вида `args.path`. Нет — None, и это скажут вслух.
+
+    Сегмент `*` разворачивает список: `data.files.*` и `data.created.*.path` дают ПО ЗНАЧЕНИЮ НА
+    ЭЛЕМЕНТ — один вызов рождает несколько предметов, и каждый спрашивается отдельно.
+    """
+    node: object = entry
+    for part in path.split("."):
+        if part == "*":
+            if not isinstance(node, list):
+                return None
+            return node
+        if isinstance(node, list):
+            return [(_step(item, part)) for item in node]
+        node = _step(node, part)
+        if node is None:
+            return None
+    return node
+
+
+def _step(node: object, key: str):
+    return node.get(key) if isinstance(node, dict) else None
 
 
 REF = re.compile(r"^\$\{(identity|args\.[\w.]+|data\.[\w.]+)\}$")
@@ -208,6 +226,14 @@ def _fill(value, item: dict):
     return got
 
 
+def _fill_deep(value, item: dict):
+    if isinstance(value, dict):
+        return {k: _fill_deep(v, item) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_fill_deep(v, item) for v in value]
+    return _fill(value, item)
+
+
 def artefacts(entries: list[dict], observations: dict) -> list[dict]:
     """Что запись создала: по одному наблюдаемому предмету на успешный вызов.
 
@@ -228,7 +254,10 @@ def artefacts(entries: list[dict], observations: dict) -> list[dict]:
             if name is None:
                 raise SystemExit(f"шаг {at + 1} ({entry['tool']}): по адресу {rule['identity']} "
                                  f"имени нет — наблюдать нечего, поправь объявление наблюдения")
-            out.append({"at": at, "fact": fact, "name": str(name), "rule": rule, "entry": entry})
+            # Список имён — это НЕСКОЛЬКО предметов из одного вызова, а не одно составное имя:
+            # пачка иначе выродилась бы в первый элемент, и остальные остались бы непроверенными.
+            for one in (name if isinstance(name, list) else [name]):
+                out.append({"at": at, "fact": fact, "name": str(one), "rule": rule, "entry": entry})
             break
     return out
 
@@ -255,9 +284,11 @@ def _check(items: list[dict], present: set[int]) -> list[dict]:
     steps = []
     for i, item in enumerate(items):
         rule = item["rule"]
-        args = {k: _fill(v, item) for k, v in (rule.get("with") or {}).items()}
+        args = _fill_deep(rule.get("with") or {}, item)
+        # Ожидание тоже подставляется: «в очереди стоит ЭТА строка» без имени предмета не
+        # выражается, а один текст ожидания на все предметы проверял бы не тот из них.
         steps.append({"call": rule["observe"], "with": args,
-                      "expect": dict(rule["present"] if i in present else rule["absent"])})
+                      "expect": _fill_deep(rule["present"] if i in present else rule["absent"], item)})
     return steps
 
 

@@ -25,6 +25,14 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             return ctx.err("TABLE_NOT_FOUND", f"Table not found: {table}")
         return ToolResult(status="success", data=snapshot, facts=[Fact(type="SnapshotRead", data={"table": table})])
 
+    async def json_read_queue(table: str) -> "ToolResult":
+        """Что стоит в очереди и ещё не применено."""
+        ok, res = ctx.safe(lambda: ctx.table_engine.read_queue(table))
+        if not ok:
+            return res
+        return ToolResult(status="success", data=res,
+                          facts=[Fact(type="QueueRead", data={"table": table, "count": res["count"]})])
+
     # ─── Категория 3: чтения (проекции) ───
 
     async def table_get_column(table: str, sheet: str, column: str) -> "ToolResult":
@@ -161,6 +169,9 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         ("json_push_to_queue", "Таблицы: очередь → добавить", "Положить пишущую операцию (set/update/append/delete) в write.json.",
          {"type": "object", "properties": {"table": TABLE, "action": {"type": "object", "description": "{action: set|update|append|delete, sheet, ...}"}}, "required": ["table", "action"]},
          json_push_to_queue, ANNOTATIONS_MODIFY),
+        ("json_read_queue", "Таблицы: очередь → посмотреть", "Показать неприменённые операции очереди и строки, которых они коснутся.",
+         {"type": "object", "properties": {"table": TABLE}, "required": ["table"]},
+         json_read_queue, ANNOTATIONS_READONLY),
         ("json_execute_queue", "Таблицы: очередь → применить", "Применить очередь к read.json (RMW). Синк в .xlsx отложен.",
          {"type": "object", "properties": {"table": TABLE}, "required": ["table"]},
          json_execute_queue, ANNOTATIONS_MODIFY),

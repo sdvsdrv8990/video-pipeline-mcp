@@ -30,7 +30,7 @@ SCENARIO_KEYS = {"scenario", "why", "given", "when", "then"}
 GIVEN_KEYS = {"files"}
 STEP_KEYS = {"call", "python", "rpc", "run", "headers", "token", "repeat", "with", "as", "expect"}
 EXPECT_KEYS = {"ok", "code", "class", "recovery", "facts", "data", "data_contains",
-               "console", "console_absent", "open", "http", "exit"}
+               "data_absent", "console", "console_absent", "open", "http", "exit"}
 
 _REF = re.compile(r"\$\{([A-Za-z_][\w]*)\.([\w.]+)\}")
 # Предел команде: сторож дерева считается секундами, а зависший шаг молчит так же, как пройденный.
@@ -87,6 +87,7 @@ class Expectation:
     facts: list[str] = field(default_factory=list)
     data: dict[str, Any] = field(default_factory=dict)
     data_contains: dict[str, str] = field(default_factory=dict)
+    data_absent: dict[str, str] = field(default_factory=dict)
     console: str = ""
     console_absent: str = ""
     open: str = ""                         # адрес ОТКРЫТОЙ находки: ждём желаемого, сегодня его нет
@@ -163,6 +164,7 @@ def _expect(raw: dict, vocab: Vocabulary, where: str, command: bool = False) -> 
         facts=list(raw.get("facts") or []),
         data=dict(raw.get("data") or {}),
         data_contains=dict(raw.get("data_contains") or {}),
+        data_absent=dict(raw.get("data_absent") or {}),
         console=str(raw.get("console") or ""),
         console_absent=str(raw.get("console_absent") or ""),
         open=str(raw.get("open") or ""),
@@ -250,6 +252,12 @@ class Check:
     label: str
     ok: bool
     detail: str = ""
+
+
+def _as_text(found: Any) -> str:
+    """Текст ответа по адресу. У структуры «содержит» значит «встречается в её записи»: очередь и
+    список приходят списком словарей, и требовать от них строки означало бы не спрашивать вовсе."""
+    return found if isinstance(found, str) else json.dumps(found, ensure_ascii=False, sort_keys=True)
 
 
 def dig(data: Any, path: str) -> Any:
@@ -590,8 +598,15 @@ class Runner:
         for path, part in exp.data_contains.items():
             found = dig(got["data"], path)
             out.append(Check(scenario.id, f"{tag} → {path} содержит {part!r}",
-                             isinstance(found, str) and part in found,
+                             part in _as_text(found),
                              f"пришло {found!r}{_advice(got['data'], path, found)}"))
+        for path, part in exp.data_absent.items():
+            # Отрицание — не роскошь: «предмета ещё нет» иначе неотличимо от «ответ пуст», и
+            # состояние ДО появления предмета выражать нечем, а без него нет и предиката.
+            found = dig(got["data"], path)
+            out.append(Check(scenario.id, f"{tag} → в {path} НЕТ {part!r}",
+                             part not in _as_text(found),
+                             f"пришло {found!r}"))
         if exp.console:
             out.append(Check(scenario.id, f"{tag} → консоль /{exp.console}/",
                              re.search(exp.console, console, re.I | re.M) is not None,

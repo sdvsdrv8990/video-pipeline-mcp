@@ -136,6 +136,20 @@ class StateManager:
 
         return True
 
+    def read_queue(self, entity_path: str) -> list[dict]:
+        """Очередь БЕЗ изъятия: `execute_queue` забирает и очищает, а посмотреть было нечем.
+
+        Пустой список и на отсутствующий файл — для читателя «пусто» и «файла нет» одно и то же;
+        отсутствие самой таблицы отвечает уровнем выше своим кодом.
+        """
+        safe_resolve(entity_path, self.workspace_path)
+        queue_file = self.workspace_path / entity_path / "write.json"
+        with self._lock:
+            if not queue_file.exists():
+                return []
+            with open(queue_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+
     def execute_queue(self, entity_path: str) -> list[dict]:
         """Выполнение очереди операций.
 

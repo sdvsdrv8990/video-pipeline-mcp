@@ -32,7 +32,7 @@ KNOWN_FACT_TYPES = {
     # Таблицы: данные (Категория 3)
     "ColumnRead", "RowRead", "RowSet", "RowUpdated", "RowsFound", "RowAppended", "RowDeleted",
     "DependentsFound",
-    "QueuePushed", "QueueExecuted", "QueueCleared",
+    "QueuePushed", "QueueExecuted", "QueueCleared", "QueueRead",
     # Таблицы: структура (Категория 2, excel_*)
     "WorkbookCreated", "SheetAdded", "SheetRenamed", "SheetDeleted",
     "SheetsReordered", "ColumnAdded", "ColumnDeleted", "ColumnMoved",
