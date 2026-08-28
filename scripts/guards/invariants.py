@@ -37,6 +37,9 @@ FACT_EMITTER_BASELINE = Path(__file__).with_name("fact_emitters_baseline.txt")
 FACT_EXEMPT_BASELINE = Path(__file__).with_name("fact_exempt_baseline.txt")
 # Две ветки — это выбор, три и больше по одному значению — уже таблица.
 DISPATCH_LIMIT = 3
+# Диспетчеризацию не отменяет ни тип значения, ни имя вместо литерала: `if code == 404` и
+# `if kind == SET` добавляют случай правкой КОДА ровно так же, как сравнение со строкой.
+DISPATCH_VALUE = (ast.Constant, ast.Name, ast.Attribute)
 
 # Пути НЕ зашиты: корень приходит параметром, иначе сторожа нельзя проверить, не насорив в
 # репозитории, — а проверка, требующая мусора, делается редко.
@@ -503,8 +506,7 @@ def _chain(node: ast.If) -> list[ast.Compare]:
         if not (isinstance(current.test, ast.Compare) and len(current.test.ops) == 1
                 and isinstance(current.test.ops[0], ast.Eq)
                 and len(current.test.comparators) == 1
-                and isinstance(current.test.comparators[0], ast.Constant)
-                and isinstance(current.test.comparators[0].value, str)):
+                and isinstance(current.test.comparators[0], DISPATCH_VALUE)):
             break
         out.append(current.test)
         if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
@@ -539,7 +541,7 @@ def dispatch_by_value(root: Path = ROOT) -> list[str]:
                 continue
             for extra in ast.walk(node):
                 seen.add(id(extra))
-            values = [c.comparators[0].value for c in chain]
+            values = [ast.unparse(c.comparators[0]) for c in chain]
             notes.append(f"{source.relative_to(root)}:{node.lineno} — ветвление по `{subject}` на "
                          f"{len(chain)} значений {values}: механизм из объявления, политика кодом")
     return notes
@@ -920,7 +922,12 @@ def _python_sources(root: Path) -> list[Path]:
 
 
 def _named_literals(tree: ast.AST) -> list[tuple[str, ast.AST, int]]:
-    """Что код связывает с ИМЕНЕМ: присваивание, дефолт параметра, именованный аргумент."""
+    """Что код связывает с ИМЕНЕМ: присваивание, дефолт параметра, именованный аргумент, `.get`.
+
+    У `cfg.get("ключ", дефолт)` имя приходит СТРОКОЙ, а не идентификатором, поэтому три первые
+    формы её не видят; при этом она опаснее прочих — пропадёт ключ в декларации, и код молча
+    подставит свой дефолт вместо отказа.
+    """
     out: list[tuple[str, ast.AST, int]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
@@ -940,6 +947,10 @@ def _named_literals(tree: ast.AST) -> list[tuple[str, ast.AST, int]]:
                     out.append((arg.arg, default, default.lineno))
         elif isinstance(node, ast.keyword) and node.arg:
             out.append((node.arg, node.value, node.value.lineno))
+        elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+              and node.func.attr == "get" and len(node.args) == 2
+              and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)):
+            out.append((node.args[0].value, node.args[1], node.lineno))
     return out
 
 
@@ -977,10 +988,14 @@ def mirrored_declaration(root: Path = ROOT) -> list[str]:
             continue
         for name, node, line in _named_literals(tree):
             bare = name.lower().strip("_")
-            fallback = any(bare.startswith(pre) for pre in ("default_", "fallback_"))
-            for prefix in ("default_", "fallback_"):
-                if bare.startswith(prefix):
-                    bare = bare[len(prefix):]
+            # Приставка снимается ТОЛЬКО когда точного имени нет: `default_unit` бывает и своим
+            # ключом декларации, и запасным значением для ключа `unit` — сперва читаем буквально.
+            fallback = False
+            if bare not in singular:
+                for prefix in ("default_", "fallback_"):
+                    if bare.startswith(prefix):
+                        bare, fallback = bare[len(prefix):], True
+                        break
             if bare not in singular:
                 continue
             # `frozenset({...})` — перечень, а не вызов: literal_eval его не берёт, и запасной
@@ -1006,19 +1021,29 @@ def mirrored_declaration(root: Path = ROOT) -> list[str]:
 
 # Имя короче совпадает с чужим по случайности — тот же порог, что у копий объявления.
 KNOB_NAME = 6
-QUOTED_NAME = re.compile(r"""["']([A-Za-z_][A-Za-z_0-9]*)["']""")
-ATTR_NAME = re.compile(r"\.([A-Za-z_][A-Za-z_0-9]*)\b")
 # Ключи схемы адресуются библиотекой целиком: `properties.color.pattern` никто по имени не грузит.
 SCHEMA_SECTION = ("properties", "params")
 KNOB_READ = 0.5
 
 
 def _code_names(root: Path) -> set[str]:
-    """Имена, которые код НАЗЫВАЕТ: строкой в кавычках либо обращением к полю."""
+    """Имена, которые код НАЗЫВАЕТ: строкой-значением либо обращением к полю.
+
+    Считается по ДЕРЕВУ, а не по тексту: регулярка засчитывала читателем упоминание в комментарии,
+    в докстринге и путь импорта (`from core.excel.excel_core import` — «обращение к полю»), а на
+    `"couldn't start tunnel"` апостроф работал закрывающей кавычкой. Комментариев в дереве нет.
+    """
     names: set[str] = set()
     for source in _python_sources(root):
-        text = source.read_text(encoding="utf-8", errors="replace")
-        names |= set(QUOTED_NAME.findall(text)) | set(ATTR_NAME.findall(text))
+        try:
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.isidentifier():
+                names.add(node.value)
+            elif isinstance(node, ast.Attribute):
+                names.add(node.attr)
     return names
 
 

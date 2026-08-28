@@ -241,6 +241,21 @@ ok(not dispatch_by_value(make({"core/z.py": TWO})),
    "две ветки — выбор, а не таблица: молчим")
 ok(not dispatch_by_value(make({"core/z.py": MIXED})),
    "ветки по РАЗНЫМ именам — не диспетчеризация, молчим")
+THREE_INTS = ('def f(code):\n'
+              '    if code == 200:\n        return 1\n'
+              '    elif code == 404:\n        return 2\n'
+              '    elif code == 500:\n        return 3\n'
+              '    return 0\n')
+THREE_CONSTS = ('SET, GET, DEL = "set", "get", "del"\n'
+                'def f(kind):\n'
+                '    if kind == SET:\n        return 1\n'
+                '    elif kind == GET:\n        return 2\n'
+                '    elif kind == DEL:\n        return 3\n'
+                '    return 0\n')
+ok(len(dispatch_by_value(make({"core/z.py": THREE_INTS}))) == 1,
+   "три ветки по числам — та же таблица: тип значения диспетчеризацию не отменяет")
+ok(len(dispatch_by_value(make({"core/z.py": THREE_CONSTS}))) == 1,
+   "именованная константа вместо литерала — случай всё равно добавляется правкой КОДА")
 
 print("\n== объявление сценария против описи и реестра ==")
 REGISTRY_TWO = ("ALIVE_CODE:\n  class: ai_recoverable\n"
@@ -356,6 +371,15 @@ ok(not mirrored_declaration(make({"config/f.yaml": DECL_LIST,
 ok(len(mirrored_declaration(make({"config/f.yaml": DECL_LIST,
                                   "core/z.py": 'DEFAULT_BAD_PATTERNS = frozenset({"ты теперь", "забудь всё"})\n'}))) == 1,
    "запасной перечень СОВПАЛ — это копия, и она разойдётся при следующей правке декларации")
+ok(len(mirrored_declaration(make({"config/f.yaml": DECL_ONE,
+                                  "core/z.py": 'x = cfg.get("ban_duration_hours", 24)\n'}))) == 1,
+   "`.get(ключ, дефолт)` — копия, у которой имя приходит СТРОКОЙ: три прежние формы её не видели")
+ok(not mirrored_declaration(make({"config/f.yaml": DECL_ONE,
+                                  "core/z.py": 'x = cfg.get("ban_duration_hours", 48)\n'})),
+   "дефолт `.get` разошёлся с объявлением и не помечен запасным — своё решение, не копия")
+ok(len(mirrored_declaration(make({"config/f.yaml": "usage:\n  default_unit: call\n",
+                                  "core/z.py": 'x = cfg.get("default_unit", "call")\n'}))) == 1,
+   "`default_unit` объявлено САМО — имя читается буквально, а не как запасное для ключа `unit`")
 
 
 print("\n== сторож мимо каталога зон ==")
@@ -527,6 +551,15 @@ ok(not knob_without_reader(make({"config/u.yaml": "sec:\n  record_sheet: D\n  sc
    "короткое имя совпадает по случайности — порог длины держит сторожа точным")
 ok(not knob_without_reader(make({"core/z.py": READS_TWO})),
    "деклараций нет вовсе — ручек не бывает, а не «все мёртвые»")
+ok(len(knob_without_reader(make({"config/u.yaml": RECORD,
+                                 "core/z.py": READS_TWO + '# раньше читали cfg["memory_file"], убрали\n'}))) == 1,
+   "имя в комментарии читателем не считается: комментария в дереве нет")
+ok(len(knob_without_reader(make({"config/u.yaml": RECORD, "core/z.py": READS_TWO
+                                 + 'def q():\n    """Ключ "memory_file" когда-то грузился."""\n'}))) == 1,
+   "имя внутри докстринга — проза: значением узла стоит весь текст, а не ключ")
+ok(not knob_without_reader(make({"config/u.yaml": RECORD,
+                                 "core/z.py": READS_TWO + 'c = obj.memory_file\n'})),
+   "обращение к полю — настоящий читатель наравне со строкой-ключом")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
