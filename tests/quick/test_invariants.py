@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT))
 from invariants import (  # noqa: E402
     codes_outside_registry, codes_without_emitter, dead_recovery_in_engine,
     declared_but_unscripted, enum_without_values,
+    facts_outside_registry, facts_without_emitter, facts_without_observer,
     resources_off_inventory, scenario_calls_unknown_tool, skips_without_ci,
     ci_jobs_off_docs, dispatch_by_value, guards_off_catalog, mirrored_declaration,
     module_without_reader,
@@ -410,6 +411,47 @@ ok(len(module_without_reader(make({"core/lonely.py": "x = 1\n",
    "чужая строка в конфиге читателем не становится")
 ok(not module_without_reader(make({"docs/x.md": "text\n"})),
    "ни core/, ни tools/ в дереве нет — событие не наше, молчим")
+
+print("\n== факт против реестра типов, наблюдателя и эмиттера ==")
+FACT_REG = 'KNOWN_FACT_TYPES = {\n    "FileCreated", "FileWritten", "FolderCreated",\n}\n'
+EMIT = 'from core.contracts import Fact\nFact(type="FileCreated", data={})\n'
+OBSERVE = "FileCreated:\n  identity: args.path\n  observe: fs_read_file\n"
+
+ok(len(facts_outside_registry(make({"core/contracts/fact.py": FACT_REG,
+                                    "tools/x/__init__.py": 'from core.contracts import Fact\n'
+                                                           'Fact(type="Unlisted", data={})\n'}))) == 1,
+   "факт шлётся, а в реестре типов его нет — предупреждение модели слышно только в рантайме")
+ok(not facts_outside_registry(make({"core/contracts/fact.py": FACT_REG, "tools/x/__init__.py": EMIT})),
+   "факт из реестра не обвиняется")
+ok(not facts_outside_registry(make({
+       "core/contracts/fact.py": FACT_REG,
+       "tools/x/__init__.py": 'from core.contracts import Fact\n'
+                              'Fact(type="FolderCreated" if c["kind"] == "folder" else "FileCreated",'
+                              ' data={})\n'})),
+   "у тернарника читаются ВЕТВИ, а не условие: иначе `kind`/`folder` попали бы в факты")
+ok(not facts_outside_registry(make({"tools/x/__init__.py": EMIT})),
+   "реестра типов нет — сверять не с чем, молчим")
+
+ok(len(facts_without_observer(make({"tools/x/__init__.py": EMIT}))) == 1,
+   "факт объявляет сделанное, а спросить реальность нечем — наблюдателя нет")
+ok(not facts_without_observer(make({"tools/x/__init__.py": EMIT,
+                                    "tests/harness/observations.yaml": OBSERVE})),
+   "строка наблюдения есть — долг закрыт объявлением, без нового скрипта")
+ok(not facts_without_observer(make({"core/contracts/fact.py": FACT_REG})),
+   "не шлётся ни один факт — событие не наше")
+
+ok(len(facts_without_emitter(make({"core/contracts/fact.py": FACT_REG,
+                                   "tools/x/__init__.py": EMIT}))) == 2,
+   "два типа обещаны реестром, а слать их некому")
+ok(not facts_without_emitter(make({
+       "core/contracts/fact.py": 'KNOWN_FACT_TYPES = {"FileWritten"}\n',
+       "tools/x/__init__.py": '_created_result(path, size, False, "FileWritten")\n'})),
+   "тип, уехавший в вызов параметром, шлётся — обвинять его значило бы краснеть на живом пути")
+ok(len(facts_without_emitter(make({"core/contracts/fact.py": 'KNOWN_FACT_TYPES = {"FileCreated"}\n',
+                                   "tools/x/__init__.py": EMIT,
+                                   "tests/harness/observations.yaml": OBSERVE
+                                       + "FileAppended:\n  identity: args.path\n"}))) == 1,
+   "наблюдатель построен на факт, которого сервер не шлёт — карта на пустоте")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

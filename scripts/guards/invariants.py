@@ -32,6 +32,8 @@ UNSCRIPTED_BASELINE = Path(__file__).with_name("unscripted_baseline.txt")
 DEAD_RECOVERY_BASELINE = Path(__file__).with_name("dead_recovery_baseline.txt")
 ORPHAN_BASELINE = Path(__file__).with_name("orphan_codes_baseline.txt")
 MIRROR_BASELINE = Path(__file__).with_name("mirror_baseline.txt")
+FACT_OBSERVER_BASELINE = Path(__file__).with_name("fact_observers_baseline.txt")
+FACT_EMITTER_BASELINE = Path(__file__).with_name("fact_emitters_baseline.txt")
 # Две ветки — это выбор, три и больше по одному значению — уже таблица.
 DISPATCH_LIMIT = 3
 
@@ -52,6 +54,8 @@ GUARDS_CATALOG = ("scripts", "guards", "CATALOG.md")
 GATE = ("tests", "test_suites.py")
 SCENARIOS = ("tests", "scenarios")
 ROUTES = ("tests", "routes")
+FACT_TYPES = ("core", "contracts", "fact.py")
+OBSERVATIONS = ("tests", "harness", "observations.yaml")
 
 
 def _at(root: Path, parts: tuple[str, ...]) -> Path:
@@ -639,6 +643,139 @@ def declared_but_unscripted(root: Path = ROOT) -> list[str]:
     return notes
 
 
+
+# Факт — третья вещь, которую сервер объявляет клиенту наряду с кодом отказа и инструментом
+# (он доезжает в `structuredContent`), и концов у него три: реестр типов, место эмиссии,
+# наблюдатель харнесса. Каждый разрыв между ними молчит по-своему.
+FACT_NAME = re.compile(r"""["']([A-Z][A-Za-z0-9]{3,})["']""")
+
+
+def _fact_sources(root: Path) -> list[Path]:
+    sources = [p for p in sorted(list((root / "core").rglob("*.py")) + list((root / "tools").rglob("*.py")))
+               if "__pycache__" not in str(p) and p != _at(root, FACT_TYPES)]
+    if (root / "server.py").exists():
+        sources.append(root / "server.py")
+    return sources
+
+
+def _literal_branches(node: ast.AST) -> set[str]:
+    """Только ВЕТВИ выражения, не его условие: `"A" if c["kind"] == "folder" else "B"` даёт две
+    строки, а не четыре — обход целиком тащил бы в реестр фактов сравниваемые литералы."""
+    if isinstance(node, ast.Constant):
+        return {node.value} if isinstance(node.value, str) else set()
+    if isinstance(node, ast.IfExp):
+        return _literal_branches(node.body) | _literal_branches(node.orelse)
+    return set()
+
+
+def _facts_emitted(root: Path) -> set[str]:
+    """Типы, которые действительно строятся вызовом `Fact(type=...)`.
+
+    Разбором, а не строкой в тексте: обвинение здесь адресное, и занижение безопаснее завышения.
+    Тип, собранный из переменной, отсюда не виден — обратную сторону считает
+    `_fact_names_mentioned`, где занижение как раз опасно.
+    """
+    found: set[str] = set()
+    for source in _fact_sources(root):
+        try:
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "Fact"):
+                continue
+            for kw in node.keywords:
+                if kw.arg == "type":
+                    found |= _literal_branches(kw.value)
+    return found
+
+
+def _fact_names_mentioned(root: Path) -> set[str]:
+    """Любое имя в кавычках: `_created_result(..., "FileWritten")` — тоже эмиссия, через параметр.
+
+    Тот же выбор, что у `_emitted_codes`: обвинять «слать некому» по одной форме вызова значило бы
+    краснеть на живых путях, а ложное обвинение выключают быстрее, чем его отсутствие.
+    """
+    found: set[str] = set()
+    for source in _fact_sources(root):
+        found |= set(FACT_NAME.findall(source.read_text(encoding="utf-8")))
+    return found
+
+
+def _facts_declared(root: Path) -> set[str]:
+    """Реестр типов читается разбором: импорт втащил бы pydantic и половину сервера в сторожа."""
+    path = _at(root, FACT_TYPES)
+    if not path.exists():
+        return set()
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign) and isinstance(node.value, (ast.Set, ast.Tuple, ast.List))
+                and any(isinstance(t, ast.Name) and t.id == "KNOWN_FACT_TYPES" for t in node.targets)):
+            return {e.value for e in node.value.elts
+                    if isinstance(e, ast.Constant) and isinstance(e.value, str)}
+    return set()
+
+
+def _facts_observed(root: Path) -> set[str]:
+    path = _at(root, OBSERVATIONS)
+    if not path.exists():
+        return set()
+    declared = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return set(declared) if isinstance(declared, dict) else set()
+
+
+def facts_outside_registry(root: Path = ROOT) -> list[str]:
+    """Факт эмитится, а в реестре типов его нет.
+
+    Единственный читатель реестра — `warnings.warn` внутри самой модели: он срабатывает в чужом
+    процессе и его никто не слышит. Тот же класс, что `codes_outside_registry`: перечень,
+    объявленный клиенту, обязан совпадать с тем, что сервер действительно шлёт.
+    """
+    declared = _facts_declared(root)
+    if not declared:
+        return []
+    return [f"факт `{name}` эмитится, а в KNOWN_FACT_TYPES его нет: предупреждение модели уходит "
+            "в рантайм, где его никто не слышит"
+            for name in sorted(_facts_emitted(root) - declared)]
+
+
+def facts_without_observer(root: Path = ROOT) -> list[str]:
+    """Факт говорит «сделано», а спросить об этом реальность нечем.
+
+    Наблюдение не выводится из факта — расхождение между ними и есть находка, ради которой
+    харнесс заведён. Без строки в `observations.yaml` воспроизводитель не построит карту на этот
+    факт, то есть покрытие останется вчерашним молча.
+    """
+    emitted = _facts_emitted(root)
+    if not emitted:
+        return []
+    return [f"факт `{name}` эмитится, а наблюдать его нечем — нет строки в {'/'.join(OBSERVATIONS)}"
+            for name in sorted(emitted - _facts_observed(root))]
+
+
+def facts_without_emitter(root: Path = ROOT) -> list[str]:
+    """Тип объявлен реестром или наблюдателем, а слать его некому — обещание без держателя.
+
+    Две разные потери правды, поэтому и совет разный: в реестре это мёртвая строка контракта,
+    в наблюдателе — карта, построенная на факт, которого не бывает.
+    """
+    declared, observed = _facts_declared(root), _facts_observed(root)
+    if not declared and not observed:
+        return []
+    mentioned = _fact_names_mentioned(root)
+    if not mentioned:
+        return []
+    notes = [f"тип `{name}` объявлен в KNOWN_FACT_TYPES, но ни один путь сервера его не шлёт"
+             for name in sorted(declared - mentioned)]
+    notes += [f"наблюдатель на `{name}` объявлен в {'/'.join(OBSERVATIONS)}, а факта такого сервер "
+              "не шлёт" for name in sorted(observed - mentioned)]
+    return notes
+
+
 def _raise_sites(root: Path) -> list[tuple[str, str, str]]:
     """Места `ЗонаError(код, …, suggested_tool=…)`: (адрес, код, советуемый инструмент).
 
@@ -858,7 +995,8 @@ HARD = (("пропуск набора без покрытия в CI", skips_with
         ("сторож мимо каталога зон", guards_off_catalog),
         ("модуль без единого читателя", module_without_reader),
         ("число джоб гейта мимо ci.yml", ci_jobs_off_docs),
-        ("сценарий зовёт инструмент мимо описи", scenario_calls_unknown_tool))
+        ("сценарий зовёт инструмент мимо описи", scenario_calls_unknown_tool),
+        ("факт мимо реестра типов", facts_outside_registry))
 
 # Храповик: вниз можно, вверх нет. Потолок — в файле рядом, совет — как долг закрывается.
 RATCHETS = (
@@ -879,6 +1017,12 @@ RATCHETS = (
     ("объявлено сервером, но сценарием не покрыто", declared_but_unscripted, UNSCRIPTED_BASELINE,
      "Новое объявление без сценария. Покрытие пишется ОБЪЯВЛЕНИЕМ в tests/scenarios/*.yaml "
      "(`call` + `expect.code`), новый python-скрипт для этого не нужен — либо --bless с объяснением"),
+    ("факт эмитится, а наблюдать его нечем", facts_without_observer, FACT_OBSERVER_BASELINE,
+     "Факт объявляет сделанное, а проверить это снаружи нечем. Покрытие пишется ОБЪЯВЛЕНИЕМ в "
+     "tests/harness/observations.yaml (identity + observe + present/absent) — либо --bless"),
+    ("объявлено фактом, а слать некому", facts_without_emitter, FACT_EMITTER_BASELINE,
+     "Тип обещан контрактом (или наблюдателем), а сервер его не шлёт: либо путь, который шлёт, "
+     "либо снять строку из KNOWN_FACT_TYPES / tests/harness/observations.yaml"),
 )
 
 

@@ -13,7 +13,7 @@ from pydantic import BaseModel
 KNOWN_FACT_TYPES = {
     "DirectoryTree", "Echo", "FileCreated", "FileRead",
     "FileWritten", "FileMoved", "FileRenamed", "FileDeleted",
-    "FileSearch", "StructureCreated", "FileAppended",
+    "FileSearch", "StructureCreated", "FileAppended", "FragmentsSkipped",
     # Режимы создания: сервер объясняет выбор и отчитывается о нём
     "CreationSkipped", "TemplatesCustomized",
     # Уникальность (A7.2): число, неполнота входов и сигнал в петлю решений
