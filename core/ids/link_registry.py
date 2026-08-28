@@ -349,7 +349,6 @@ class LinkRegistry:
                                    "container": root, "entity_type": node_type})
                 _descend(ent, node_type)
         return {"issues": issues, "state": f"выполнен: узлов на диске {checked}"}
-        return ""
 
     def link(self, child_type: str = "", child_name: str = "", parent_type: str = "",
              parent_name: str = "", child_id: str = "", parent_id: str = "",

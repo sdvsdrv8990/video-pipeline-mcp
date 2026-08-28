@@ -29,7 +29,6 @@ class Transport:
         """
         self.engine = engine
         self.firewall = firewall
-        self._request_id = 0
 
     async def handle_request(self, raw_request: str) -> str | None:
         """Обработка JSON-RPC запроса.

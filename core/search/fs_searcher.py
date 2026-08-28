@@ -64,16 +64,6 @@ class FsSearchError(ContractError):
     """Ошибка поиска файловой системы."""
 
 
-# Маппинг расширений на типы файлов
-FILE_TYPE_MAP = {
-    ".xlsx": "table",
-    ".json": "data",
-    ".md": "memory",
-    ".yaml": "config",
-    ".tpl.yaml": "template",
-}
-
-
 class FsSearcher:
     """Умный поиск по файловой системе.
 
