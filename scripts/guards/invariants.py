@@ -1181,6 +1181,37 @@ def _zones_of(path: Path) -> set[str]:
 GUARD_HOME = re.compile(r"scripts/guards/([\w.]+\.py)")
 
 
+def zone_declared_twice(root: Path = ROOT) -> list[str]:
+    """Одну зону объявили два хозяина — правило «не плодить» перестало действовать.
+
+    Зона отвечает на «что покрывает ТОЛЬКО он», и второй претендент на ту же территорию и есть
+    размножение, ради запрета которого каталог заведён. Личность зоны — назван ли в ней сторож
+    (два дома у одного сторожа), а если не назван — сам текст зоны. Переписанный своими словами
+    дубль так не ловится, и это честный предел: близость формулировок машина не судит.
+    """
+    notes = []
+    for catalog in (_at(root, CATALOG), _at(root, GUARDS_CATALOG)):
+        if not catalog.exists():
+            continue
+        owners: dict[str, list[str]] = {}
+        for line in catalog.read_text(encoding="utf-8").splitlines():
+            cells = line.split("|")
+            if not line.startswith("|") or len(cells) < 3:
+                continue
+            name = cells[1].strip().strip("*").strip("`").strip()
+            if not (name.endswith(".py") or name.endswith("/")):
+                continue
+            named = sorted(set(GUARD_HOME.findall(cells[2])))
+            owners.setdefault(", ".join(named) if named else " ".join(cells[2].split()),
+                              []).append(name)
+        for zone, claimants in owners.items():
+            if len(claimants) > 1:
+                notes.append(f"{catalog.relative_to(root)}: зону `{zone[:60]}` объявили "
+                             f"{', '.join(claimants)} — у одной правды два хозяина, "
+                             f"и один из них всегда отстанет")
+    return notes
+
+
 def guard_without_home(root: Path = ROOT) -> list[str]:
     """Сторож, которого не судит ни один набор: его правку цикл сравнить не может.
 
@@ -1232,7 +1263,8 @@ def guards_off_catalog(root: Path = ROOT) -> list[str]:
                          "расширять предлагается несуществующее")
     return notes
 
-HARD = (("сторож без набора-дома", guard_without_home),
+HARD = (("одну зону объявили два хозяина", zone_declared_twice),
+        ("сторож без набора-дома", guard_without_home),
         ("пропуск набора без покрытия в CI", skips_without_ci),
         ("имя используется до объявления", used_before_declared),
         ("код отказа мимо реестра", codes_outside_registry),

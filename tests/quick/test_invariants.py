@@ -19,7 +19,7 @@ from invariants import (  # noqa: E402
     declared_but_unscripted, enum_without_values,
     facts_exempt_from_observation, facts_outside_registry, facts_without_emitter,
     facts_without_observer, observation_incomplete,
-    guard_without_home, hooks_off_declaration, knob_without_reader,
+    guard_without_home, hooks_off_declaration, knob_without_reader, zone_declared_twice,
     resources_off_inventory, scenario_calls_unknown_tool, skips_without_ci,
     ci_jobs_off_docs, dispatch_by_value, guards_off_catalog, mirrored_declaration,
     module_without_reader,
@@ -523,6 +523,27 @@ ok(not hooks_off_declaration(make({"core/x.py": "x = 1\n"})),
 ok(len(hooks_off_declaration(make({".claude/settings.json": "{ сломано\n",
                                    ".claude/hooks/vpm-x.py": "x = 1\n"}))) == 1,
    "сломанный JSON назван ОДНОЙ причиной, а не обвинением каждого файла в дереве")
+
+print("\n== одну зону объявили два хозяина ==")
+HEAD_ROW = "| Тест | Зона |\n|---|---|\n"
+ok(not zone_declared_twice(make({"tests/CATALOG.md": HEAD_ROW
+                                 + "| `test_a.py` | зона про поиск |\n| `test_b.py` | зона про таблицы |\n"})),
+   "у каждой строки своя территория — молчим")
+ok(len(zone_declared_twice(make({"tests/CATALOG.md": HEAD_ROW
+                                 + "| `test_a.py` | зона про поиск |\n| `test_b.py` | зона про поиск |\n"}))) == 1,
+   "две строки объявили дословно одну зону — второй хозяин и есть размножение")
+ok(len(zone_declared_twice(make({"tests/CATALOG.md": HEAD_ROW
+                                 + "| `test_a.py` | сам сторож `scripts/guards/g.py`: отчёт |\n"
+                                 + "| `test_b.py` | сам сторож `scripts/guards/g.py`: иначе сказано |\n"}))) == 1,
+   "формулировки разные, а НАЗВАН один сторож — два дома у одной правды")
+ok(not zone_declared_twice(make({"tests/CATALOG.md": HEAD_ROW
+                                 + "| `test_a.py` | сам сторож `scripts/guards/g.py` |\n"
+                                 + "| `test_b.py` | сам сторож `scripts/guards/o.py` |\n"})),
+   "разные сторожа названы — территории не пересекаются")
+ok(not zone_declared_twice(make({"scripts/guards/CATALOG.md": HEAD_ROW + "| `g.py` | своя зона |\n"})),
+   "каталог сторожей судится тем же правилом и на одной строке молчит")
+ok(not zone_declared_twice(make({"core/z.py": "x = 1\n"})),
+   "каталогов нет вовсе — улики нет, а не «дублей нет»")
 
 print("\n== сторож без набора-дома ==")
 HOME = "| Тест | Зона |\n|---|---|\n| `test_g.py` | сам сторож `scripts/guards/g.py` |\n"
