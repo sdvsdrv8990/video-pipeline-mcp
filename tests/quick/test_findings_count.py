@@ -144,6 +144,45 @@ def main() -> int:
                    if ("закрыт" if mine[f] else "открыт") != theirs[f])
     ok(not clash, f"вердикт совпадает по каждой находке; расходятся: {clash}")
 
+    print("§8 пространство состояний обходится ОБЪЯВЛЕНИЕМ, а не перечислением руками")
+    # Предметы судьи и их состояния. Ожидание — НАМЕРЕНИЕ (что судья обязан ответить), а не
+    # вывод из его же кода: иначе таблица зеленела бы на сломанном судье.
+    REGISTRY_STATE = {
+        "нет":     None,
+        "пустой":  HEAD,
+        "строки":  HEAD + "| F1 | 🔴 | a |\n| F2 | 🔴 | b |\n| F3 | ✅ | c |",
+    }
+    FLOOR_STATE = {"нет": None, "нечитаем": "не число", "число": "3"}
+    ROWS_REL = {"меньше": "9", "ровно": "3", "больше": "1"}
+    FLAGS = ("--check", "--bless")
+
+    def intent(reg: str, flo: str, rel: str | None, flag: str) -> int:
+        """Что судья ОБЯЗАН ответить. Пишется намерением, читается как требование."""
+        if reg in ("нет", "пустой"):
+            return 2                                   # улики нет — до флагов и до пола
+        if flag == "--bless":
+            return 0                                   # поднятие пола не судит
+        if flo in ("нет", "нечитаем"):
+            return 2                                   # храповик без пола молчать не смеет
+        return 1 if rel == "меньше" else 0
+
+    space, surprises = 0, []
+    for reg, text in REGISTRY_STATE.items():
+        for flo, floor_raw in FLOOR_STATE.items():
+            rels = ROWS_REL if (reg == "строки" and flo == "число") else {None: floor_raw}
+            for rel, floor_value in rels.items():
+                for flag in FLAGS:
+                    space += 1
+                    code, out, err = run(text, floor_value, flag)
+                    want = intent(reg, flo, rel, flag)
+                    if code != want:
+                        surprises.append(f"реестр={reg} пол={flo} строк={rel} {flag}: "
+                                         f"ждали {want}, судья ответил {code}")
+    ok(not surprises, f"обойдено сочетаний: {space}; расхождений с намерением: {len(surprises)}")
+    for s in surprises:
+        print(f"      · {s}")
+    ok(space >= 22, f"пространство перечислено целиком, а не выборкой: {space}")
+
     print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")
     for fail in _fails:
         print(f"  ✗ {fail}")
