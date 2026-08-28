@@ -32,6 +32,7 @@ UNSCRIPTED_BASELINE = Path(__file__).with_name("unscripted_baseline.txt")
 DEAD_RECOVERY_BASELINE = Path(__file__).with_name("dead_recovery_baseline.txt")
 ORPHAN_BASELINE = Path(__file__).with_name("orphan_codes_baseline.txt")
 MIRROR_BASELINE = Path(__file__).with_name("mirror_baseline.txt")
+KNOB_BASELINE = Path(__file__).with_name("knob_reader_baseline.txt")
 FACT_EMITTER_BASELINE = Path(__file__).with_name("fact_emitters_baseline.txt")
 FACT_EXEMPT_BASELINE = Path(__file__).with_name("fact_exempt_baseline.txt")
 # Две ветки — это выбор, три и больше по одному значению — уже таблица.
@@ -521,10 +522,7 @@ def dispatch_by_value(root: Path = ROOT) -> list[str]:
     и о забытой ветке никто не узнает. Храповик: вниз можно, вверх нет.
     """
     notes = []
-    for source in sorted(list((root / "core").rglob("*.py")) + list((root / "tools").rglob("*.py"))
-                         + [root / "server.py"]):
-        if "__pycache__" in str(source) or not source.exists():
-            continue
+    for source in _python_sources(root):
         try:
             tree = ast.parse(source.read_text(encoding="utf-8"))
         except SyntaxError:
@@ -915,6 +913,12 @@ def _singular_declarations(root: Path) -> dict[str, tuple[str, object]]:
             if len(v) == 1 and len(k) >= MIRROR_NAME}
 
 
+def _python_sources(root: Path) -> list[Path]:
+    """Код СЕРВЕРА. Сторожа и тесты сюда не входят: они называют чужие имена, разбирая их."""
+    files = list((root / "core").rglob("*.py")) + list((root / "tools").rglob("*.py")) + [root / "server.py"]
+    return [p for p in sorted(files) if "__pycache__" not in str(p) and p.exists()]
+
+
 def _named_literals(tree: ast.AST) -> list[tuple[str, ast.AST, int]]:
     """Что код связывает с ИМЕНЕМ: присваивание, дефолт параметра, именованный аргумент."""
     out: list[tuple[str, ast.AST, int]] = []
@@ -965,8 +969,7 @@ def mirrored_declaration(root: Path = ROOT) -> list[str]:
     if not singular:
         return []
     notes = []
-    sources = [p for p in sorted(list((root / "core").rglob("*.py")) + list((root / "tools").rglob("*.py"))
-                                 + [root / "server.py"]) if "__pycache__" not in str(p) and p.exists()]
+    sources = _python_sources(root)
     for source in sources:
         try:
             tree = ast.parse(source.read_text(encoding="utf-8"))
@@ -999,6 +1002,100 @@ def mirrored_declaration(root: Path = ROOT) -> list[str]:
     return notes
 
 
+
+
+# Имя короче совпадает с чужим по случайности — тот же порог, что у копий объявления.
+KNOB_NAME = 6
+QUOTED_NAME = re.compile(r"""["']([A-Za-z_][A-Za-z_0-9]*)["']""")
+ATTR_NAME = re.compile(r"\.([A-Za-z_][A-Za-z_0-9]*)\b")
+# Ключи схемы адресуются библиотекой целиком: `properties.color.pattern` никто по имени не грузит.
+SCHEMA_SECTION = ("properties", "params")
+KNOB_READ = 0.5
+
+
+def _code_names(root: Path) -> set[str]:
+    """Имена, которые код НАЗЫВАЕТ: строкой в кавычках либо обращением к полю."""
+    names: set[str] = set()
+    for source in _python_sources(root):
+        text = source.read_text(encoding="utf-8", errors="replace")
+        names |= set(QUOTED_NAME.findall(text)) | set(ATTR_NAME.findall(text))
+    return names
+
+
+def _knobs(root: Path) -> list[tuple[str, str, str, list[str], list[str]]]:
+    """Ручки деклараций: (файл, путь, имя, соседи по секции, секции над ней).
+
+    Ручка — ключ со скаляром или перечнем скаляров: именно его правят, чтобы изменить поведение.
+    Перечень скаляров — ОДНА ручка под своим именем, спуск по элементам сделал бы ручками данные.
+    """
+    out: list[tuple[str, str, str, list[str], list[str]]] = []
+
+    def leaf(node: object) -> bool:
+        return not isinstance(node, dict) and not (isinstance(node, list)
+                                                   and any(isinstance(v, (dict, list)) for v in node))
+
+    def walk(node: object, origin: str, path: str, chain: list[str]) -> None:
+        if isinstance(node, dict):
+            siblings = [str(k) for k in node]
+            for key, value in node.items():
+                where = f"{path}.{key}"
+                if leaf(value):
+                    out.append((origin, where, str(key), siblings, chain))
+                else:
+                    walk(value, origin, where, chain + [str(key)])
+        elif isinstance(node, list):
+            for i, value in enumerate(node):
+                walk(value, origin, f"{path}[{i}]", chain)
+
+    for declaration in sorted((root / "config").glob("*.yaml")):
+        walk(yaml.safe_load(declaration.read_text(encoding="utf-8")) or {}, declaration.name, "", [])
+    return out
+
+
+def _declaration_values(root: Path) -> set[str]:
+    """Строки, стоящие в декларациях ЗНАЧЕНИЕМ: такое имя — величина предметной области."""
+    values: set[str] = set()
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+        elif isinstance(node, str):
+            values.add(node)
+
+    for declaration in sorted((root / "config").rglob("*.yaml")):
+        walk(yaml.safe_load(declaration.read_text(encoding="utf-8")) or {})
+    return values
+
+
+def knob_without_reader(root: Path = ROOT) -> list[str]:
+    """Ручка объявлена, а грузить её некому: правка строки не меняет ПОВЕДЕНИЯ.
+
+    Обвиняется не всякий неупомянутый ключ — так набирается шум. Уликой ключ делает ЖИВАЯ секция
+    вокруг: больше половины соседей код называет по имени, значит запись читают полями, и молчит
+    именно этот. Где соседей не называют вовсе — это не запись, а карта, ключи которой приходят
+    данными (`codecs.by_name`, `dtype_alias`), и в коде их не бывает по устройству. Ключ, стоящий
+    в декларациях ещё и значением, — тоже величина предметной области, а не ручка.
+    """
+    if not (root / "config").is_dir():
+        return []
+    names = _code_names(root)
+    values = _declaration_values(root)
+    notes = []
+    for origin, where, key, siblings, chain in _knobs(root):
+        if len(key) < KNOB_NAME or key in names or key in values:
+            continue
+        if any(section in SCHEMA_SECTION for section in chain):
+            continue
+        read = [s for s in siblings if s != key and s in names]
+        if len(read) <= KNOB_READ * len(siblings):
+            continue
+        notes.append(f"config/{origin}{where} — ручку никто не грузит, а соседей по секции "
+                     f"({', '.join(read[:3])}) код читает: правка этой строки не меняет ничего")
+    return notes
 
 
 # Путь хука в объявлении — от корня проекта через подстановку Claude Code, поэтому и сверяется
@@ -1115,6 +1212,9 @@ RATCHETS = (
     ("копия объявления в коде", mirrored_declaration, MIRROR_BASELINE,
      "Значение объявлено в config/*.yaml и продублировано в коде под тем же именем: читай "
      "декларацию вместо копии — либо опусти потолок осознанно, --bless"),
+    ("ручка объявлена, а читателя нет", knob_without_reader, KNOB_BASELINE,
+     "Ключ в config/*.yaml не грузит НИКТО: правка строки не меняет поведения. Либо читатель, "
+     "либо снять строку — украшение хуже пустого места, оно обещает управление, которого нет"),
     ("объявлено сервером, но сценарием не покрыто", declared_but_unscripted, UNSCRIPTED_BASELINE,
      "Новое объявление без сценария. Покрытие пишется ОБЪЯВЛЕНИЕМ в tests/scenarios/*.yaml "
      "(`call` + `expect.code`), новый python-скрипт для этого не нужен — либо --bless с объяснением"),

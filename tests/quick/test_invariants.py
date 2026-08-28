@@ -19,7 +19,7 @@ from invariants import (  # noqa: E402
     declared_but_unscripted, enum_without_values,
     facts_exempt_from_observation, facts_outside_registry, facts_without_emitter,
     facts_without_observer, observation_incomplete,
-    hooks_off_declaration,
+    hooks_off_declaration, knob_without_reader,
     resources_off_inventory, scenario_calls_unknown_tool, skips_without_ci,
     ci_jobs_off_docs, dispatch_by_value, guards_off_catalog, mirrored_declaration,
     module_without_reader,
@@ -499,6 +499,34 @@ ok(not hooks_off_declaration(make({"core/x.py": "x = 1\n"})),
 ok(len(hooks_off_declaration(make({".claude/settings.json": "{ сломано\n",
                                    ".claude/hooks/vpm-x.py": "x = 1\n"}))) == 1,
    "сломанный JSON назван ОДНОЙ причиной, а не обвинением каждого файла в дереве")
+
+print("\n== ручка объявлена, а читателя нет ==")
+RECORD = "compensation:\n  record_sheet: DECISIONS\n  scene_column: scene_id\n  memory_file: p.md\n"
+READS_TWO = 'a = cfg["record_sheet"]\nb = cfg["scene_column"]\n'
+
+ok(len(knob_without_reader(make({"config/u.yaml": RECORD, "core/z.py": READS_TWO}))) == 1,
+   "секцию читают полями, а эту ручку никто не называет — правка строки не меняет ничего")
+ok(not knob_without_reader(make({"config/u.yaml": RECORD,
+                                 "core/z.py": READS_TWO + 'c = cfg["memory_file"]\n'})),
+   "ручку грузят — молчим")
+ok(len(knob_without_reader(make({"config/u.yaml": RECORD, "tests/t.py": READS_TWO + 'c = cfg["memory_file"]\n',
+                                 "core/z.py": READS_TWO}))) == 1,
+   "читатель в наборе тестов не считается: поведение сервера от него не зависит")
+ok(not knob_without_reader(make({"config/c.yaml": "codecs:\n  by_name:\n    h264: libx264\n    h265: libx265\n",
+                                 "core/z.py": 'x = cfg["by_name"].get(name)\n'})),
+   "карта: ключи приходят данными, соседей по имени не читают — обвинять нечего")
+ok(not knob_without_reader(make({"config/u.yaml": RECORD, "config/o.yaml": "kinds:\n  - memory_file\n",
+                                 "core/z.py": READS_TWO})),
+   "ключ стоит в декларациях ещё и значением — это величина предметной области, не ручка")
+ok(not knob_without_reader(make({"config/f.yaml": "filters:\n  params:\n    properties:\n      color:\n"
+                                 "        type: string\n        title: Цвет\n        pattern: '^0x'\n",
+                                 "core/z.py": 'x = s["type"]\ny = s["title"]\n'})),
+   "фрагмент JSON-схемы: его проверяет библиотека целиком, по именам его не грузят")
+ok(not knob_without_reader(make({"config/u.yaml": "sec:\n  record_sheet: D\n  scene_column: s\n  ttl: 5\n",
+                                 "core/z.py": READS_TWO})),
+   "короткое имя совпадает по случайности — порог длины держит сторожа точным")
+ok(not knob_without_reader(make({"core/z.py": READS_TWO})),
+   "деклараций нет вовсе — ручек не бывает, а не «все мёртвые»")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
