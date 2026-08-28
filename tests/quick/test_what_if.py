@@ -76,7 +76,23 @@ def main() -> int:
     ok("tests/quick/test_findings_count.py" in roster,
        "набор, грузящий сторожа компиляцией из исходника, взят из ОБЪЯВЛЕНИЯ, а не выведен из дерева")
 
-    print("§6 одна метка на несколько проверок не съедает соседей")
+    print("§6 «не меняется ничего» — тоже заявление")
+    out, code = run([], {"a": True, "b": True}, {"a": True, "b": True})
+    ok(code == 0 and "не меняет НИЧЕГО" in out, "пустой expect принят как утверждение, и оно сбылось")
+    out, code = run([], {"a": True}, {"a": False})
+    ok(code == 1 and "⚠" in out, "заявили «ничего», а цвет сменился — это скрытый риск, а не успех")
+    bad = Path(tempfile.mkdtemp()) / "i.yaml"
+    bad.write_text("intent: п\nwhere: п\nwhy: п\n", encoding="utf-8")
+    err = io.StringIO()
+    try:
+        with redirect_stdout(err):
+            what_if.load_intent(bad)
+        raised = False
+    except SystemExit:
+        raised = True
+    ok(raised, "ОТСУТСТВИЕ `expect` по-прежнему отказ: промолчать про поведение нельзя")
+
+    print("§7 одна метка на несколько проверок не съедает соседей")
     tree = Path(tempfile.mkdtemp())
     (tree / "tests" / "quick").mkdir(parents=True)
     (tree / "tests" / "CATALOG.md").write_text(

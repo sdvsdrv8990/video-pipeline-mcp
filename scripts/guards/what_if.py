@@ -88,9 +88,17 @@ def load_intent(path: Path) -> dict:
     unknown = set(data) - INTENT_KEYS
     if unknown:
         sys.exit(f"{path.name}: неизвестные ключи {sorted(unknown)} (разрешены {sorted(INTENT_KEYS)})")
-    for field in ("intent", "where", "why", "expect"):
+    for field in ("intent", "where", "why"):
         if not data.get(field):
             sys.exit(f"{path.name}: нет `{field}` — намерение без него не проверяемо")
+    # Пустой `expect` — не пропуск, а УТВЕРЖДЕНИЕ «цвет не меняет ничего»: у сноса мёртвого и у
+    # переноса это и есть весь заявленный итог, и проверяет его вторая колонка. Отличать надо от
+    # ОТСУТСТВИЯ ключа: там автор про поведение не сказал ничего, и сравнивать не с чем.
+    if "expect" not in data:
+        sys.exit(f"{path.name}: нет `expect` — объяви, что сменит цвет, либо `expect: []`, "
+                 f"если утверждаешь, что не сменит ничего")
+    if not isinstance(data["expect"], list):
+        sys.exit(f"{path.name}: `expect` — список ожиданий либо пустой список")
     for item in data["expect"]:
         unknown = set(item) - EXPECT_KEYS
         if unknown:
@@ -148,7 +156,9 @@ def report(intent: dict, before: dict[str, bool], after: dict[str, bool]) -> int
     fulfilled = [name for name, color in declared.items() if got.get(name) == color]
     for name in fulfilled:
         print(f"  ✓ {name} → {declared[name]}")
-    if not fulfilled:
+    if not declared:
+        print("  заявлено, что цвет не меняет НИЧЕГО — весь вердикт во второй колонке")
+    elif not fulfilled:
         print("  (ничего)")
 
     print("\n── ИЗМЕНИЛОСЬ НЕЗАЯВЛЕННОЕ (скрытый риск) ──")
