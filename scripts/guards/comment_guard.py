@@ -303,7 +303,9 @@ def cmd_scan(targets: list[str]) -> int:
         for note in notes:
             print(note)
     print(f"\nВсего замечаний: {total} в {len(found)} файлах")
-    return 0
+    # Отчёт, отвечающий нулём и когда нашёл, и когда нет, — печать, а не наблюдение: объявлением
+    # такой вердикт не спросишь, и обе стороны сторожа остаются недостижимы из карты.
+    return 1 if total else 0
 
 
 def cmd_bless() -> int:

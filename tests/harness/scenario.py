@@ -13,8 +13,10 @@ tests/harness/scenario.py — исполнитель ОБЪЯВЛЕННЫХ сц
 """
 
 import json
+import os
 import re
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,11 +28,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 SCENARIO_KEYS = {"scenario", "why", "given", "when", "then"}
 GIVEN_KEYS = {"files"}
-STEP_KEYS = {"call", "python", "rpc", "headers", "token", "repeat", "with", "as", "expect"}
+STEP_KEYS = {"call", "python", "rpc", "run", "headers", "token", "repeat", "with", "as", "expect"}
 EXPECT_KEYS = {"ok", "code", "class", "recovery", "facts", "data", "data_contains",
-               "console", "console_absent", "open", "http"}
+               "console", "console_absent", "open", "http", "exit"}
 
 _REF = re.compile(r"\$\{([A-Za-z_][\w]*)\.([\w.]+)\}")
+# Предел команде: сторож дерева считается секундами, а зависший шаг молчит так же, как пройденный.
+COMMAND_TIMEOUT = 300
 
 
 def known_findings() -> set[str]:
@@ -87,6 +91,7 @@ class Expectation:
     console_absent: str = ""
     open: str = ""                         # адрес ОТКРЫТОЙ находки: ждём желаемого, сегодня его нет
     http: int | None = None                # код HTTP: отказ авторизации живёт в статусе, не в теле
+    exit_code: int | None = None           # код возврата команды: у сторожа отказ живёт в нём
 
 
 @dataclass
@@ -95,6 +100,7 @@ class Step:
     tool: str = ""
     python: str = ""
     rpc: str = ""
+    run: str = ""
     repeat: int = 1
     headers: dict = field(default_factory=dict)
     token: str | None = None
@@ -104,7 +110,7 @@ class Step:
 
     @property
     def name(self) -> str:
-        return self.tool or self.rpc or f"python:{self.python}"
+        return self.tool or self.rpc or (f"run:{self.run}" if self.run else f"python:{self.python}")
 
 
 @dataclass
@@ -123,16 +129,27 @@ def _reject_unknown(got: dict, allowed: set[str], where: str) -> None:
         raise ScenarioError(f"{where}: неизвестные ключи {sorted(extra)} (разрешены {sorted(allowed)})")
 
 
-def _expect(raw: dict, vocab: Vocabulary, where: str) -> Expectation:
+def _expect(raw: dict, vocab: Vocabulary, where: str, command: bool = False) -> Expectation:
+    """Ожидание шага. У команды отказ выражается КОДОМ ВОЗВРАТА, а не кодом реакции сервера:
+    сторож не отвечает `ErrorDetail`, и подставлять ему реестровый код значило бы врать в словаре."""
     _reject_unknown(raw, EXPECT_KEYS, f"{where}.expect")
     if "ok" not in raw:
         raise ScenarioError(f"{where}.expect: нет ключа `ok` — исход обязан быть объявлен, а не выведен")
     ok = bool(raw["ok"])
     code = str(raw.get("code") or "")
+    status = None if raw.get("exit") is None else int(raw["exit"])
+    if status is not None and not command:
+        raise ScenarioError(f"{where}.expect: `exit` не у шага `run` — код возврата есть только у команды")
+    if command and code:
+        raise ScenarioError(f"{where}.expect: `code` у шага `run` — у команды отказ живёт в коде "
+                            "возврата, реестровых кодов она не отдаёт")
     if code and ok:
         raise ScenarioError(f"{where}.expect: `code` при `ok: true` — успех не несёт кода отказа")
-    if not ok and not code:
+    if not ok and not code and status is None:
         raise ScenarioError(f"{where}.expect: отказ без `code` — «просто упало» не является ожиданием")
+    if command and status is not None and (status == 0) != ok:
+        raise ScenarioError(f"{where}.expect: `exit: {status}` спорит с `ok: {ok}` — нулевой код "
+                            "возврата и есть успех команды")
     if code:
         vocab.validate(code, str(raw.get("class") or "") or None, f"{where}.expect")
     address = str(raw.get("open") or "")
@@ -150,6 +167,7 @@ def _expect(raw: dict, vocab: Vocabulary, where: str) -> Expectation:
         console_absent=str(raw.get("console_absent") or ""),
         open=str(raw.get("open") or ""),
         http=None if raw.get("http") is None else int(raw["http"]),
+        exit_code=status,
     )
 
 
@@ -159,18 +177,21 @@ def _steps(raw: list, vocab: Vocabulary, where: str) -> list[Step]:
         if not isinstance(item, dict):
             raise ScenarioError(f"{where}[{i}]: шаг должен быть словарём, а не {type(item).__name__}")
         _reject_unknown(item, STEP_KEYS, f"{where}[{i}]")
-        kinds = [k for k in ("call", "python", "rpc") if item.get(k)]
+        kinds = [k for k in ("call", "python", "rpc", "run") if item.get(k)]
         if len(kinds) != 1:
             raise ScenarioError(f"{where}[{i}]: шаг — ровно одно из `call` (инструмент), "
-                                f"`rpc` (метод протокола), `python` (шаг-помощник); указано {kinds or 'ничего'}")
+                                f"`rpc` (метод протокола), `python` (шаг-помощник), `run` (команда "
+                                f"репозитория); указано {kinds or 'ничего'}")
         expect = item.get("expect")
         out.append(Step(
             index=i, tool=str(item.get("call") or ""), python=str(item.get("python") or ""),
-            rpc=str(item.get("rpc") or ""), repeat=int(item.get("repeat") or 1),
+            rpc=str(item.get("rpc") or ""), run=str(item.get("run") or ""),
+            repeat=int(item.get("repeat") or 1),
             headers=dict(item.get("headers") or {}),
             token=None if item.get("token") is None else str(item.get("token")),
             args=dict(item.get("with") or {}), alias=str(item.get("as") or ""),
-            expect=_expect(expect, vocab, f"{where}[{i}]") if expect is not None else None,
+            expect=(_expect(expect, vocab, f"{where}[{i}]", command=bool(item.get("run")))
+                    if expect is not None else None),
         ))
     return out
 
@@ -433,7 +454,9 @@ class Runner:
               return_observed: bool = False):
         args = _resolve(step.args, results)
         console_from = len(self.srv.console.lines)
-        if step.python:
+        if step.run:
+            observed = self._command(step, args)
+        elif step.python:
             if step.python not in self.steps:
                 raise ScenarioError(f"шаг-помощник {step.python!r} не объявлен в tests/scenarios/steps.py")
             outcome = self.steps[step.python](self.srv, **args) or {}
@@ -470,7 +493,10 @@ class Runner:
             observed["http"] = status
         if step.alias:
             results[step.alias] = observed["data"]
-        console = self.srv.console.lines[console_from:]
+        # У команды своей консоли сервера нет: её вывод И ЕСТЬ то, что читают глазами, поэтому
+        # он подставляется на место консоли — иначе `console:` в объявлении был бы недостижим.
+        console = ([observed.pop("output")] if step.run
+                   else self.srv.console.lines[console_from:])
         entry = {"scenario": scenario.id, "step": step.index, "tool": step.name, "args": args,
                  "ok": observed["ok"], "code": observed["code"], "message": observed["message"],
                  "reaction_class": observed["reaction_class"], "recovery": observed["recovery"],
@@ -481,6 +507,24 @@ class Runner:
         if self.journal:
             self.journal.write(**entry)
         return self._verify(scenario, step, observed, "\n".join(console))
+
+    def _command(self, step: Step, args: dict) -> dict:
+        """Команда РЕПОЗИТОРИЯ: сторож судит дерево, и его вердикт приходит кодом возврата.
+
+        Оболочки нет, цель обязана лежать в дереве: объявление исполняемо, и «запусти что угодно»
+        превратило бы карту в дверь наружу.
+        """
+        target = (ROOT / step.run).resolve()
+        if not str(target).startswith(str(ROOT) + os.sep) or not target.is_file():
+            raise ScenarioError(f"шаг `run: {step.run}` ведёт вне репозитория или в пустоту — "
+                                "объявление исполняемо, поэтому цель обязана быть своей")
+        argv = ([sys.executable, str(target)] if target.suffix == ".py" else [str(target)])
+        argv += [str(a) for a in (args.get("args") or [])]
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=COMMAND_TIMEOUT, cwd=ROOT)
+        return {"ok": done.returncode == 0, "code": "",
+                "message": (done.stdout + done.stderr).strip()[-400:],
+                "data": {"exit": done.returncode}, "reaction_class": "", "recovery": {},
+                "facts": [], "output": done.stdout + done.stderr}
 
     def _verify(self, scenario: Scenario, step: Step, got: dict, console: str) -> list[Check]:
         exp = step.expect
@@ -502,7 +546,12 @@ class Runner:
                           f"{exp.open} закрыта: сними `open` и обнови docs/roadmap/02_findings.md")]
 
         # Исход и причина: при расхождении печатается ФАКТИЧЕСКИЙ код и сообщение сервера.
-        if exp.ok:
+        if exp.exit_code is not None:
+            came = (got.get("data") or {}).get("exit")
+            out.append(Check(scenario.id, f"{tag} → код возврата {exp.exit_code}",
+                             came == exp.exit_code,
+                             f"вернулось {came} · вывод: {got['message'][-200:]}"))
+        elif exp.ok:
             out.append(Check(scenario.id, f"{tag} → успех", got["ok"],
                              f"вместо успеха {got['code'] or '(без кода)'}: {got['message']} · "
                              f"совет: {self._hint(got['code'], '')}"))

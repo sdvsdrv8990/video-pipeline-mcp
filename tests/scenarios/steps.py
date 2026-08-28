@@ -16,6 +16,14 @@ def remove_path(srv, path: str) -> dict:
     return {"ok": True, "data": {"removed": path}}
 
 
+def workspace_path(srv, path: str) -> dict:
+    """Абсолютный путь файла рабочей области: команде репозитория относительный ни о чём не говорит."""
+    target = Path(srv.workspace) / path
+    if not target.exists():
+        return {"ok": False, "code": "FILE_NOT_FOUND", "message": f"в рабочей области нет: {path}"}
+    return {"ok": True, "data": {"path": str(target)}}
+
+
 def branch_state(srv, niche: str) -> dict:
     """Снимок ВЕТКИ ниши: что в ней заведено и что сервер о ней говорит.
 
@@ -140,6 +148,7 @@ def hold_connections(srv, count: int, seconds: float = 2.5) -> dict:
 
 
 STEPS = {"remove_path": remove_path, "branch_state": branch_state,
+         "workspace_path": workspace_path,
          "busy_server_still_answers": busy_server_still_answers,
          "trail_says": trail_says, "speak_garbage": speak_garbage,
          "hold_connections": hold_connections}

@@ -15,7 +15,8 @@ sys.path.insert(0, str(ROOT))
 import yaml
 
 from tests.harness import live_server
-from tests.harness.scenario import Journal, Runner, ScenarioError, Vocabulary, load, scenario_files
+from tests.harness.scenario import (Journal, Runner, ScenarioError, Step, Vocabulary, _steps,
+                                    load, scenario_files)
 from tests.harness.scenario_map import MapRunner, analyse, load_map, plan
 from tests.scenarios.steps import STEPS
 
@@ -23,7 +24,56 @@ HERE = Path(__file__).parent
 JOURNAL_DIR = Path(__file__).resolve().parents[1] / ".journal"
 
 
+def _language() -> list[str]:
+    """Правила ЯЗЫКА объявления проверяются до сервера: кривое объявление обязано падать разбором.
+
+    Шаг `run` исполняет команду репозитория, и его ожидание — код возврата, а не код реакции:
+    сторож `ErrorDetail` не отдаёт, и реестровый код у него означал бы враньё в словаре.
+    """
+    vocab, bad = Vocabulary(), []
+
+    def rejects(item: dict, because: str) -> None:
+        try:
+            _steps([item], vocab, "проба")
+        except ScenarioError:
+            return
+        bad.append(f"объявление принято, а не должно: {because}")
+
+    def accepts(item: dict, because: str) -> None:
+        try:
+            _steps([item], vocab, "проба")
+        except ScenarioError as exc:
+            bad.append(f"объявление отвергнуто, а должно приниматься ({because}): {exc}")
+
+    rejects({"run": "scripts/guards/invariants.py", "call": "fs_read_file", "expect": {"ok": True}},
+            "и команда, и инструмент в одном шаге")
+    rejects({"call": "fs_read_file", "expect": {"ok": False, "code": "FILE_NOT_FOUND", "exit": 1}},
+            "`exit` у шага, который команду не запускает")
+    rejects({"run": "scripts/guards/invariants.py", "expect": {"ok": False, "code": "FILE_NOT_FOUND"}},
+            "реестровый код отказа у команды")
+    rejects({"run": "scripts/guards/invariants.py", "expect": {"ok": True, "exit": 1}},
+            "`exit: 1` при `ok: true` — нулевой код возврата и есть успех")
+    rejects({"run": "scripts/guards/invariants.py", "expect": {"ok": False}},
+            "отказ команды без кода возврата — «просто упало» не ожидание")
+    accepts({"run": "scripts/guards/invariants.py", "with": {"args": ["--check"]},
+             "expect": {"ok": True, "exit": 0}}, "полное объявление команды")
+
+    runner = Runner(None, None, {})
+    for target, why in (("../секрет.txt", "цель вне репозитория"),
+                        ("scripts/guards/нет-такого.py", "цели не существует")):
+        try:
+            runner._command(Step(index=1, run=target), {})
+            bad.append(f"команда исполнена, а не должна: {why}")
+        except ScenarioError:
+            pass
+    return bad
+
+
 def main() -> int:
+    broken = _language()
+    print(f"══ язык объявления: {'чисто' if not broken else str(len(broken)) + ' нарушений'} ══")
+    for note in broken:
+        print(f"  ✗ {note}")
     files = scenario_files(HERE)
     maps = sorted(HERE.glob("*.map.yaml"))
     if not files and not maps:
@@ -33,7 +83,7 @@ def main() -> int:
     vocab = Vocabulary()
     ran: set[str] = set()
     journal = Journal(JOURNAL_DIR / f"scenarios-{time.strftime('%Y%m%d-%H%M%S')}.jsonl")
-    total, fails = 0, []
+    total, fails = len(broken), list(broken)
     matched: set[str] = set()
     try:
         for path in files:

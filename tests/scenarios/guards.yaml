@@ -1,0 +1,38 @@
+# Сторож судит ДЕРЕВО, и его вердикт приходит кодом возврата. Шаг `run:` даёт объявлению доступ
+# к этому вердикту: до него обе стороны сторожа были достижимы только из python-набора, то есть
+# кодом. Цель `run` обязана лежать в репозитории, оболочки нет — объявление исполняемо.
+
+- scenario: guard_text_answers_by_exit_code
+  why: сторож, отвечающий нулём и когда нашёл, и когда нет, — печать, а не наблюдение
+  given:
+    files:
+      сторож/чисто.py: "x = 1\n"
+      сторож/координата.py: "# F160 закрыт в этой сессии\nx = 1\n"
+  when:
+    - python: workspace_path
+      with: {path: сторож/чисто.py}
+      as: clean
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "${clean.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+    - python: workspace_path
+      with: {path: сторож/координата.py}
+      as: dirty
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "${dirty.path}"]}
+      expect: {ok: false, exit: 1, console: "координата задачи"}
+
+- scenario: guard_gate_commands_answer_zero_on_this_tree
+  why: гейт жил только в ci.yml и pre-commit — объявлением он не спрашивался ни разу
+  when:
+    - run: scripts/guards/invariants.py
+      with: {args: ["--check"]}
+      expect: {ok: true, exit: 0}
+    - run: scripts/guards/findings_count.py
+      with: {args: ["--check"]}
+      expect: {ok: true, exit: 0, console: "реестр читается машиной"}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--check"]}
+      expect: {ok: true, exit: 0, console: "не выше"}
