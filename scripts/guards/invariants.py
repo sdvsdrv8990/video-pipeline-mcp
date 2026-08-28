@@ -1178,6 +1178,32 @@ def _zones_of(path: Path) -> set[str]:
     return zones
 
 
+GUARD_HOME = re.compile(r"scripts/guards/([\w.]+\.py)")
+
+
+def guard_without_home(root: Path = ROOT) -> list[str]:
+    """Сторож, которого не судит ни один набор: его правку цикл сравнить не может.
+
+    Дом объявляется зоной в `tests/CATALOG.md` — строкой набора, называющей `scripts/guards/*.py`;
+    оттуда же `what_if.py` берёт третью карту сравнения. Обратная сторона так же красная:
+    объявленный дом несуществующего сторожа отправляет цикл сравнивать пустоту.
+    """
+    directory, catalog = _at(root, GUARDS), _at(root, CATALOG)
+    if not directory.is_dir() or not catalog.exists():
+        return []
+    on_disk = {p.name for p in directory.glob("*.py") if not p.name.startswith("_")}
+    housed: set[str] = set()
+    for line in catalog.read_text(encoding="utf-8").splitlines():
+        cells = line.split("|")
+        if line.startswith("|") and len(cells) >= 3:
+            housed |= set(GUARD_HOME.findall(cells[2]))
+    return ([f"scripts/guards/{name} — сторожа не судит ни один набор: правку такого сторожа "
+             f"цикл `what_if.py` не с чем сравнить, третья карта его не видит"
+             for name in sorted(on_disk - housed)]
+            + [f"tests/CATALOG.md называет домом сторожа `scripts/guards/{name}`, которого нет — "
+               f"карта цикла ведёт в пустоту" for name in sorted(housed - on_disk)])
+
+
 def guards_off_catalog(root: Path = ROOT) -> list[str]:
     """Сторож без объявленной зоны — и правило «не плодить» перестаёт действовать на сторожей.
 
@@ -1206,7 +1232,8 @@ def guards_off_catalog(root: Path = ROOT) -> list[str]:
                          "расширять предлагается несуществующее")
     return notes
 
-HARD = (("пропуск набора без покрытия в CI", skips_without_ci),
+HARD = (("сторож без набора-дома", guard_without_home),
+        ("пропуск набора без покрытия в CI", skips_without_ci),
         ("имя используется до объявления", used_before_declared),
         ("код отказа мимо реестра", codes_outside_registry),
         ("объявление ресурсов мимо инвентаря", resources_off_inventory),

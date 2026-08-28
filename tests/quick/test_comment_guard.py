@@ -27,7 +27,9 @@ def ok(name, cond, detail=""):
     _checks += 1
     if not cond:
         _fails.append(name)
-    print(f"[{'PASS' if cond else 'FAIL'}] {name} {('- ' + str(detail)) if detail else ''}")
+    # Форму строки РАЗБИРАЕТ цикл `what_if.py`, сравнивая цвет проверки до и после правки:
+    # свой диалект не ломает набор, но молча выносит все его проверки из сравнения.
+    print(f"  {'✓' if cond else '✗'} {name}" + (f"  → {detail}" if detail else ""))
 
 
 def notes_of(src):

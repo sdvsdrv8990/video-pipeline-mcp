@@ -7,7 +7,9 @@ Standalone-прогон:  python tests/quick/test_what_if.py
 проверка не выдаётся за «цвет не сменился».
 """
 import io
+import shutil
 import sys
+import tempfile
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -64,9 +66,27 @@ def main() -> int:
        "у маршрута имя берётся до рубежа")
     ok(what_if._named("alpha · 1. шаг → успех") == "alpha", "у сценария имя берётся до шага")
 
-    print("§5 обе карты объявлены источником вердиктов")
-    ok(any("routes" in s for s in what_if.SUITES) and any("scenarios" in s for s in what_if.SUITES),
+    print("§5 три карты объявлены источником вердиктов")
+    roster = what_if.suites(ROOT)
+    guards = {p.name for p in (ROOT / "scripts" / "guards").glob("*.py") if not p.name.startswith("_")}
+    ok(any("routes" in s for s in roster) and any("scenarios" in s for s in roster),
        "сравниваются и сценарии, и маршруты потоков данных")
+    ok(sum(s.startswith("tests/quick/") for s in roster) == len(guards),
+       "каждый сторож на диске представлен в сравнении своим набором-домом")
+    ok("tests/quick/test_findings_count.py" in roster,
+       "набор, грузящий сторожа компиляцией из исходника, взят из ОБЪЯВЛЕНИЯ, а не выведен из дерева")
+
+    print("§6 одна метка на несколько проверок не съедает соседей")
+    tree = Path(tempfile.mkdtemp())
+    (tree / "tests" / "quick").mkdir(parents=True)
+    (tree / "tests" / "CATALOG.md").write_text(
+        "| Тест | Зона |\n|---|---|\n| `test_g.py` | сам сторож `scripts/guards/g.py` |\n", encoding="utf-8")
+    (tree / "tests" / "quick" / "test_g.py").write_text(
+        'print("  \\u2713 одна метка")\nprint("  \\u2717 одна метка")\n', encoding="utf-8")
+    got = what_if.verdicts(tree)
+    ok(len(got) == 2, "две проверки под ОДНОЙ меткой сравниваются обе, а не схлопываются в последнюю")
+    ok(set(got.values()) == {True, False}, "цвет каждой сохранён: порядковый номер различает их")
+    shutil.rmtree(tree, ignore_errors=True)
 
     print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")
     for fail in _fails:

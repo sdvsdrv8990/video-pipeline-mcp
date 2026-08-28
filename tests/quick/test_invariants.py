@@ -19,7 +19,7 @@ from invariants import (  # noqa: E402
     declared_but_unscripted, enum_without_values,
     facts_exempt_from_observation, facts_outside_registry, facts_without_emitter,
     facts_without_observer, observation_incomplete,
-    hooks_off_declaration, knob_without_reader,
+    guard_without_home, hooks_off_declaration, knob_without_reader,
     resources_off_inventory, scenario_calls_unknown_tool, skips_without_ci,
     ci_jobs_off_docs, dispatch_by_value, guards_off_catalog, mirrored_declaration,
     module_without_reader,
@@ -524,6 +524,22 @@ ok(len(hooks_off_declaration(make({".claude/settings.json": "{ сломано\n"
                                    ".claude/hooks/vpm-x.py": "x = 1\n"}))) == 1,
    "сломанный JSON назван ОДНОЙ причиной, а не обвинением каждого файла в дереве")
 
+print("\n== сторож без набора-дома ==")
+HOME = "| Тест | Зона |\n|---|---|\n| `test_g.py` | сам сторож `scripts/guards/g.py` |\n"
+ok(len(guard_without_home(make({"scripts/guards/g.py": "x = 1\n", "tests/CATALOG.md": HOME}))) == 0,
+   "дом объявлен зоной набора — цикл знает, чем сравнивать правку сторожа")
+ok(len(guard_without_home(make({"scripts/guards/g.py": "x = 1\n", "scripts/guards/n.py": "y = 1\n",
+                                "tests/CATALOG.md": HOME}))) == 1,
+   "сторож есть, а набора-дома нет: его правку цикл сравнить не с чем")
+TWO_HOMES = HOME + "| `test_o.py` | сам сторож `scripts/guards/o.py` |\n"
+ok(len(guard_without_home(make({"scripts/guards/o.py": "x = 1\n", "tests/CATALOG.md": TWO_HOMES}))) == 1,
+   "дом объявлен сторожу, которого на диске нет — карта цикла ведёт в пустоту")
+ok(not guard_without_home(make({"scripts/guards/_src.py": "x = 1\n", "tests/CATALOG.md": HOME,
+                                "scripts/guards/g.py": "x = 1\n"})),
+   "источник улики (`_`) сторожем не считается: он не судит, дома ему не нужно")
+ok(not guard_without_home(make({"scripts/guards/g.py": "x = 1\n"})),
+   "каталога тестов нет вовсе — улики нет, а не «все сторожа бездомны»")
+
 print("\n== ручка объявлена, а читателя нет ==")
 RECORD = "compensation:\n  record_sheet: DECISIONS\n  scene_column: scene_id\n  memory_file: p.md\n"
 READS_TWO = 'a = cfg["record_sheet"]\nb = cfg["scene_column"]\n'
@@ -548,7 +564,7 @@ ok(not knob_without_reader(make({"config/f.yaml": "filters:\n  params:\n    prop
    "фрагмент JSON-схемы: его проверяет библиотека целиком, по именам его не грузят")
 ok(not knob_without_reader(make({"config/u.yaml": "sec:\n  record_sheet: D\n  scene_column: s\n  ttl: 5\n",
                                  "core/z.py": READS_TWO})),
-   "короткое имя совпадает по случайности — порог длины держит сторожа точным")
+   "короткое имя РУЧКИ совпадает по случайности — порог длины держит сторожа точным")
 ok(not knob_without_reader(make({"core/z.py": READS_TWO})),
    "деклараций нет вовсе — ручек не бывает, а не «все мёртвые»")
 ok(len(knob_without_reader(make({"config/u.yaml": RECORD,

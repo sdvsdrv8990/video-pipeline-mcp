@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """scripts/guards/what_if.py — реальность против ожиданий: что даст правка, ДО того как её принять.
 
-Намерение (`intent.yaml`) объявляет, что меняем, где, зачем и что обязано сменить цвет — сценарий
-или маршрут потока данных. Кандидатный патч раскатывается в ОТДЕЛЬНОМ worktree, ОБЕ карты гоняются
-дважды — на `HEAD` и на патче, — и отчёт кладётся в три колонки:
+Намерение (`intent.yaml`) объявляет, что меняем, где, зачем и что обязано сменить цвет — сценарий,
+маршрут потока данных или проверка сторожа. Кандидатный патч раскатывается в ОТДЕЛЬНОМ worktree,
+ВСЕ ТРИ карты гоняются дважды — на `HEAD` и на патче, — и отчёт кладётся в три колонки:
 
     заявленное сбылось · ИЗМЕНИЛОСЬ НЕЗАЯВЛЕННОЕ (скрытый риск) · заявленное не сбылось
 
@@ -24,8 +24,32 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-SUITES = ("tests/scenarios/test_scenarios.py", "tests/routes/test_routes.py")
+BEHAVIOUR = ("tests/scenarios/test_scenarios.py", "tests/routes/test_routes.py")
+TESTS_CATALOG = ("tests", "CATALOG.md")
+GUARD_IN_ZONE = re.compile(r"scripts/guards/[\w.]+\.py")
 LINE = re.compile(r"^\s{2}([✓✗]) (.+?)(?:\s{2}→ .*)?$")
+
+
+def suites(root: Path) -> list[str]:
+    """Карты цикла: поведение сервера, маршруты потоков и НАБОРЫ, судящие сторожей.
+
+    Третья карта берётся из объявления (`tests/CATALOG.md`: строка набора, зона которого называет
+    `scripts/guards/*.py`), а не выводится из дерева. Вывод пробовали: `test_findings_count.py`
+    грузит сторожа компиляцией из исходника, поэтому ни импорта, ни строки-пути в нём нет, и
+    производная теряла его молча. Роспись, которая тихо недосчитывает, хуже объявленной.
+    """
+    homes = []
+    for line in root.joinpath(*TESTS_CATALOG).read_text(encoding="utf-8").splitlines():
+        cells = line.split("|")
+        if not line.startswith("|") or len(cells) < 3 or not GUARD_IN_ZONE.search(cells[2]):
+            continue
+        name = cells[1].strip().strip("*").strip("`").strip()
+        path = next(root.glob(f"tests/**/{name}"), None)
+        if path is None:
+            sys.exit(f"tests/CATALOG.md объявляет `{name}` домом сторожа, а файла нет: карта "
+                     f"сторожей неполна, и сравнение молча пропустит их правки")
+        homes.append(str(path.relative_to(root)))
+    return list(BEHAVIOUR) + sorted(homes)
 INTENT_KEYS = {"intent", "where", "why", "expect"}
 EXPECT_KEYS = {"scenario", "becomes", "why"}
 
@@ -38,7 +62,8 @@ def verdicts(cwd: Path) -> dict[str, bool]:
     до/после без маршрутов молчало бы ровно там, где дороже всего.
     """
     out: dict[str, bool] = {}
-    for suite in SUITES:
+    seen: dict[str, int] = {}
+    for suite in suites(cwd):
         if not (cwd / suite).exists():
             continue
         done = subprocess.run([sys.executable, suite], cwd=cwd, capture_output=True,
@@ -48,7 +73,11 @@ def verdicts(cwd: Path) -> dict[str, bool]:
             sys.exit(f"{suite} в {cwd} не дал ни одной проверки:\n"
                      f"{done.stdout[-2000:]}\n{done.stderr[-1000:]}")
         for found in rows:
-            out[found.group(2).strip()] = found.group(1) == "✓"
+            label = found.group(2).strip()
+            # Решётка печатает одну метку на несколько прогонов (`#путь1 · … → успех` × 4). Без
+            # порядкового номера словарь оставил бы последнюю, и смена цвета остальных пропала бы.
+            seen[label] = seen.get(label, 0) + 1
+            out[label if seen[label] == 1 else f"{label} ×{seen[label]}"] = found.group(1) == "✓"
     if not out:
         sys.exit(f"Прогон в {cwd} не дал ни одной проверки — сравнивать нечего")
     return out
