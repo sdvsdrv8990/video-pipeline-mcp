@@ -1,0 +1,145 @@
+"""
+tests/quick/test_hooks.py — хуки `.claude/hooks/` судят СОБЫТИЕ сессии, а не дерево репозитория.
+
+Standalone-прогон:  python tests/quick/test_hooks.py
+Проверяет: каждый хук ловит своё событие и молчит на чужом; обе ложные тревоги гейта фактов
+(проза про запись, путь в кавычках) закреплены регрессией; шим без репозитория молчит, а не
+падает. Состояние пишется в подставной HOME — настоящее не трогается.
+"""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+HOOKS = ROOT / ".claude" / "hooks"
+
+_checks = 0
+_fails = []
+
+
+def ok(cond, msg):
+    global _checks
+    _checks += 1
+    if not cond:
+        _fails.append(msg)
+    print(f"  {'✓' if cond else '✗'} {msg}")
+
+
+def fire(hook: str, payload: dict, *args, home: str | None = None, **env) -> tuple[int, dict, str]:
+    """Событие в хук через stdin. HOME подставной: у хуков состояние с TTL, и оно лежит на диске."""
+    env_full = {**os.environ, "HOME": home or tempfile.mkdtemp(prefix="vpm-hooks-home-"), **env}
+    done = subprocess.run([sys.executable, str(HOOKS / hook), *args],
+                          input=json.dumps(payload), capture_output=True, text=True,
+                          timeout=120, env=env_full, cwd=str(ROOT))
+    try:
+        out = json.loads(done.stdout) if done.stdout.strip() else {}
+    except json.JSONDecodeError:
+        out = {}
+    return done.returncode, out, done.stdout + done.stderr
+
+
+def decision(out: dict) -> str:
+    return (out.get("hookSpecificOutput") or {}).get("permissionDecision", "")
+
+
+def reason(out: dict) -> str:
+    spec = out.get("hookSpecificOutput") or {}
+    return spec.get("permissionDecisionReason") or spec.get("additionalContext") or ""
+
+
+def edit(path: str, tool: str = "Edit", **extra) -> dict:
+    return {"hook_event_name": "PreToolUse", "tool_name": tool, "session_id": "набор-хуков",
+            "tool_input": {"file_path": str(ROOT / path), **extra}}
+
+
+def bash(command: str, sid: str = "набор-хуков") -> dict:
+    return {"hook_event_name": "PreToolUse", "tool_name": "Bash", "session_id": sid,
+            "tool_input": {"command": command}}
+
+
+def main() -> int:
+    print("§1 гейт фактов: правка несущего файла")
+    _, out, _ = fire("vpm-fact-gate.py", edit("core/engine/engine.py"))
+    ok(decision(out) == "deny", f"правка ядра без фактов — отказ (решение {decision(out)!r})")
+    ok("Замер места" in reason(out),
+       "отказ ОТДАЁТ замер, а не просит его сделать: просьбу удовлетворяет одна фраза")
+    _, out, _ = fire("vpm-fact-gate.py", edit("docs/roadmap/02_findings.md"))
+    ok(not out, "документы вне несущей зоны — молчим")
+    _, out, _ = fire("vpm-fact-gate.py", edit("tests/quick/test_invariants.py"))
+    ok(not out, "правка СУЩЕСТВУЮЩЕГО набора — не рождение, гейт молчит")
+
+    print("§2 гейт фактов: рождение набора — отдельная дверь")
+    _, out, _ = fire("vpm-fact-gate.py", edit("tests/quick/test_ещё_один.py", tool="Write"))
+    ok(decision(out) == "deny", "новый набор — решение «не плодить», а не правка")
+    ok("Замер зон" in reason(out) and "запас:" in reason(out),
+       "отказ ДОСТАВЛЯЕТ таблицу зон с запасами — без неё на «кто хозяин» не ответить")
+
+    print("§3 гейт фактов: команда оболочки")
+    _, out, _ = fire("vpm-fact-gate.py", bash("rm -rf build/"))
+    ok(decision(out) == "deny", "разрушительная команда — отказ")
+    _, out, _ = fire("vpm-fact-gate.py", bash("cat > core/новый.py <<'EOF'\nx = 1\nEOF"))
+    ok(decision(out) == "deny", "запись несущего файла через оболочку — та же правка")
+    _, out, _ = fire("vpm-fact-gate.py", bash("git status --porcelain"))
+    ok(not out, "чтение состояния — не запись и не разрушение")
+
+    print("§4 гейт фактов: обе ложные тревоги, найденные на себе же")
+    _, out, _ = fire("vpm-fact-gate.py",
+                     bash("cat > docs/roadmap/_sessions.md <<'EOF'\nприём записи: rm -rf лишнего\nEOF"))
+    ok(not out, "тело here-document — ДАННЫЕ: текст про опасную команду не запрещает сам себя")
+    _, out, _ = fire("vpm-fact-gate.py", bash("echo 'core/engine/engine.py' | wc -l"))
+    ok(not out, "путь в кавычках — упоминание, а не цель записи")
+
+    print("§5 рубильники сторожей живы")
+    _, out, _ = fire("vpm-fact-gate.py", edit("core/engine/engine.py"), VPM_FACT_GATE="off")
+    ok(not out, "VPM_FACT_GATE=off — сторож выключается объявленным способом")
+    home = tempfile.mkdtemp(prefix="vpm-hooks-home-")
+    _, first, _ = fire("vpm-fact-gate.py", bash("rm -rf a/", sid="повтор"), home=home)
+    _, second, _ = fire("vpm-fact-gate.py", bash("rm -rf a/", sid="повтор"), home=home)
+    ok(decision(first) == "deny" and len(reason(second)) < len(reason(first)),
+       "второй отказ по тому же поводу короче первого: сторож не превращается в шум")
+
+    print("§6 обоснование текста в коде")
+    added = "\n".join(["    # почему именно так", "    x = 1"])
+    _, out, _ = fire("vpm-comment-intent.py", edit("core/engine/engine.py", new_string=added))
+    ok(decision(out) == "deny", "добавлен комментарий — обоснование требуется ДО записи")
+    _, out, _ = fire("vpm-comment-intent.py", edit("core/engine/engine.py", new_string="    x = 1\n"))
+    ok(not out, "текста в код не добавлено — молчим")
+    _, out, _ = fire("vpm-comment-intent.py", edit("core/engine/engine.py", new_string=added),
+                     VPM_COMMENT_INTENT="off")
+    ok(not out, "VPM_COMMENT_INTENT=off — рубильник жив")
+
+    print("§7 шимы: правило живёт в репозитории, копии снаружи нет")
+    for shim, guard in (("vpm-comment-guard.py", "comment_guard.py"),
+                        ("vpm-invariants.py", "invariants.py")):
+        text = (HOOKS / shim).read_text(encoding="utf-8")
+        ok("/home/" not in text,
+           f"{shim}: корень не зашит путём одной машины — иначе хук молчит у всех, кроме автора")
+        ok(guard in text, f"{shim} ведёт в scripts/guards/{guard}, а не держит копию правила")
+    done = subprocess.run([sys.executable, str(HOOKS / "vpm-comment-guard.py"), "--check"],
+                          capture_output=True, text=True, timeout=120, cwd=tempfile.mkdtemp())
+    ok("Храповик" in done.stdout,
+       "запущенный из ЧУЖОГО каталога шим судит репозиторий: корень взят от файла, не от cwd")
+
+    print("§8 заявление о зелёном отличается от пожелания")
+    gate: dict = {}
+    exec(compile((HOOKS / "vpm-delivery-gate.py").read_text(encoding="utf-8"),
+                 str(HOOKS / "vpm-delivery-gate.py"), "exec"),
+         {**gate, "__name__": "не-главный", "__file__": str(HOOKS / "vpm-delivery-gate.py")}, gate)
+    claim, modal = gate["CLAIM"], gate["MODAL"]
+    said, wished = "гейт зелёный, можно коммитить", "убедись, что гейт зелёный"
+    ok(bool(claim.search(said)) and not modal.search(said), "«гейт зелёный» — утверждение")
+    ok(bool(claim.search(wished)) and bool(modal.search(wished)),
+       "«убедись, что гейт зелёный» — те же слова, но модальность отменяет утверждение")
+    ok(not claim.search("тесты я пока не гонял"), "отсутствие заявления заявлением не считается")
+
+    print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")
+    for fail in _fails:
+        print(f"  ✗ {fail}")
+    return 1 if _fails else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

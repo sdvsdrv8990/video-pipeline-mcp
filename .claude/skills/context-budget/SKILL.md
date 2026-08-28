@@ -52,7 +52,7 @@ wc -w ~/.claude/CLAUDE.md ./CLAUDE.md 2>/dev/null
 wc -w ~/.claude/projects/-home-admin-projects-video-pipeline-mcp/memory/*.md | tail -1
 
 # 3. Вброс SessionStart-хука — то, что приезжает до первого хода
-bash ~/.claude/hooks/vpm-skill-bundle.sh </dev/null | wc -w
+bash .claude/hooks/vpm-skill-bundle.sh </dev/null | wc -w
 
 # 4. Серверы MCP: сколько их и какие
 python3 -c "import json;d=json.load(open('.mcp.json'));print(len(d.get('mcpServers',{})), list(d.get('mcpServers',{})))" 2>/dev/null

@@ -18,6 +18,7 @@ from invariants import (  # noqa: E402
     codes_outside_registry, codes_without_emitter, dead_recovery_in_engine,
     declared_but_unscripted, enum_without_values,
     facts_outside_registry, facts_without_emitter, facts_without_observer,
+    hooks_off_declaration,
     resources_off_inventory, scenario_calls_unknown_tool, skips_without_ci,
     ci_jobs_off_docs, dispatch_by_value, guards_off_catalog, mirrored_declaration,
     module_without_reader,
@@ -452,6 +453,23 @@ ok(len(facts_without_emitter(make({"core/contracts/fact.py": 'KNOWN_FACT_TYPES =
                                    "tests/harness/observations.yaml": OBSERVE
                                        + "FileAppended:\n  identity: args.path\n"}))) == 1,
    "наблюдатель построен на факт, которого сервер не шлёт — карта на пустоте")
+
+print("\n== хук против своего объявления ==")
+DECL = ('{"hooks": {"PreToolUse": [{"matcher": "Edit", "hooks": [{"type": "command", '
+        '"command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/vpm-x.py"}]}]}}\n')
+
+ok(len(hooks_off_declaration(make({".claude/settings.json": DECL}))) == 1,
+   "объявление есть, файла нет — событие приходит, запускать нечего")
+ok(len(hooks_off_declaration(make({".claude/hooks/vpm-x.py": "x = 1\n"}))) == 1,
+   "файл есть, объявления нет — код лежит, срабатывать ему не на чем")
+ok(not hooks_off_declaration(make({".claude/settings.json": DECL,
+                                   ".claude/hooks/vpm-x.py": "x = 1\n"})),
+   "обе половины на месте — молчим")
+ok(not hooks_off_declaration(make({"core/x.py": "x = 1\n"})),
+   "ни хуков, ни объявления — событие не наше")
+ok(len(hooks_off_declaration(make({".claude/settings.json": "{ сломано\n",
+                                   ".claude/hooks/vpm-x.py": "x = 1\n"}))) == 1,
+   "сломанный JSON назван ОДНОЙ причиной, а не обвинением каждого файла в дереве")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

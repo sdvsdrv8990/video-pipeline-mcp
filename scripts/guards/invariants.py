@@ -56,6 +56,8 @@ SCENARIOS = ("tests", "scenarios")
 ROUTES = ("tests", "routes")
 FACT_TYPES = ("core", "contracts", "fact.py")
 OBSERVATIONS = ("tests", "harness", "observations.yaml")
+HOOK_SETTINGS = (".claude", "settings.json")
+HOOKS = (".claude", "hooks")
 
 
 def _at(root: Path, parts: tuple[str, ...]) -> Path:
@@ -947,6 +949,49 @@ def mirrored_declaration(root: Path = ROOT) -> list[str]:
 
 
 
+
+# Путь хука в объявлении — от корня проекта через подстановку Claude Code, поэтому и сверяется
+# он с деревом, а не с домашним каталогом автора.
+HOOK_PATH = re.compile(r"\$CLAUDE_PROJECT_DIR/(\.claude/hooks/[\w.-]+)")
+
+
+def _declared_hooks(root: Path) -> set[str] | None:
+    """None — объявление не читается: это отдельный исход, а не «объявлено ноль хуков»."""
+    settings = _at(root, HOOK_SETTINGS)
+    if not settings.exists():
+        return set()
+    try:
+        declared = json.loads(settings.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return set(HOOK_PATH.findall(json.dumps(declared.get("hooks", {}))))
+
+
+def hooks_off_declaration(root: Path = ROOT) -> list[str]:
+    """Хук объявлен путём, которого нет, — или лежит файлом, которого никто не зовёт.
+
+    Обе половины молчат по-своему: мёртвое объявление не падает, а незаявленный файл просто не
+    запускается — поэтому сверяются обе, и «хука нет» никогда не выглядит как «хук промолчал».
+    """
+    directory = _at(root, HOOKS)
+    settings = _at(root, HOOK_SETTINGS)
+    if not directory.is_dir() and not settings.exists():
+        return []
+    declared = _declared_hooks(root)
+    if declared is None:
+        return [f"{'/'.join(HOOK_SETTINGS)} не разбирается как JSON — не загрузится НИ ОДИН хук, "
+                "и это выглядит как их молчание"]
+    present = {f"{'/'.join(HOOKS)}/{p.name}" for p in (directory.iterdir() if directory.is_dir() else ())
+               if p.is_file() and not p.name.startswith(".")}
+    notes = [f"{rel} объявлен в {'/'.join(HOOK_SETTINGS)}, а файла нет — событие приходит, "
+             "запускать нечего, и отказ выглядит как молчание"
+             for rel in sorted(declared - present)]
+    notes += [f"{rel} лежит в дереве, а объявления в {'/'.join(HOOK_SETTINGS)} у него нет — "
+              "код есть, срабатывать ему не на чем"
+              for rel in sorted(present - declared)]
+    return notes
+
+
 def _zones_of(path: Path) -> set[str]:
     """Зоны, объявленные строками таблицы в этом каталоге."""
     if not path.exists():
@@ -996,7 +1041,8 @@ HARD = (("пропуск набора без покрытия в CI", skips_with
         ("модуль без единого читателя", module_without_reader),
         ("число джоб гейта мимо ci.yml", ci_jobs_off_docs),
         ("сценарий зовёт инструмент мимо описи", scenario_calls_unknown_tool),
-        ("факт мимо реестра типов", facts_outside_registry))
+        ("факт мимо реестра типов", facts_outside_registry),
+        ("хук мимо объявления", hooks_off_declaration))
 
 # Храповик: вниз можно, вверх нет. Потолок — в файле рядом, совет — как долг закрывается.
 RATCHETS = (

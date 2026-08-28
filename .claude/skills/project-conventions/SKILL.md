@@ -122,7 +122,7 @@ metadata:
    а не навигация по коду (владелец 2026-07-05). «4 уровня» — шаг мышления ([[engineering-questions]]),
    не артефакт в файле. Правишь файл — заодно пропалываешь его легаси-шапку: хук всё равно укажет на неё.
    **Проверяет не только хук, а гейт** (S24): правило живёт в `scripts/guards/comment_guard.py` (хук
-   `~/.claude/hooks/vpm-comment-guard.py` — шим сюда, копии правила нет), джоба CI `comment-guard`
+   `.claude/hooks/vpm-comment-guard.py` — шим сюда, копии правила нет), джоба CI `comment-guard`
    гоняет `--check` — пофайловый храповик против `scripts/guards/comment_guard_baseline.txt`. Новый файл
    идёт в замер с потолком **0**: длинная шапка в нём краснит гейт сразу, а не «когда-нибудь на
    прополке». Прополол — опусти потолок: `python3 scripts/guards/comment_guard.py --bless`.

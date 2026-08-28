@@ -7,7 +7,7 @@
 `docs/roadmap/_sessions.md` и commit: дубль декларации в прозе гниёт молча.
 
 ## Границы
-Единственная копия правила; хук `~/.claude/hooks/vpm-comment-guard.py` — шим сюда.
+Единственная копия правила; хук `.claude/hooks/vpm-comment-guard.py` — шим сюда.
 Режимы: `--hook` (PostToolUse: предупреждает), `--scan` (отчёт), `--check` (храповик:
 превышение = exit 1), `--bless` (переписать потолок после прополки).
 Границы текста в Python даёт `ast`+`tokenize`, в остальных языках — лексер `pygments`
