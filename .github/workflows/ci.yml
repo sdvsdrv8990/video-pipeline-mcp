@@ -28,6 +28,8 @@ jobs:
         run: ruff check .
       - name: mypy
         run: mypy
+      - name: import-linter (архитектурные контракты)
+        run: lint-imports
 
   test:
     name: test (in-process, script exit-code = gate)

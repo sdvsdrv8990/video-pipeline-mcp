@@ -77,6 +77,9 @@ dev = [
     "pre-commit>=3.8",
     "bandit>=1.7",
     "pip-audit>=2.7",
+    # Архитектурные контракты ОБЪЯВЛЕНИЕМ ([tool.importlinter] ниже), а не нашим обходчиком:
+    # этажность и границы Bounded Context держит библиотека, нам остаётся политика.
+    "import-linter>=2.14",
     # Пол по advisory (PYSEC-2026-3447): у раннера CI предустановлен уязвимый 79.0.1, и
     # `pip install -e ".[dev]"` его НЕ трогает. Пол в манифесте действует и на чистой
     # машине, и в CI — а больше объявить версию негде.
@@ -205,3 +208,21 @@ namespace_packages = true
 # `exclude = "core/providers/"` СНЯТ: он не работал — mypy идёт в провайдеров по импортам
 # из tools/media, а не обходом каталога, — и потому 15 ошибок типов там жили, пока сессии писали
 # «mypy PASS». Провайдеры давно не стабы: локальные адаптеры реальны и типизируются наравне.
+
+[tool.importlinter]
+# Корни графа — ПАКЕТЫ: `server.py` это модуль, и grimp его в корни не берёт. Этаж сервера
+# остаётся за нашей осью, а не додумывается контрактом, который библиотека судить не может.
+root_packages = ["tools", "core"]
+
+[[tool.importlinter.contracts]]
+name = "Этажность: инструменты над ядром, ядро о них не знает"
+type = "layers"
+layers = ["tools", "core"]
+
+[[tool.importlinter.contracts]]
+name = "Bounded Context: группы инструментов не знают друг о друге"
+type = "independence"
+modules = [
+    "tools.excel", "tools.filesystem", "tools.media", "tools.memory", "tools.montage",
+    "tools.search", "tools.structure", "tools.tables", "tools.uniqueness",
+]

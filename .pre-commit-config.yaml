@@ -17,6 +17,12 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+      - id: import-linter
+        name: import-linter (этажность и границы групп)
+        entry: .venv/bin/lint-imports
+        language: system
+        types: [python]
+        pass_filenames: false
       # Храповик считается по репозиторию целиком, поэтому имена файлов не передаём и
       # гоняем всегда: иначе координата, внесённая в нетронутый файл, проедет молча.
       - id: comment-guard

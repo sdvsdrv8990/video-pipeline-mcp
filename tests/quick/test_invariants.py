@@ -25,6 +25,7 @@ from invariants import (  # noqa: E402
     module_without_reader,
     status_off_registry,
     suites_off_catalog,
+    unfinished_in_server,
     used_before_declared,
 )
 
@@ -635,6 +636,16 @@ ok(not default_instead_of_declaration(make({"config/u.yaml": DECL,
    "имя декларации в комментарии ничего не грузит — читателем модуль не становится")
 ok(not default_instead_of_declaration(make({"core/z.py": NAMES + READS_ABSENT})),
    "деклараций нет вовсе — улики нет, а не «весь конфиг мимо»")
+
+print("\n== объявлено незавершённым ==")
+ok(len(unfinished_in_server(make({"core/z.py": "def f():\n    raise NotImplementedError\n"}))) == 1,
+   "стаб кричит — и прибавление такого крика становится решением, а не строкой между делом")
+ok(len(unfinished_in_server(make({"core/z.py": 'def f():\n    raise NotImplementedError("позже")\n'}))) == 1,
+   "форма с аргументом — тот же стаб: имя берётся из вызова, а не из голого узла")
+ok(not unfinished_in_server(make({"tests/t.py": "def f():\n    raise NotImplementedError\n"})),
+   "стаб в наборе тестов сервером не исполняется — не его зона")
+ok(not unfinished_in_server(make({"core/z.py": 'def f():\n    raise ValueError("x")\n'})),
+   "обычный отказ — не незавершённость: молчим")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

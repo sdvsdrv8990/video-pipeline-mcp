@@ -34,6 +34,7 @@ ORPHAN_BASELINE = Path(__file__).with_name("orphan_codes_baseline.txt")
 MIRROR_BASELINE = Path(__file__).with_name("mirror_baseline.txt")
 KNOB_BASELINE = Path(__file__).with_name("knob_reader_baseline.txt")
 ABSENT_KNOB_BASELINE = Path(__file__).with_name("absent_knob_baseline.txt")
+STUB_BASELINE = Path(__file__).with_name("stub_baseline.txt")
 FACT_EMITTER_BASELINE = Path(__file__).with_name("fact_emitters_baseline.txt")
 FACT_EXEMPT_BASELINE = Path(__file__).with_name("fact_exempt_baseline.txt")
 # Две ветки — это выбор, три и больше по одному значению — уже таблица.
@@ -1205,6 +1206,39 @@ def default_instead_of_declaration(root: Path = ROOT) -> list[str]:
     return notes
 
 
+def _raises_name(node: ast.Raise) -> str:
+    """Имя исключения у `raise X` и `raise X(...)` — иначе форма с аргументом уходит незамеченной."""
+    exc = node.exc
+    if isinstance(exc, ast.Call):
+        exc = exc.func
+    if isinstance(exc, ast.Name):
+        return exc.id
+    if isinstance(exc, ast.Attribute):
+        return exc.attr
+    return ""
+
+
+def unfinished_in_server(root: Path = ROOT) -> list[str]:
+    """Незавершённое, ОБЪЯВЛЕННОЕ в серверном коде: `raise NotImplementedError`.
+
+    Кричать о незавершённом — правило проекта, и храповик его не отменяет: он требует, чтобы
+    прибавление кричащего было РЕШЕНИЕМ (`--bless`), а не строкой, которую никто не заметил.
+    Тихая заглушка сюда не попадает по устройству — на то она и тихая; поэтому ноль на этой оси
+    означает «незавершённого не объявлено», а не «незавершённого нет».
+    """
+    notes = []
+    for source in _python_sources(root):
+        try:
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Raise) and _raises_name(node) == "NotImplementedError":
+                notes.append(f"{source.relative_to(root)}:{node.lineno} — объявлено незавершённым: "
+                             "стаб остаётся решением, а не строкой между делом")
+    return notes
+
+
 # Путь хука в объявлении — от корня проекта через подстановку Claude Code, поэтому и сверяется
 # он с деревом, а не с домашним каталогом автора.
 HOOK_PATH = re.compile(r"\$CLAUDE_PROJECT_DIR/(\.claude/hooks/[\w.-]+)")
@@ -1381,6 +1415,9 @@ RATCHETS = (
     ("ручка объявлена, а читателя нет", knob_without_reader, KNOB_BASELINE,
      "Ключ в config/*.yaml не грузит НИКТО: правка строки не меняет поведения. Либо читатель, "
      "либо снять строку — украшение хуже пустого места, оно обещает управление, которого нет"),
+    ("объявлено незавершённым", unfinished_in_server, STUB_BASELINE,
+     "Незавершённого стало больше. Кричать о нём правильно, но прибавление — "
+     "решение: либо доделать, либо --bless с объяснением, почему стаб остаётся"),
     ("конфигурация, которой нет: ключ читают с дефолтом", default_instead_of_declaration,
      ABSENT_KNOB_BASELINE,
      "Читают раздел декларации и спрашивают строку, которой в нём нет: либо объяви её в "
