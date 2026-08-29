@@ -1023,7 +1023,9 @@ def mirrored_declaration(root: Path = ROOT) -> list[str]:
 KNOB_NAME = 6
 # Ключи схемы адресуются библиотекой целиком: `properties.color.pattern` никто по имени не грузит.
 SCHEMA_SECTION = ("properties", "params")
-KNOB_READ = 0.5
+# Ключ ЗАПИСИ — имя ручки: несколько слов через `_`. Ключ КАРТЫ — величина предметной области
+# (`h264`, `float16`, `Encoder not found`), и по имени её не грузят по устройству.
+KNOB_WORDS = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def _code_names(root: Path) -> set[str]:
@@ -1099,11 +1101,15 @@ def _declaration_values(root: Path) -> set[str]:
 def knob_without_reader(root: Path = ROOT) -> list[str]:
     """Ручка объявлена, а грузить её некому: правка строки не меняет ПОВЕДЕНИЯ.
 
-    Обвиняется не всякий неупомянутый ключ — так набирается шум. Уликой ключ делает ЖИВАЯ секция
-    вокруг: больше половины соседей код называет по имени, значит запись читают полями, и молчит
-    именно этот. Где соседей не называют вовсе — это не запись, а карта, ключи которой приходят
-    данными (`codecs.by_name`, `dtype_alias`), и в коде их не бывает по устройству. Ключ, стоящий
-    в декларациях ещё и значением, — тоже величина предметной области, а не ручка.
+    Обвиняется не всякий неупомянутый ключ — так набирается шум. Уликой ключ делает ЗАПИСЬ вокруг:
+    её ключи — имена ручек (`log_blocked`, `scene_column`), а у карты ключами приходят величины
+    предметной области (`h264`, `float16`, `Encoder not found`), и в коде их не бывает по
+    устройству. Плюс хотя бы один сосед, названный кодом: секция, которой не читают вовсе, не
+    судится — улики нет. Ключ, стоящий в декларациях ещё и значением, — тоже величина, не ручка.
+
+    Честный предел: читателем считается ЛЮБОЙ модуль, назвавший имя, даже если он грузит другую
+    декларацию — `log_file` в `firewall.yaml` «читает» `core/runner/supervisor.py`. Поэтому улику
+    даёт форма ключа, а не доля читаемых соседей: от чужого однофамильца она не зависит.
     """
     if not (root / "config").is_dir():
         return []
@@ -1115,8 +1121,10 @@ def knob_without_reader(root: Path = ROOT) -> list[str]:
             continue
         if any(section in SCHEMA_SECTION for section in chain):
             continue
+        if "_" not in key or not all(KNOB_WORDS.match(s) for s in siblings):
+            continue
         read = [s for s in siblings if s != key and s in names]
-        if len(read) <= KNOB_READ * len(siblings):
+        if not read:
             continue
         notes.append(f"config/{origin}{where} — ручку никто не грузит, а соседей по секции "
                      f"({', '.join(read[:3])}) код читает: правка этой строки не меняет ничего")

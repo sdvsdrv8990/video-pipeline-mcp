@@ -597,6 +597,20 @@ ok(len(knob_without_reader(make({"config/u.yaml": RECORD, "core/z.py": READS_TWO
 ok(not knob_without_reader(make({"config/u.yaml": RECORD,
                                  "core/z.py": READS_TWO + 'c = obj.memory_file\n'})),
    "обращение к полю — настоящий читатель наравне со строкой-ключом")
+LOGGING = ("logging:\n  log_all_requests: false\n  log_suspicious: true\n"
+           "  log_blocked: true\n  log_file: p.log\n")
+ok(len(knob_without_reader(make({"config/f.yaml": LOGGING,
+                                 "core/z.py": 'a = cfg["log_suspicious"]\n'}))) == 3,
+   "запись судится по форме ключей: три мёртвые ручки видны, хотя читают меньше половины секции")
+ok(not knob_without_reader(make({"config/p.yaml": "fit:\n  dtype_alias:\n    float16: fp16\n    bfloat16: bf16\n",
+                                 "core/z.py": 'x = m["float16"]\n'})),
+   "ключ карты — величина предметной области, а не имя ручки из слов: молчим")
+ok(not knob_without_reader(make({"config/e.yaml": "failures:\n  by_reason:\n    Encoder not found: x\n"
+                                 "    missing_input_file: y\n",
+                                 "core/z.py": 'x = f["Encoder not found"]\n'})),
+   "среди ключей секции есть не-имя — секция карта целиком, обвинять соседей по ней нечего")
+ok(not knob_without_reader(make({"config/u.yaml": RECORD, "core/z.py": "x = 1\n"})),
+   "секцию не читают вовсе — улики нет, а не «все ручки мёртвые»")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
