@@ -8,6 +8,7 @@ tools/tables — данные таблиц (Категория 3): снапшо�
 
 from core.contracts import Fact, ToolResult
 from core.engine import Engine
+from core.tables import QUEUEABLE_ACTIONS
 from tools._schemas import SHEET, TABLE
 from tools._context import ANNOTATIONS_MODIFY, ANNOTATIONS_READONLY, ToolContext
 
@@ -166,8 +167,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         ("table_delete", "Таблицы: удалить строку", "Удалить строку по ID (через очередь).",
          {"type": "object", "properties": {"table": TABLE, "sheet": SHEET, "row_id": {"type": "string", "description": "ID строки"}}, "required": ["table", "sheet", "row_id"]},
          table_delete, ANNOTATIONS_MODIFY),
-        ("json_push_to_queue", "Таблицы: очередь → добавить", "Положить пишущую операцию (set/update/append/delete) в write.json.",
-         {"type": "object", "properties": {"table": TABLE, "action": {"type": "object", "description": "{action: set|update|append|delete, sheet, ...}"}}, "required": ["table", "action"]},
+        ("json_push_to_queue", "Таблицы: очередь → добавить", f"Положить пишущую операцию ({'/'.join(QUEUEABLE_ACTIONS)}) в write.json.",
+         {"type": "object", "properties": {"table": TABLE, "action": {"type": "object", "description": f"{{action: {'|'.join(QUEUEABLE_ACTIONS)}, sheet, ...}}"}}, "required": ["table", "action"]},
          json_push_to_queue, ANNOTATIONS_MODIFY),
         ("json_read_queue", "Таблицы: очередь → посмотреть", "Показать неприменённые операции очереди и строки, которых они коснутся.",
          {"type": "object", "properties": {"table": TABLE}, "required": ["table"]},

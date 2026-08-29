@@ -18,9 +18,15 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from typing import Literal, assert_never
 
 import yaml
 
+
+# Словарь событий лога cloudflared объявлен ОДИН раз: и производитель (`_classify_line`), и оба
+# потребителя судятся по нему. Вид, который потребитель забыл разобрать, называет mypy в гейте
+# (`assert_never`), а не тишина в рантайме.
+LineKind = Literal["url", "connected", "disconnected", "fatal", "error"]
 
 # Публичный URL quick-туннеля cloudflared печатает в свой поток вывода.
 _TRYCLOUDFLARE_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
@@ -154,7 +160,7 @@ class CloudflaredTunnel:
         )
 
     @staticmethod
-    def _classify_line(line: str) -> tuple[str | None, str | None]:
+    def _classify_line(line: str) -> tuple[LineKind | None, str | None]:
         """Классификация строки лога cloudflared.
 
         Возвращает ('url', <url>) | ('connected', None) | ('fatal', <текст>)
@@ -193,7 +199,10 @@ class CloudflaredTunnel:
             poll_fn: функция → код возврата процесса или None (жив ли он).
         """
         url = None
-        connected = False
+        # Счётчик, а не признак: cloudflared держит НЕСКОЛЬКО рёбер, и `Unregistered connIndex=2`
+        # при живых остальных не означает «связи нет». Супервизор считает так же — один словарь,
+        # одна арифметика.
+        connections = 0
         last_err = None
 
         for raw in lines:
@@ -203,14 +212,20 @@ class CloudflaredTunnel:
             if kind == "url":
                 url = val
             elif kind == "connected":
-                connected = True
+                connections += 1
+            elif kind == "disconnected":
+                # Последнее ребро потеряно ДО готовности: держать прежнее «соединено» значит отдать
+                # URL туннеля, которого уже нет. Ждём следующей регистрации.
+                connections = max(0, connections - 1)
             elif kind == "fatal":
                 raise TunnelError(f"cloudflared отказал: {val}")
             elif kind == "error":
                 last_err = val  # мягкая ошибка/ретрай — как контекст
+            elif kind is not None:
+                assert_never(kind)
 
             # Триггер готовности — наличие соединения (для quick ещё и URL).
-            if connected and (url is not None or self.mode == "named"):
+            if connections and (url is not None or self.mode == "named"):
                 self._public_url = url if url is not None else self._named_url()
                 return self._public_url
 
@@ -300,8 +315,10 @@ class CloudflaredTunnel:
                 self._connected = self._connections > 0
             elif kind == "url":
                 self._public_url = val
-            elif kind in ("error", "fatal"):
+            elif kind == "error" or kind == "fatal":
                 self._last_error = val
+            elif kind is not None:
+                assert_never(kind)
 
     def _start_supervisor(self):
         """Фоновый цикл: следит за процессом И соединением, дренажит stdout,

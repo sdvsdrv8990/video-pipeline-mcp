@@ -13,11 +13,16 @@
 """
 
 from __future__ import annotations
+from typing import Literal, get_args
+
 from core.contracts import ContractError
 
 # Действия, которые можно класть в очередь (пишущие примитивы).
 # get_column/get_row — чтения, в очередь НЕ кладутся (ИНСТРУКЦИЯ §4).
-QUEUEABLE_ACTIONS = {"set", "update", "append", "delete"}
+# Перечень объявлен ОДИН раз: и проверка входа, и обещание клиенту в описании инструмента берут
+# его отсюда, а не переписывают рядом прозой, которая разойдётся молча.
+QueueAction = Literal["set", "update", "append", "delete"]
+QUEUEABLE_ACTIONS: tuple[QueueAction, ...] = get_args(QueueAction)
 
 
 class TableError(ContractError):

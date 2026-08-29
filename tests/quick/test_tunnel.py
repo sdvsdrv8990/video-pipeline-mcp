@@ -87,6 +87,34 @@ def test_readiness_event_driven():
     url5 = t5._await_ready(iter(["INF Registered tunnel connection connIndex=0\n"]), alive)
     check("named: connected -> hostname URL", url5 == "https://mcp.example.com", url5)
 
+    # Потеря соединения ДО готовности: признак «соединено» обязан сброситься, иначе сервер отдаёт
+    # URL туннеля, которого уже нет. Обе стороны — потеря не пускает, повторная регистрация пускает.
+    lost_log = [
+        "INF Registered tunnel connection connIndex=0\n",
+        "INF Unregistered tunnel connection connIndex=0\n",
+        "INF |  https://gone.trycloudflare.com  |\n",
+    ]
+    t6 = CloudflaredTunnel(port=8080); t6.mode = "quick"
+    try:
+        t6._await_ready(iter(lost_log), exited)
+        check("quick: connection lost before URL is NOT ready", False)
+    except TunnelError:
+        check("quick: connection lost before URL is NOT ready", True)
+
+    t7 = CloudflaredTunnel(port=8080); t7.mode = "quick"
+    url7 = t7._await_ready(iter([*lost_log, "INF Registered tunnel connection connIndex=1\n"]), alive)
+    check("quick: re-registration after loss is ready again", url7 == "https://gone.trycloudflare.com", url7)
+
+    # Рёбер у cloudflared несколько: падение ОДНОГО при живых остальных готовность не отменяет.
+    t8 = CloudflaredTunnel(port=8080); t8.mode = "quick"
+    url8 = t8._await_ready(iter([
+        "INF Registered tunnel connection connIndex=0\n",
+        "INF Registered tunnel connection connIndex=1\n",
+        "INF Unregistered tunnel connection connIndex=0\n",
+        "INF |  https://multi.trycloudflare.com  |\n",
+    ]), alive)
+    check("quick: one edge of many lost -> still ready", url8 == "https://multi.trycloudflare.com", url8)
+
 
 def test_supervisor_backoff_and_status():
     t = CloudflaredTunnel(port=8080, config_path=CFG)
