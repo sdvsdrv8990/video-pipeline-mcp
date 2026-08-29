@@ -26,12 +26,16 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 BEHAVIOUR = ("tests/scenarios/test_scenarios.py", "tests/routes/test_routes.py")
 TESTS_CATALOG = ("tests", "CATALOG.md")
-GUARD_IN_ZONE = re.compile(r"scripts/guards/[\w.]+\.py")
+GUARD_IN_ZONE = re.compile(r"scripts/guards/[\w.]+\.py|\.claude/hooks/")
 LINE = re.compile(r"^\s{2}([✓✗]) (.+?)(?:\s{2}→ .*)?$")
 
 
 def suites(root: Path) -> list[str]:
-    """Карты цикла: поведение сервера, маршруты потоков и НАБОРЫ, судящие сторожей.
+    """Карты цикла: поведение сервера, маршруты потоков и НАБОРЫ, судящие машинерию.
+
+    Машинерия — это сторожа И хуки: сервер не импортирует ни тех, ни других, поэтому правка хука
+    без этой строки читалась бы как «ничего не изменилось» ровно так же, как когда-то правка
+    сторожа.
 
     Третья карта берётся из объявления (`tests/CATALOG.md`: строка набора, зона которого называет
     `scripts/guards/*.py`), а не выводится из дерева. Вывод пробовали: `test_findings_count.py`

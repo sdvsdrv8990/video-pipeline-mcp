@@ -33,6 +33,7 @@ DEAD_RECOVERY_BASELINE = Path(__file__).with_name("dead_recovery_baseline.txt")
 ORPHAN_BASELINE = Path(__file__).with_name("orphan_codes_baseline.txt")
 MIRROR_BASELINE = Path(__file__).with_name("mirror_baseline.txt")
 KNOB_BASELINE = Path(__file__).with_name("knob_reader_baseline.txt")
+ABSENT_KNOB_BASELINE = Path(__file__).with_name("absent_knob_baseline.txt")
 FACT_EMITTER_BASELINE = Path(__file__).with_name("fact_emitters_baseline.txt")
 FACT_EXEMPT_BASELINE = Path(__file__).with_name("fact_exempt_baseline.txt")
 # Две ветки — это выбор, три и больше по одному значению — уже таблица.
@@ -1131,6 +1132,79 @@ def knob_without_reader(root: Path = ROOT) -> list[str]:
     return notes
 
 
+def _declaration_keys(root: Path) -> set[str]:
+    """Все имена ключей деклараций — и разделов, и ручек."""
+    keys: set[str] = set()
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                keys.add(str(key))
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    for declaration in sorted((root / "config").rglob("*.yaml")):
+        walk(yaml.safe_load(declaration.read_text(encoding="utf-8")) or {})
+    return keys
+
+
+def _addressed_by(node: ast.AST) -> str | None:
+    """Ключ, которым добыт САМ приёмник: `cfg.get("раздел", {})` либо `cfg["раздел"]`."""
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get"
+            and node.args and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)):
+        return node.args[0].value
+    if (isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, str)):
+        return str(node.slice.value)
+    return None
+
+
+def default_instead_of_declaration(root: Path = ROOT) -> list[str]:
+    """Ключ читают с дефолтом, а в декларации его нет: значение живёт в коде, конфиг бессилен.
+
+    Зеркало «ручки без читателя»: там объявление без читателя, здесь читатель без объявления.
+    Обвиняется не всякий `.get(имя, дефолт)` — таких на дереве 64, и это заголовки HTTP, поля
+    JSON-RPC, параметры инструментов и разбор `/proc`, то есть данные запроса, а не конфигурация.
+    Уликой чтение делают два условия разом: модуль называет файл декларации СТРОКОЙ (в комментарии
+    имя ничего не грузит), а приёмник добыт ОБЪЯВЛЕННЫМ ключом — читают раздел декларации и
+    спрашивают в нём строку, которой там нет. Дефолт обязан быть литералом: `.get("раздел", {})` —
+    это спуск по декларации, а не ручка.
+    """
+    declarations = [f.name for f in sorted((root / "config").glob("*.yaml"))]
+    if not declarations:
+        return []
+    keys = _declaration_keys(root)
+    notes = []
+    for source in _python_sources(root):
+        try:
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        strings = [n.value for n in ast.walk(tree)
+                   if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+        if not any(name in text for text in strings for name in declarations):
+            continue
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "get" and len(node.args) == 2):
+                continue
+            key, default = node.args
+            if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                continue
+            if not isinstance(default, ast.Constant) or key.value in keys:
+                continue
+            section = _addressed_by(node.func.value)
+            if section is None or section not in keys:
+                continue
+            notes.append(f"{source.relative_to(root)}:{node.lineno} — `{key.value}` спрашивают "
+                         f"у раздела `{section}` с дефолтом {default.value!r}, а строки такой в "
+                         f"декларациях нет: значение живёт в коде, правка конфига бессильна")
+    return notes
+
+
 # Путь хука в объявлении — от корня проекта через подстановку Claude Code, поэтому и сверяется
 # он с деревом, а не с домашним каталогом автора.
 HOOK_PATH = re.compile(r"\$CLAUDE_PROJECT_DIR/(\.claude/hooks/[\w.-]+)")
@@ -1307,6 +1381,10 @@ RATCHETS = (
     ("ручка объявлена, а читателя нет", knob_without_reader, KNOB_BASELINE,
      "Ключ в config/*.yaml не грузит НИКТО: правка строки не меняет поведения. Либо читатель, "
      "либо снять строку — украшение хуже пустого места, оно обещает управление, которого нет"),
+    ("конфигурация, которой нет: ключ читают с дефолтом", default_instead_of_declaration,
+     ABSENT_KNOB_BASELINE,
+     "Читают раздел декларации и спрашивают строку, которой в нём нет: либо объяви её в "
+     "config/*.yaml, либо не притворяйся конфигурацией — именованная константа честнее"),
     ("объявлено сервером, но сценарием не покрыто", declared_but_unscripted, UNSCRIPTED_BASELINE,
      "Новое объявление без сценария. Покрытие пишется ОБЪЯВЛЕНИЕМ в tests/scenarios/*.yaml "
      "(`call` + `expect.code`), новый python-скрипт для этого не нужен — либо --bless с объяснением"),

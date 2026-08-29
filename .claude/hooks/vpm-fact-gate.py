@@ -100,6 +100,16 @@ BASH_MSG = """Гейт фактов: разрушительная команда
 Для правки на месте третий пункт заменяется на пост-условие: какая команда докажет, что правка
 попала (промах немой — exit 0 без изменений). См. `verified-edits`."""
 
+GROWTH_MSG = """Подсказка зоны: правка ДОБАВЛЯЕТ проверки в существующий набор {path}.
+
+Ответь двумя строками, потом повтори — пройдёт:
+1. Что стоит ЗАПАСОМ этого набора (строка ниже) — добавляемое попадает в него дословно?
+2. Не попадает — чья зона ближе и что мешает положить туда?
+
+Правило «не плодить» держится на обеих сторонах: новый набор рядом — решение, но и рост ВНУТРИ
+набора мимо его запаса делает набор разнородным ровно так же, а на это не смотрит ни одна ось.
+Выключить: VPM_FACT_GATE=off."""
+
 SHORT = "Гейт фактов ({n}-й отказ): факты по {what} не предъявлены — см. `verified-edits`."
 AGAIN = ("Гейт фактов: с прошлого отказа по {what} ты ничего не СМОТРЕЛ — ни grep, ни git log, ни чтения.\n"
          "Предъяви факты командой (её вывод и есть улика), потом повтори правку.")
@@ -242,6 +252,37 @@ def suite_birth(rel: str) -> bool:
     return bool(NEW_SUITE.match(rel)) and not (PROJ / rel).exists()
 
 
+CHECK_LINE = re.compile(r"^\s*(?:ok\(|assert |def test_|-\s*(?:name|call):)")
+
+
+def suite_growth(rel: str, added: str) -> bool:
+    """Рост ВНУТРИ набора: проверки прибавляются к существующему файлу тестов.
+
+    Рождение набора — соседняя дверь; здесь файл уже есть, и вопрос не «плодить ли», а «в своей ли
+    зоне он растёт». Пустая правка (переименование, чистка) двери не открывает: улика — добавленная
+    строка ПРОВЕРКИ, а не факт касания файла.
+    """
+    return (rel.startswith("tests/") and rel.endswith((".py", ".yaml", ".yml"))
+            and (PROJ / rel).exists()
+            and any(CHECK_LINE.match(line) for line in added.splitlines()))
+
+
+def zone_row(rel: str) -> str:
+    """Строка ЭТОГО набора из каталога зон: своя зона и свой запас, а не таблица целиком."""
+    catalog = PROJ / "tests" / "CATALOG.md"
+    name = Path(rel).name
+    if catalog.exists():
+        for line in catalog.read_text(encoding="utf-8").splitlines():
+            if line.startswith("| `") and name in line.split("|")[1]:
+                cells = [c.strip() for c in line.strip("|").split(" | ")]
+                if len(cells) >= 5:
+                    return (f"\n\nЗона {cells[0]}: {cells[1][:220]}"
+                            f"\n  ЗАПАС: {cells[3][:220]}"
+                            f"\n  Новый рядом оправдан: {cells[4][:120]}")
+    return (f"\n\nЗоны у {name} в tests/CATALOG.md НЕТ — набор растёт вне объявленной "
+            "ответственности, и это уже находка, а не вопрос.")
+
+
 def zone_hint() -> str:
     """Замер ВМЕСТО требования: таблица зон с запасами отдаётся сразу, её не надо просить."""
     catalog = PROJ / "tests" / "CATALOG.md"
@@ -257,10 +298,12 @@ def zone_hint() -> str:
             + "\n".join(rows))
 
 
-def verdict(rel: str) -> tuple[str, str, str] | None:
+def verdict(rel: str, added: str = "") -> tuple[str, str, str] | None:
     """(ключ, о чём, сообщение) для пути в дереве — либо None, если гейта он не касается."""
     if suite_birth(rel):
         return f"suite:{rel}", rel, SUITE_MSG.format(path=rel) + zone_hint()
+    if suite_growth(rel, added):
+        return f"zone:{rel}", rel, GROWTH_MSG.format(path=rel) + zone_row(rel)
     if gated(rel):
         return f"file:{rel}", rel, EDIT_MSG.format(path=rel) + radius_hint(rel)
     return None
@@ -270,7 +313,9 @@ def pre(data: dict, st: dict, sid: str) -> None:
     tool, inp = data.get("tool_name", ""), (data.get("tool_input") or {})
     if tool in ("Edit", "Write", "MultiEdit"):
         rel = in_tree(inp.get("file_path", ""))
-        found = verdict(rel) if rel else None
+        added = "\n".join([str(inp.get("content") or ""), str(inp.get("new_string") or "")]
+                          + [str(e.get("new_string") or "") for e in (inp.get("edits") or [])])
+        found = verdict(rel, added) if rel else None
         if not found:
             sys.exit(0)
         key, what, full = found
@@ -278,7 +323,7 @@ def pre(data: dict, st: dict, sid: str) -> None:
         raw = inp.get("command", "")
         # Запись файла из Bash — та же правка: цель ищется в команде, а не ожидается от Edit.
         for rel in written_paths(raw):
-            found = verdict(rel)
+            found = verdict(rel, raw)
             if found and found[0] not in st["cleared"]:
                 key, what, full = found
                 break

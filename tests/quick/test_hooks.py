@@ -135,6 +135,30 @@ def main() -> int:
        "«убедись, что гейт зелёный» — те же слова, но модальность отменяет утверждение")
     ok(not claim.search("тесты я пока не гонял"), "отсутствие заявления заявлением не считается")
 
+    print("§9 подсказка зоны: рост ВНУТРИ набора")
+    check = "ok(1, 'новая проверка')\n"
+    _, out, _ = fire("vpm-fact-gate.py", edit("tests/quick/test_invariants.py", new_string=check))
+    ok(decision(out) == "deny", "проверки прибавляются к существующему набору — подсказка ДО записи")
+    ok("ЗАПАС:" in reason(out),
+       "подсказка ДОСТАВЛЯЕТ запас именно этого набора: без него на «в своей ли зоне» не ответить")
+    _, out, _ = fire("vpm-fact-gate.py", edit("tests/quick/test_invariants.py", new_string="x = 1\n"))
+    ok(not out, "правка без новых проверок — переименование или чистка, дверь не открывается")
+    _, out, _ = fire("vpm-fact-gate.py",
+                     edit("tests/quick/test_ещё_один.py", tool="Write", content=check))
+    ok("РОЖДЕНИЕ" in reason(out),
+       "у несуществующего набора дверь другая: рождение судится «не плодить», а не запасом зоны")
+    gate2 = {"__name__": "не-главный", "__file__": str(HOOKS / "vpm-fact-gate.py")}
+    exec(compile((HOOKS / "vpm-fact-gate.py").read_text(encoding="utf-8"),
+                 str(HOOKS / "vpm-fact-gate.py"), "exec"), gate2)
+    ok("ЗАПАС: новые хуки" in gate2["zone_row"]("tests/quick/test_hooks.py"),
+       "запас берётся из СВОЕГО столбца каталога: столбцов пять, и «Зачем» стоит перед ним")
+    ok("НЕТ" in gate2["zone_row"]("tests/quick/test_безымянный.py"),
+       "набора нет в каталоге зон — подсказка говорит это прямо, а не молчит про отсутствие строки")
+    ok(gate2["suite_growth"]("tests/quick/test_hooks.py", check),
+       "предикат роста узнаёт свой случай сам, не полагаясь на порядок дверей в verdict")
+    ok(not gate2["suite_growth"]("tests/scenarios/ещё_не_рождённый.yaml", "- call: x\n"),
+       "файла ещё нет — это рождение, а не рост: расширять нечего, и запаса у него не бывает")
+
     print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")
     for fail in _fails:
         print(f"  ✗ {fail}")

@@ -71,8 +71,11 @@ def main() -> int:
     guards = {p.name for p in (ROOT / "scripts" / "guards").glob("*.py") if not p.name.startswith("_")}
     ok(any("routes" in s for s in roster) and any("scenarios" in s for s in roster),
        "сравниваются и сценарии, и маршруты потоков данных")
-    ok(sum(s.startswith("tests/quick/") for s in roster) == len(guards),
-       "каждый сторож на диске представлен в сравнении своим набором-домом")
+    ok(sum(s.startswith("tests/quick/") for s in roster) == len(guards) + 1,
+       "каждый сторож представлен своим домом, и сверх них ровно один — дом хуков")
+    ok("tests/quick/test_hooks.py" in roster,
+       "машинерия сессии тоже сравнивается: сервер не импортирует ни сторожей, ни хуков, и без "
+       "этой строки правка хука читается как «ничего не изменилось»")
     ok("tests/quick/test_findings_count.py" in roster,
        "набор, грузящий сторожа компиляцией из исходника, взят из ОБЪЯВЛЕНИЯ, а не выведен из дерева")
 

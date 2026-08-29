@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 from invariants import (  # noqa: E402
     codes_outside_registry, codes_without_emitter, dead_recovery_in_engine,
-    declared_but_unscripted, enum_without_values,
+    declared_but_unscripted, default_instead_of_declaration, enum_without_values,
     facts_exempt_from_observation, facts_outside_registry, facts_without_emitter,
     facts_without_observer, observation_incomplete,
     guard_without_home, hooks_off_declaration, knob_without_reader, zone_declared_twice,
@@ -611,6 +611,30 @@ ok(not knob_without_reader(make({"config/e.yaml": "failures:\n  by_reason:\n    
    "среди ключей секции есть не-имя — секция карта целиком, обвинять соседей по ней нечего")
 ok(not knob_without_reader(make({"config/u.yaml": RECORD, "core/z.py": "x = 1\n"})),
    "секцию не читают вовсе — улики нет, а не «все ручки мёртвые»")
+
+print("\n== конфигурация, которой нет ==")
+DECL = "limits:\n  max_size: 10\n"
+NAMES = 'DECLARATION = "config/u.yaml"\n'
+READS_ABSENT = 'x = cfg["limits"].get("max_retries", 3)\n'
+ok(len(default_instead_of_declaration(make({"config/u.yaml": DECL,
+                                            "core/z.py": NAMES + READS_ABSENT}))) == 1,
+   "читают раздел декларации и спрашивают строку, которой в нём нет — значение живёт в коде")
+ok(not default_instead_of_declaration(make({"config/u.yaml": "limits:\n  max_size: 10\n  max_retries: 3\n",
+                                            "core/z.py": NAMES + READS_ABSENT})),
+   "ключ объявлен — дефолт лишь страхует, правка конфига действует")
+ok(not default_instead_of_declaration(make({"config/u.yaml": DECL, "core/z.py": READS_ABSENT})),
+   "модуль не называет ни одной декларации — он их не грузит: это данные запроса, не конфигурация")
+ok(not default_instead_of_declaration(make({"config/u.yaml": DECL,
+                                            "core/z.py": NAMES + 'x = q["size"].get("min", 0)\n'})),
+   "приёмник добыт НЕобъявленным ключом — раздел принадлежит запросу, а не декларации")
+ok(not default_instead_of_declaration(make({"config/u.yaml": DECL,
+                                            "core/z.py": NAMES + 'x = cfg["limits"].get("nested", {})\n'})),
+   "дефолт не литерал — это спуск по декларации, а не ручка")
+ok(not default_instead_of_declaration(make({"config/u.yaml": DECL,
+                                            "core/z.py": '# грузим config/u.yaml\n' + READS_ABSENT})),
+   "имя декларации в комментарии ничего не грузит — читателем модуль не становится")
+ok(not default_instead_of_declaration(make({"core/z.py": NAMES + READS_ABSENT})),
+   "деклараций нет вовсе — улики нет, а не «весь конфиг мимо»")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
