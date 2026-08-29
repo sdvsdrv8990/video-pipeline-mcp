@@ -23,6 +23,7 @@ from invariants import (  # noqa: E402
     resources_off_inventory, scenario_calls_unknown_tool, skips_without_ci,
     ci_jobs_off_docs, dispatch_by_value, guards_off_catalog, mirrored_declaration,
     module_without_reader,
+    muted_refusal,
     status_off_registry,
     suites_off_catalog,
     unfinished_in_server,
@@ -646,6 +647,18 @@ ok(not unfinished_in_server(make({"tests/t.py": "def f():\n    raise NotImplemen
    "стаб в наборе тестов сервером не исполняется — не его зона")
 ok(not unfinished_in_server(make({"core/z.py": 'def f():\n    raise ValueError("x")\n'})),
    "обычный отказ — не незавершённость: молчим")
+
+print("\n== отказ погашен молча ==")
+ok(len(muted_refusal(make({"core/z.py": "def f():\n    try:\n        g()\n    except Exception:\n        return {}\n"}))) == 1,
+   "широкий except отдаёт пустоту вместо отказа — клиент считает её ответом")
+ok(not muted_refusal(make({"core/z.py": "def f():\n    try:\n        g()\n    except OSError:\n        return {}\n"})),
+   "узкий перехват назвал причину — это решение, а не глушение")
+ok(not muted_refusal(make({"core/z.py": 'def f():\n    try:\n        g()\n    except Exception as e:\n        return err(str(e))\n'})),
+   "пойманное названо и уехало отказом — обработчик говорит")
+ok(not muted_refusal(make({"core/z.py": "def f():\n    try:\n        g()\n    except Exception:\n        raise\n"})),
+   "исключение поднято дальше — гасить нечего")
+ok(not muted_refusal(make({"core/z.py": "def f():\n    try:\n        g()\n    except Exception:\n        print('сбой')\n"})),
+   "след оставлен — отказ не нем, даже если наверх ушла пустота")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

@@ -35,6 +35,7 @@ MIRROR_BASELINE = Path(__file__).with_name("mirror_baseline.txt")
 KNOB_BASELINE = Path(__file__).with_name("knob_reader_baseline.txt")
 ABSENT_KNOB_BASELINE = Path(__file__).with_name("absent_knob_baseline.txt")
 STUB_BASELINE = Path(__file__).with_name("stub_baseline.txt")
+MUTED_BASELINE = Path(__file__).with_name("muted_refusal_baseline.txt")
 FACT_EMITTER_BASELINE = Path(__file__).with_name("fact_emitters_baseline.txt")
 FACT_EXEMPT_BASELINE = Path(__file__).with_name("fact_exempt_baseline.txt")
 # Две ветки — это выбор, три и больше по одному значению — уже таблица.
@@ -1133,6 +1134,43 @@ def knob_without_reader(root: Path = ROOT) -> list[str]:
     return notes
 
 
+# Голос обработчика: он поднимает своё, называет пойманное или оставляет след. Ничего из этого —
+# отказ погашен, и наверх уходит пустота, неотличимая от честного «данных нет».
+SPEAKS = ("err", "log", "print", "warn", "trail", "refus")
+BROAD = {"Exception", "BaseException"}
+
+
+def muted_refusal(root: Path = ROOT) -> list[str]:
+    """Широкий `except`, гасящий отказ молча: сбой уезжает наверх пустым результатом.
+
+    Узкий перехват (`OSError` на чтении `/proc`, `ImportError` у необязательной библиотеки) —
+    решение о конкретной причине, и он сюда не попадает. Улику даёт именно ШИРИНА: `Exception`
+    ловит и опечатку в своём коде, и обрыв диска, а клиент получает «пусто» и считает её ответом.
+    """
+    notes = []
+    for source in _python_sources(root):
+        try:
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ExceptHandler) or node.type is None:
+                continue
+            caught = {ast.unparse(part) for part in
+                      (node.type.elts if isinstance(node.type, ast.Tuple) else [node.type])}
+            if not caught & BROAD:
+                continue
+            names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+            calls = {ast.unparse(n.func).lower() for n in ast.walk(node) if isinstance(n, ast.Call)}
+            if (any(isinstance(n, ast.Raise) for n in ast.walk(node))
+                    or (node.name and node.name in names)
+                    or any(word in call for call in calls for word in SPEAKS)):
+                continue
+            notes.append(f"{source.relative_to(root)}:{node.lineno} — широкий `except` гасит отказ "
+                         "молча: наверх уходит пустота, и клиент считает её ответом")
+    return notes
+
+
 def _declaration_keys(root: Path) -> set[str]:
     """Все имена ключей деклараций — и разделов, и ручек."""
     keys: set[str] = set()
@@ -1415,6 +1453,9 @@ RATCHETS = (
     ("ручка объявлена, а читателя нет", knob_without_reader, KNOB_BASELINE,
      "Ключ в config/*.yaml не грузит НИКТО: правка строки не меняет поведения. Либо читатель, "
      "либо снять строку — украшение хуже пустого места, оно обещает управление, которого нет"),
+    ("отказ погашен молча", muted_refusal, MUTED_BASELINE,
+     "Широкий `except` превратил сбой в пустой результат: назови причину узким перехватом, "
+     "либо отдай отказ кодом реестра, либо оставь след — молчание клиенту неотличимо от данных"),
     ("объявлено незавершённым", unfinished_in_server, STUB_BASELINE,
      "Незавершённого стало больше. Кричать о нём правильно, но прибавление — "
      "решение: либо доделать, либо --bless с объяснением, почему стаб остаётся"),

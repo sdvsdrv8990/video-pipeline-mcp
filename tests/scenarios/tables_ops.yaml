@@ -135,3 +135,29 @@
       with: {table: videos/uniq, row_id: VID_1}
       expect:
         ok: true
+
+- scenario: tbl_uniqueness_alerts_and_records_compensation
+  why: уникальный текст закрывает собой заспамленный фон, итог проходит — и приём обязан быть записан, а не растворён в среднем
+  given:
+    files:
+      videos/comp/read.json: |
+        {"SCRIPT_PATTERNS_USED": {"schema": {"pattern_description": {"type": "string", "writable": true}},
+          "rows": {"PAT_1": {"pattern_description": "совершенно иной ход мысли про морскую навигацию"},
+                   "PAT_2": {"pattern_description": "рецепт борща с копчёными рёбрами и свёклой"}}},
+         "SCENE_PROFILE": {"schema": {"fragment_type": {"type": "string", "writable": true},
+            "enabled": {"type": "boolean", "writable": true}, "niche_weight": {"type": "number", "writable": true}},
+          "rows": {"SP_1": {"fragment_type": "background", "enabled": true, "niche_weight": 1}}},
+         "ASSETS_USED": {"schema": {"asset_type": {"type": "string", "writable": true},
+            "global_asset_id": {"type": "string", "writable": true}},
+          "rows": {"AU_1": {"asset_type": "background", "global_asset_id": "BG_1"},
+                   "AU_2": {"asset_type": "background", "global_asset_id": "BG_1"},
+                   "AU_3": {"asset_type": "background", "global_asset_id": "BG_1"}}}}
+  when:
+    # Три применения ОДНОГО фона дают уникальность типа 1/3 — ниже критического порога, тогда как
+    # композиция (0,5·текст + 0,5·фон) остаётся выше порога сигнала. Этот разрыв и есть компенсация:
+    # слабое прошло за счёт сильного, и запись об этом обязана появиться.
+    - call: uniqueness_check
+      with: {table: videos/comp, row_id: PAT_1}
+      expect:
+        ok: true
+        facts: [UniquenessCompensated, UniquenessAlert]

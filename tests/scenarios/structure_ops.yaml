@@ -150,3 +150,23 @@
     - call: structure_find
       with: {text: такого-имени-нет}
       expect: {ok: true, data: {count: 0}}
+
+- scenario: str_existing_ancestor_is_adopted_only_on_request
+  why: каталог на диске без записи в реестре — разрыв адресации; присвоение обязано быть решением, а не автоматикой
+  given:
+    files:
+      niches/сирота/README.md: |
+        каталог создан мимо сервера — записи о нём в реестре нет
+  when:
+    # Без `adopt` сервер обязан ОТКАЗАТЬ: молча присвоить чужой каталог значит выдать
+    # незарегистрированное за своё.
+    - call: structure_create
+      with: {type: network, name: сеть, parent_path: "niches/сирота/networks/"}
+      expect:
+        ok: false
+        code: CHAIN_UNRESOLVED
+    - call: structure_create
+      with: {type: network, name: сеть, parent_path: "niches/сирота/networks/", adopt: true}
+      expect:
+        ok: true
+        facts: [EntityAdopted]
