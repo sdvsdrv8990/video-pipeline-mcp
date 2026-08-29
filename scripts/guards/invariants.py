@@ -33,6 +33,7 @@ DEAD_RECOVERY_BASELINE = Path(__file__).with_name("dead_recovery_baseline.txt")
 ORPHAN_BASELINE = Path(__file__).with_name("orphan_codes_baseline.txt")
 MIRROR_BASELINE = Path(__file__).with_name("mirror_baseline.txt")
 KNOB_BASELINE = Path(__file__).with_name("knob_reader_baseline.txt")
+RECORD_FIELD_BASELINE = Path(__file__).with_name("record_field_baseline.txt")
 ABSENT_KNOB_BASELINE = Path(__file__).with_name("absent_knob_baseline.txt")
 STUB_BASELINE = Path(__file__).with_name("stub_baseline.txt")
 MUTED_BASELINE = Path(__file__).with_name("muted_refusal_baseline.txt")
@@ -1435,6 +1436,70 @@ HARD = (("одну зону объявили два хозяина", zone_declar
         ("факт эмитится, а решения о наблюдении нет", facts_without_observer))
 
 # Храповик: вниз можно, вверх нет. Потолок — в файле рядом, совет — как долг закрывается.
+
+# Кто читает запись следа/журнала и кто её СОБИРАЕТ. Списки поимённые, а не «все файлы»: `.get`
+# по строке встречается всюду, и обвинять каждый значило бы выключить сторожа в первый же день.
+RECORD_READERS = ("scripts/guards/reproduce.py",)
+RECORD_WRITERS = ("tests/harness/scenario.py",)
+# Имена, которыми в этих файлах зовут САМУ запись. Прочие `.get` читают объявления, а не запись.
+RECORD_RECEIVERS = {"entry", "e", "rec", "record"}
+
+
+def _record_fields() -> set[str]:
+    """Объявленные поля записи — из модели, а не вторым списком рядом."""
+    sys.path.insert(0, str(ROOT))
+    from core.contracts.trail_record import RunSummary, TrailRecord
+    return set(TrailRecord.model_fields) | set(RunSummary.model_fields)
+
+
+def record_field_mismatch(root: Path = ROOT) -> list[str]:
+    """У записи спрашивают или в неё кладут поле, которого в объявлении нет.
+
+    Промах здесь НЕМОЙ по природе: `dict.get` вернёт `None`, и читатель примет отсутствие улики за
+    отсутствие в реальности. Мутация «переименовать `reaction_class`» когда-то оставляла всё
+    зелёным; писателя сервера теперь судит mypy по модели, а харнесс модель не импортирует
+    намеренно — он судит сервер снаружи, — поэтому его сторону и сторону читателя судит эта ось.
+    """
+    fields = _record_fields()
+    notes = []
+    for rel in RECORD_READERS:
+        source = root / rel
+        if not source.exists():
+            continue
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "get" and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id in RECORD_RECEIVERS and node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)
+                    and node.args[0].value not in fields):
+                notes.append(f"{rel}:{node.lineno} — у записи спрашивают поле "
+                             f"`{node.args[0].value}`, которого нет в объявлении "
+                             f"(core/contracts/trail_record.py)")
+    for rel in RECORD_WRITERS:
+        source = root / rel
+        if not source.exists():
+            continue
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            # Запись узнаётся по ПАРЕ ключей, а не по имени переменной: словарь ответа сервера
+            # (`ok`/`code`/`facts`) записью не является, и обвинять его нельзя.
+            if isinstance(node, ast.Dict):
+                keys = {k.value for k in node.keys
+                        if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+                if {"scenario", "ok"} <= keys:
+                    notes += [f"{rel}:{node.lineno} — в запись кладут поле `{key}`, которого нет "
+                              f"в объявлении (core/contracts/trail_record.py)"
+                              for key in sorted(keys - fields)]
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "write"):
+                named = {kw.arg for kw in node.keywords if kw.arg}
+                if "scenario" in named:
+                    notes += [f"{rel}:{node.lineno} — в запись кладут поле `{key}`, которого нет "
+                              f"в объявлении (core/contracts/trail_record.py)"
+                              for key in sorted(named - fields)]
+    return notes
+
+
 RATCHETS = (
     ("enum без значений", enum_without_values, BASELINE,
      "Долг вырос. Почини столбцы выше или объясни в ревью: --bless"),
@@ -1469,6 +1534,10 @@ RATCHETS = (
     ("объявлено ненаблюдаемым", facts_exempt_from_observation, FACT_EXEMPT_BASELINE,
      "Спросить реальность про этот факт нечем — и таких стало больше. Либо наблюдатель, либо "
      "инструмент, которого не хватает, чтобы наблюдатель стал возможен"),
+    ("поле записи мимо объявления", record_field_mismatch, RECORD_FIELD_BASELINE,
+     "У записи следа/журнала спрашивают или в неё кладут поле, которого нет в "
+     "core/contracts/trail_record.py. Промах немой: `dict.get` вернёт None, и отсутствие улики "
+     "сойдёт за отсутствие в реальности — объяви поле либо спрашивай объявленным именем"),
     ("объявлено фактом, а слать некому", facts_without_emitter, FACT_EMITTER_BASELINE,
      "Тип обещан контрактом (или наблюдателем), а сервер его не шлёт: либо путь, который шлёт, "
      "либо снять строку из KNOWN_FACT_TYPES / tests/harness/observations.yaml"),

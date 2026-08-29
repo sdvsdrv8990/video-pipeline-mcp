@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from core.contracts.trail_record import TrailRecord
 
 from ..contracts.error_detail import redact
 
@@ -80,22 +81,21 @@ class Trail:
             return
         self._step += 1
         error = getattr(result, "error", None)
-        entry = {
-            "ts": round(time.time(), 3),
-            "scenario": f"trail-{self.run}",
-            "step": self._step,
-            "level": "engine",
-            "tool": tool,
-            "args": redact(args) if self.record_args else {},
-            "ok": getattr(result, "status", "") == "success",
-            "code": getattr(error, "code", "") or "",
-            "message": getattr(error, "message", "") or "",
-            "reaction_class": getattr(error, "reaction_class", "") or "",
-            "recovery": _recovery(error),
-            "facts": [f.type for f in (getattr(result, "facts", None) or [])],
-            "data": redact(getattr(result, "data", None)) or {},
-        }
-        self._append(entry)
+        self._append(TrailRecord(
+            ts=round(time.time(), 3),
+            scenario=f"trail-{self.run}",
+            step=self._step,
+            level="engine",
+            tool=tool,
+            args=(redact(args) or {}) if self.record_args else {},
+            ok=getattr(result, "status", "") == "success",
+            code=getattr(error, "code", "") or "",
+            message=getattr(error, "message", "") or "",
+            reaction_class=getattr(error, "reaction_class", "") or "",
+            recovery=_recovery(error),
+            facts=[f.type for f in (getattr(result, "facts", None) or [])],
+            data=redact(getattr(result, "data", None)) or {},
+        ))
 
     def refusal(self, level: str, code: str, message: str, rpc: str = "", args: dict | None = None) -> None:
         """Отказ ДО диспетчера: периметр, личность, файрвол.
@@ -109,29 +109,34 @@ class Trail:
         if self.max_bytes and self._written >= self.max_bytes:
             return
         self._step += 1
-        self._append({
-            "ts": round(time.time(), 3),
-            "scenario": f"trail-{self.run}",
-            "step": self._step,
-            "level": level,
-            "tool": "",
-            "rpc": rpc,
-            "args": redact(args or {}) if self.record_args else {},
-            "ok": False,
-            "code": code,
-            "message": message,
-            "reaction_class": "",
-            "recovery": {},
-            "facts": [],
-            "data": {},
-        })
+        self._append(TrailRecord(
+            ts=round(time.time(), 3),
+            scenario=f"trail-{self.run}",
+            step=self._step,
+            level=level,
+            tool="",
+            rpc=rpc,
+            args=(redact(args or {}) or {}) if self.record_args else {},
+            ok=False,
+            code=code,
+            message=message,
+            reaction_class="",
+            recovery={},
+            facts=[],
+            data={},
+        ))
 
-    def _append(self, entry: dict) -> None:
-        """Единственное место записи на диск: два места разошлись бы по обработке отказа."""
+    def _append(self, record: TrailRecord) -> None:
+        """Единственное место записи на диск: два места разошлись бы по обработке отказа.
+
+        Принимает ОБЪЯВЛЕНИЕ формы, а не словарь: переименованное поле тогда ловит mypy у писателя,
+        а не тишина у читателя. `exclude_defaults` держит форму артефакта прежней — поля одного
+        производителя пишутся ровно там, где им есть что сказать.
+        """
         try:
             path = self._open()
             assert path is not None
-            line = json.dumps(entry, ensure_ascii=False) + "\n"
+            line = json.dumps(record.model_dump(exclude_defaults=True), ensure_ascii=False) + "\n"
             with path.open("a", encoding="utf-8") as fh:
                 fh.write(line)
             self._written += len(line.encode("utf-8"))

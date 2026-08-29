@@ -8,6 +8,7 @@ Standalone-прогон:  python tests/quick/test_what_if.py
 """
 import io
 import shutil
+import subprocess
 import sys
 import tempfile
 from contextlib import redirect_stdout
@@ -132,6 +133,53 @@ def main() -> int:
     text, _ = run([{"scenario": "alpha", "becomes": "vanished"}],
                   {"alpha · 1. шаг": True}, {"alpha · 1. шаг": True})
     ok("ждали vanished" in text, "заявленное исчезновение, которого не было, — не сбылось")
+
+    print("§10 новый файл доезжает в дерево кандидата: `git diff` его не содержит")
+    # Правка, добавляющая модуль, раскатывалась ПОЛОВИНОЙ: ссылки на него есть, файла нет, и
+    # сервер в дереве кандидата не поднимался вовсе.
+    repo = Path(tempfile.mkdtemp(prefix="vpm-untracked-"))
+    def git(*a):
+        return subprocess.run(["git", *a], cwd=repo, capture_output=True, text=True)
+    git("init", "-q"); git("config", "user.email", "t@t"); git("config", "user.name", "t")
+    (repo / "tracked.py").write_text("x = 1\n", encoding="utf-8")
+    (repo / ".gitignore").write_text("artifact.txt\n", encoding="utf-8")
+    git("add", "-A"); git("commit", "-qm", "init")
+    (repo / "core").mkdir()
+    (repo / "core" / "новый.py").write_text("y = 2\n", encoding="utf-8")
+    (repo / "artifact.txt").write_text("прогон\n", encoding="utf-8")
+
+    got = what_if.untracked(repo)
+    ok(got == ["core/новый.py"],
+       f"новый файл виден, отслеживаемый и игнорируемый — нет (получено {got})")
+
+    tree = Path(tempfile.mkdtemp(prefix="vpm-tree-")) / "tree"
+    tree.mkdir(parents=True)
+    carried = what_if.carry_untracked(tree, repo)
+    ok(carried == ["core/новый.py"] and (tree / "core" / "новый.py").exists(),
+       "новый файл перенесён вместе с каталогом — иначе импорт в дереве кандидата не найдёт модуль")
+    ok(not (tree / "artifact.txt").exists(),
+       "игнорируемое не переносится: артефакт прогона правкой не является")
+    shutil.rmtree(tree.parent, ignore_errors=True)
+
+    # СВЯЗЬ, а не часть: сегодня сломалось именно то, что дерево кандидата собиралось БЕЗ переноса.
+    built = what_if.candidate_tree("", repo)
+    try:
+        ok((built / "core" / "новый.py").exists(),
+           "дерево кандидата собрано ВМЕСТЕ с новым файлом — иначе правка раскатывается половиной")
+        ok(not (built / "artifact.txt").exists(),
+           "и без игнорируемого: дерево кандидата — правка, а не рабочий стол")
+    finally:
+        what_if.drop_tree(built, repo)
+
+    # База — ЧИСТЫЙ HEAD: новый файл принадлежит правке, а занесённый в базу он делает её химерой
+    # и красит там сторожа (у нового модуля на HEAD читателей нет).
+    base = what_if.candidate_tree("", repo, carry=False)
+    try:
+        ok(not (base / "core" / "новый.py").exists(),
+           "в базовую линию файлы правки не попадают — иначе сравниваем правку саму с собой")
+    finally:
+        what_if.drop_tree(base, repo)
+    shutil.rmtree(repo, ignore_errors=True)
 
     print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")
     for fail in _fails:

@@ -118,24 +118,61 @@ def load_intent(path: Path) -> dict:
     return data
 
 
-def candidate_tree(patch: str) -> Path:
-    """Копия HEAD в отдельном worktree с наложенным патчем. Рабочее дерево не трогаем вовсе."""
+def untracked(root: Path = ROOT) -> list[str]:
+    """НОВЫЕ файлы рабочего дерева. `git diff` их не содержит вовсе, поэтому правка, добавляющая
+    файл, доезжала в дерево кандидата половиной: ссылки на новый модуль есть, самого модуля нет.
+    Игнорируемое не берём — это артефакты прогонов, а не правка."""
+    done = subprocess.run(["git", "ls-files", "--others", "--exclude-standard", "-z"],
+                          cwd=root, capture_output=True, text=True)
+    return sorted(item for item in done.stdout.split("\0") if item)
+
+
+def carry_untracked(tree: Path, root: Path = ROOT) -> list[str]:
+    """Перенести новые файлы в дерево кандидата. Возвращает перенесённое — молчаливый перенос
+    нечем отличить от отсутствия новых файлов."""
+    carried = []
+    for rel in untracked(root):
+        source = root / rel
+        if not source.is_file():
+            continue
+        target = tree / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        carried.append(rel)
+    return carried
+
+
+def candidate_tree(patch: str, root: Path = ROOT, carry: bool = True) -> Path:
+    """Копия HEAD в отдельном worktree с наложенным патчем. Рабочее дерево не трогаем вовсе.
+
+    `carry` разводит два дерева: новый файл принадлежит ПРАВКЕ, а не HEAD. Занесённый в базовую
+    линию, он делает её химерой — код HEAD плюс файлы правки — и красит там сторожа (у нового
+    модуля на HEAD нет ни одного читателя). Ровно так и вышло: цикл поймал это сменой цвета,
+    о которой намерение не говорило.
+
+    `root` — параметр, а не константа: связь «дерево собрано И новые файлы в нём» проверяется
+    набором на своём временном репозитории, иначе тест бьёт по частям, а ломается связь.
+    """
     tmp = Path(tempfile.mkdtemp(prefix="vpm_whatif_"))
     tree = tmp / "tree"
     subprocess.run(["git", "worktree", "add", "--detach", str(tree), "HEAD"],
-                   cwd=ROOT, capture_output=True, text=True, check=True)
+                   cwd=root, capture_output=True, text=True, check=True)
     if patch.strip():
         applied = subprocess.run(["git", "apply", "--whitespace=nowarn", "-"], cwd=tree,
                                  input=patch, capture_output=True, text=True)
         if applied.returncode != 0:
-            drop_tree(tree)
+            drop_tree(tree, root)
             sys.exit(f"Патч не накладывается на HEAD:\n{applied.stderr[-1500:]}")
+    carried = carry_untracked(tree, root) if carry else []
+    if carried:
+        print(f"  новых файлов перенесено: {len(carried)} ({', '.join(carried[:4])}"
+              f"{' …' if len(carried) > 4 else ''})")
     return tree
 
 
-def drop_tree(tree: Path) -> None:
+def drop_tree(tree: Path, root: Path = ROOT) -> None:
     subprocess.run(["git", "worktree", "remove", "--force", str(tree)],
-                   cwd=ROOT, capture_output=True, text=True)
+                   cwd=root, capture_output=True, text=True)
     shutil.rmtree(tree.parent, ignore_errors=True)
 
 
@@ -215,11 +252,13 @@ def main() -> int:
     intent = load_intent(args.intent)
     patch = args.patch.read_text(encoding="utf-8") if args.patch else subprocess.run(
         ["git", "diff", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout
-    if not patch.strip():
-        sys.exit("Патча нет: незакоммиченных правок не найдено, а --patch не задан.")
+    if not patch.strip() and not untracked():
+        # Правка бывает и БЕЗ диффа — из одних новых файлов. Отвергать её как «патча нет» значит
+        # не судить самый частый вид прибавления: новый сторож, новый набор, новый модуль.
+        sys.exit("Патча нет: ни незакоммиченных правок, ни новых файлов, а --patch не задан.")
 
     print("Прогон на HEAD (базовая линия)…")
-    base = candidate_tree("")
+    base = candidate_tree("", carry=False)   # база — ЧИСТЫЙ HEAD, без файлов правки
     try:
         before = verdicts(base)
     finally:

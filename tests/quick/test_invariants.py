@@ -26,6 +26,7 @@ from invariants import (  # noqa: E402
     muted_refusal,
     status_off_registry,
     suites_off_catalog,
+    record_field_mismatch,
     unfinished_in_server,
     used_before_declared,
 )
@@ -661,6 +662,29 @@ ok(not muted_refusal(make({"core/z.py": "def f():\n    try:\n        g()\n    ex
    "след оставлен — отказ не нем, даже если наверх ушла пустота")
 
 print(f"\n{'='*50}")
+print("== поле записи мимо объявления: промах немой по природе ==")
+_REC = ('entry = {"scenario": s, "step": 1, "tool": t, "args": {}, "ok": True, "code": "",\n'
+        '         "message": "", "reaction_class": "", "recovery": {}, "facts": [], "data": {},\n'
+        '         "console": []}\n')
+ok(not record_field_mismatch(make({"tests/harness/scenario.py": _REC})),
+   "запись из объявленных полей молчит")
+ok(len(record_field_mismatch(make({
+    "tests/harness/scenario.py": _REC.replace('"console": []', '"console": [], "klass": ""')}))) == 1,
+   "лишнее поле у писателя названо: форма разошлась, а читатель об этом не узнает")
+ok(len(record_field_mismatch(make({
+    "scripts/guards/reproduce.py": 'x = entry.get("class")\n'}))) == 1,
+   "чтение записи именем ОБЪЯВЛЕНИЯ (`class`) поймано — у записи поле зовётся reaction_class")
+ok(not record_field_mismatch(make({
+    "scripts/guards/reproduce.py": 'x = entry.get("reaction_class")\n'})),
+   "объявленным именем спрашивать можно")
+ok(not record_field_mismatch(make({
+    "scripts/guards/reproduce.py": 'x = item.get("observes")\n'})),
+   "чужой словарь не запись: `.get` по объявлению не обвиняется")
+ok(not record_field_mismatch(make({
+    "tests/harness/scenario.py": 'observed = {"ok": True, "code": "", "klass": ""}\n'})),
+   "ответ сервера записью не является — узнаётся по ПАРЕ ключей scenario+ok, а не по одному")
+
+
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:
     print("ПРОВАЛЫ:")
