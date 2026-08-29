@@ -13,6 +13,14 @@
       as: tree
       expect:
         ok: true
+    # `manual` — режим, в котором сервер НАМЕРЕННО ничего не материализует и отдаёт работу
+    # инструментам: успех с пустым `created` здесь объявленное поведение, а не дефект. До этого
+    # шага его факт не рождался ни в одной записи.
+    - call: structure_create
+      with: {type: niche, name: ручная, mode: manual}
+      expect:
+        ok: true
+        facts: [CreationSkipped]
     - call: structure_resolve
       with: {path: niches/проба}
       expect:

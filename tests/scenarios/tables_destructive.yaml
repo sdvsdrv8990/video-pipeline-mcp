@@ -91,6 +91,13 @@
     - call: excel_move_column
       with: {path: books/move.xlsx, sheet: DATA, column: qty, to_index: 1}
       expect: {ok: false, code: COLUMN_HAS_DEPENDENTS, class: ai_recoverable, recovery: true}
+    # Столбец, от которого не зависит ни одна формула, переносится успешно: без этого шага покрыт
+    # только отказ, а факт переноса не рождался ни разу за всю историю записей.
+    - call: excel_move_column
+      with: {path: books/move.xlsx, sheet: DATA, column: total, to_index: 1}
+      expect:
+        ok: true
+        facts: [ColumnMoved]
 
 - scenario: ed7_delete_row_through_queue
   why: удаление строки идёт очередью, и до применения снапшот обязан остаться прежним

@@ -17,6 +17,13 @@
       with: {action: status}
       expect:
         ok: true
+    # `spec` отдаёт спеку модели (`ModelSpecRead`), а опись рождает свой факт — и до этого шага он
+    # не появлялся ни в одной записи: пустой список установленного тоже опись.
+    - call: media_models
+      with: {scope: installed}
+      expect:
+        ok: true
+        facts: [ModelsListed]
 
 - scenario: media_refusal_is_loud_and_coded
   why: отсутствующая модель обязана давать код реестра, а не пустой успех — иначе ИИ ждёт файла, которого не будет

@@ -152,6 +152,8 @@ def main() -> int:
                  str(HOOKS / "vpm-fact-gate.py"), "exec"), gate2)
     ok("ЗАПАС: новые хуки" in gate2["zone_row"]("tests/quick/test_hooks.py"),
        "запас берётся из СВОЕГО столбца каталога: столбцов пять, и «Зачем» стоит перед ним")
+    ok("scenarios/" in gate2["zone_row"]("tests/scenarios/media_ops.yaml"),
+       "зона объявлена КАТАЛОГУ, а не файлу — подсказка находит хозяина сценариев, а не врёт «зоны нет»")
     ok("НЕТ" in gate2["zone_row"]("tests/quick/test_безымянный.py"),
        "набора нет в каталоге зон — подсказка говорит это прямо, а не молчит про отсутствие строки")
     ok(gate2["suite_growth"]("tests/quick/test_hooks.py", check),

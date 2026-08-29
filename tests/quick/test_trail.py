@@ -272,6 +272,22 @@ ok(len(untested2) == 1 and "ColumnMoved" in untested2[0],
 empty_stale, empty_untested = exemptions([], {"AUTH_FAILED"}, {"ColumnMoved"})
 ok(not empty_stale and len(empty_untested) == 1,
    "записи нет вовсе: устаревших не выдумываем, а непроверенным остаётся каждый освобождённый")
+TRAIL = [{"tool": "excel_read_range", "scenario": "trail-20260829-134007", "code": "COLUMN_NOT_FOUND",
+          "facts": []}]
+IN_SCENARIO = [{"tool": "excel_delete_column", "scenario": "ed5_delete_column_under_formula",
+                "code": "COLUMN_NOT_FOUND", "facts": ["ColumnDeleted"]}]
+ok(len(exemptions(TRAIL, {"COLUMN_NOT_FOUND"}, set())[0]) == 1,
+   "след СЕРВЕРА — улика о бое: там отказ случился вне всякого объявления")
+ok(not exemptions(IN_SCENARIO, {"COLUMN_NOT_FOUND"}, set(), frozenset(),
+                  {"ed5_delete_column_under_formula"})[0],
+   "отказ внутри объявленного сценария уликой о бое не считается: прогон был КРАСНЫМ, а не боевым")
+ok(not exemptions(IN_SCENARIO, {"COLUMN_NOT_FOUND"}, {"ColumnDeleted"}, frozenset(),
+                  {"ed5_delete_column_under_formula"})[1],
+   "факты берутся из ВСЕХ записей, даже красных: увиденное однажды увидено")
+ok(not exemptions([{"tool": "excel_read_range", "scenario": "res_refusals", "code": "INTERNAL_ERROR",
+                    "facts": []}], {"INTERNAL_ERROR"}, set(),
+                  {("res_refusals", "excel_read_range")})[0],
+   "шаг объявлен известной дырой (`open: F#`) — требовать на неё сценарий значит требовать желаемым нежелаемое")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

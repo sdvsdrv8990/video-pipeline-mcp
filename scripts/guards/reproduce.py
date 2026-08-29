@@ -378,28 +378,50 @@ def _reject_fiction(text: str) -> None:
         raise SystemExit("порождённая карта не проходит разбор харнесса:\n  " + "\n  ".join(notes))
 
 
-def exemptions(entries: list[dict], unscripted: set[str], exempt: set[str]) -> tuple[list[str], list[str]]:
+def exemptions(entries: list[dict], unscripted: set[str], exempt: set[str],
+               claimed: set[tuple[str, str]] = frozenset(),
+               scripted: set[str] = frozenset()) -> tuple[list[str], list[str]]:
     """Вердикт по ПОСЛАБЛЕНИЯМ: что из объявленных исключений живой прогон опроверг.
 
-    Послабление — не грех, а решение; проверяется оно не спором, а боем. Отсюда ровно два вопроса,
-    решаемых по записи: код, объявленный непокрытым, ВЫСТРЕЛИЛ у клиента (значит случается в работе,
-    и его никто не ждёт), и факт, объявленный ненаблюдаемым, не появился НИ РАЗУ (значит послабление
-    не проверено ничем — ни наблюдателем, ни прогоном).
+    Решаемых по записи вопросов два: код, объявленный непокрытым, ВЫСТРЕЛИЛ у клиента, и факт,
+    объявленный ненаблюдаемым, не появился НИ РАЗУ. Третий — «в записи есть поле, которым наблюдают
+    другие факты» — замерен и отвергнут: 33 пары, почти весь улов `args.path`, который есть у
+    чтения ровно так же, как у создания.
 
-    Третий вопрос замерен и отвергнут: «в записи есть поле, которым наблюдают другие факты» дал 33
-    пары на живом прогоне, и почти весь улов — `args.path`, который есть у чтения ровно так же, как
-    у создания. Наличие поля не отличает созданное от прочитанного.
+    Уликой о БОЕ служит только след сервера: отказ внутри объявленного сценария либо совпал с
+    объявлением (тогда код покрыт), либо прогон был КРАСНЫМ. Факты берутся из ВСЕХ записей —
+    увиденное однажды увидено. `claimed` — пары «сценарий + инструмент» с `open: F#`, где неверный
+    код уже назван дырой; ключ — инструмент, а не номер шага, который съезжает при правке.
     """
-    fired = {entry.get("code"): entry for entry in entries if entry.get("code")}
+    holes = {(entry.get("tool"), entry.get("code")) for entry in entries
+             if (str(entry.get("scenario") or ""), str(entry.get("tool") or "")) in claimed
+             and entry.get("code")}
     seen = {fact for entry in entries for fact in (entry.get("facts") or [])}
-    stale = [f"код `{code}` объявлен непокрытым сценарием, а в бою ВЫСТРЕЛИЛ "
-             f"({fired[code].get('tool') or '?'}, сценарий {fired[code].get('scenario') or '?'}): "
+    live = [entry for entry in entries
+            if (entry.get("tool"), entry.get("code")) not in holes
+            and str(entry.get("scenario") or "") not in scripted]
+    fired = {entry.get("code"): entry for entry in live if entry.get("code")}
+    stale = [f"код `{code}` объявлен непокрытым сценарием, а в СЛЕДЕ СЕРВЕРА он есть "
+             f"({fired[code].get('tool') or '?'}, запись {fired[code].get('scenario') or '?'}): "
              "послабление устарело — отказ случается у клиента, и никто его не ждёт"
              for code in sorted(unscripted & set(fired))]
     untested = [f"факт `{fact}` объявлен ненаблюдаемым и в записи не появился ни разу: "
                 "послабление не проверено ничем — ни наблюдателем, ни прогоном"
                 for fact in sorted(exempt - seen)]
     return stale, untested
+
+
+def _claimed_calls(root: Path = ROOT) -> set[tuple[str, str]]:
+    """Пары «сценарий + инструмент», объявленные известной дырой (`open: F#`)."""
+    out = set()
+    for path in sorted((root / "tests" / "scenarios").glob("*.yaml")):
+        for item in yaml.safe_load(path.read_text(encoding="utf-8")) or []:
+            if not isinstance(item, dict):
+                continue
+            for step in item.get("when") or []:
+                if isinstance(step, dict) and (step.get("expect") or {}).get("open"):
+                    out.add((str(item.get("scenario") or ""), str(step.get("call") or "")))
+    return out
 
 
 def _exempt_facts(root: Path = ROOT) -> set[str]:
@@ -439,7 +461,10 @@ def main() -> int:
         unscripted = {note.split("`")[1] for note in declared_but_unscripted() if "код отказа" in note}
         records = [record] if a.record else every_record()
         whole = [entry for path in records for entry in _entries(path)]
-        stale, untested = exemptions(whole, unscripted, _exempt_facts())
+        scripted = {str(item.get("scenario")) for path in sorted((ROOT / "tests" / "scenarios").glob("*.yaml"))
+                    for item in (yaml.safe_load(path.read_text(encoding="utf-8")) or [])
+                    if isinstance(item, dict) and item.get("scenario")}
+        stale, untested = exemptions(whole, unscripted, _exempt_facts(), _claimed_calls(), scripted)
         print(f"записей: {len(records)}, вызовов {len(whole)}")
         print(f"\n── ПОСЛАБЛЕНИЕ УСТАРЕЛО ({len(stale)}) ──")
         print("\n".join(f"  ✗ {note}" for note in stale) or "  (ничего)")

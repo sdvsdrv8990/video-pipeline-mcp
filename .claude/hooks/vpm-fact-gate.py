@@ -270,10 +270,13 @@ def suite_growth(rel: str, added: str) -> bool:
 def zone_row(rel: str) -> str:
     """Строка ЭТОГО набора из каталога зон: своя зона и свой запас, а не таблица целиком."""
     catalog = PROJ / "tests" / "CATALOG.md"
-    name = Path(rel).name
+    # Зона объявляется файлу ЛИБО каталогу: у сценариев хозяин — `scenarios/` целиком, и поиск
+    # только по имени файла выдавал бы «зоны нет» там, где она есть. Те же ключи, что у сторожа.
+    keys = [Path(rel).name, f"{Path(rel).parent.name}/"]
+    name = keys[0]
     if catalog.exists():
         for line in catalog.read_text(encoding="utf-8").splitlines():
-            if line.startswith("| `") and name in line.split("|")[1]:
+            if line.startswith("| `") and any(k in line.split("|")[1] for k in keys):
                 cells = [c.strip() for c in line.strip("|").split(" | ")]
                 if len(cells) >= 5:
                     return (f"\n\nЗона {cells[0]}: {cells[1][:220]}"
