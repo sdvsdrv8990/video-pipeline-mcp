@@ -135,7 +135,8 @@ class SceneBook:
         enabled = next((bool(row.get(toggle["enabled_column"])) for row in rows
                         if row.get(toggle["type_column"]) == toggle["fragment_type"]), None)
         el_cfg = self.config["scene"]["elements"]
-        used = any(row.get("slot_id") for _row_id, row in self._scene_rows(table, el_cfg, scene_id))
+        slot_column = (rig.get("variants") or {})["slot_column"]
+        used = any(row.get(slot_column) for _row_id, row in self._scene_rows(table, el_cfg, scene_id))
         advice = rig.get("advice") or {}
         key = ""
         # `None` = строки тумблера в канале нет вовсе (книга старой формы). Для совета это то же
@@ -219,17 +220,18 @@ class SceneBook:
         rig = (self.config.get("rig") or {}).get("variants") or {}
         rows = self._scene_rows(table, el_cfg, scene_id)
         by_slot: dict[str, list[dict]] = {}
+        slot_column, variant_column = rig["slot_column"], rig["id_column"]
         for _rid, row in rows:
-            if row.get("slot_id") and row.get("variant_id") in catalogue:
-                by_slot.setdefault(str(row["slot_id"]), []).append(catalogue[str(row["variant_id"])])
+            if row.get(slot_column) and row.get(variant_column) in catalogue:
+                by_slot.setdefault(str(row[slot_column]), []).append(catalogue[str(row[variant_column])])
         layers = []
         for row_id, row in rows:
             values = self._values(row, el_cfg["fields"])
             asset = values.pop("asset_path", "")
-            slot_id = str(row.get("slot_id") or "")
+            slot_id = str(row.get(slot_column) or "")
             slot = slots.get(slot_id) or {}
             parent_slot = str(slot.get("parent_slot") or "")
-            if variant_id := str(row.get("variant_id") or ""):
+            if variant_id := str(row.get(variant_column) or ""):
                 variant = self._variant(catalogue, variant_id, row_id)
                 asset = asset or variant.get(rig["fields"][1]) or ""
                 if parent_slot:

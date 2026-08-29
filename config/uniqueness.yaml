@@ -51,9 +51,7 @@ compensation:
   source_column: flag_source
   reason_column: reason
   neutralizing_statuses: [dismissed]      # такие записи в счёт эскалации НЕ идут
-  decision_sources: [human_decision, ai_decision]
   # Обоснование решения живёт в ПАМЯТИ проекта (числа — в таблицах, «почему» — в памяти, `10 §6`).
-  memory_file: project_memory.md
 
 # Что ТРЕБУЕТСЯ для каждой оценки. Нет входа → расчёт не выдумывается, а честно неполон:
 # в ответе перечисляется, чего не хватает. Это и есть «все данные есть» vs «чего-то нет».

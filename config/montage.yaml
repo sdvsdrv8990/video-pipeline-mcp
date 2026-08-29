@@ -131,4 +131,3 @@ target:
     status: render_status
     duration: duration_sec
     verified: file_verified
-    derived_from: derived_from_render_id

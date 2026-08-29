@@ -116,7 +116,4 @@ write_allowlist:
 
 # ═══ ЛОГИРОВАНИЕ ═══
 logging:
-  log_all_requests: false
   log_suspicious: true
-  log_blocked: true
-  log_file: "logs/firewall.log"
