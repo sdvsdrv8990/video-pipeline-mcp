@@ -44,6 +44,11 @@
       expect:
         ok: true
         facts: [SheetCopied]
+    # Имя листа валидирует openpyxl. Отказ объявлен клиенту чинимым — и приезжать обязан им,
+    # а не «зови человека»; следующий шаг доказывает, что отказавшая копия не осела на диске.
+    - call: excel_copy_sheet
+      with: {path: books/copy.xlsx, sheet: DATA, new_name: "DATA/BACKUP"}
+      expect: {ok: false, code: SHEET_COPY_ERROR, class: ai_recoverable, console_absent: Traceback}
     - call: inspect_file
       with: {path: books/copy.xlsx}
       expect:

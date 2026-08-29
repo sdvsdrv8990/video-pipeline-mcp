@@ -150,7 +150,13 @@ class ExcelEngine:
                              reason="Выбери свободное имя.")
         source = wb[sheet]
         copy = wb.copy_worksheet(source)
-        copy.title = new_name
+        try:
+            # Имя листа валидирует сама openpyxl (запрещённые символы). Голый ValueError доезжал
+            # до клиента как INTERNAL_ERROR «зови человека» — при том что чинит это он сам, и
+            # рецепт объявлен в реестре под SHEET_COPY_ERROR. Книга не сохранена, диск не тронут.
+            copy.title = new_name
+        except ValueError as e:
+            raise ExcelError("SHEET_COPY_ERROR", f"Ошибка копирования листа: {e}") from e
         self._save(wb, path)
         return {"path": path, "copied": sheet, "to": new_name, "sheets": wb.sheetnames}
 

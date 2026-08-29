@@ -31,9 +31,9 @@ class Recovery(BaseModel):
 # для валидации. При добавлении нового кода — добавить сюда И в yaml.
 KNOWN_ERROR_CODES = {
     "TOOL_NOT_FOUND", "VALIDATION_ERROR", "INTERNAL_ERROR",
-    "PATH_ESCAPE", "MISSING_TARGET_FILE", "FILE_NOT_FOUND",
-    "TABLE_NOT_FOUND", "STRUCTURE_INCOMPLETE",
-    "FILE_EXISTS", "DIRECTORY_NOT_EMPTY", "TEMPLATE_NOT_FOUND",
+    "PATH_ESCAPE", "FILE_NOT_FOUND",
+    "TABLE_NOT_FOUND",
+    "FILE_EXISTS", "TEMPLATE_NOT_FOUND",
     "NO_FRAGMENTS", "INVALID_EXTENSION",
     "PROVIDER_FAILED", "CONTENT_REJECTED", "LOCAL_INFERENCE_FAILED",
     "PROVIDER_NOT_CONFIGURED", "PROVIDER_EXHAUSTED",
@@ -57,8 +57,8 @@ KNOWN_ERROR_CODES = {
     # Таблицы: структура (Категория 2, excel_*)
     "WORKBOOK_NOT_FOUND", "SHEET_EXISTS", "LAST_SHEET",
     "COLUMN_EXISTS", "FORMULA_PROTECTED", "COLUMN_HAS_DEPENDENTS",
-    # Структура: реестр связей / ORPHAN
-    "UNLINKED_ENTITY", "ENTITY_NOT_FOUND",
+    # Структура: реестр связей
+    "ENTITY_NOT_FOUND",
     # Анализ данных
     "SHEET_COPY_ERROR",
     # Проверка целостности

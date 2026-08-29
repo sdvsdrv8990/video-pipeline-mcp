@@ -37,14 +37,6 @@ PATH_ESCAPE:
   recovery:
     reason: "Используй путь ВНУТРИ workspace, без '..' и абсолютных путей."
 
-MISSING_TARGET_FILE:
-  class: ai_recoverable
-  message_template: "Файл '{missing_path}' не найден."
-  recovery:
-    suggested_tool: "fs_create_file"
-    reason: "Создай файл перед чтением."
-
-# Добавлены коды из fs_*/table_* хендлеров (были хардкодом вне реестра).
 FILE_NOT_FOUND:
   class: ai_recoverable
   message_template: "Файл не найден."
@@ -65,12 +57,6 @@ FILE_EXISTS:
   recovery:
     reason: "Удали существующий файл или используй другое имя."
 
-DIRECTORY_NOT_EMPTY:
-  class: ai_recoverable
-  message_template: "Каталог не пуст: {path}"
-  recovery:
-    reason: "Используй force=true для удаления с содержимым или очисти каталог вручную."
-
 TEMPLATE_NOT_FOUND:
   class: ai_recoverable
   message_template: "Шаблон не найден: {template}"
@@ -88,15 +74,6 @@ INVALID_EXTENSION:
   message_template: "Неверное расширение файла: {path}"
   recovery:
     reason: "Используй расширение .py для Python-скриптов."
-
-STRUCTURE_INCOMPLETE:
-  class: ai_recoverable
-  message_template: "Структура неполна: отсутствуют {missing_fragments}."
-  recovery:
-    suggested_tool: "fs_create_project_structure"
-    reason: "Дострой недостающие фрагменты структуры."
-
-# ═══ Провайдеры (медиа) ═══
 
 PROVIDER_FAILED:
   class: server_recoverable
@@ -308,13 +285,6 @@ RECALC_UNAVAILABLE:
     reason: "Установи libreoffice-calc в окружении сервера — валидация формул требует реального пересчёта."
 
 # ═══ Структура: реестр связей / ORPHAN ═══
-
-UNLINKED_ENTITY:
-  class: ai_recoverable
-  message_template: "Сущность {name} не привязана к родителю типа {needs_parent_type}."
-  recovery:
-    suggested_tool: "structure_link"
-    reason: "Оставить как есть можно, но связь не установлена. Привяжи через structure_link (в одном месте)."
 
 ENTITY_NOT_FOUND:
   class: ai_recoverable

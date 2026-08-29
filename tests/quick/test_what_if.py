@@ -107,6 +107,32 @@ def main() -> int:
     ok(set(got.values()) == {True, False}, "цвет каждой сохранён: порядковый номер различает их")
     shutil.rmtree(tree, ignore_errors=True)
 
+    print("§8 появление проверки — объявляемый исход, а не всегда скрытый риск")
+    # Правка, ВЕСЬ смысл которой в новой проверке, цвет не меняет ни у кого. Без этого рода
+    # исхода она обречена падать в «скрытый риск», а третья колонка врать «не сбылось».
+    text, code = run([{"scenario": "alpha", "becomes": "appeared"}],
+                     {"alpha · 1. шаг": True},
+                     {"alpha · 1. шаг": True, "alpha · 2. новый шаг": True})
+    ok("✓ alpha → appeared" in text, "объявленное появление зачтено как исполнение")
+    ok("проверка появилась" not in text, "объявленное появление не числится скрытым риском")
+    ok(code == 0, "объявленное появление даёт exit 0")
+
+    text, code = run([], {"alpha · 1. шаг": True},
+                     {"alpha · 1. шаг": True, "alpha · 2. новый шаг": True})
+    ok("проверка появилась" in text and code == 1,
+       "НЕобъявленное появление по-прежнему риск: молчать о новой проверке нельзя")
+
+    print("§9 вставка шага: старая проверка исчезает под новым номером — объявляется отдельно")
+    text, code = run([{"scenario": "alpha", "becomes": "appeared"},
+                      {"scenario": "alpha", "becomes": "vanished"}],
+                     {"alpha · 3. хвост": True},
+                     {"alpha · 2. вставка": True, "alpha · 4. хвост": True})
+    ok(code == 0 and "✓ alpha → vanished" in text,
+       "перенумерация выражается парой исходов у ОДНОГО имени")
+    text, _ = run([{"scenario": "alpha", "becomes": "vanished"}],
+                  {"alpha · 1. шаг": True}, {"alpha · 1. шаг": True})
+    ok("ждали vanished" in text, "заявленное исчезновение, которого не было, — не сбылось")
+
     print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")
     for fail in _fails:
         print(f"  - {fail}")

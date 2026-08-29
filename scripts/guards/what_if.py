@@ -55,6 +55,11 @@ def suites(root: Path) -> list[str]:
         homes.append(str(path.relative_to(root)))
     return list(BEHAVIOUR) + sorted(homes)
 INTENT_KEYS = {"intent", "where", "why", "expect"}
+# Исходы сравнения. Смена цвета — не единственный род: правка, ВЕСЬ смысл которой в новой проверке,
+# цвет не меняет ни у кого, и без `appeared` она обречена падать в «скрытый риск», а третья колонка
+# врать «заявленное не сбылось». Исчезновение объявляется так же — иначе снятую проверку не отличить
+# от переименованной.
+OUTCOMES = {"red", "green", "appeared", "vanished"}
 EXPECT_KEYS = {"scenario", "becomes", "why"}
 
 
@@ -107,8 +112,9 @@ def load_intent(path: Path) -> dict:
         unknown = set(item) - EXPECT_KEYS
         if unknown:
             sys.exit(f"{path.name}.expect: неизвестные ключи {sorted(unknown)}")
-        if item.get("becomes") not in ("red", "green"):
-            sys.exit(f"{path.name}.expect: `becomes` — только `red` или `green` (у {item.get('scenario')!r})")
+        if item.get("becomes") not in OUTCOMES:
+            sys.exit(f"{path.name}.expect: `becomes` — одно из {sorted(OUTCOMES)} "
+                     f"(у {item.get('scenario')!r})")
     return data
 
 
@@ -145,49 +151,59 @@ def report(intent: dict, before: dict[str, bool], after: dict[str, bool]) -> int
     turned_green = {label for label in common if not before[label] and after[label]}
     appeared, vanished = set(after) - set(before), set(before) - set(after)
 
-    declared = {str(item["scenario"]): str(item["becomes"]) for item in intent["expect"]}
-    got: dict[str, str] = {}
-    for label in turned_red:
-        got.setdefault(_named(label), "red")
-    for label in turned_green:
-        got.setdefault(_named(label), "green")
+    # У одного имени исходов бывает НЕСКОЛЬКО (вставка шага разом рождает новые проверки и уносит
+    # старые под новым номером), поэтому и заявленное, и полученное — множества, а не одно значение.
+    declared: dict[str, set[str]] = {}
+    for item in intent["expect"]:
+        declared.setdefault(str(item["scenario"]), set()).add(str(item["becomes"]))
+    got: dict[str, set[str]] = {}
+    for labels, outcome in ((turned_red, "red"), (turned_green, "green"),
+                            (appeared, "appeared"), (vanished, "vanished")):
+        for label in labels:
+            got.setdefault(_named(label), set()).add(outcome)
 
     print(f"\n═══ НАМЕРЕНИЕ: {intent['intent']} ═══")
     print(f"  где: {intent['where']}\n  зачем: {intent['why']}")
     print(f"  проверок сравнено {len(common)}; сменили цвет {len(turned_red | turned_green)}")
 
     print("\n── ЗАЯВЛЕННОЕ СБЫЛОСЬ ──")
-    fulfilled = [name for name, color in declared.items() if got.get(name) == color]
-    for name in fulfilled:
-        print(f"  ✓ {name} → {declared[name]}")
+    fulfilled = [(name, out) for name, outs in sorted(declared.items())
+                 for out in sorted(outs) if out in got.get(name, set())]
+    for name, out in fulfilled:
+        print(f"  ✓ {name} → {out}")
     if not declared:
         print("  заявлено, что цвет не меняет НИЧЕГО — весь вердикт во второй колонке")
     elif not fulfilled:
         print("  (ничего)")
 
     print("\n── ИЗМЕНИЛОСЬ НЕЗАЯВЛЕННОЕ (скрытый риск) ──")
-    surprise = {name: color for name, color in got.items() if name not in declared}
-    for name, color in sorted(surprise.items()):
-        print(f"  ⚠ {name} → {color} — намерение об этом не говорило")
+    surprise = {(name, out) for name, outs in got.items() for out in outs
+                if out not in declared.get(name, set())}
+    for name, out in sorted(surprise):
+        if out in ("red", "green"):
+            print(f"  ⚠ {name} → {out} — намерение об этом не говорило")
     for label in sorted(appeared | vanished):
-        print(f"  ⚠ проверка {'появилась' if label in appeared else 'исчезла'}: {label}")
-    if not surprise and not (appeared | vanished):
+        outcome = "appeared" if label in appeared else "vanished"
+        if (_named(label), outcome) in surprise:
+            print(f"  ⚠ проверка {'появилась' if label in appeared else 'исчезла'}: {label}")
+    if not surprise:
         print("  (ничего — правка задела ровно то, что заявлено)")
 
     print("\n── ЗАЯВЛЕННОЕ НЕ СБЫЛОСЬ ──")
     gone = {_named(label) for label in vanished}
-    missed = [(name, color) for name, color in declared.items() if got.get(name) != color]
-    for name, color in missed:
-        if name in gone:
+    missed = [(name, out) for name, outs in sorted(declared.items())
+              for out in sorted(outs) if out not in got.get(name, set())]
+    for name, out in missed:
+        if name in gone and out not in ("vanished",):
             # Исчезнувшая проверка — не «цвет не сменился»: наблюдения не стало вовсе, и принять
             # это за «ничего не поменялось» значит принять отсутствие улики за чистый результат.
-            print(f"  ✗ {name}: ждали {color}, а проверки ИСЧЕЗЛИ — улики нет, это не «без изменений»")
+            print(f"  ✗ {name}: ждали {out}, а проверки ИСЧЕЗЛИ — улики нет, это не «без изменений»")
         else:
-            print(f"  ✗ {name}: ждали {color}, получили {got.get(name) or 'без изменений'}")
+            print(f"  ✗ {name}: ждали {out}, получили {sorted(got.get(name, set())) or 'без изменений'}")
     if not missed:
         print("  (ничего)")
 
-    return 0 if not (missed or surprise or appeared or vanished) else 1
+    return 0 if not (missed or surprise) else 1
 
 
 def main() -> int:

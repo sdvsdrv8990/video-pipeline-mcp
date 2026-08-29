@@ -11,7 +11,7 @@ def remove_path(srv, path: str) -> dict:
     """Файл исчез МИМО инструментов — так его сносит человек в проводнике, а не сервер."""
     target = Path(srv.workspace) / path
     if not target.exists():
-        return {"ok": False, "code": "MISSING_TARGET_FILE", "message": f"нечего убирать: {path}"}
+        return {"ok": False, "code": "STEP_TARGET_ABSENT", "message": f"нечего убирать: {path}"}
     target.unlink()
     return {"ok": True, "data": {"removed": path}}
 
@@ -114,7 +114,7 @@ def trail_says(srv, tool: str = "", level: str = "", code: str = "") -> dict:
                                          "step": entry.get("step")}}
     искали = ", ".join(f"{k}={v}" for k, v in
                        (("tool", tool), ("level", level), ("code", code)) if v) or "любую запись"
-    return {"ok": False, "code": "MISSING_TARGET_FILE",
+    return {"ok": False, "code": "STEP_TRAIL_RECORD_ABSENT",
             "message": f"в следе сервера нет СВЕЖЕЙ записи ({искали}): "
                        f"сервер не пишет то, чем воспроизводят"}
 

@@ -193,6 +193,11 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         advice_key = ("structure_create.custom_without_templates"
                       if dirs["source"] == "server_fallback" else "structure_create.modes")
         res["recommendations"] = ctx.advice.get(advice_key, path=f"{parent_path}{name}")
+        # Уведомление без рецепта — половина уведомления. Рецепт лежит в советах: реестр отказов
+        # такого кода больше не обещает, потому что отказом это и не приезжало никогда.
+        for o in orphan_notices:
+            res["recommendations"] += ctx.advice.get("structure.orphan_entity", child_id=o["id"],
+                                                     needs_parent_type=o["needs_parent_type"])
 
         # Названный ребёнок, которого нет среди объявленных детей ЭТОЙ ветки, раньше
         # просто исчезал: ИИ считал, что создал дерево, а создал корень. Дерево не
@@ -204,6 +209,9 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         res["children_unfulfilled"] = unfulfilled
         for u in unfulfilled:
             facts.append(Fact(type="ChildUnfulfilled", data=u))
+        if unfulfilled:
+            res["recommendations"] += ctx.advice.get("structure.children_unfulfilled",
+                                                     parent_path=f"{parent_path}{name}")
 
         # Единый блок «имя + адрес + ID + цепочка» на КАЖДЫЙ созданный объект.
         res["entities"] = [_entity_block(nid) for nid in created_ids]
@@ -563,6 +571,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         if not ctx.link_registry.check_integrity()["total_entities"]:
             data["cold_start"] = True
             data["recommendations"] = ctx.advice.get("structure_status.cold_start")
+        for o in orphans:
+            data.setdefault("recommendations", []).extend(
+                ctx.advice.get("structure.orphan_entity", child_id=o["id"],
+                               needs_parent_type=o["needs_parent_type"]))
         return ToolResult(status="success", data=data, facts=facts)
 
     async def structure_check_integrity() -> "ToolResult":
@@ -690,7 +702,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         description=(
             "Связывает сущность с родителем В ОДНОМ месте (реестр связей — источник истины): "
             "например конкурента с нашим каналом. Один вызов, не нужно править оба дерева — "
-            "экономит токены и исключает рассинхрон. Снимает уведомление UNLINKED_ENTITY. "
+            "экономит токены и исключает рассинхрон. Снимает уведомление о висящей сущности "
+            "(факт EntityOrphaned, поле orphans у structure_status). "
             "АДРЕС: надёжнее всего child_id/parent_id (ID однозначен всегда), можно child_path/parent_path; "
             "пара (тип, имя) работает, только пока имя уникально — в иерархии имена повторяются "
             "(два видео 'intro' в разных каналах), и тогда сервер вернёт список кандидатов с их ID."),
