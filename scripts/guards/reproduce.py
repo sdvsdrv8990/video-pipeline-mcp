@@ -61,6 +61,14 @@ def latest(explicit: str | None) -> Path:
     return max(files, key=lambda f: f.stat().st_mtime)
 
 
+def every_record() -> list[Path]:
+    """ВСЕ записи обоих источников. Вердикт о послаблении по одному файлу — артефакт выбора файла:
+    свежайшей записью бывает тонкий след на 41 вызов, и «факт не появился» означает в ней только
+    то, что прогон был коротким."""
+    return sorted(f for source in SOURCES if source.is_dir()
+                  for f in list(source.glob("trail-*.jsonl")) + list(source.glob("scenarios-*.jsonl")))
+
+
 def pick(entries: list[dict], tool: str | None, code: str | None) -> int:
     """Индекс ОТКАЗА, который воспроизводим. Последний подходящий: свежий интереснее старого."""
     for i in range(len(entries) - 1, -1, -1):
@@ -370,6 +378,40 @@ def _reject_fiction(text: str) -> None:
         raise SystemExit("порождённая карта не проходит разбор харнесса:\n  " + "\n  ".join(notes))
 
 
+def exemptions(entries: list[dict], unscripted: set[str], exempt: set[str]) -> tuple[list[str], list[str]]:
+    """Вердикт по ПОСЛАБЛЕНИЯМ: что из объявленных исключений живой прогон опроверг.
+
+    Послабление — не грех, а решение; проверяется оно не спором, а боем. Отсюда ровно два вопроса,
+    решаемых по записи: код, объявленный непокрытым, ВЫСТРЕЛИЛ у клиента (значит случается в работе,
+    и его никто не ждёт), и факт, объявленный ненаблюдаемым, не появился НИ РАЗУ (значит послабление
+    не проверено ничем — ни наблюдателем, ни прогоном).
+
+    Третий вопрос замерен и отвергнут: «в записи есть поле, которым наблюдают другие факты» дал 33
+    пары на живом прогоне, и почти весь улов — `args.path`, который есть у чтения ровно так же, как
+    у создания. Наличие поля не отличает созданное от прочитанного.
+    """
+    fired = {entry.get("code"): entry for entry in entries if entry.get("code")}
+    seen = {fact for entry in entries for fact in (entry.get("facts") or [])}
+    stale = [f"код `{code}` объявлен непокрытым сценарием, а в бою ВЫСТРЕЛИЛ "
+             f"({fired[code].get('tool') or '?'}, сценарий {fired[code].get('scenario') or '?'}): "
+             "послабление устарело — отказ случается у клиента, и никто его не ждёт"
+             for code in sorted(unscripted & set(fired))]
+    untested = [f"факт `{fact}` объявлен ненаблюдаемым и в записи не появился ни разу: "
+                "послабление не проверено ничем — ни наблюдателем, ни прогоном"
+                for fact in sorted(exempt - seen)]
+    return stale, untested
+
+
+def _exempt_facts(root: Path = ROOT) -> set[str]:
+    """Факты, освобождённые от наблюдения объявлением (`observes: нечего`)."""
+    path = root / "tests" / "harness" / "observations.yaml"
+    if not path.exists():
+        return set()
+    declared = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return {name for name, item in declared.items()
+            if isinstance(item, dict) and item.get("observes") == "нечего"}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--record", help="файл записи; по умолчанию самый свежий из следа и журнала")
@@ -381,12 +423,30 @@ def main() -> int:
     ap.add_argument("--promote", action="store_true",
                     help="карта вместо сценария: состояния из записи, переходы — решётка независимых вызовов")
     ap.add_argument("--write", help="дописать объявление в этот файл вместо вывода в stdout")
+    ap.add_argument("--exemptions", action="store_true",
+                    help="вердикт по послаблениям: что из объявленных исключений опроверг живой прогон")
     a = ap.parse_args()
 
     record = latest(a.record)
     entries = _entries(record)
     if not entries:
         raise SystemExit(f"{record}: ни одной записи о вызове")
+    if a.exemptions:
+        # Список непокрытых берётся у своего хозяина, а не считается здесь заново: два выражения
+        # одного факта разошлись бы молча.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from invariants import declared_but_unscripted
+        unscripted = {note.split("`")[1] for note in declared_but_unscripted() if "код отказа" in note}
+        records = [record] if a.record else every_record()
+        whole = [entry for path in records for entry in _entries(path)]
+        stale, untested = exemptions(whole, unscripted, _exempt_facts())
+        print(f"записей: {len(records)}, вызовов {len(whole)}")
+        print(f"\n── ПОСЛАБЛЕНИЕ УСТАРЕЛО ({len(stale)}) ──")
+        print("\n".join(f"  ✗ {note}" for note in stale) or "  (ничего)")
+        print(f"\n── ПОСЛАБЛЕНИЕ НЕ ПРОВЕРЕНО БОЕМ ({len(untested)}) ──")
+        print("\n".join(f"  ? {note}" for note in untested) or "  (ничего)")
+        return 0
+
     at = pick(entries, a.tool, a.code)
     entry = entries[at]
     # Предмет отказа: инструмент, если он был; иначе конверт — метод протокола и уровень.

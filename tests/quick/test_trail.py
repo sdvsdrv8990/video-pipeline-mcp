@@ -19,7 +19,8 @@ sys.path.insert(0, str(ROOT))
 from core.observability import Trail  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "scripts" / "guards"))
-from reproduce import _entries, _fill, artefacts, as_steps, depends, pick, promote, render  # noqa: E402
+from reproduce import (_entries, _fill, artefacts, as_steps, depends, exemptions,  # noqa: E402
+                       pick, promote, render)
 
 _checks = 0
 _fails: list[str] = []
@@ -256,6 +257,21 @@ try:
     ok(False, "за пределом решётка обязана отказать, а не родить нечитаемое")
 except SystemExit as exc:
     ok("минимизируй" in str(exc), "отказ за пределом называет, что делать дальше")
+
+print("\n== вердикт по послаблениям: что опроверг живой прогон ==")
+FIRED = [{"tool": "excel_read_range", "scenario": "res_refusals", "code": "INTERNAL_ERROR", "facts": []},
+         {"tool": "fs_read_file", "scenario": "res_refusals", "code": "", "facts": ["FileRead"]}]
+stale, untested = exemptions(FIRED, {"INTERNAL_ERROR"}, {"FileRead"})
+ok(len(stale) == 1 and "INTERNAL_ERROR" in stale[0] and "excel_read_range" in stale[0],
+   "код объявлен непокрытым, а в бою выстрелил — послабление устарело, и названы инструмент и сценарий")
+ok(not untested, "освобождённый факт в записи появился — послабление боем проверено, молчим")
+stale2, untested2 = exemptions(FIRED, {"AUTH_FAILED"}, {"ColumnMoved"})
+ok(not stale2, "выстреливший код не объявлен непокрытым — это не послабление, а обычный отказ")
+ok(len(untested2) == 1 and "ColumnMoved" in untested2[0],
+   "освобождённый факт не появился НИ РАЗУ — послабление не проверено ничем")
+empty_stale, empty_untested = exemptions([], {"AUTH_FAILED"}, {"ColumnMoved"})
+ok(not empty_stale and len(empty_untested) == 1,
+   "записи нет вовсе: устаревших не выдумываем, а непроверенным остаётся каждый освобождённый")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
