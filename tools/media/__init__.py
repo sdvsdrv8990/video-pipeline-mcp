@@ -33,11 +33,12 @@ def register(engine: Engine, ctx: ToolContext) -> None:
     """Регистрация группы media в движке."""
 
     def _rows(table: str, sheet: str) -> list[dict]:
-        """Строки листа провайдеров из данных канала (с ID строки — расход пишется именно ей)."""
-        try:
-            snapshot = ctx.state_manager.read_snapshot(table) or {}
-        except Exception:  # нет данных = нет строк
-            return []
+        """Строки листа провайдеров из данных канала (с ID строки — расход пишется именно ей).
+
+        Отсутствие данных читатель отдаёт `None` САМ, перехватывать здесь нечего: широкий `except`
+        гасил бы побег из workspace и битый снимок, выдавая «строк нет» вместо отказа.
+        """
+        snapshot = ctx.state_manager.read_snapshot(table) or {}
         rows = ((snapshot.get(sheet) or {}).get("rows") or {})
         # Служебное поле с «_» не уходит в параметры вызова: фильтр резолвера его отбрасывает.
         return [{**row, "_row_id": row_id} for row_id, row in rows.items()]
@@ -98,7 +99,12 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         ok, cfg = ctx.safe(lambda: resolver.config)
         if not ok:
             return cfg
-        rows, source, sheet = _source(table, cfg)
+        # Недоступность стола (побег из workspace, битый снимок) обязана стать кодом реестра,
+        # а не «строк нет»: пустой список неотличим от честно пустого листа.
+        ok, prepared = ctx.safe(lambda: _source(table, cfg))
+        if not ok:
+            return prepared
+        rows, source, sheet = prepared
 
         type_col = (cfg.get("source") or {}).get("type_column", "resource_type")
         types = [resource_type] if resource_type else sorted(
@@ -186,7 +192,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         ok, cfg = ctx.safe(lambda: resolver.config)
         if not ok:
             return cfg
-        rows, source, sheet = _source(table, cfg)
+        ok, prepared = ctx.safe(lambda: _source(table, cfg))
+        if not ok:
+            return prepared
+        rows, source, sheet = prepared
         ok, decision = ctx.safe(lambda: resolver.resolve(rows, resource_type, source=source))
         if not ok:
             return decision

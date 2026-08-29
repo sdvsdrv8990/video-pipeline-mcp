@@ -20,11 +20,13 @@ def register(engine: Engine, ctx: ToolContext) -> None:
 
     def _rows(table: str, sheet: str) -> dict:
         """Строки листа из данных проекта. Нет листа — пусто, а не исключение: отсутствие входа
-        это факт расчёта (`readiness`), а не ошибка вызова."""
-        try:
-            snapshot = ctx.state_manager.read_snapshot(table) or {}
-        except Exception:  # нет данных = нет входа
-            return {}
+        это факт расчёта (`readiness`), а не ошибка вызова.
+
+        Отсутствие данных читатель отдаёт `None` САМ, поэтому перехватывать здесь нечего: широкий
+        `except` гасил бы и побег из workspace, и битый снимок, выдавая клиенту «нет входа» вместо
+        отказа. Настоящий сбой уезжает наверх и становится кодом реестра в `ctx.safe`.
+        """
+        snapshot = ctx.state_manager.read_snapshot(table) or {}
         sheet_obj = snapshot.get(sheet) or {}
         return sheet_obj.get("rows") or {}
 
@@ -112,7 +114,11 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         sources = cfg.get("sources") or {}
 
         text_spec = sources.get("text") or {}
-        text_rows = _rows(table, text_spec.get("sheet", ""))
+        # Все чтения идут в ОДИН снимок, поэтому недоступность стола (побег из workspace, битый
+        # файл) приходит на первом же — здесь она и становится кодом реестра, а не пустым входом.
+        ok, text_rows = ctx.safe(lambda: _rows(table, text_spec.get("sheet", "")))
+        if not ok:
+            return text_rows
         text_col = text_spec.get("column", "")
         text = str((text_rows.get(row_id) or {}).get(text_col, "") or "") if row_id else ""
 

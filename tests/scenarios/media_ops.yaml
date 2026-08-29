@@ -24,6 +24,13 @@
       expect:
         ok: true
         facts: [ModelsListed]
+    # Тот же закон, что у уникальности: недоступность стола обязана приезжать КОДОМ, а не пустым
+    # списком строк — пустой список неотличим от честно пустого листа провайдеров.
+    - call: media_provider_status
+      with: {table: "../../etc"}
+      expect:
+        ok: false
+        code: PATH_ESCAPE
 
 - scenario: media_refusal_is_loud_and_coded
   why: отсутствующая модель обязана давать код реестра, а не пустой успех — иначе ИИ ждёт файла, которого не будет

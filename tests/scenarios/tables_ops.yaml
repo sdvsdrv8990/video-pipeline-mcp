@@ -161,3 +161,10 @@
       expect:
         ok: true
         facts: [UniquenessCompensated, UniquenessAlert]
+    # Побег из workspace обязан приезжать КОДОМ, а не «нет входа»: раньше широкий `except`
+    # в чтении строк гасил его и выдавал неполноту расчёта за ответ.
+    - call: uniqueness_check
+      with: {table: "../../etc", row_id: PAT_1}
+      expect:
+        ok: false
+        code: PATH_ESCAPE
