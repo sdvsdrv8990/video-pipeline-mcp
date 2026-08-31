@@ -972,16 +972,96 @@ def _same_fact(value: object, declared: object) -> bool:
     return value == declared
 
 
+# Путь чтения точнее имени: `spec.get("scene_column", …)` называет ключ, который в декларациях
+# не один, — по имени такое судить нельзя, а по пути `compensation.scene_column` можно.
+CONFIG_ROOT_NAMES = ("config", "cfg", "data", "declaration")
+_NOT_LITERAL = object()
+
+
+def _declared_paths(root: Path) -> dict[tuple[str, ...], dict[str, object]]:
+    """Каждый объявленный скаляр под ПОЛНЫМ путём: {(ключ,…): {файл:путь: значение}}."""
+    out: dict[tuple[str, ...], dict[str, object]] = {}
+
+    def walk(node: object, chain: tuple[str, ...], origin: str, text: str) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                walk(value, chain + (str(key),), origin, f"{text}.{key}")
+        elif isinstance(node, list):
+            if chain and all(not isinstance(v, (dict, list)) for v in node):
+                out.setdefault(chain, {})[f"{origin}:{text}"] = list(node)
+            else:
+                for i, value in enumerate(node):
+                    walk(value, chain, origin, f"{text}[{i}]")
+        elif node is not None and not isinstance(node, bool):
+            out.setdefault(chain, {})[f"{origin}:{text}"] = node
+
+    for declaration in sorted((root / "config").glob("*.yaml")):
+        walk(yaml.safe_load(declaration.read_text(encoding="utf-8")) or {}, (), declaration.name, "")
+    return out
+
+
+def _receiver_path(node: ast.AST, assigns: dict[str, ast.AST], depth: int = 0) -> tuple[str, ...] | None:
+    """Каким путём добыт приёмник `.get`: `()` — корень декларации, `None` — не декларация."""
+    while isinstance(node, ast.BoolOp) and node.values:      # `cfg.get("раздел") or {}`
+        node = node.values[0]
+    if depth > 6:
+        return None
+    if isinstance(node, ast.Attribute) and node.attr in CONFIG_ROOT_NAMES:
+        return ()
+    if isinstance(node, ast.Name):
+        if node.id in CONFIG_ROOT_NAMES:
+            return ()
+        origin = assigns.get(node.id)
+        return _receiver_path(origin, assigns, depth + 1) if origin is not None else None
+    key = _addressed_by(node)
+    if key is None:
+        return None
+    outer = _receiver_path(node.func.value if isinstance(node, ast.Call) else node.value, assigns, depth + 1)
+    return None if outer is None else outer + (key,)
+
+
+def _config_reads(tree: ast.AST) -> list[tuple[tuple[str, ...], ast.AST, int]]:
+    """`X.get("ключ", запасное)`, у которых путь приёмника разрешился до декларации."""
+    assigns: dict[str, ast.AST] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            assigns.setdefault(node.targets[0].id, node.value)
+    out = []
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get"
+                and len(node.args) == 2 and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)):
+            chain = _receiver_path(node.func.value, assigns)
+            if chain is not None:
+                out.append((chain + (node.args[0].value,), node.args[1], node.lineno))
+    return out
+
+
+def _literal(node: ast.AST) -> object:
+    """Значение литерала. `frozenset({…})` — перечень, а не вызов: literal_eval его сам не берёт,
+    и запасной список молча уходил бы от сторожа именно в той форме, в какой его чаще всего пишут."""
+    inner = node.args[0] if (isinstance(node, ast.Call) and len(node.args) == 1
+                             and getattr(node.func, "id", "") in ("frozenset", "set", "tuple", "list")) else node
+    try:
+        return ast.literal_eval(inner)
+    except (ValueError, SyntaxError, TypeError):
+        return _NOT_LITERAL
+
+
 def mirrored_declaration(root: Path = ROOT) -> list[str]:
     """Код держит ВТОРУЮ копию объявленного факта: то же имя, то же значение.
 
     Литерал сам по себе не улика: поиск по одному лишь равенству значений тонет в шуме. Уликой его
-    делает второй ИМЕНОВАННЫЙ источник: ключ, называющий одно-единственное значение во всех
-    декларациях, и то же имя в коде под тем же значением. Расхождение имён при равном значении —
-    совпадение (`status` = 403 против столбца таблицы), поэтому обвиняется только полное совпадение.
+    делает второй ИМЕНОВАННЫЙ источник, и называют его двумя способами. ПУТЬ ЧТЕНИЯ точнее:
+    `lim.get("limit_column", "daily_limit")` под разделом `limits` обвиняется, даже когда имя ключа
+    в декларациях не одно; по одному имени такое приходилось отпускать. Где путь приёмника не
+    выводится (раздел приехал параметром), судит ИМЯ — ключ, называющий одно-единственное значение
+    во всех декларациях. Расхождение имён при равном значении — совпадение (`status` = 403 против
+    столбца таблицы), поэтому обвиняется только полное совпадение.
     """
     singular = _singular_declarations(root)
-    if not singular:
+    paths = _declared_paths(root)
+    if not singular and not paths:
         return []
     notes = []
     sources = _python_sources(root)
@@ -990,7 +1070,23 @@ def mirrored_declaration(root: Path = ROOT) -> list[str]:
             tree = ast.parse(source.read_text(encoding="utf-8"))
         except SyntaxError:
             continue
+        judged: set[tuple[int, str]] = set()
+        for chain, node, line in _config_reads(tree):
+            if len(chain) < 2:
+                continue                      # ключ без раздела — это имя, а не путь: судит правило имени
+            places = {where: value for c, decl in paths.items() if c[-len(chain):] == chain
+                      for where, value in decl.items()}
+            if len(places) != 1:
+                continue                      # суффикс попал в несколько объявлений — улика неоднозначна
+            (where, declared), = places.items()
+            value = _literal(node)
+            if value is not _NOT_LITERAL and _same_fact(value, declared):
+                judged.add((line, chain[-1]))
+                notes.append(f"{source.relative_to(root)}:{line} — `{'.'.join(chain)}` = {value!r:.60} "
+                             f"повторяет объявление {where}: правка декларации молча разойдётся с кодом")
         for name, node, line in _named_literals(tree):
+            if (line, name) in judged:
+                continue
             bare = name.lower().strip("_")
             # Приставка снимается ТОЛЬКО когда точного имени нет: `default_unit` бывает и своим
             # ключом декларации, и запасным значением для ключа `unit` — сперва читаем буквально.
@@ -1002,13 +1098,8 @@ def mirrored_declaration(root: Path = ROOT) -> list[str]:
                         break
             if bare not in singular:
                 continue
-            # `frozenset({...})` — перечень, а не вызов: literal_eval его не берёт, и запасной
-            # список молча уходил бы от сторожа именно в той форме, в какой его чаще всего пишут.
-            inner = node.args[0] if (isinstance(node, ast.Call) and len(node.args) == 1
-                                     and getattr(node.func, "id", "") in ("frozenset", "set", "tuple", "list")) else node
-            try:
-                value = ast.literal_eval(inner)
-            except (ValueError, SyntaxError, TypeError):
+            value = _literal(node)
+            if value is _NOT_LITERAL:
                 continue
             path, declared = singular[bare]
             same = _same_fact(value, declared)

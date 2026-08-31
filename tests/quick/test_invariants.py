@@ -383,6 +383,24 @@ ok(not mirrored_declaration(make({"config/f.yaml": DECL_ONE,
 ok(len(mirrored_declaration(make({"config/f.yaml": "usage:\n  default_unit: call\n",
                                   "core/z.py": 'x = cfg.get("default_unit", "call")\n'}))) == 1,
    "`default_unit` объявлено САМО — имя читается буквально, а не как запасное для ключа `unit`")
+ok(len(mirrored_declaration(make({"config/f.yaml": DECL_TWICE,
+                                  "core/z.py": 'x = cfg.get("ip_blocklist", {}).get("ban_duration_hours", 24)\n'}))) == 1,
+   "имя названо в декларациях дважды, но ПУТЬ чтения один — по имени это отпускали, по пути обвиняем")
+ok(len(mirrored_declaration(make({"config/f.yaml": DECL_TWICE,
+                                  "core/z.py": 'sec = cfg.get("ip_blocklist") or {}\nx = sec.get("ban_duration_hours", 24)\n'}))) == 1,
+   "раздел добыт в переменную — путь всё равно собирается, иначе сторож слеп к обычной форме чтения")
+ok(not mirrored_declaration(make({"config/f.yaml": DECL_TWICE,
+                                  "core/z.py": 'x = cfg.get("ip_blocklist", {}).get("ban_duration_hours", 48)\n'})),
+   "путь тот же, значение другое — код решает сам, копией это не является")
+ok(not mirrored_declaration(make({"config/f.yaml": "a:\n  s:\n    ttl: 24\nb:\n  s:\n    ttl: 24\n",
+                                  "core/z.py": 'x = cfg.get("s", {}).get("ttl", 24)\n'})),
+   "суффикс пути попал в два объявления — с чем совпало, неизвестно: обвинять нельзя")
+ok(not mirrored_declaration(make({"config/f.yaml": DECL_TWICE,
+                                  "core/z.py": 'def f(spec):\n    return spec.get("ban_duration_hours", 24)\n'})),
+   "раздел приехал параметром — путь не выводится, а имя многозначно: это остаток слепой зоны")
+ok(len(mirrored_declaration(make({"config/f.yaml": DECL_ONE,
+                                  "core/z.py": 'x = cfg.get("ip_blocklist", {}).get("ban_duration_hours", 24)\n'}))) == 1,
+   "оба правила указывают на одну строку — нота одна: двойной счёт задрал бы потолок на пустом месте")
 
 
 print("\n== сторож мимо каталога зон ==")
