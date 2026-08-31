@@ -124,16 +124,27 @@ def main() -> int:
        "запущенный из ЧУЖОГО каталога шим судит репозиторий: корень взят от файла, не от cwd")
 
     print("§8 заявление о зелёном отличается от пожелания")
-    gate: dict = {}
+    gate: dict = {"__name__": "не-главный", "__file__": str(HOOKS / "vpm-delivery-gate.py")}
     exec(compile((HOOKS / "vpm-delivery-gate.py").read_text(encoding="utf-8"),
-                 str(HOOKS / "vpm-delivery-gate.py"), "exec"),
-         {**gate, "__name__": "не-главный", "__file__": str(HOOKS / "vpm-delivery-gate.py")}, gate)
+                 str(HOOKS / "vpm-delivery-gate.py"), "exec"), gate)
     claim, modal = gate["CLAIM"], gate["MODAL"]
     said, wished = "гейт зелёный, можно коммитить", "убедись, что гейт зелёный"
     ok(bool(claim.search(said)) and not modal.search(said), "«гейт зелёный» — утверждение")
     ok(bool(claim.search(wished)) and bool(modal.search(wished)),
        "«убедись, что гейт зелёный» — те же слова, но модальность отменяет утверждение")
     ok(not claim.search("тесты я пока не гонял"), "отсутствие заявления заявлением не считается")
+
+    print("§8а снесённый файл не заклинивает выбор прогона")
+    # Карту собирают ПОСЛЕ правки, поэтому снесённого пути в ней не будет никогда, а покрывать
+    # уже нечего: без отсечки гейт требовал пересборки, которая помочь не могла.
+    _all_sc = list(gate["scenarios_on_disk"]())
+    _radius = {"server.py": _all_sc}
+    ok(gate["map_untrustworthy"](["core/снесённого-нет.py"], _radius) == "",
+       "тронутый файл, которого нет на диске, картой не судится — покрывать нечего")
+    ok("нет в карте" in gate["map_untrustworthy"](["core/paths.py"], _radius),
+       "существующий файл вне карты по-прежнему запрещает выбирать прогон — отсечка не глушит своё")
+    ok("не знает сценариев" in gate["map_untrustworthy"](["server.py"], {"server.py": []}),
+       "карта без сегодняшних сценариев недостоверна раньше и независимо от разговора про файлы")
 
     print("§9 подсказка зоны: рост ВНУТРИ набора")
     check = "ok(1, 'новая проверка')\n"

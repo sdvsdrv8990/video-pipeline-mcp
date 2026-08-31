@@ -184,7 +184,9 @@ def map_untrustworthy(touched: list[str], radius: dict) -> str:
     missing = sorted(scenarios_on_disk() - known)
     if missing:
         return f"карта не знает сценариев: {', '.join(missing[:6])}" + (" …" if len(missing) > 6 else "")
-    blind = [f for f in touched if f not in radius]
+    # Файл, СНЕСЁННЫЙ правкой, в карте не окажется никогда: её собирают после, а покрывать
+    # уже нечего. Без этой отсечки гейт заклинивало на любом переносе — пересборка не помогала.
+    blind = [f for f in touched if f not in radius and (PROJ / f).exists()]
     if blind:
         return f"тронутых файлов нет в карте: {', '.join(blind[:4])}"
     return ""
