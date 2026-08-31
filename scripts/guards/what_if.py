@@ -158,13 +158,18 @@ def candidate_tree(patch: str, root: Path = ROOT, carry: bool = True) -> Path:
     subprocess.run(["git", "worktree", "add", "--detach", str(tree), "HEAD"],
                    cwd=root, capture_output=True, text=True, check=True)
     if patch.strip():
-        applied = subprocess.run(["git", "apply", "--whitespace=nowarn", "-"], cwd=tree,
+        # `--index`: без него удалённый правкой файл исчезает с диска, но остаётся в `git ls-files`,
+        # и сторож, берущий цели у git, умирает чтением несуществующего — вся его карта пропадает
+        # из сравнения как «проверка исчезла». Ровно так правка с переездом модуля и не судилась.
+        applied = subprocess.run(["git", "apply", "--index", "--whitespace=nowarn", "-"], cwd=tree,
                                  input=patch, capture_output=True, text=True)
         if applied.returncode != 0:
             drop_tree(tree, root)
             sys.exit(f"Патч не накладывается на HEAD:\n{applied.stderr[-1500:]}")
     carried = carry_untracked(tree, root) if carry else []
     if carried:
+        # Та же причина с другой стороны: перенесённый файл невидим для целей, взятых у git.
+        subprocess.run(["git", "add", "--", *carried], cwd=tree, capture_output=True, text=True)
         print(f"  новых файлов перенесено: {len(carried)} ({', '.join(carried[:4])}"
               f"{' …' if len(carried) > 4 else ''})")
     return tree

@@ -179,6 +179,29 @@ def main() -> int:
            "в базовую линию файлы правки не попадают — иначе сравниваем правку саму с собой")
     finally:
         what_if.drop_tree(base, repo)
+    print("§11 индекс дерева кандидата совпадает с диском: снос и новый файл видны целям от git")
+    # Сторож, берущий цели у `git ls-files`, читает их с диска. Разойдись индекс с диском — он
+    # умирает трейсом, и ВСЯ его карта пропадает из сравнения как «проверка исчезла».
+    patch = subprocess.run(["git", "diff", "HEAD"], cwd=repo, capture_output=True, text=True)
+    (repo / "tracked.py").unlink()
+    git("add", "-A"); git("commit", "-qm", "снос"); git("reset", "-q", "--soft", "HEAD~1")
+    deletion = subprocess.run(["git", "diff", "HEAD", "--cached"], cwd=repo,
+                              capture_output=True, text=True).stdout
+    git("reset", "-q", "HEAD")
+    (repo / "tracked.py").write_text("x = 1\n", encoding="utf-8")
+
+    built = what_if.candidate_tree(deletion, repo)
+    try:
+        listed = [x for x in subprocess.run(["git", "ls-files", "-z"], cwd=built, capture_output=True,
+                                            text=True).stdout.split("\0") if x]
+        ok("tracked.py" not in listed and not (built / "tracked.py").exists(),
+           f"снесённого правкой файла нет ни на диске, ни в индексе (числится: {listed})")
+        ok("core/новый.py" in listed and (built / "core" / "новый.py").exists(),
+           f"перенесённый новый файл ЧИСЛИТСЯ индексом — иначе цели от git его не видят ({listed})")
+    finally:
+        what_if.drop_tree(built, repo)
+    _ = patch
+
     shutil.rmtree(repo, ignore_errors=True)
 
     print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")

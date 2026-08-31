@@ -92,6 +92,24 @@ ok("решётка после значения в декларации не сч
 ok("не-Python цель не падает разбором Python", G.review("проба.yml", "a: [1, 2\n") == [],
    G.review("проба.yml", "a: [1, 2\n"))
 
+# Снесённый файл git числит до индексации — обычное состояние дерева посреди правки.
+_real_tracked = G._tracked
+try:
+    G._tracked = lambda: [ROOT / "server.py", ROOT / "core" / "снесённого-нет.py"]
+    try:
+        _out = G.collect()
+        ok("git числит снесённое — сторож даёт вердикт, а не трейс", set(_out) == {"server.py"}, sorted(_out))
+    except FileNotFoundError as e:
+        ok("git числит снесённое — сторож даёт вердикт, а не трейс", False, f"FileNotFoundError: {e}")
+    G._tracked = lambda: [ROOT / "core" / "снесённого-нет.py"]
+    try:
+        G.collect()
+        ok("на диске не осталось НИ ОДНОЙ цели — это отказ, а не пустой чистый замер", False, "молчание")
+    except SystemExit:
+        ok("на диске не осталось НИ ОДНОЙ цели — это отказ, а не пустой чистый замер", True)
+finally:
+    G._tracked = _real_tracked
+
 # Путь вне репозитория — отчёт, а не сырой ValueError.
 with tempfile.TemporaryDirectory() as tmp:
     alien = Path(tmp) / "чужой.py"

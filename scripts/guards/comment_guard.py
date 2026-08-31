@@ -275,7 +275,10 @@ def collect(targets: list[str] | None = None) -> dict[str, list[str]]:
                 raise SystemExit(f"comment_guard: цель не найдена — {p}")
             files += [p] if p.is_file() else [f for f in p.rglob("*.py") if "__pycache__" not in str(f)]
     else:
-        files = _tracked()
+        # Снесённый, но ещё не заиндексированный файл `git ls-files` называет: обычное состояние
+        # дерева посреди правки. Читать его — умереть трейсом вместо вердикта, и вся карта сторожа
+        # пропадает; текста в несуществующем файле нет, судить нечего.
+        files = [f for f in _tracked() if f.exists()]
     out = {_rel(f): review(_rel(f), f.read_text(encoding="utf-8", errors="replace"))
            for f in sorted(set(files))}
     if not out:
