@@ -43,3 +43,19 @@ class Declaration:
                     reason="Почини YAML — без него сервер не знает, как работать.") from e
             self._data, self._mtime = data, mtime
         return self._data
+
+    def need(self, *path: str) -> object:
+        """Объявленное значение по пути. Ключа нет — код реестра, а не запасное значение в коде.
+
+        Копия рядом с чтением (`sec.get("limit_column", "daily_limit")`) глушит опечатку в
+        декларации: правка конфига не действует и об этом никто не узнаёт.
+        """
+        node: object = self.data
+        for depth, key in enumerate(path, 1):
+            if not isinstance(node, dict) or key not in node:
+                raise self._error(
+                    "SCHEMA_INVALID", f"В {self.config_file.name} не объявлено `{'.'.join(path)}`.",
+                    reason=f"Добавь строку `{'.'.join(path[:depth])}`: сервер читает её оттуда, "
+                           f"своей копии у него нет.")
+            node = node[key]
+        return node

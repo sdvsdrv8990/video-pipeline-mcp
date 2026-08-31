@@ -55,14 +55,13 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 return list(sh.get("rows") or [])
         return []
 
-    def _source(table: str, cfg: dict) -> tuple[list[dict], str, str]:
+    def _source(table: str, resolver: ProviderResolver) -> tuple[list[dict], str, str]:
         """Строки провайдеров + откуда они: данные канала или дефолт декларации."""
-        src = cfg.get("source") or {}
-        sheet = src.get("sheet", "RESOURCE_LIMITS")
+        sheet = resolver.sheet
         rows = _rows(table, sheet)
         if rows:
             return rows, "project", sheet
-        rows = _declared(src.get("fallback_book", ""), sheet)
+        rows = _declared(resolver.fallback_book, sheet)
         return rows, ("declaration" if rows else "none"), sheet
 
     def _key_state(table: str, provider: str, resource_type: str, registry) -> dict:
@@ -101,12 +100,12 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             return cfg
         # Недоступность стола (побег из workspace, битый снимок) обязана стать кодом реестра,
         # а не «строк нет»: пустой список неотличим от честно пустого листа.
-        ok, prepared = ctx.safe(lambda: _source(table, cfg))
+        ok, prepared = ctx.safe(lambda: _source(table, resolver))
         if not ok:
             return prepared
         rows, source, sheet = prepared
 
-        type_col = (cfg.get("source") or {}).get("type_column", "resource_type")
+        type_col = resolver.type_column
         types = [resource_type] if resource_type else sorted(
             {str(r.get(type_col)) for r in rows if r.get(type_col)})
 
@@ -192,7 +191,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         ok, cfg = ctx.safe(lambda: resolver.config)
         if not ok:
             return cfg
-        ok, prepared = ctx.safe(lambda: _source(table, cfg))
+        ok, prepared = ctx.safe(lambda: _source(table, resolver))
         if not ok:
             return prepared
         rows, source, sheet = prepared

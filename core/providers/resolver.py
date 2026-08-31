@@ -36,24 +36,50 @@ class ProviderResolver:
     def config(self) -> dict:
         return self._decl.data
 
+    # ═══ Объявленные имена ═══
+    # Единственная дверь к именам столбцов: копия в вызывающем коде глушит опечатку в декларации.
+
+    @property
+    def sheet(self) -> str:
+        """Лист книги канала, где живут строки провайдеров."""
+        return str(self._decl.need("source", "sheet"))
+
+    @property
+    def fallback_book(self) -> str:
+        """Книга, откуда берутся строки, когда у канала своих нет."""
+        return str(self._decl.need("source", "fallback_book"))
+
+    @property
+    def type_column(self) -> str:
+        """Столбец с типом ресурса."""
+        return str(self._decl.need("source", "type_column"))
+
+    @property
+    def limit_column(self) -> str:
+        """Столбец суточного лимита."""
+        return str(self._decl.need("limits", "limit_column"))
+
+    @property
+    def usage_column(self) -> str:
+        """Столбец израсходованного за сутки."""
+        return str(self._decl.need("limits", "usage_column"))
+
     # ═══ Состояние строки ═══
 
     def _exhausted(self, row: dict) -> bool:
         """Лимит исчерпан? Отрицательный лимит означает «без ограничения»."""
-        lim = self.config.get("limits") or {}
-        limit = row.get(lim.get("limit_column", "daily_limit"))
-        usage = row.get(lim.get("usage_column", "current_usage")) or 0
+        limit = row.get(self.limit_column)
+        usage = row.get(self.usage_column) or 0
         if limit is None or not isinstance(limit, (int, float)):
             return False
-        if limit < float(lim.get("unlimited_below", 0)):
+        if limit < float(str(self._decl.need("limits", "unlimited_below"))):
             return False
         return float(usage) >= float(limit)
 
     def _warning(self, row: dict) -> bool:
         """Пора предупредить: расход дошёл до объявленного порога."""
-        lim = self.config.get("limits") or {}
-        threshold = row.get(lim.get("warning_column", "warning_threshold"))
-        usage = row.get(lim.get("usage_column", "current_usage")) or 0
+        threshold = row.get(str(self._decl.need("limits", "warning_column")))
+        usage = row.get(self.usage_column) or 0
         if threshold is None or not isinstance(threshold, (int, float)) or threshold < 0:
             return False
         return float(usage) >= float(threshold)
@@ -67,16 +93,15 @@ class ProviderResolver:
 
     def resolve(self, rows: list[dict], resource_type: str, source: str = "") -> dict:
         """Кем исполнять `resource_type` прямо сейчас: строка данных → решение для адаптера."""
-        src = self.config.get("source") or {}
-        type_col = src.get("type_column", "resource_type")
-        prov_col = src.get("provider_column", "provider")
-        fb_col = src.get("fallback_column", "fallback_provider")
+        type_col = self.type_column
+        prov_col = str(self._decl.need("source", "provider_column"))
+        fb_col = str(self._decl.need("source", "fallback_column"))
 
         candidates = [r for r in rows if r.get(type_col) == resource_type]
         if not candidates:
             raise ProviderError(
                 "PROVIDER_NOT_CONFIGURED", f"Для ресурса '{resource_type}' не объявлен ни один провайдер.",
-                reason=(f"Добавь строку в лист {src.get('sheet', 'RESOURCE_LIMITS')} книги канала: "
+                reason=(f"Добавь строку в лист {self.sheet} книги канала: "
                         "провайдер, модель, лимит. Провайдер живёт в данных, не в коде."),
                 suggested_tool="table_append")
 
@@ -84,7 +109,7 @@ class ProviderResolver:
         chain: list[str] = []
         skipped: list[dict] = []
         current = candidates[0]
-        depth = int(self.config.get("max_fallback_depth", 5))
+        depth = int(str(self._decl.need("max_fallback_depth")))
         for _ in range(depth):
             name = str(current.get(prov_col) or "")
             if not name or name in chain:
@@ -115,6 +140,7 @@ class ProviderResolver:
         raise ProviderError(
             "PROVIDER_EXHAUSTED",
             f"Все провайдеры для '{resource_type}' исчерпали лимит: {', '.join(chain)}.",
-            reason=("Подними daily_limit, обнули current_usage или добавь провайдера строкой в "
-                    "лист провайдеров — всё это данные канала, правятся table_update/table_append."),
+            reason=(f"Подними {self.limit_column}, обнули {self.usage_column} или добавь провайдера "
+                    f"строкой в лист {self.sheet} — всё это данные канала, правятся "
+                    f"table_update/table_append."),
             suggested_tool="table_update")

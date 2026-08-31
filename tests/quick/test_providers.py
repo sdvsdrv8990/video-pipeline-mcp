@@ -156,6 +156,45 @@ _cfg2.write_text(yaml.safe_dump(_data, allow_unicode=True), encoding="utf-8")
 ok("model" not in ProviderResolver(_cfg2).resolve(rows(), "image_generations")["params"],
    "смена meta_columns меняет состав параметров — конфиг не декоративный")
 
+print("== 8а. Опечатка в декларации не глушится копией в коде ==")
+# Книга канала с ЧУЖИМИ именами столбцов: имена берутся из декларации, и если код держит свою
+# копию, промах в декларации не отвергается — исчерпанный провайдер проходит как свободный.
+_exhausted_rows = [{"resource_type": "tts", "provider": "elevenlabs", "quota": 10, "used": 10,
+                    "fallback_provider": ""}]
+
+
+def _declared_as(mutate) -> Path:
+    data = yaml.safe_load(CFG.read_text(encoding="utf-8"))
+    mutate(data)
+    path = Path(tempfile.mkdtemp()) / "providers.yaml"
+    path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+    return path
+
+
+_named_ok = _declared_as(lambda d: d["limits"].update(limit_column="quota", usage_column="used"))
+try:
+    ProviderResolver(_named_ok).resolve(_exhausted_rows, "tts")
+    ok(False, "объявленные имена столбцов должны читаться: лимит исчерпан")
+except ProviderError as e:
+    ok(e.code == "PROVIDER_EXHAUSTED", f"имена столбцов взяты из декларации ({e.code})")
+
+_typo = _declared_as(lambda d: (d["limits"].update(limit_colunm="quota", usage_column="used"),
+                                d["limits"].pop("limit_column")))
+try:
+    _got = ProviderResolver(_typo).resolve(_exhausted_rows, "tts")
+    ok(False, f"опечатка в имени ключа отдала провайдера {_got['provider']} вместо отказа")
+except ProviderError as e:
+    ok(e.code == "SCHEMA_INVALID",
+       f"опечатка в ключе лимита → отказ, а не молчаливый выбор исчерпанного ({e.code})")
+
+_gone = _declared_as(lambda d: d.pop("limits"))
+try:
+    _got = ProviderResolver(_gone).resolve(_exhausted_rows, "tts")
+    ok(False, f"снос раздела limits отдал провайдера {_got['provider']} вместо отказа")
+except ProviderError as e:
+    ok(e.code == "SCHEMA_INVALID",
+       f"снесённый раздел лимитов → отказ: контроль расхода не выключается молча ({e.code})")
+
 print("== 9. Инструмент: кто исполняет и какой моделью (шаг 2) ==")
 import asyncio as _aio
 import json as _json
