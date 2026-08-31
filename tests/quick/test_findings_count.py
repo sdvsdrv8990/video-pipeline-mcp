@@ -139,7 +139,7 @@ def main() -> int:
     real = (ROOT / "docs" / "roadmap" / "02_findings.md").read_text(encoding="utf-8")
     mine = fc.scan(real)
     theirs = inv._registry_status(ROOT)
-    ok(set(mine) == set(theirs), f"оба читателя видят один набор строк: {len(mine)} и {len(theirs)}")
+    ok(set(mine) == set(theirs), f"оба читателя видят один набор строк  → {len(mine)} и {len(theirs)}")
     clash = sorted(f for f in set(mine) & set(theirs)
                    if ("закрыт" if mine[f] else "открыт") != theirs[f])
     ok(not clash, f"вердикт совпадает по каждой находке; расходятся: {clash}")

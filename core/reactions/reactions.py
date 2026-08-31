@@ -5,10 +5,10 @@ core/reactions/reactions.py — Чтение и маппинг реакций
 Чтение server_reactions.yaml и маппинг ошибок на ErrorDetail.
 """
 
-import yaml
 from pathlib import Path
 
-from core.contracts import ErrorDetail, Recovery
+from core.contracts import ContractError, ErrorDetail, Recovery
+from core.declaration import Declaration
 
 
 class Reactions:
@@ -30,15 +30,16 @@ class Reactions:
             self.load(config_path)
 
     def load(self, config_path: str | Path):
-        """Загрузка реакций из YAML.
+        """Прочитать реестр. Отсутствие файла — отказ, а не пустой реестр: без него КАЖДЫЙ код
+        вырождается в `UNKNOWN_ERROR`, и класс реакции, по которому клиент выбирает поведение,
+        пропадает молча. Присвоение только после успеха — перечитывание битого держит прежний.
 
         Args:
             config_path: Путь к server_reactions.yaml
         """
-        path = Path(config_path)
-        if path.exists():
-            with open(path, "r", encoding="utf-8") as f:
-                self.reactions = yaml.safe_load(f) or {}
+        self.reactions = Declaration(
+            config_path, ContractError, "реакций сервера",
+            "Заведи config/server_reactions.yaml — коды отказов и рецепты объявлены там.").data
 
     def get_error(self, code: str, raw_message: str = "", raw_response: dict | None = None) -> ErrorDetail:
         """Получение ErrorDetail по коду ошибки.

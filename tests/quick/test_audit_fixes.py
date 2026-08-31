@@ -472,6 +472,43 @@ async def main():
           (await _no_limit.call("занятой", {})).status == "success")
     await _t
 
+    # Реестр реакций: без него КАЖДЫЙ код вырождается в UNKNOWN_ERROR, и класс, по которому
+    # клиент выбирает поведение, пропадает молча.
+    import tempfile as _tf192
+    from core.contracts import ContractError as _CE192
+    from core.reactions import Reactions as _R192
+
+    _gone192 = Path(_tf192.mkdtemp()) / "server_reactions.yaml"
+    try:
+        _R192(_gone192)
+        check("нет реестра реакций → отказ, а не пустой реестр", False, "загрузился тихо")
+    except _CE192 as e:
+        check("нет реестра реакций → отказ, а не пустой реестр", e.code == "TEMPLATE_NOT_FOUND", e.code)
+
+    _broken192 = Path(_tf192.mkdtemp()) / "server_reactions.yaml"
+    _broken192.write_text("PATH_ESCAPE: [не словарь\n", encoding="utf-8")
+    try:
+        _R192(_broken192)
+        check("битый реестр реакций → код реестра, а не сырой ParserError", False, "загрузился тихо")
+    except _CE192 as e:
+        check("битый реестр реакций → код реестра, а не сырой ParserError", e.code == "SCHEMA_INVALID", e.code)
+    except Exception as e:
+        check("битый реестр реакций → код реестра, а не сырой ParserError", False, type(e).__name__)
+
+    # Компенсация проверяется на ВТОРОЙ операции: первая обязана успеть загрузить то,
+    # что перечитывание битого не имеет права снести.
+    _live192 = _R192(ROOT / "config" / "server_reactions.yaml")
+    check("боевой реестр даёт класс из yaml, а не unknown",
+          _live192.get_error("PATH_ESCAPE").reaction_class == "ai_recoverable",
+          _live192.get_error("PATH_ESCAPE").reaction_class)
+    try:
+        _live192.load(_broken192)
+    except _CE192:
+        pass
+    check("перечитывание битого держит ПРЕЖНИЙ реестр — отказы не обезличиваются на лету",
+          _live192.get_error("PATH_ESCAPE").reaction_class == "ai_recoverable",
+          _live192.get_error("PATH_ESCAPE").reaction_class)
+
     print()
     passed = sum(results)
     total = len(results)
