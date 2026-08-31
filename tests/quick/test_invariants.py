@@ -22,6 +22,7 @@ from invariants import (  # noqa: E402
     guard_without_home, hooks_off_declaration, knob_without_reader, zone_declared_twice,
     resources_off_inventory, scenario_calls_unknown_tool, skips_without_ci,
     ci_jobs_off_docs, dispatch_by_value, guards_off_catalog, mirrored_declaration,
+    declaration_loaded_privately,
     module_without_reader,
     muted_refusal,
     status_off_registry,
@@ -402,6 +403,20 @@ ok(len(mirrored_declaration(make({"config/f.yaml": DECL_ONE,
                                   "core/z.py": 'x = cfg.get("ip_blocklist", {}).get("ban_duration_hours", 24)\n'}))) == 1,
    "оба правила указывают на одну строку — нота одна: двойной счёт задрал бы потолок на пустом месте")
 
+
+print("\n== своя загрузка декларации мимо общей двери ==")
+DECL_FILE = {"config/uniqueness.yaml": "ngram:\n  size: 4\n"}
+ok(len(declaration_loaded_privately(make({**DECL_FILE,
+        "core/z.py": 'import yaml\ndata = yaml.safe_load(open("config/uniqueness.yaml").read())\n'}))) == 1,
+   "модуль называет декларацию И разбирает YAML сам — у отказа заводится своя политика")
+ok(not declaration_loaded_privately(make({**DECL_FILE,
+        "core/z.py": 'from core.declaration import Declaration\nd = Declaration("config/uniqueness.yaml", E, "s", "h").data\n'})),
+   "чтение через общую дверь не обвиняется — политика отказа одна на всех")
+ok(not declaration_loaded_privately(make({**DECL_FILE,
+        "core/z.py": 'import yaml\ndata = yaml.safe_load(запрос_ии)\n'})),
+   "разбор YAML, пришедшего НЕ из декларации, — не наша ось: имя файла модуль не называет")
+ok(not declaration_loaded_privately(make({"core/z.py": 'import yaml\nyaml.safe_load("config/uniqueness.yaml")\n'})),
+   "деклараций на дереве нет вовсе — судить не по чему, молчим")
 
 print("\n== сторож мимо каталога зон ==")
 GUARD_ROW = "| `alpha.py` | зона | улика | запас | никогда |\n"

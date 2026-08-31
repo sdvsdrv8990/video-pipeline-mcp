@@ -15,9 +15,8 @@ core/advice.py — второй канал объяснения: советы в
 
 from pathlib import Path
 
-import yaml
-
 from core.contracts import ContractError
+from core.declaration import Declaration
 
 
 class AdviceError(ContractError):
@@ -29,23 +28,16 @@ class Advice:
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
-        self._cache: dict | None = None
-        self._mtime: float = 0.0
+        self._decl = Declaration(
+            path, AdviceError, "советов",
+            "Заведи config/recommendations.yaml — что советовать клиенту, объявлено там.")
 
     def _load(self) -> dict:
-        if not self.path.exists():
-            return {}
-        mtime = self.path.stat().st_mtime
-        if self._cache is None or mtime != self._mtime:
-            try:
-                data = yaml.safe_load(self.path.read_text(encoding="utf-8")) or {}
-            except yaml.YAMLError as e:
-                raise AdviceError("ADVICE_INVALID", f"Битый {self.path.name}: {e}") from e
-            if not isinstance(data, dict):
-                raise AdviceError("ADVICE_INVALID",
-                                  f"{self.path.name}: ожидался словарь ключ → список советов.")
-            self._cache, self._mtime = data, mtime
-        return self._cache
+        data = self._decl.data
+        if not isinstance(data, dict):
+            raise AdviceError("ADVICE_INVALID",
+                              f"{self.path.name}: ожидался словарь ключ → список советов.")
+        return data
 
     def get(self, key: str, **context) -> list[dict]:
         """Советы по ключу с подстановкой контекста в `params`.

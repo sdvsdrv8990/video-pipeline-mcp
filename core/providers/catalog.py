@@ -65,10 +65,11 @@ class ModelCatalog:
         return self.models_dir / "installed.yaml"
 
     def inventory(self) -> list[dict]:
-        import yaml
-        if not self.inventory_file.exists():
-            return []
-        data = yaml.safe_load(self.inventory_file.read_text(encoding="utf-8")) or {}
+        """Опись поставленного. Её отсутствие — «ничего не поставлено», а вот битость — отказ:
+        пустой список вместо повреждённой описи выглядел бы как чистая машина."""
+        data = Declaration(
+            self.inventory_file, ProviderError, "описи установленного",
+            "Опись пишет установка моделей; руками её не правят.").optional()
         return list(data.get("models") or [])
 
     def entries(self) -> list[dict]:

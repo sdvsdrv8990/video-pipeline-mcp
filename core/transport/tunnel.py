@@ -20,7 +20,8 @@ import time
 from pathlib import Path
 from typing import Literal, assert_never
 
-import yaml
+from core.contracts import ContractError
+from core.declaration import Declaration
 
 
 # Словарь событий лога cloudflared объявлен ОДИН раз: и производитель (`_classify_line`), и оба
@@ -108,12 +109,13 @@ class CloudflaredTunnel:
 
     @staticmethod
     def _load_config(config_path: str | Path | None) -> dict:
+        """Путь НЕ задан — режим без объявления (quick), это решение вызывающего. Путь задан, а
+        файла нет — промах: молча поднятый на дефолтах туннель не соответствует ничему."""
         if not config_path:
             return {}
-        path = Path(config_path)
-        if path.exists():
-            return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        return {}
+        return Declaration(
+            config_path, ContractError, "туннеля",
+            "Заведи config/tunnel.yaml — режим, порт и hostname объявлены там.").data
 
     def _binary_available(self) -> bool:
         return self.binary.startswith("/") and Path(self.binary).exists() \

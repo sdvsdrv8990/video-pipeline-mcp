@@ -13,8 +13,8 @@ core/ids/taxonomy.py — Таксономия узлов workspace: префик
 
 from pathlib import Path
 
-import yaml
 from core.contracts import ContractError
+from core.declaration import Declaration
 
 
 class TaxonomyError(ContractError):
@@ -43,7 +43,8 @@ class Taxonomy:
             return self._types
         types: dict[str, dict] = {}
         for p in sorted(self.dir.glob("*.tpl.yaml")):
-            data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+            data = Declaration(p, TaxonomyError, "таксономии",
+                               "Шаблон типа — объявление иерархии; без него типа не существует.").data
             node_type = p.name[: -len(".tpl.yaml")]
             body = data.get(node_type)
             if not isinstance(body, dict):
@@ -136,7 +137,8 @@ class Taxonomy:
             raise TaxonomyError(
                 "TEMPLATE_INVALID", f"Нет объявления классов файлов: {FILE_CLASSES_FILE}",
                 "Префиксы файлов объявляются декларативно, в коде их нет.")
-        data = (yaml.safe_load(p.read_text(encoding="utf-8")) or {}).get("file_classes")
+        data = Declaration(p, TaxonomyError, "классов файлов",
+                           "Префиксы файлов объявляются декларативно, в коде их нет.").data.get("file_classes")
         if not isinstance(data, dict) or not data:
             raise TaxonomyError(
                 "TEMPLATE_INVALID", f"{FILE_CLASSES_FILE}: пустой или неверный ключ file_classes.",

@@ -15,8 +15,8 @@ from typing import ClassVar
 import re
 from pathlib import Path
 
-import yaml
 from core.contracts import ContractError
+from core.declaration import Declaration
 
 
 class UniquenessError(ContractError):
@@ -32,27 +32,16 @@ class UniquenessEngine:
 
     def __init__(self, config_file: str | Path):
         self.config_file = Path(config_file)
-        self._cfg: dict | None = None
-        self._mtime: float = 0.0
+        self._decl = Declaration(
+            config_file, UniquenessError, "расчёта уникальности",
+            "Заведи config/uniqueness.yaml — параметры расчёта живут там, не в коде.")
 
     # ═══ Декларация ═══
 
     @property
     def config(self) -> dict:
         """Параметры расчёта. Битую декларацию не глушим — иначе она тихо перестанет работать."""
-        if not self.config_file.exists():
-            raise UniquenessError(
-                "TEMPLATE_NOT_FOUND", f"Нет декларации расчёта: {self.config_file.name}",
-                reason="Заведи config/uniqueness.yaml — параметры расчёта живут там, не в коде.")
-        mtime = self.config_file.stat().st_mtime
-        if self._cfg is None or mtime != self._mtime:
-            try:
-                data = yaml.safe_load(self.config_file.read_text(encoding="utf-8")) or {}
-            except yaml.YAMLError as e:
-                raise UniquenessError("SCHEMA_INVALID", f"Битый {self.config_file.name}: {e}",
-                                      reason="Почини YAML — без него расчёт не имеет параметров.") from e
-            self._cfg, self._mtime = data, mtime
-        return self._cfg
+        return self._decl.data
 
     # ═══ Похожесть текста ═══
 

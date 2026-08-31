@@ -509,6 +509,48 @@ async def main():
           _live192.get_error("PATH_ESCAPE").reaction_class == "ai_recoverable",
           _live192.get_error("PATH_ESCAPE").reaction_class)
 
+    # Одна политика у ВСЕХ загрузчиков деклараций: нет файла → TEMPLATE_NOT_FOUND,
+    # битый → SCHEMA_INVALID. Инвариант вешается тестом, а не дисциплиной: шесть загрузчиков
+    # успели развести шесть разных ответов, и два из них молча ослабляли защиту.
+    from core.contracts import ContractError
+    from core.advice import Advice as _A194
+    from core.declaration import Declaration as _D194
+    from core.ids.taxonomy import Taxonomy as _T194
+    from core.transport.tunnel import CloudflaredTunnel as _Tun194
+    from core.uniqueness.uniqueness_core import UniquenessEngine as _U194
+    from core.write_policy import WritePolicy as _W194
+
+    def _codes(filename, call) -> tuple[str, str]:
+        """(код на отсутствие, код на битость): у каждого загрузчика СВОЁ имя файла декларации."""
+        out = []
+        for body in (None, "раздел: [не словарь\n"):
+            d = Path(_tf192.mkdtemp())
+            if body is not None:
+                (d / filename).write_text(body, encoding="utf-8")
+            try:
+                call(d / filename, d)
+                out.append("ТИХО")
+            except ContractError as e:
+                out.append(e.code)
+            except Exception as e:
+                out.append(type(e).__name__)
+        return out[0], out[1]
+
+    for _name, _file, _call in (
+        ("Declaration", "объявление.yaml", lambda t, d: _D194(t, ContractError, "s", "h").data),
+        ("Advice", "recommendations.yaml", lambda t, d: _A194(t)._load()),
+        ("Reactions", "server_reactions.yaml", lambda t, d: _R192(t)),
+        ("UniquenessEngine", "uniqueness.yaml", lambda t, d: _U194(t).config),
+        ("CloudflaredTunnel", "tunnel.yaml", lambda t, d: _Tun194(port=1, config_path=t)),
+        ("WritePolicy", "firewall.yaml", lambda t, d: _W194(d).enabled),
+        ("Taxonomy", "video.tpl.yaml", lambda t, d: _T194(d).prefix("video")),
+    ):
+        _absent, _broken = _codes(_file, _call)
+        check(f"{_name}: битая декларация → SCHEMA_INVALID, а не сырой разбор",
+              _broken == "SCHEMA_INVALID", _broken)
+        check(f"{_name}: нет декларации → отказ, а не тихая пустота",
+              _absent not in ("ТИХО", "ParserError"), _absent)
+
     print()
     passed = sum(results)
     total = len(results)

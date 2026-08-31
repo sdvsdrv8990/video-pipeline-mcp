@@ -32,6 +32,7 @@ UNSCRIPTED_BASELINE = Path(__file__).with_name("unscripted_baseline.txt")
 DEAD_RECOVERY_BASELINE = Path(__file__).with_name("dead_recovery_baseline.txt")
 ORPHAN_BASELINE = Path(__file__).with_name("orphan_codes_baseline.txt")
 MIRROR_BASELINE = Path(__file__).with_name("mirror_baseline.txt")
+PRIVATE_LOADER_BASELINE = Path(__file__).with_name("private_loader_baseline.txt")
 KNOB_BASELINE = Path(__file__).with_name("knob_reader_baseline.txt")
 RECORD_FIELD_BASELINE = Path(__file__).with_name("record_field_baseline.txt")
 ABSENT_KNOB_BASELINE = Path(__file__).with_name("absent_knob_baseline.txt")
@@ -1336,6 +1337,37 @@ def default_instead_of_declaration(root: Path = ROOT) -> list[str]:
     return notes
 
 
+def declaration_loaded_privately(root: Path = ROOT) -> list[str]:
+    """Своя загрузка YAML в модуле, который НАЗЫВАЕТ декларацию: у отказа заводится своя политика.
+
+    Замерено прогоном: шесть загрузчиков давали шесть разных ответов на одно и то же — «файла нет»
+    и «файл битый», — и два из них молча ослабляли защиту, а три отдавали сырой `ParserError` мимо
+    контракта. Дверь одна (`core/declaration.py`): отсутствие — `TEMPLATE_NOT_FOUND` либо решение
+    вызывающего (`optional`), битость — всегда `SCHEMA_INVALID`. Улику даёт ПАРА: модуль называет
+    файл декларации строкой И разбирает YAML сам.
+    """
+    declarations = [f.name for f in sorted((root / "config").glob("*.yaml"))]
+    if not declarations:
+        return []
+    notes = []
+    for source in _python_sources(root):
+        try:
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        strings = [n.value for n in ast.walk(tree)
+                   if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+        named = [d for d in declarations if any(d in text for text in strings)]
+        if not named:
+            continue
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "safe_load"):
+                notes.append(f"{source.relative_to(root)}:{node.lineno} — своя загрузка YAML в "
+                             f"модуле, который называет {named[0]}: у отказа появится своя политика")
+    return notes
+
+
 def _raises_name(node: ast.Raise) -> str:
     """Имя исключения у `raise X` и `raise X(...)` — иначе форма с аргументом уходит незамеченной."""
     exc = node.exc
@@ -1629,6 +1661,9 @@ RATCHETS = (
      "У записи следа/журнала спрашивают или в неё кладут поле, которого нет в "
      "core/contracts/trail_record.py. Промах немой: `dict.get` вернёт None, и отсутствие улики "
      "сойдёт за отсутствие в реальности — объяви поле либо спрашивай объявленным именем"),
+    ("своя загрузка декларации мимо общей двери", declaration_loaded_privately, PRIVATE_LOADER_BASELINE,
+     "Модуль разбирает YAML сам, и у отказа заводится своя политика: шесть загрузчиков давали "
+     "шесть ответов на «нет файла» и «битый файл». Читай через core/declaration.py"),
     ("объявлено фактом, а слать некому", facts_without_emitter, FACT_EMITTER_BASELINE,
      "Тип обещан контрактом (или наблюдателем), а сервер его не шлёт: либо путь, который шлёт, "
      "либо снять строку из KNOWN_FACT_TYPES / tests/harness/observations.yaml"),

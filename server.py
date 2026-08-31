@@ -24,6 +24,8 @@ import yaml
 # Добавляем корень проекта в путь
 sys.path.insert(0, str(Path(__file__).parent))
 
+from core.contracts import ContractError
+from core.declaration import Declaration
 from core.engine import Engine
 from core.observability import Trail, wire
 from core.firewall import Firewall, FirewallRequest, FirewallDecision
@@ -115,10 +117,10 @@ ALLOW_NO_AUTH = os.environ.get("MCP_ALLOW_NO_AUTH", "") == "1"
 # ═══ ХЕЛПЕРЫ ═══
 
 def _load_yaml(path: Path) -> dict:
-    """Безопасное чтение YAML-конфига (пустой dict, если файла нет)."""
-    if path.exists():
-        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    return {}
+    """Объявление сервера. Нет файла — отказ: пустой dict молча заменял бы декларацию дефолтами,
+    и сервер поднимался бы не тем, чем объявлен."""
+    return Declaration(path, ContractError, f"«{path.stem}»",
+                       f"Заведи config/{path.name} — сервер поднимается по нему.").data
 
 
 def create_server() -> tuple[Engine, Transport, Firewall]:
