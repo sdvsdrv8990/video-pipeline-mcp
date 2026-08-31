@@ -14,10 +14,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-import yaml
-
 from core.advice import Advice
 from core.contracts import ContractError, ErrorDetail, Recovery, ToolResult
+from core.declaration import Declaration
 from core.firewall.rules.injection_detector import InjectionDetector
 from core.engine import Engine, TemplateEngine, TemplateResolver
 from core.excel import ExcelEngine
@@ -34,6 +33,14 @@ ANNOTATIONS_READONLY = {"readOnlyHint": True, "destructiveHint": False, "idempot
 ANNOTATIONS_MODIFY = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
 # Резерв, намеренно не назначен: destructiveHint триггерит auth-гейт коннектора Claude.ai.
 ANNOTATIONS_DESTRUCTIVE = {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False}
+
+
+def _firewall(config_path: Path) -> Declaration:
+    """Дверь к `config/firewall.yaml`. Одна на всех читателей: своя загрузка у каждого дала
+    пять разных политик на один отказ, и две из них молча ослабляли защиту."""
+    return Declaration(
+        config_path / "firewall.yaml", ContractError, "правил файрвола",
+        "Заведи config/firewall.yaml — закрытые каталоги и паттерны инъекций объявлены там.")
 
 
 @dataclass
@@ -79,11 +86,8 @@ class ToolContext:
     def injection_flagger(self) -> InjectionDetector:
         """Детектор для ПОМЕТКИ чужого текста в выводе. Паттерны — боевые, из firewall.yaml:
         второй копии в коде быть не должно. Это подсказка клиенту, а не барьер — барьер — конверт."""
-        patterns = None
-        cfg = self.config_path / "firewall.yaml"
-        if cfg.exists():
-            data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-            patterns = (data.get("injection_detection") or {}).get("patterns")
+        declared = _firewall(self.config_path).optional()
+        patterns = (declared.get("injection_detection") or {}).get("patterns")
         return InjectionDetector(patterns)
 
     @property
@@ -151,14 +155,7 @@ def build_context(engine: Engine, id_generator: IDGenerator, state_manager: Stat
     workspace_path = state_manager.workspace_path
     # Какие каталоги внутри рабочей области закрыты — объявлено в firewall.yaml. Конфиг
     # только РАСШИРЯЕТ встроенный минимум: не загрузился — запрет остаётся (fail-closed).
-    _fw = config_path / "firewall.yaml"
-    _declared: list[str] = []
-    if _fw.exists():
-        try:
-            _declared = ((yaml.safe_load(_fw.read_text(encoding="utf-8")) or {})
-                         .get("secret_paths") or {}).get("dirs") or []
-        except yaml.YAMLError:
-            _declared = []
+    _declared = (_firewall(config_path).optional().get("secret_paths") or {}).get("dirs") or []
     configure_secret_dirs(_declared)
     # Личность инстанса — ключ подписи выпускается рядом с .env (вне workspace/).
     identity = InstanceIdentity(config_path.parent, workspace_path)

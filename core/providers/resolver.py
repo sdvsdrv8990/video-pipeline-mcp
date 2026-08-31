@@ -15,7 +15,7 @@ core/providers/resolver.py — кто и какой моделью исполн�
 
 from pathlib import Path
 
-from .declaration import Declaration
+from core.declaration import Declaration
 from core.contracts import ContractError
 
 

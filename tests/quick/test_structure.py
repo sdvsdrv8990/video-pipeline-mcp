@@ -696,6 +696,10 @@ print("== 33. Механизм kind: config — копия дефолта в п�
 _cfgdir33 = Path(tempfile.mkdtemp(prefix="vpm_cfgdir_")) / "config"
 (_cfgdir33 / "templates" / "workspace").mkdir(parents=True)
 (_cfgdir33 / "probe_defaults.yaml").write_text("# СЕРВЕРНЫЙ ДЕФОЛТ\nkey: value\n", encoding="utf-8")
+# Корень серверных деклараций обязан объявлять разрешённые к записи типы: копия шаблона идёт
+# в ту же дверь, что и fs_write_file, и без объявления дверь отказывает.
+(_cfgdir33 / "firewall.yaml").write_text(
+    'write_allowlist:\n  enabled: true\n  extensions: [".yaml"]\n', encoding="utf-8")
 (_cfgdir33 / "templates" / "workspace" / "probe.tpl.yaml").write_text(
     'probe:\n  id:\n    prefix: PR\n    strategy: hex\n  files:\n'
     '    - { name: "probe_defaults.yaml", kind: config, source: probe_defaults.yaml, required: true }\n',
@@ -1131,6 +1135,32 @@ for _i, _t in enumerate(("channel", "video", "competitor_video", "competitor_cha
     _reg41.register({"id": f"E41_{_i}", "type": _t, "name": f"n{_i}", "path": f"p{_i}", "parent_ids": []})
 _types41 = sorted({o["type"] for o in _reg41.find_orphans()})
 ok(_types41 == ["competitor_channel"], f"без родителей висит только конкурент (получено: {_types41})")
+
+print("\n== 43. Отсутствие объявления не выключает запрет записи ==")
+import tempfile as _tf42
+from core.write_policy import WritePolicy as _WP42, WritePolicyError as _WPE42
+
+_no_decl = Path(_tf42.mkdtemp())
+try:
+    _WP42(_no_decl).check("payload.sh")
+    ok(False, "без firewall.yaml запись .sh прошла — контроль выключился молча")
+except _WPE42 as e:
+    ok(e.code == "TEMPLATE_NOT_FOUND", f"нет объявления → отказ, а не тихое «правило не настроено» ({e.code})")
+
+_broken42 = Path(_tf42.mkdtemp())
+(_broken42 / "firewall.yaml").write_text("write_allowlist: [не словарь\n", encoding="utf-8")
+try:
+    _WP42(_broken42).check("payload.sh")
+    ok(False, "битое объявление пропустило запись")
+except _WPE42 as e:
+    ok(e.code == "SCHEMA_INVALID", f"битое объявление → код реестра, а не сырой ParserError ({e.code})")
+except Exception as e:
+    ok(False, f"битое объявление отдало {type(e).__name__} мимо контракта")
+
+_off42 = Path(_tf42.mkdtemp())
+(_off42 / "firewall.yaml").write_text("write_allowlist:\n  enabled: false\n", encoding="utf-8")
+_WP42(_off42).check("payload.sh")
+ok(True, "`enabled: false` в ПРИСУТСТВУЮЩЕМ объявлении — осознанный выключатель владельца, он цел")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

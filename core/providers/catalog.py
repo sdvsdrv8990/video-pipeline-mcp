@@ -19,7 +19,7 @@ import re
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .declaration import Declaration
+from core.declaration import Declaration
 from .resolver import ProviderError
 
 

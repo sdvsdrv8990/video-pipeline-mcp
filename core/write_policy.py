@@ -4,20 +4,19 @@ core/write_policy.py — Какие типы файлов сервер впра�
 ## Назначение
 Единственная точка решения «можно ли создать/перезаписать файл с таким расширением».
 Default-deny: разрешено только то, что объявлено в `config/firewall.yaml → write_allowlist`.
-Сервер не должен уметь класть в рабочую область исполняемое или веб-содержимое
-(`.sh`, `.html`, `.exe`, `.bat`, `.dll`) — даже если его об этом попросят.
 
 ## Границы
 - Список — в конфиге, не в коде (anti-hardcode): добавить тип = строка в YAML.
 - Правило про **тип**, а не про путь: containment (`core/paths`) и подпись артефактов
   (`core/integrity`) — соседние, независимые слои.
-- Выключение (`enabled: false`) — осознанный fail-open владельца, он виден в конфиге.
+- `enabled: false` — осознанный выключатель владельца, он виден в конфиге; ОТСУТСТВИЕ файла
+  таким решением не является и отвечает отказом.
 """
 
 from pathlib import Path
 
-import yaml
 from core.contracts import ContractError
+from core.declaration import Declaration
 
 
 class WritePolicyError(ContractError):
@@ -31,15 +30,12 @@ class WritePolicy:
 
     def __init__(self, config_path: Path):
         self.config_file = Path(config_path) / "firewall.yaml"
-        self._cache: dict | None = None
+        self._decl = Declaration(
+            self.config_file, WritePolicyError, "разрешённых к записи типов",
+            "Заведи config/firewall.yaml — какие типы файлов сервер вправе класть, объявлено там.")
 
     def _config(self) -> dict:
-        if self._cache is None:
-            data: dict = {}
-            if self.config_file.exists():
-                data = yaml.safe_load(self.config_file.read_text(encoding="utf-8")) or {}
-            self._cache = data.get(self.SECTION) or {}
-        return self._cache
+        return self._decl.data.get(self.SECTION) or {}
 
     @property
     def enabled(self) -> bool:

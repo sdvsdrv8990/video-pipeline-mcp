@@ -19,7 +19,7 @@ from pathlib import Path
 
 from core.paths import safe_resolve
 
-from .declaration import Declaration
+from core.declaration import Declaration
 from core.contracts import ContractError
 
 

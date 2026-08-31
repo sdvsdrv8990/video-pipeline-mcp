@@ -18,7 +18,7 @@ import time
 from typing import Any
 from pathlib import Path
 
-from .declaration import Declaration
+from core.declaration import Declaration
 from .resolver import ProviderError
 
 

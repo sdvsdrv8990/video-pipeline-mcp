@@ -24,7 +24,7 @@ from pathlib import Path
 
 from core.paths import PathEscapeError, safe_resolve
 
-from .declaration import Declaration
+from core.declaration import Declaration
 from .resolver import ProviderError
 
 

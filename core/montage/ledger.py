@@ -15,7 +15,7 @@ from pathlib import Path
 
 import yaml
 
-from core.providers.declaration import Declaration
+from core.declaration import Declaration
 
 from .errors import MontageError
 

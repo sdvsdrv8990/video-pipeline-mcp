@@ -15,7 +15,7 @@ core/providers/usage.py — учёт расхода: после вызова с�
 
 from pathlib import Path
 
-from .declaration import Declaration
+from core.declaration import Declaration
 from .resolver import ProviderError
 
 # Как измерить единицу. Вокабуляр закрытый: новый СПОСОБ мерить — это код, а вот назначение

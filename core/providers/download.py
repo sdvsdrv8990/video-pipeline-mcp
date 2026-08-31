@@ -17,7 +17,7 @@ import socket
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .declaration import Declaration
+from core.declaration import Declaration
 from .task_cycle import TaskCycleError
 
 CHUNK = 64 * 1024

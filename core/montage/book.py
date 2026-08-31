@@ -16,7 +16,7 @@ from typing import Callable
 
 import yaml
 
-from core.providers.declaration import Declaration
+from core.declaration import Declaration
 from core.providers.ffmpeg import AudioTrack, Layer, RenderProfile, SceneSpec
 
 from .errors import MontageError

@@ -1,7 +1,7 @@
 """core/providers — адаптеры внешних провайдеров + выбор провайдера по данным канала."""
 
 from .adapters import AdapterRegistry, MediaOutcome, MediaRequest
-from .declaration import Declaration
+from core.declaration import Declaration
 from .download import ResultDownloader
 from .installer import ModelInstaller
 from .model_spec import ModelSpec

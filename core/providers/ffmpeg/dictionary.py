@@ -15,7 +15,7 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
-from ..declaration import Declaration
+from core.declaration import Declaration
 from .errors import FfmpegError
 
 CONFIG = Path(__file__).resolve().parents[3] / "config" / "ffmpeg_filters.yaml"
