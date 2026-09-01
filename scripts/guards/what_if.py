@@ -198,11 +198,20 @@ def report(intent: dict, before: dict[str, bool], after: dict[str, bool]) -> int
     declared: dict[str, set[str]] = {}
     for item in intent["expect"]:
         declared.setdefault(str(item["scenario"]), set()).add(str(item["becomes"]))
+    def key(label: str) -> str:
+        """Точное имя, если намерение зовёт проверку так; иначе — нормализованное.
+
+        Метка с рубежом внутри иначе непроизносима: `_named` срезала бы её по первому
+        разделителю, и заявленное не совпало бы с полученным НИКОГДА — правка выглядела бы
+        одновременно «не сбылась» и «скрытый риск».
+        """
+        return label if label in declared else _named(label)
+
     got: dict[str, set[str]] = {}
     for labels, outcome in ((turned_red, "red"), (turned_green, "green"),
                             (appeared, "appeared"), (vanished, "vanished")):
         for label in labels:
-            got.setdefault(_named(label), set()).add(outcome)
+            got.setdefault(key(label), set()).add(outcome)
 
     print(f"\n═══ НАМЕРЕНИЕ: {intent['intent']} ═══")
     print(f"  где: {intent['where']}\n  зачем: {intent['why']}")
@@ -226,13 +235,13 @@ def report(intent: dict, before: dict[str, bool], after: dict[str, bool]) -> int
             print(f"  ⚠ {name} → {out} — намерение об этом не говорило")
     for label in sorted(appeared | vanished):
         outcome = "appeared" if label in appeared else "vanished"
-        if (_named(label), outcome) in surprise:
+        if (key(label), outcome) in surprise:
             print(f"  ⚠ проверка {'появилась' if label in appeared else 'исчезла'}: {label}")
     if not surprise:
         print("  (ничего — правка задела ровно то, что заявлено)")
 
     print("\n── ЗАЯВЛЕННОЕ НЕ СБЫЛОСЬ ──")
-    gone = {_named(label) for label in vanished}
+    gone = {key(label) for label in vanished}
     missed = [(name, out) for name, outs in sorted(declared.items())
               for out in sorted(outs) if out not in got.get(name, set())]
     for name, out in missed:

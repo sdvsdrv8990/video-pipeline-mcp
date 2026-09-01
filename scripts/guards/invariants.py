@@ -1443,6 +1443,39 @@ def hooks_off_declaration(root: Path = ROOT) -> list[str]:
     return notes
 
 
+# Хвосты, гасящие вердикт: `|| true` обнуляет код возврата, перенаправление уводит поток.
+HOOK_MUFFLE = ("2>/dev/null", "2>&1", "|| true", "; true")
+
+
+def hook_declared_muted(root: Path = ROOT) -> list[str]:
+    """Хук объявлен так, что сказать о находке он не может.
+
+    К модели ведут ровно два канала — `exit 2` со `stderr` и JSON `additionalContext` на stdout.
+    Хвост в команде рвёт первый и прячет трейс: упавший сторож становится неотличим от
+    промолчавшего, а сторож без голоса — отсутствующий сторож, который выглядит работающим.
+    """
+    settings = _at(root, HOOK_SETTINGS)
+    if not settings.exists():
+        return []
+    try:
+        declared = json.loads(settings.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []                        # разбор объявления судит соседняя ось, здесь улики нет
+    notes = []
+    for event, blocks in (declared.get("hooks") or {}).items():
+        for block in blocks if isinstance(blocks, list) else ():
+            for hook in block.get("hooks", []):
+                command = str(hook.get("command", ""))
+                if "/".join(HOOKS) not in command:
+                    continue
+                muffle = [tail for tail in HOOK_MUFFLE if tail in command]
+                if muffle:
+                    name = Path(command.split()[1] if " " in command else command).name
+                    notes.append(f"{event}: {name} объявлен с {muffle} — вердикт не доходит ни до "
+                                 f"модели, ни до человека, и молчание выглядит чистым результатом")
+    return notes
+
+
 def _zones_of(path: Path) -> set[str]:
     """Зоны, объявленные строками таблицы в этом каталоге."""
     if not path.exists():
@@ -1555,6 +1588,7 @@ HARD = (("одну зону объявили два хозяина", zone_declar
         ("сценарий зовёт инструмент мимо описи", scenario_calls_unknown_tool),
         ("факт мимо реестра типов", facts_outside_registry),
         ("хук мимо объявления", hooks_off_declaration),
+        ("объявление глушит голос хука", hook_declared_muted),
         ("объявление наблюдения неполно", observation_incomplete),
         ("факт эмитится, а решения о наблюдении нет", facts_without_observer))
 

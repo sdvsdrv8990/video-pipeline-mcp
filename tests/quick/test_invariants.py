@@ -19,7 +19,8 @@ from invariants import (  # noqa: E402
     declared_but_unscripted, default_instead_of_declaration, enum_without_values,
     facts_exempt_from_observation, facts_outside_registry, facts_without_emitter,
     facts_without_observer, observation_incomplete,
-    guard_without_home, hooks_off_declaration, knob_without_reader, zone_declared_twice,
+    guard_without_home, hook_declared_muted, hooks_off_declaration,
+    knob_without_reader, zone_declared_twice,
     resources_off_inventory, scenario_calls_unknown_tool, skips_without_ci,
     ci_jobs_off_docs, dispatch_by_value, guards_off_catalog, mirrored_declaration,
     declaration_loaded_privately,
@@ -559,6 +560,19 @@ ok(not hooks_off_declaration(make({"core/x.py": "x = 1\n"})),
 ok(len(hooks_off_declaration(make({".claude/settings.json": "{ сломано\n",
                                    ".claude/hooks/vpm-x.py": "x = 1\n"}))) == 1,
    "сломанный JSON назван ОДНОЙ причиной, а не обвинением каждого файла в дереве")
+
+MUTED = ('{"hooks": {"PostToolUse": [{"matcher": "Edit", "hooks": [{"type": "command", '
+         '"command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/vpm-x.py 2>/dev/null || true"}]}]}}\n')
+
+ok(len(hook_declared_muted(make({".claude/settings.json": MUTED}))) == 1,
+   "хвост в команде хука назван — вердикт не доходит ни до модели, ни до человека")
+ok(not hook_declared_muted(make({".claude/settings.json": DECL})),
+   "команда без хвоста не обвиняется")
+ok(not hook_declared_muted(make({".claude/settings.json": "{ сломано\n"})),
+   "битый JSON судит соседняя ось — здесь улики нет, и обвинять нечего")
+ok(not hook_declared_muted(make({"core/x.py": "x = 1\n"})),
+   "объявления нет вовсе — событие не наше")
+
 
 print("\n== одну зону объявили два хозяина ==")
 HEAD_ROW = "| Тест | Зона |\n|---|---|\n"
