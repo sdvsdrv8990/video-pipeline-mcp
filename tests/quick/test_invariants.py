@@ -20,7 +20,8 @@ from invariants import (  # noqa: E402
     facts_exempt_from_observation, facts_outside_registry, facts_without_emitter,
     facts_without_observer, observation_incomplete,
     door_not_installed, guard_without_home, hook_declared_muted,
-    lesson_without_executor, lesson_without_mechanism, memory_dir, memory_off_index,
+    lesson_without_evidence, lesson_without_executor, lesson_without_mechanism,
+    memory_dir, memory_off_index,
     hooks_off_declaration,
     knob_without_reader, zone_declared_twice,
     resources_off_inventory, scenario_calls_unknown_tool, skips_without_ci,
@@ -634,6 +635,21 @@ ok(not lesson_without_mechanism(memory=уроки(УРОК.format("Урок", "�
    "за уроком стоит ось — долгом он не числится")
 ok(not lesson_without_executor(memory=Path("/нет/такого/каталога")),
    "реестра уроков нет — улики нет, а не «уроков ноль»")
+
+ok(len(lesson_without_evidence(memory=уроки(УРОК.format("Урок", "НЕТ")))) == 1,
+   "урок без ключа улики назван — по нему не поднять прогон, в котором он родился")
+СКЛЮЧОМ = "- **Урок** пояснение. ⟨исполняет: НЕТ⟩ ⟨улика: ⟦vpm 0000⟧⟩\n"
+ok("ведёт в пустоту" in lesson_without_evidence(memory=уроки(СКЛЮЧОМ))[0],
+   "ключ, которого нет в журнале подписей, назван прямо — метка в пустоту хуже её отсутствия")
+ok(not lesson_without_evidence(memory=Path("/нет/такого/каталога")),
+   "реестра уроков нет — улики нет, а не «уроков без ключа ноль»")
+НЕБЫЛИЦА = "проверка-" + Path(tempfile.mkdtemp()).name + "-которой-нет"
+ok(len(lesson_without_executor(memory=уроки(
+       f"- **Урок** пояснение. ⟨исполняет: проверка «{НЕБЫЛИЦА}»⟩\n"))) == 1,
+   "метка проверки сверяется с исходниками наборов, а не с реестром имён")
+ok(not lesson_without_executor(memory=уроки(
+       "- **Урок** пояснение. ⟨исполняет: проверка «указатель и диск сошлись — молчим»⟩\n")),
+   "настоящая метка проверки принимается — исполнителем считается и строка набора")
 
 ok(len(door_not_installed(make({".pre-commit-config.yaml": "repos: []\n",
                                 "install.sh": "pip install -e .\n"}))) == 1,

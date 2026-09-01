@@ -28,6 +28,7 @@ from findings_count import scan as scan_registry  # noqa: E402  разбор р�
 
 BASELINE = Path(__file__).with_name("invariants_baseline.txt")
 LESSON_BASELINE = Path(__file__).with_name("lesson_debt_baseline.txt")
+EVIDENCE_BASELINE = Path(__file__).with_name("lesson_evidence_baseline.txt")
 DISPATCH_BASELINE = Path(__file__).with_name("dispatch_baseline.txt")
 UNSCRIPTED_BASELINE = Path(__file__).with_name("unscripted_baseline.txt")
 DEAD_RECOVERY_BASELINE = Path(__file__).with_name("dead_recovery_baseline.txt")
@@ -1447,25 +1448,41 @@ def hooks_off_declaration(root: Path = ROOT) -> list[str]:
 LESSONS = "hard-won-lessons.md"
 LESSON = re.compile(r"^- \*\*(.+?)\*\*", re.M)
 EXECUTOR = re.compile(r"⟨исполняет:\s*(.+?)⟩")
+EVIDENCE = re.compile(r"⟨улика:\s*⟦vpm\s+([0-9a-f]{4})[^⟧]*⟧⟩")
 SCENARIO_NAME = re.compile(r"^- scenario:\s*(\S+)", re.M)
 # Механизм ловит повтор ошибки сам; скилл и «НЕТ» — это слова, и они считаются ДОЛГОМ.
 MECHANISM = ("ось ", "проверка ", "сценарий ")
 
 
-def _lessons(memory: Path) -> list[tuple[str, str]]:
-    """(заголовок урока, объявленный исполнитель). Урок без метки отдаёт пустого исполнителя."""
+def _lesson_blocks(memory: Path) -> list[tuple[str, str]]:
+    """(заголовок урока, весь его кусок текста). Разбор один на все три оси — иначе они разойдутся."""
     path = memory / LESSONS
     if not path.exists():
         return []
     text = path.read_text(encoding="utf-8")
     границы = [m.start() for m in LESSON.finditer(text)] + [len(text)]
+    return [(LESSON.match(text[начало:границы[i + 1]]).group(1), text[начало:границы[i + 1]])
+            for i, начало in enumerate(границы[:-1])]
+
+
+def _lessons(memory: Path) -> list[tuple[str, str]]:
+    """(заголовок урока, объявленный исполнитель). Урок без метки отдаёт пустого исполнителя."""
     уроки = []
-    for i, начало in enumerate(границы[:-1]):
-        кусок = text[начало:границы[i + 1]]
-        имя = LESSON.match(кусок).group(1)
+    for имя, кусок in _lesson_blocks(memory):
         метка = EXECUTOR.search(кусок)
         уроки.append((имя, метка.group(1).strip() if метка else ""))
     return уроки
+
+
+def _suite_text(root: Path) -> str:
+    """Свод исходников наборов: метки проверок живут строками в них, а не отдельным реестром."""
+    куски = []
+    for путь in sorted((root / "tests").rglob("*.py")):
+        try:
+            куски.append(путь.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+    return "\n".join(куски)
 
 
 def _mechanisms(root: Path) -> set[str]:
@@ -1497,10 +1514,42 @@ def lesson_without_executor(root: Path = ROOT, memory: Path | None = None) -> li
             notes.append(f"{LESSONS}: урок «{имя[:60]}» не называет исполнителя — повтор ошибки "
                          f"он не ловит, а пылится")
             continue
+        if исполнитель.startswith("проверка "):
+            # Метка проверки — не имя из реестра, а строка, которую печатает набор: ищем её ТАМ,
+            # где она живёт, иначе пришлось бы держать второй список из девятисот меток.
+            метка = исполнитель.split("«", 1)[-1].rstrip("»")
+            if метка not in _suite_text(root):
+                notes.append(f"{LESSONS}: урок «{имя[:50]}» зовёт проверку «{метка[:40]}», которой "
+                             f"нет ни в одном наборе")
+            continue
         названо = исполнитель.split("`")[1] if "`" in исполнитель else исполнитель.split(" ", 1)[-1]
         if исполнитель != "НЕТ" and названо not in известные:
             notes.append(f"{LESSONS}: урок «{имя[:50]}» зовёт исполнителя `{названо}`, которого "
                          f"нет ни среди осей, ни среди сценариев, ни среди скилов")
+    return notes
+
+
+def lesson_without_evidence(root: Path = ROOT, memory: Path | None = None) -> list[str]:
+    """Долг: урок без ключа улики — по нему не поднять прогон, в котором он родился.
+
+    Ключ ведёт в запись подписи: намерение, ожидание, факт, HEAD и команда повтора. Журнал подписей
+    не под git, поэтому нет журнала вовсе — «улики нет» и обвинять некого; есть журнал, но ключа в
+    нём нет — это находка: метка ссылается в пустоту, что хуже её отсутствия.
+    """
+    home = memory or memory_dir(root)
+    if not (home / LESSONS).exists():
+        return []
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import _stamp
+    журнал = list(root.joinpath(*_stamp.JOURNAL).glob("stamps-*.jsonl"))
+    notes = []
+    for имя, кусок in _lesson_blocks(home):
+        ключ = EVIDENCE.search(кусок)
+        if not ключ:
+            notes.append(f"{LESSONS}: «{имя[:70]}» — ключа улики нет, прогон не поднять")
+        elif журнал and not _stamp.find(ключ.group(1), root):
+            notes.append(f"{LESSONS}: «{имя[:50]}» ссылается на ключ {ключ.group(1)}, которого нет "
+                         f"в журнале подписей — метка ведёт в пустоту")
     return notes
 
 
@@ -1801,6 +1850,9 @@ def record_field_mismatch(root: Path = ROOT) -> list[str]:
 
 
 RATCHETS = (
+    ("урок без ключа улики", lesson_without_evidence, EVIDENCE_BASELINE,
+     "Урок не ведёт в прогон, где родился: подпиши наблюдение (`_stamp.py`) и поставь ключ "
+     "меткой ⟨улика: ⟦vpm КЛЮЧ⟧⟩ — или объясни в ревью, почему улики быть не может (--bless)"),
     ("урок без механизма", lesson_without_mechanism, LESSON_BASELINE,
      "Урок держится словами: заведи ось/проверку/сценарий, который ловит повтор — "
      "или объясни в ревью, почему механизма быть не может (--bless)"),
