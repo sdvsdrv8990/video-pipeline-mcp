@@ -19,7 +19,7 @@ from invariants import (  # noqa: E402
     declared_but_unscripted, default_instead_of_declaration, enum_without_values,
     facts_exempt_from_observation, facts_outside_registry, facts_without_emitter,
     facts_without_observer, observation_incomplete,
-    door_not_installed, guard_without_home, hook_declared_muted,
+    door_not_installed, guard_without_home, hook_declared_muted, memory_off_index,
     hooks_off_declaration,
     knob_without_reader, zone_declared_twice,
     resources_off_inventory, scenario_calls_unknown_tool, skips_without_ci,
@@ -573,6 +573,37 @@ ok(not hook_declared_muted(make({".claude/settings.json": "{ сломано\n"})
    "битый JSON судит соседняя ось — здесь улики нет, и обвинять нечего")
 ok(not hook_declared_muted(make({"core/x.py": "x = 1\n"})),
    "объявления нет вовсе — событие не наше")
+
+print("\n== память против своего указателя ==")
+ШАПКА = "---\nname: {}\ndescription: x\nmetadata:\n  type: project\n---\n\nтело\n"
+
+
+def память(files: dict[str, str], git: bool = True) -> Path:
+    """Подставная память: каталог вне дерева проекта, как и настоящая."""
+    home = Path(tempfile.mkdtemp(prefix="vpm-память-"))
+    if git:
+        (home / ".git").mkdir()
+    for name, text in files.items():
+        (home / name).write_text(text, encoding="utf-8")
+    return home
+
+
+ok(len(memory_off_index(memory=память({"MEMORY.md": "- [Есть](есть.md)\n",
+                                       "есть.md": ШАПКА.format("есть"),
+                                       "потерянный.md": ШАПКА.format("потерянный")}))) == 1,
+   "файл памяти без указателя назван — иначе его находят только перебором")
+ok(len(memory_off_index(memory=память({"MEMORY.md": "- [Нет](снесённый.md)\n"}))) == 1,
+   "указатель в пустоту назван — карта памяти не смеет вести в никуда")
+ok("ведёт мимо файла" in memory_off_index(memory=память({"MEMORY.md": "- [Есть](есть.md)\n",
+                                                         "есть.md": ШАПКА.format("другое")}))[0],
+   "имя в шапке разошлось с файлом — связи `[[имя]]` ведут мимо")
+ok("вне версий" in memory_off_index(memory=память({"MEMORY.md": ""}, git=False))[0],
+   "память без git названа: без истории «обновил память» проверяется только словом")
+ok(not memory_off_index(memory=память({"MEMORY.md": "- [Есть](есть.md)\n",
+                                       "есть.md": ШАПКА.format("есть")})),
+   "указатель и диск сошлись — молчим")
+ok(not memory_off_index(memory=Path("/нет/такого/каталога")),
+   "каталога памяти нет (CI, чужая машина) — улики нет, а не «памяти ноль»")
 
 ok(len(door_not_installed(make({".pre-commit-config.yaml": "repos: []\n",
                                 "install.sh": "pip install -e .\n"}))) == 1,

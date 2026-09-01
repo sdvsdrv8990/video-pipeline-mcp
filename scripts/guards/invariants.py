@@ -1443,6 +1443,54 @@ def hooks_off_declaration(root: Path = ROOT) -> list[str]:
     return notes
 
 
+MEMORY_INDEX = "MEMORY.md"
+# Указатель индекса: `- [Заголовок](файл.md) — крючок`. Берём только адрес.
+MEMORY_LINK = re.compile(r"\]\(([^)]+\.md)\)")
+MEMORY_NAME = re.compile(r"^name:\s*(\S+)\s*$", re.M)
+
+
+def memory_dir(root: Path = ROOT) -> Path:
+    """Слуг памяти считается из корня ТЕМ ЖЕ правилом, каким его строит сам Claude Code."""
+    return Path.home() / ".claude" / "projects" / str(root).replace("/", "-") / "memory"
+
+
+def memory_off_index(root: Path = ROOT, memory: Path | None = None) -> list[str]:
+    """Память живёт в двух местах — файлы на диске и указатели в `MEMORY.md`, — и они обязаны сойтись.
+
+    Каталога нет (CI, чужая машина) — «улики нет», а не «памяти ноль»: чужое отсутствие не наша
+    находка. Здесь же судится версионирование: память без git не имеет ни истории, ни отката, и
+    «обновил память» остаётся словом.
+    """
+    home = memory or memory_dir(root)
+    if not home.is_dir():
+        return []
+    notes = []
+    if not (home / ".git").exists():
+        notes.append(f"{home.name}: память вне версий — ни истории, ни отката, ни гейта; "
+                     f"«обновил память» проверяется только словом (`git init` в каталоге памяти)")
+    index = home / MEMORY_INDEX
+    if not index.exists():
+        return notes + [f"{MEMORY_INDEX} отсутствует — указателя на память нет, и каждый файл "
+                        f"придётся открывать наугад"]
+    listed = set(MEMORY_LINK.findall(index.read_text(encoding="utf-8")))
+    # Снятое лежит в `_archive/` намеренно и в указателе не значится — это не расхождение.
+    on_disk = {p.name for p in home.glob("*.md") if p.name != MEMORY_INDEX}
+    notes += [f"{name} лежит в памяти, а указателя в {MEMORY_INDEX} у него нет — файл найдут "
+              f"только перебором" for name in sorted(on_disk - listed)]
+    notes += [f"{MEMORY_INDEX} указывает на `{name}`, которого нет — указатель ведёт в пустоту"
+              for name in sorted(listed - on_disk)]
+    for path in sorted(home.glob("*.md")):
+        if path.name == MEMORY_INDEX:
+            continue
+        found = MEMORY_NAME.search(path.read_text(encoding="utf-8"))
+        if not found:
+            notes.append(f"{path.name}: нет `name:` в шапке — связи `[[имя]]` в него не ведут")
+        elif found.group(1) != path.stem:
+            notes.append(f"{path.name}: шапка зовётся `{found.group(1)}`, а файл — `{path.stem}`; "
+                         f"связь `[[{found.group(1)}]]` ведёт мимо файла")
+    return notes
+
+
 PRECOMMIT = (".pre-commit-config.yaml",)
 INSTALL = ("install.sh",)
 
@@ -1609,6 +1657,7 @@ HARD = (("одну зону объявили два хозяина", zone_declar
         ("хук мимо объявления", hooks_off_declaration),
         ("объявление глушит голос хука", hook_declared_muted),
         ("дверь коммита объявлена, но не ставится", door_not_installed),
+        ("память разошлась со своим указателем", memory_off_index),
         ("объявление наблюдения неполно", observation_incomplete),
         ("факт эмитится, а решения о наблюдении нет", facts_without_observer))
 

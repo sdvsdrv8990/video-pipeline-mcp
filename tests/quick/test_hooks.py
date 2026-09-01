@@ -208,6 +208,21 @@ def main() -> int:
     ok(door("git log -n 5", root=ROOT) == "",
        "не коммит вовсе — соседняя команда с похожим флагом не обвиняется")
 
+    print("§9б память под версиями судится тем же гейтом")
+    склад = Path(tempfile.mkdtemp(prefix="vpm-склад-"))
+    среда2 = {"HOME": str(склад), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+    subprocess.run(["git", "init", "-q"], cwd=склад, env=среда2, timeout=60, check=True)
+    (склад / "MEMORY.md").write_text("- [Есть](есть.md)\n", encoding="utf-8")
+    ok("MEMORY.md" in gate["memory_uncommitted"](склад),
+       "правка памяти без коммита названа — иначе она живёт до первой чистки")
+    subprocess.run(["git", "-c", "user.name=н", "-c", "user.email=н@н", "add", "-A"],
+                   cwd=склад, env=среда2, timeout=60, check=True)
+    subprocess.run(["git", "-c", "user.name=н", "-c", "user.email=н@н", "commit", "-q", "-m", "п"],
+                   cwd=склад, env=среда2, timeout=60, check=True)
+    ok(gate["memory_uncommitted"](склад) == "", "закоммиченная память тревоги не поднимает")
+    ok(gate["memory_uncommitted"](Path(tempfile.mkdtemp())) == "",
+       "каталог без git — улики нет, а не тревога: чужое отсутствие не наша находка")
+
     print("§10 форма того, что правка оставила в дереве")
     inv: dict = {"__name__": "не-главный", "__file__": str(HOOKS / "vpm-invariants.py")}
     exec(compile((HOOKS / "vpm-invariants.py").read_text(encoding="utf-8"),

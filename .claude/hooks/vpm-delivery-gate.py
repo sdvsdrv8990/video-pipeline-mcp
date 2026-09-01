@@ -299,6 +299,30 @@ def _command(names: set[str]) -> str:
     return f"VPM_SCENARIO='{','.join(sorted(names))}' python3 tests/scenarios/test_scenarios.py"
 
 
+MSG_D = """Гейт поставки: память правлена, но не закоммичена.
+
+{files}
+
+С 2026-09-01 память под версиями (`git` в самом каталоге памяти), и правка закрывается коммитом
+там же — иначе она живёт до первой чистки и «обновил память» снова становится словом.
+
+    cd {home} && git add -A && git commit -m "..."
+
+Выключить гейт: VPM_DELIVERY_GATE=off."""
+
+
+def memory_uncommitted(home: Path = MEM) -> str:
+    """Незакоммиченная правка памяти. Не репозиторий или нет каталога — «улики нет», а не тревога."""
+    if not (home / ".git").exists():
+        return ""
+    try:
+        done = subprocess.run(["git", "status", "--porcelain"], cwd=str(home),
+                              capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout.strip()[:400] if done.returncode == 0 else ""
+
+
 def touched_today() -> bool:
     today = datetime.date.today()
     paths = [PROJ / r for r in RECORDS] + (list(MEM.glob("*.md")) if MEM.is_dir() else [])
@@ -385,6 +409,10 @@ def main() -> None:
     edits = len(EDIT_CALL.findall(transcript))
     if edits >= COMPLEX_EDITS and not touched_today():
         block(MSG_B.format(n=edits))
+
+    # D. Память под версиями: незакоммиченная правка исчезает вместе с сессией
+    if (грязь := memory_uncommitted()):
+        block(MSG_D.format(files=грязь, home=MEM))
 
     # C. Тронут код сервера — гоним задетое сами
     touched = server_code_touched()
