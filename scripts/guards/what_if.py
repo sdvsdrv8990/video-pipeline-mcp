@@ -19,9 +19,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections import Counter
 from pathlib import Path
 
 import yaml
+
+import _stamp
 
 ROOT = Path(__file__).resolve().parents[2]
 BEHAVIOUR = ("tests/scenarios/test_scenarios.py", "tests/routes/test_routes.py")
@@ -187,7 +190,8 @@ def _named(label: str) -> str:
     return label.split(" · ")[0].split(": ")[0]
 
 
-def report(intent: dict, before: dict[str, bool], after: dict[str, bool]) -> int:
+def compare(intent: dict, before: dict[str, bool], after: dict[str, bool]) -> dict:
+    """Сверка заявленного с полученным. Одна на печать и на подпись: два счёта разошлись бы."""
     common = set(before) & set(after)
     turned_red = {label for label in common if before[label] and not after[label]}
     turned_green = {label for label in common if not before[label] and after[label]}
@@ -198,6 +202,7 @@ def report(intent: dict, before: dict[str, bool], after: dict[str, bool]) -> int
     declared: dict[str, set[str]] = {}
     for item in intent["expect"]:
         declared.setdefault(str(item["scenario"]), set()).add(str(item["becomes"]))
+
     def key(label: str) -> str:
         """Точное имя, если намерение зовёт проверку так; иначе — нормализованное.
 
@@ -213,48 +218,77 @@ def report(intent: dict, before: dict[str, bool], after: dict[str, bool]) -> int
         for label in labels:
             got.setdefault(key(label), set()).add(outcome)
 
-    print(f"\n═══ НАМЕРЕНИЕ: {intent['intent']} ═══")
-    print(f"  где: {intent['where']}\n  зачем: {intent['why']}")
-    print(f"  проверок сравнено {len(common)}; сменили цвет {len(turned_red | turned_green)}")
-
-    print("\n── ЗАЯВЛЕННОЕ СБЫЛОСЬ ──")
     fulfilled = [(name, out) for name, outs in sorted(declared.items())
                  for out in sorted(outs) if out in got.get(name, set())]
-    for name, out in fulfilled:
+    surprise = {(name, out) for name, outs in got.items() for out in outs
+                if out not in declared.get(name, set())}
+    missed = [(name, out) for name, outs in sorted(declared.items())
+              for out in sorted(outs) if out not in got.get(name, set())]
+    news = [(label, "appeared" if label in appeared else "vanished")
+            for label in sorted(appeared | vanished)]
+    return {"common": len(common), "colour": len(turned_red | turned_green),
+            "declared": declared, "got": got, "fulfilled": fulfilled, "surprise": surprise,
+            "missed": missed, "news": [(label, out) for label, out in news
+                                       if (key(label), out) in surprise],
+            "gone": {key(label) for label in vanished}}
+
+
+def report(intent: dict, before: dict[str, bool], after: dict[str, bool]) -> int:
+    sums = compare(intent, before, after)
+    declared, got, surprise = sums["declared"], sums["got"], sums["surprise"]
+
+    print(f"\n═══ НАМЕРЕНИЕ: {intent['intent']} ═══")
+    print(f"  где: {intent['where']}\n  зачем: {intent['why']}")
+    print(f"  проверок сравнено {sums['common']}; сменили цвет {sums['colour']}")
+
+    print("\n── ЗАЯВЛЕННОЕ СБЫЛОСЬ ──")
+    for name, out in sums["fulfilled"]:
         print(f"  ✓ {name} → {out}")
     if not declared:
         print("  заявлено, что цвет не меняет НИЧЕГО — весь вердикт во второй колонке")
-    elif not fulfilled:
+    elif not sums["fulfilled"]:
         print("  (ничего)")
 
     print("\n── ИЗМЕНИЛОСЬ НЕЗАЯВЛЕННОЕ (скрытый риск) ──")
-    surprise = {(name, out) for name, outs in got.items() for out in outs
-                if out not in declared.get(name, set())}
     for name, out in sorted(surprise):
         if out in ("red", "green"):
             print(f"  ⚠ {name} → {out} — намерение об этом не говорило")
-    for label in sorted(appeared | vanished):
-        outcome = "appeared" if label in appeared else "vanished"
-        if (key(label), outcome) in surprise:
-            print(f"  ⚠ проверка {'появилась' if label in appeared else 'исчезла'}: {label}")
+    for label, outcome in sums["news"]:
+        print(f"  ⚠ проверка {'появилась' if outcome == 'appeared' else 'исчезла'}: {label}")
     if not surprise:
         print("  (ничего — правка задела ровно то, что заявлено)")
 
     print("\n── ЗАЯВЛЕННОЕ НЕ СБЫЛОСЬ ──")
-    gone = {key(label) for label in vanished}
-    missed = [(name, out) for name, outs in sorted(declared.items())
-              for out in sorted(outs) if out not in got.get(name, set())]
-    for name, out in missed:
-        if name in gone and out not in ("vanished",):
+    for name, out in sums["missed"]:
+        if name in sums["gone"] and out not in ("vanished",):
             # Исчезнувшая проверка — не «цвет не сменился»: наблюдения не стало вовсе, и принять
             # это за «ничего не поменялось» значит принять отсутствие улики за чистый результат.
             print(f"  ✗ {name}: ждали {out}, а проверки ИСЧЕЗЛИ — улики нет, это не «без изменений»")
         else:
             print(f"  ✗ {name}: ждали {out}, получили {sorted(got.get(name, set())) or 'без изменений'}")
-    if not missed:
+    if not sums["missed"]:
         print("  (ничего)")
 
-    return 0 if not (missed or surprise) else 1
+    return 0 if not (sums["missed"] or surprise) else 1
+
+
+def stamp_fields(intent: dict, sums: dict, path: Path) -> dict:
+    """Состав подписи цикла. Отдельно от печати, потому что подпись читает ЧЕЛОВЕК в чужой сессии.
+
+    Именем зовётся файл намерения, а не список тронутых путей: по нему прогон повторяют, а список
+    путей в подпись не влезает и обрывается на полуслове.
+    """
+    ждали = Counter(out for outs in sums["declared"].values() for out in outs)
+    return {"what": f"цикл по «{path.stem}» — сравнено {sums['common']} проверок, цвет сменили "
+                    f"{sums['colour']}, скрытых рисков {len(sums['surprise'])}",
+            "intent": path.stem,
+            "expected": " + ".join(f"{n}×{out}" for out, n in sorted(ждали.items()))
+                        or "цвет не меняется",
+            "actual": f"сбылось {len(sums['fulfilled'])} · риска {len(sums['surprise'])} · "
+                      f"не сбылось {len(sums['missed'])}",
+            "cmd": f"python3 scripts/guards/what_if.py --intent {path}",
+            "detail": {"намерение": intent, "сбылось": sums["fulfilled"],
+                       "не сбылось": sums["missed"], "риск": sorted(sums["surprise"])}}
 
 
 def main() -> int:
@@ -285,7 +319,12 @@ def main() -> int:
     finally:
         drop_tree(tree)
 
-    return report(intent, before, after)
+    code = report(intent, before, after)
+    поля = stamp_fields(intent, compare(intent, before, after), args.intent)
+    print("\n" + _stamp.sign("цикл", "ВЕРДИКТ", поля["what"], intent=поля["intent"],
+                             expected=поля["expected"], actual=поля["actual"],
+                             cmd=поля["cmd"], detail=поля["detail"])[1])
+    return code
 
 
 if __name__ == "__main__":

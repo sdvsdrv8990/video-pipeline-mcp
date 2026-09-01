@@ -332,8 +332,22 @@ def server_code_touched() -> list[str]:
     return sorted(f for f in files if f.endswith(".py") and f.startswith(MEASURED))
 
 
+def sign_refusal(reason: str) -> str:
+    """Подпись отказа. Нет источника подписи — отдаём строку об этом, а не роняем гейт поставки."""
+    try:
+        sys.path.insert(0, str(PROJ / "scripts" / "guards"))
+        import _stamp
+        return _stamp.sign("гейт", "ОТКАЗ", reason.strip().splitlines()[0][:120],
+                           intent="гейт поставки", expected="зелёное перед словом «сделано»",
+                           actual="отказ гейта", cmd="см. команду в тексте отказа")[1]
+    except Exception as beda:                  # noqa: BLE001 — подпись не важнее самого отказа
+        return f"⟦vpm — ⟧ подписи нет ({beda})"
+
+
 def block(reason: str) -> None:
-    print(reason, file=sys.stderr)
+    # Отказ уходит модели вместе с подписью: скопированный в другую сессию, он иначе не говорит,
+    # чем был и по какому запросу, и разбор пришлось бы вести заново.
+    print(reason + "\n\n" + sign_refusal(reason), file=sys.stderr)
     sys.exit(2)
 
 

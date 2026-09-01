@@ -9,8 +9,10 @@ Standalone-прогон:  python tests/quick/test_trail.py
 живому серверу. Здесь — то, что сценарием не выразить: прополка старых файлов, предел на файл,
 неполное объявление и сломанная запись, которая обязана потерять НАБЛЮДЕНИЕ, а не вызов.
 """
+import io
 import sys
 import tempfile
+from contextlib import redirect_stdout
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -288,6 +290,47 @@ ok(not exemptions([{"tool": "excel_read_range", "scenario": "res_refusals", "cod
                     "facts": []}], {"INTERNAL_ERROR"}, set(),
                   {("res_refusals", "excel_read_range")})[0],
    "шаг объявлен известной дырой (`open: F#`) — требовать на неё сценарий значит требовать желаемым нежелаемое")
+
+print("\n== подпись вывода и её разбор по ключу ==")
+sys.path.insert(0, str(ROOT / "scripts" / "guards"))
+import _stamp  # noqa: E402  источник улики: подпись пишется им, читается производителем
+from reproduce import resolve_stamp  # noqa: E402
+
+tree = Path(tempfile.mkdtemp(prefix="vpm-подпись-"))
+key, text = _stamp.sign("проба", "УЛИКА", "ось слепа к core — ruff обязан покраснеть",
+                        intent="форма-правки", expected="red", actual="red",
+                        cmd="ruff check core/advice.py", root=tree)
+ok(text.splitlines()[0].startswith(f"⟦vpm {key} УЛИКА⟧"),
+   "первая строка подписи говорит РОЛЬ и ключ до всякого разбора")
+ok("род=проба" in text and "ждали=red" in text and "запись=" in text,
+   "вторая строка несёт ключи для дешёвого сбора улик")
+ok(len(_stamp.find(key, tree)) == 1, "запись легла в журнал подписей и находится по ключу")
+
+try:
+    _stamp.sign("выдумка", "УЛИКА", "x", root=tree)
+    ok(False, "незнакомый род отвергается, а не пишется молча")
+except ValueError:
+    ok(True, "незнакомый род отвергается, а не пишется молча")
+try:
+    _stamp.sign("проба", "ВЫДУМКА", "x", root=tree)
+    ok(False, "незнакомая роль отвергается, а не пишется молча")
+except ValueError:
+    ok(True, "незнакомая роль отвергается, а не пишется молча")
+
+out = io.StringIO()
+with redirect_stdout(out):
+    code = resolve_stamp(key, tree)
+resolved = out.getvalue()
+ok(code == 0 and "форма-правки" in resolved and "ruff check core/advice.py" in resolved,
+   "ключ поднимает намерение и команду повтора — дознание заново не нужно")
+out = io.StringIO()
+with redirect_stdout(out):
+    code = resolve_stamp("0000", tree)
+ok(code == 1 and "записи нет" in out.getvalue(),
+   "чужой ключ назван прямо — отсутствие улики не выдаётся за пустую улику")
+ok(not list((tree / "tests" / ".journal").glob("trail-*.jsonl"))
+   and not list((tree / "tests" / ".journal").glob("scenarios-*.jsonl")),
+   "журнал подписей своей формы — вход производителя сценариев им не отравляется")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

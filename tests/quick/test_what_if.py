@@ -78,6 +78,19 @@ def main() -> int:
     ok("✓ здоровый файл — молчание → appeared" in text,
        "короткое имя работает по-прежнему — прежний способ звать проверку не сломан")
 
+    print("§4б подпись цикла читается человеком в чужой сессии")
+    намерение = {"intent": "У вывода появляется происхождение: подпись из двух строк говорит роль",
+                 "where": "scripts/guards/_stamp.py, scripts/guards/what_if.py, ещё десять путей",
+                 "why": "проба", "expect": [{"scenario": "alpha", "becomes": "appeared"}]}
+    поля = what_if.stamp_fields(намерение, what_if.compare(намерение, {}, {"alpha · 1. шаг": True}),
+                                Path("/tmp/intent_подпись.yaml"))
+    ok(поля["intent"] == "intent_подпись",
+       "именем зовётся файл намерения — по нему прогон повторяют")
+    ok("scripts/guards" not in поля["what"] and поля["what"].endswith("скрытых рисков 0"),
+       "строка `что` несёт числа и не обрывается списком путей на полуслове")
+    ok("--intent /tmp/intent_подпись.yaml" in поля["cmd"],
+       "команда повтора — полная, а не имя без пути")
+
     print("§5 три карты объявлены источником вердиктов")
     roster = what_if.suites(ROOT)
     guards = {p.name for p in (ROOT / "scripts" / "guards").glob("*.py") if not p.name.startswith("_")}

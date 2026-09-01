@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""scripts/guards/_stamp.py — подпись вывода: чем он был и по какому запросу.
+
+Не сторож: ничего не судит и exit-кода не даёт. Отвечает на вопрос, которого сам вывод не несёт, —
+УЛИКА это, ОТКАЗ или ВЕРДИКТ, каким было объявленное ожидание и где лежит полная запись.
+Скопированная в другую сессию строка без подписи требует повторного дознания; с ключом хватает
+одной команды: `reproduce.py --stamp <ключ>`.
+
+Словари родов и ролей объявлены здесь и проверяются: незнакомое имя — отказ, а не тихая запись
+неизвестно чего. Журнал свой (`stamps-*.jsonl`): производитель сценариев читает `trail-*` и
+`scenarios-*`, и подмешивать в его вход другую форму записи нельзя.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+JOURNAL = ("tests", ".journal")
+ROLES = ("УЛИКА", "ОТКАЗ", "ВЕРДИКТ")
+KINDS = ("цикл", "гейт", "проба")
+
+
+def _head(root: Path) -> tuple[str, bool]:
+    """Коммит и грязь дерева. Нет git — «улики нет», а не выдуманный ноль."""
+    try:
+        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=str(root),
+                             capture_output=True, text=True, timeout=20)
+        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=str(root),
+                               capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return "", False
+    if sha.returncode != 0:
+        return "", False
+    return sha.stdout.strip(), bool(dirty.stdout.strip())
+
+
+def sign(kind: str, role: str, what: str, *, intent: str = "", expected: str = "",
+         actual: str = "", cmd: str = "", detail: dict | None = None,
+         root: Path = ROOT) -> tuple[str, str]:
+    """Записать наблюдение и вернуть (ключ, две строки подписи)."""
+    if kind not in KINDS:
+        raise ValueError(f"род `{kind}` не объявлен; известны {list(KINDS)}")
+    if role not in ROLES:
+        raise ValueError(f"роль `{role}` не объявлена; известны {list(ROLES)}")
+    stamped = time.time()
+    key = hashlib.sha1(f"{stamped}|{kind}|{what}".encode()).hexdigest()[:4]
+    head, dirty = _head(root)
+    day = time.strftime("%Y%m%d", time.localtime(stamped))
+    path = root.joinpath(*JOURNAL) / f"stamps-{day}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = sum(1 for _ in path.open(encoding="utf-8")) + 1 if path.exists() else 1
+    where = f"{'/'.join(JOURNAL)}/{path.name}:{line}"
+    record = {"ts": stamped, "key": key, "kind": kind, "role": role, "what": what,
+              "intent": intent, "expected": expected, "actual": actual, "cmd": cmd,
+              "head": head, "dirty": dirty, "where": where, "detail": detail or {}}
+    with path.open("a", encoding="utf-8") as out:
+        out.write(json.dumps(record, ensure_ascii=False) + "\n")
+    keys = [f"род={kind}"]
+    if intent:
+        keys.append(f"намерение={intent}")
+    if expected:
+        keys.append(f"ждали={expected}")
+    if actual:
+        keys.append(f"факт={actual}")
+    keys += [f"HEAD={head or 'нет git'}{' (дерево грязное)' if dirty else ''}", f"запись={where}"]
+    return key, f"⟦vpm {key} {role}⟧ {what}\n⟦ключи⟧ " + " · ".join(keys)
+
+
+def find(key: str, root: Path = ROOT) -> list[dict]:
+    """Записи по ключу. Ключ короткий, поэтому совпадений бывает несколько — отдаём все."""
+    found = []
+    for path in sorted(root.joinpath(*JOURNAL).glob("stamps-*.jsonl")):
+        for row in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not row.strip():
+                continue
+            try:
+                record = json.loads(row)
+            except json.JSONDecodeError:
+                continue                 # обрыв строки не отменяет остальных
+            if record.get("key") == key:
+                found.append(record)
+    return found
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--kind", required=True, choices=KINDS)
+    ap.add_argument("--role", required=True, choices=ROLES)
+    ap.add_argument("--what", required=True, help="одна строка: что это и что доказывает")
+    ap.add_argument("--intent", default="", help="имя намерения или запроса")
+    ap.add_argument("--expected", default="", help="что было объявлено ожидаемым")
+    ap.add_argument("--actual", default="", help="что вышло на самом деле")
+    ap.add_argument("--cmd", default="", help="команда повтора")
+    a = ap.parse_args()
+    print(sign(a.kind, a.role, a.what, intent=a.intent, expected=a.expected,
+               actual=a.actual, cmd=a.cmd)[1])
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
