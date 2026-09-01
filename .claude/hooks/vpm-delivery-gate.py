@@ -83,6 +83,12 @@ MSG_C_RED = """Гейт поставки: тронут код сервера ({f
 Поток данных задет (что доезжает до клиента) — добавь маршрут и прогони `tests/routes/test_routes.py`.
 Меняешь поведение осознанно — покажи диффером: `python3 scripts/guards/what_if.py --intent …`.
 
+── ГОТОВАЯ РЕГРЕССИЯ на этот отказ (порождена из записи, не из головы) ──
+{scenario}
+
+Проверь и вставь в `tests/scenarios/*.yaml` — регрессия, написанная в момент отказа, стоит минуты;
+написанная через неделю, не пишется вовсе.
+
 Выключить гейт: VPM_DELIVERY_GATE=off."""
 
 MSG_C_BLIND = """Гейт поставки: тронут код сервера ({files}), а сценариев на этих строках НЕТ.
@@ -253,6 +259,25 @@ def run_scenarios(names: set[str]) -> tuple[int, str]:
     return done.returncode, "\n".join(fails[:8]) or done.stdout[-900:]
 
 
+def produced_scenario(record: Path | None = None, root: Path = PROJ) -> str:
+    """Готовый сценарий на свежий отказ — из ЗАПИСИ, а не из головы.
+
+    Производитель сценариев иначе стоит без дела: отказ ловится, регрессия на него пишется руками,
+    а руками через неделю она не пишется вовсе. Нет воспроизводимого отказа — так и говорим.
+    """
+    argv = [sys.executable, str(root / "scripts" / "guards" / "reproduce.py")]
+    if record is not None:
+        argv += ["--record", str(record)]
+    try:
+        done = subprocess.run(argv, cwd=str(root), capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.SubprocessError) as beda:
+        return f"(производитель сценариев не запустился: {beda})"
+    if done.returncode != 0 or "- scenario:" not in done.stdout:
+        return "(в записи нет воспроизводимого отказа — сценарий не порождён)"
+    начало = done.stdout.index("- scenario:")
+    return done.stdout[начало:начало + 1500].rstrip()
+
+
 def verify_behaviour(touched: list[str]) -> None:
     """Улика прогона обязана быть свежей, зелёной и покрывать задетое. Нет — гоним сами."""
     files = ", ".join(touched[:6]) + (" …" if len(touched) > 6 else "")
@@ -281,7 +306,8 @@ def verify_behaviour(touched: list[str]) -> None:
 
     if fresh and covers and not verdict.get("ok"):
         block(MSG_C_RED.format(files=files, command=_command(names),
-                               tail=f"журнал {verdict.get('_path')}: провалов {verdict.get('failed')}"))
+                               tail=f"журнал {verdict.get('_path')}: провалов {verdict.get('failed')}",
+                               scenario=produced_scenario()))
         return
 
     code, tail = run_scenarios(names)             # улики нет/несвежая/не покрывает — проверяем сами
@@ -289,7 +315,8 @@ def verify_behaviour(touched: list[str]) -> None:
         block(MSG_C_SLOW.format(limit=os.environ.get("VPM_GATE_RUN_LIMIT") or 540,
                                 command=_command(names)))
     elif code != 0:
-        block(MSG_C_RED.format(files=files, command=_command(names), tail=tail))
+        block(MSG_C_RED.format(files=files, command=_command(names), tail=tail,
+                               scenario=produced_scenario()))
 
 
 def _bare(names) -> set[str]:

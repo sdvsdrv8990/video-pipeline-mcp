@@ -208,6 +208,21 @@ def main() -> int:
     ok(door("git log -n 5", root=ROOT) == "",
        "не коммит вовсе — соседняя команда с похожим флагом не обвиняется")
 
+    print("§9в красный приносит с собой готовую регрессию")
+    запись = Path(tempfile.mkdtemp(prefix="vpm-запись-")) / "trail-проба.jsonl"
+    отказ = {"ts": 1.0, "scenario": "проба", "step": 1, "tool": "fs_read_file",
+             "args": {"path": "../секрет"}, "ok": False, "code": "PATH_ESCAPE",
+             "message": "выход за периметр", "level": "tool"}
+    запись.write_text(json.dumps(отказ, ensure_ascii=False) + "\n", encoding="utf-8")
+    сценарий = gate["produced_scenario"](запись, ROOT)
+    ok(сценарий.startswith("- scenario:") and "fs_read_file" in сценарий,
+       "отказ из записи превращается в готовый сценарий — регрессия пишется в момент отказа")
+    зелёная = запись.with_name("trail-зелёная.jsonl")
+    зелёная.write_text(json.dumps({**отказ, "ok": True, "code": ""}, ensure_ascii=False) + "\n",
+                       encoding="utf-8")
+    ok("нет воспроизводимого отказа" in gate["produced_scenario"](зелёная, ROOT),
+       "в зелёной записи воспроизводить нечего — так и сказано, а не выдуман сценарий")
+
     print("§9б память под версиями судится тем же гейтом")
     склад = Path(tempfile.mkdtemp(prefix="vpm-склад-"))
     среда2 = {"HOME": str(склад), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
