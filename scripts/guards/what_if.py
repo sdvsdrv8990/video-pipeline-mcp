@@ -14,6 +14,7 @@
     python3 scripts/guards/what_if.py --intent intent.yaml --patch fix.diff
 """
 import argparse
+import json
 import re
 import shutil
 import subprocess
@@ -96,7 +97,16 @@ def verdicts(cwd: Path) -> dict[str, bool]:
 
 
 def load_intent(path: Path) -> dict:
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as beda:
+        # Метки проверок часто несут `": "` — законно с тех пор, как имя стало точным. В YAML это
+        # начало отображения, поэтому незакавыченная метка роняет разбор чужим стеком на 20 строк.
+        место = getattr(beda, "problem_mark", None)
+        где = f"строка {место.line + 1}, колонка {место.column + 1}" if место else "место не названо"
+        sys.exit(f"{path.name}: намерение не разбирается ({где}) — {getattr(beda, 'problem', beda)}.\n"
+                 f"Чаще всего это двоеточие с пробелом внутри незакавыченной строки: закавычь "
+                 f"значение целиком — `scenario: \"метка: с рубежом\"`.")
     unknown = set(data) - INTENT_KEYS
     if unknown:
         sys.exit(f"{path.name}: неизвестные ключи {sorted(unknown)} (разрешены {sorted(INTENT_KEYS)})")
@@ -119,6 +129,23 @@ def load_intent(path: Path) -> dict:
             sys.exit(f"{path.name}.expect: `becomes` — одно из {sorted(OUTCOMES)} "
                      f"(у {item.get('scenario')!r})")
     return data
+
+
+def unspoken(intent: dict, root: Path = ROOT) -> list[str]:
+    """Метки намерения, которых НЕТ ни в одном исходнике набора: почти всегда опечатка.
+
+    Предупреждение, а не отказ: метка бывает собрана из переменных, и запрещать такую значило бы
+    запрещать целый род проверок. Смысл в том, чтобы опечатка стоила секунды, а не двух прогонов.
+    """
+    тексты = []
+    for путь in sorted((root / "tests").rglob("*.py")) + sorted((root / "tests").rglob("*.yaml")):
+        try:
+            тексты.append(путь.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+    свод = "\n".join(тексты)
+    return [str(item["scenario"]) for item in intent["expect"]
+            if str(item["scenario"]) not in свод]
 
 
 def untracked(root: Path = ROOT) -> list[str]:
@@ -291,13 +318,42 @@ def stamp_fields(intent: dict, sums: dict, path: Path) -> dict:
                        "не сбылось": sums["missed"], "риск": sorted(sums["surprise"])}}
 
 
+MAPS = ("tests", ".journal")
+
+
+def save_maps(key: str, before: dict[str, bool], after: dict[str, bool], root: Path = ROOT) -> Path:
+    """Обе карты рядом с подписью: перестроить отчёт по исправленному намерению — секунда."""
+    path = root.joinpath(*MAPS) / f"maps-{key}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"before": before, "after": after}, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def replay(key: str, intent: dict, root: Path = ROOT) -> int:
+    """Отчёт по СОХРАНЁННЫМ картам. Не новое измерение — прогона не было, и говорится это прямо."""
+    path = root.joinpath(*MAPS) / f"maps-{key}.json"
+    if not path.exists():
+        sys.exit(f"карт по ключу {key} нет ({path}): перестраивать нечего, нужен прогон")
+    карты = json.loads(path.read_text(encoding="utf-8"))
+    code = report(intent, карты["before"], карты["after"])
+    print(f"\n⟦vpm {key}⟧ отчёт перестроен по сохранённым картам — НОВОГО ПРОГОНА НЕ БЫЛО")
+    return code
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--intent", required=True, type=Path)
     parser.add_argument("--patch", type=Path, help="файл диффа; по умолчанию — незакоммиченная правка")
+    parser.add_argument("--replay", help="ключ подписи: перестроить отчёт по сохранённым картам")
     args = parser.parse_args()
 
     intent = load_intent(args.intent)
+    if (немые := unspoken(intent)):
+        print("⚠️ метки, которых нет ни в одном наборе (опечатка обойдётся в прогон):")
+        for метка in немые:
+            print(f"   • {метка}")
+    if args.replay:
+        return replay(args.replay, intent)
     patch = args.patch.read_text(encoding="utf-8") if args.patch else subprocess.run(
         ["git", "diff", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout
     if not patch.strip() and not untracked():
@@ -321,9 +377,11 @@ def main() -> int:
 
     code = report(intent, before, after)
     поля = stamp_fields(intent, compare(intent, before, after), args.intent)
-    print("\n" + _stamp.sign("цикл", "ВЕРДИКТ", поля["what"], intent=поля["intent"],
-                             expected=поля["expected"], actual=поля["actual"],
-                             cmd=поля["cmd"], detail=поля["detail"])[1])
+    ключ, подпись = _stamp.sign("цикл", "ВЕРДИКТ", поля["what"], intent=поля["intent"],
+                                expected=поля["expected"], actual=поля["actual"],
+                                cmd=поля["cmd"], detail=поля["detail"])
+    save_maps(ключ, before, after)
+    print("\n" + подпись)
     return code
 
 

@@ -91,6 +91,35 @@ def main() -> int:
     ok("--intent /tmp/intent_подпись.yaml" in поля["cmd"],
        "команда повтора — полная, а не имя без пути")
 
+    print("§4в опечатка в намерении стоит секунды, а не двух прогонов")
+    битое = Path(tempfile.mkdtemp()) / "битое.yaml"
+    битое.write_text("intent: x\nwhere: y\nwhy: z\nexpect:\n  - scenario: метка: рубеж\n"
+                     "    becomes: appeared\n    why: проба\n", encoding="utf-8")
+    try:
+        what_if.load_intent(битое)
+        ok(False, "битое намерение отвергается с местом и причиной, а не чужим стеком")
+    except SystemExit as отказ:
+        текст = str(отказ)
+        ok("строка 5" in текст and "закавычь" in текст,
+           "битое намерение отвергается с местом и причиной, а не чужим стеком")
+    небылица = "метка-" + Path(tempfile.mkdtemp()).name + "-которой-нет"
+    рабочее = {"intent": "x", "where": "y", "why": "z", "expect": [
+        {"scenario": небылица, "becomes": "appeared"},
+        {"scenario": "документ формой не судится — у прозы нет ни компиляции, ни линтера",
+         "becomes": "appeared"}]}
+    ok(what_if.unspoken(рабочее, ROOT) == [небылица],
+       "предполётная сверка называет метку, которой нет в наборах, и молчит про настоящую")
+    склад = Path(tempfile.mkdtemp())
+    what_if.save_maps("абвг", {"alpha · 1. шаг": True}, {"alpha · 1. шаг": False}, склад)
+    вывод = io.StringIO()
+    with redirect_stdout(вывод):
+        код = what_if.replay("абвг", {"intent": "x", "where": "y", "why": "z",
+                                      "expect": [{"scenario": "alpha", "becomes": "red"}]}, склад)
+    ok(код == 0 and "✓ alpha → red" in вывод.getvalue(),
+       "отчёт перестраивается по сохранённым картам — исправленное намерение не требует прогона")
+    ok("НОВОГО ПРОГОНА НЕ БЫЛО" in вывод.getvalue(),
+       "перестроенный отчёт говорит, что измерения не было — иначе он выдаёт себя за прогон")
+
     print("§5 три карты объявлены источником вердиктов")
     roster = what_if.suites(ROOT)
     guards = {p.name for p in (ROOT / "scripts" / "guards").glob("*.py") if not p.name.startswith("_")}
