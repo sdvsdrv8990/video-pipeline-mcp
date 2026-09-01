@@ -4,7 +4,8 @@ tests/quick/test_hooks.py — хуки `.claude/hooks/` судят СОБЫТИ�
 Standalone-прогон:  python tests/quick/test_hooks.py
 Проверяет: каждый хук ловит своё событие и молчит на чужом; обе ложные тревоги гейта фактов
 (проза про запись, путь в кавычках) закреплены регрессией; шим без репозитория молчит, а не
-падает. Состояние пишется в подставной HOME — настоящее не трогается.
+падает, а на неисправной форме тронутого файла — говорит, и на здоровом молчит.
+Состояние пишется в подставной HOME — настоящее не трогается.
 """
 import json
 import os
@@ -171,6 +172,38 @@ def main() -> int:
        "предикат роста узнаёт свой случай сам, не полагаясь на порядок дверей в verdict")
     ok(not gate2["suite_growth"]("tests/scenarios/ещё_не_рождённый.yaml", "- call: x\n"),
        "файла ещё нет — это рождение, а не рост: расширять нечего, и запаса у него не бывает")
+
+    print("§10 форма того, что правка оставила в дереве")
+    inv: dict = {"__name__": "не-главный", "__file__": str(HOOKS / "vpm-invariants.py")}
+    exec(compile((HOOKS / "vpm-invariants.py").read_text(encoding="utf-8"),
+                 str(HOOKS / "vpm-invariants.py"), "exec"), inv)
+    tree = Path(tempfile.mkdtemp(prefix="vpm-форма-"))
+    git = {"HOME": str(tree), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+    subprocess.run(["git", "init", "-q"], cwd=tree, env=git, timeout=60, check=True)
+    subprocess.run(["git", "-c", "user.name=н", "-c", "user.email=н@н", "commit", "-q",
+                    "--allow-empty", "-m", "пусто"], cwd=tree, env=git, timeout=60, check=True)
+    (tree / "правка_скриптом.py").write_text("import yaml\n\n\ndef f():\n    return Declaration(1)\n",
+                                             encoding="utf-8")
+    (tree / "сломан.py").write_text("def f(:\n    pass\n", encoding="utf-8")
+    (tree / "здоровый.py").write_text("import json\n\n\ndef f():\n    return json.dumps({})\n",
+                                      encoding="utf-8")
+    (tree / "заметка.md").write_text("правка документа формой не судится\n", encoding="utf-8")
+    dirty = inv["dirty_python"](tree)
+    ok({p.name for p in dirty} == {"правка_скриптом.py", "сломан.py", "здоровый.py"},
+       f"правка скриптом видна — файлы берутся из ДЕРЕВА, а не из события  → {sorted(p.name for p in dirty)}")
+    ruff = inv["linter"](ROOT)
+    notes = inv["form_complaints"](dirty, root=tree, ruff=ruff)
+    ok(any("не компилируется" in n for n in notes),
+       "сломанный синтаксис — жалоба сразу, а не на следующем чужом прогоне")
+    ok(any("F821" in n for n in notes) and any("F401" in n for n in notes),
+       "имя без импорта и незакрытый импорт названы кодом линтера — это и есть немой промах")
+    ok(inv["form_complaints"]([tree / "здоровый.py"], root=tree, ruff=ruff) == [],
+       "здоровый файл — молчание, ведь сторожа, который кричит на чистом, выключают целиком")
+    silent = inv["form_complaints"]([tree / "здоровый.py"], root=tree, ruff=None)
+    ok(len(silent) == 1 and "не судились" in silent[0],
+       "линтера нет — сторож говорит «не судил», а не выдаёт непроверенное за чистое")
+    ok(inv["event_python"]({"tool_input": {"file_path": str(ROOT / "docs/roadmap/02_findings.md")}}) == [],
+       "документ формой не судится — у прозы нет ни компиляции, ни линтера")
 
     print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")
     for fail in _fails:

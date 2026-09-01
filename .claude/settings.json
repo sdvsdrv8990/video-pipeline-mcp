@@ -76,7 +76,7 @@
           },
           {
             "type": "command",
-            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/vpm-invariants.py 2>&1 || true"
+            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/vpm-invariants.py"
           }
         ]
       },
@@ -90,7 +90,7 @@
           },
           {
             "type": "command",
-            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/vpm-invariants.py 2>&1 || true"
+            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/vpm-invariants.py"
           },
           {
             "type": "command",
