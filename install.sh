@@ -75,6 +75,20 @@ else
     echo "ВНИМАНИЕ: onnxruntime не поднялся — удаление фона и апскейл откажут честно (LOCAL_INFERENCE_FAILED)"
 fi
 
+# 9. Дверь коммита. Без неё немой промах уезжает в историю, а её отсутствие выглядит чистым
+# проходом: локально не проверяет никто, CI ловит уже после push.
+echo "Установка двери коммита (pre-commit)..."
+if python3 -c "import pre_commit" 2>/dev/null; then
+    if pre-commit install; then
+        echo "дверь коммита установлена"
+    else
+        echo "ВНИМАНИЕ: pre-commit install не прошёл — дверь коммита НЕ стоит"
+    fi
+else
+    echo "ВНИМАНИЕ: pre-commit живёт в группе dev — дверь коммита НЕ поставлена."
+    echo "  поставить: pip install -e '.[dev]' && pre-commit install"
+fi
+
 echo ""
 echo "=== Установка завершена ==="
 echo "Для запуска сервера + туннеля одной командой: ./run.sh"

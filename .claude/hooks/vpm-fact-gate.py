@@ -41,6 +41,8 @@ DESTRUCTIVE = re.compile(
     re.I,
 )
 QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
+COMMIT = re.compile(r"\bgit\s+(?:-\S+\s+)*commit\b")
+SKIP_DOOR = re.compile(r"--no-verify\b|\s-n\b")
 # Тело here-document — ДАННЫЕ, а не команда. Без этого файл, в тексте которого упомянута
 # опасная команда, запрещает сам себя записать (поймано на этом же хуке).
 HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1\r?\n.*?\r?\n\2\b", re.S)
@@ -89,6 +91,16 @@ SUITE_MSG = """Гейт фактов: {path} — РОЖДЕНИЕ набора, 
    предмет — сервер? тогда место не здесь, а в tests/scenarios/.
 
 Ответы идут в строку-зону нового набора, а не в переписку. Выключить: VPM_FACT_GATE=off."""
+
+DOOR_MSG = """Гейт фактов: коммит мимо двери — `{cmd}`
+
+{reason}
+
+Дверь коммита (`pre-commit`: ruff, mypy, import-linter, три сторожа) — единственное, что не пускает
+немой промах в историю; CI ловит то же самое уже после `push`, когда история написана.
+Поставить: `.venv/bin/pre-commit install`. Красный хук — вердикт, а не помеха: чини причину.
+
+Выключить гейт: VPM_FACT_GATE=off."""
 
 BASH_MSG = """Гейт фактов: разрушительная команда — `{cmd}`
 
@@ -301,6 +313,32 @@ def zone_hint() -> str:
             + "\n".join(rows))
 
 
+def door_path(root: Path = PROJ) -> Path:
+    """Где лежит дверь. В worktree `.git` — ФАЙЛ, а хуки общие, поэтому путь спрашиваем у git:
+    иначе сторож объявил бы «двери нет» ровно там, где она стоит (поймано циклом)."""
+    try:
+        done = subprocess.run(["git", "rev-parse", "--git-path", "hooks/pre-commit"],
+                              cwd=str(root), capture_output=True, text=True, timeout=10)
+        named = Path(done.stdout.strip()) if done.returncode == 0 and done.stdout.strip() else None
+    except (OSError, subprocess.SubprocessError):
+        named = None
+    if named is None:
+        return root / ".git" / "hooks" / "pre-commit"
+    return named if named.is_absolute() else root / named
+
+
+def commit_door(command: str, root: Path = PROJ) -> str:
+    """Причина отказать коммиту: дверь снимают флагом или её нет на месте. Иначе пустая строка."""
+    if not COMMIT.search(command):
+        return ""
+    if SKIP_DOOR.search(command):
+        return "Флаг снимает проверки коммита — ровно то, ради чего дверь стоит."
+    if not door_path(root).exists():
+        return ("Двери нет вовсе: `.git/hooks/pre-commit` отсутствует, и её молчание неотличимо "
+                "от пройденных проверок.")
+    return ""
+
+
 def verdict(rel: str, added: str = "") -> tuple[str, str, str] | None:
     """(ключ, о чём, сообщение) для пути в дереве — либо None, если гейта он не касается."""
     if suite_birth(rel):
@@ -324,6 +362,11 @@ def pre(data: dict, st: dict, sid: str) -> None:
         key, what, full = found
     elif tool == "Bash":
         raw = inp.get("command", "")
+        # Дверь коммита — СОСТОЯНИЕ, а не размышление: повтор его не меняет, поэтому отказ
+        # идёт мимо счётчика послаблений и держится, пока состояние не исправят.
+        door = commit_door(QUOTED.sub("", HEREDOC.sub("", raw)))
+        if door:
+            deny(DOOR_MSG.format(cmd=raw[:200], reason=door))
         # Запись файла из Bash — та же правка: цель ищется в команде, а не ожидается от Edit.
         for rel in written_paths(raw):
             found = verdict(rel, raw)

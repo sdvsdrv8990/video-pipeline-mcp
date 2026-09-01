@@ -19,7 +19,8 @@ from invariants import (  # noqa: E402
     declared_but_unscripted, default_instead_of_declaration, enum_without_values,
     facts_exempt_from_observation, facts_outside_registry, facts_without_emitter,
     facts_without_observer, observation_incomplete,
-    guard_without_home, hook_declared_muted, hooks_off_declaration,
+    door_not_installed, guard_without_home, hook_declared_muted,
+    hooks_off_declaration,
     knob_without_reader, zone_declared_twice,
     resources_off_inventory, scenario_calls_unknown_tool, skips_without_ci,
     ci_jobs_off_docs, dispatch_by_value, guards_off_catalog, mirrored_declaration,
@@ -572,6 +573,15 @@ ok(not hook_declared_muted(make({".claude/settings.json": "{ сломано\n"})
    "битый JSON судит соседняя ось — здесь улики нет, и обвинять нечего")
 ok(not hook_declared_muted(make({"core/x.py": "x = 1\n"})),
    "объявления нет вовсе — событие не наше")
+
+ok(len(door_not_installed(make({".pre-commit-config.yaml": "repos: []\n",
+                                "install.sh": "pip install -e .\n"}))) == 1,
+   "дверь коммита объявлена, а установка её не ставит — на свежем клоне двери нет")
+ok(not door_not_installed(make({".pre-commit-config.yaml": "repos: []\n",
+                                "install.sh": "pip install -e .\npre-commit install\n"})),
+   "установка ставит дверь — молчим")
+ok(not door_not_installed(make({"install.sh": "pip install -e .\n"})),
+   "двери не объявлено вовсе — требовать её установку не с чего")
 
 
 print("\n== одну зону объявили два хозяина ==")

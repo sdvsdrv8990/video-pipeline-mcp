@@ -1443,6 +1443,25 @@ def hooks_off_declaration(root: Path = ROOT) -> list[str]:
     return notes
 
 
+PRECOMMIT = (".pre-commit-config.yaml",)
+INSTALL = ("install.sh",)
+
+
+def door_not_installed(root: Path = ROOT) -> list[str]:
+    """Дверь коммита объявлена, а установка её не ставит.
+
+    `.git/hooks/` не под git, поэтому на свежем клоне двери нет вовсе — и её отсутствие выглядит
+    как чистый проход: локально не судит никто, CI ловит уже после `push`.
+    """
+    config, install = _at(root, PRECOMMIT), _at(root, INSTALL)
+    if not config.exists() or not install.exists():
+        return []
+    if "pre-commit install" in install.read_text(encoding="utf-8", errors="replace"):
+        return []
+    return [f"{'/'.join(PRECOMMIT)} объявляет дверь коммита, а {'/'.join(INSTALL)} её не ставит — "
+            f"на свежем клоне двери нет, и это неотличимо от пройденных проверок"]
+
+
 # Хвосты, гасящие вердикт: `|| true` обнуляет код возврата, перенаправление уводит поток.
 HOOK_MUFFLE = ("2>/dev/null", "2>&1", "|| true", "; true")
 
@@ -1589,6 +1608,7 @@ HARD = (("одну зону объявили два хозяина", zone_declar
         ("факт мимо реестра типов", facts_outside_registry),
         ("хук мимо объявления", hooks_off_declaration),
         ("объявление глушит голос хука", hook_declared_muted),
+        ("дверь коммита объявлена, но не ставится", door_not_installed),
         ("объявление наблюдения неполно", observation_incomplete),
         ("факт эмитится, а решения о наблюдении нет", facts_without_observer))
 

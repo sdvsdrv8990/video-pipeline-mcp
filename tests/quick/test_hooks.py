@@ -173,6 +173,35 @@ def main() -> int:
     ok(not gate2["suite_growth"]("tests/scenarios/ещё_не_рождённый.yaml", "- call: x\n"),
        "файла ещё нет — это рождение, а не рост: расширять нечего, и запаса у него не бывает")
 
+    print("§9а дверь коммита")
+    _, out, _ = fire("vpm-fact-gate.py", bash('git commit -m "правка" --no-verify'))
+    ok(decision(out) == "deny", "коммит с флагом, снимающим проверки, — отказ")
+    ok("Поставить" in reason(out), "отказ говорит, ЧЕМ его закрыть, а не только что нельзя")
+    gate3: dict = {"__name__": "не-главный", "__file__": str(HOOKS / "vpm-fact-gate.py")}
+    exec(compile((HOOKS / "vpm-fact-gate.py").read_text(encoding="utf-8"),
+                 str(HOOKS / "vpm-fact-gate.py"), "exec"), gate3)
+    door = gate3["commit_door"]
+    стоит = Path(tempfile.mkdtemp(prefix="vpm-дверь-"))
+    (стоит / ".git" / "hooks").mkdir(parents=True)
+    (стоит / ".git" / "hooks" / "pre-commit").write_text("#!/bin/sh\n", encoding="utf-8")
+    ok(door('git commit -m "правка"', root=стоит) == "",
+       "дверь на месте — обычный коммит не трогаем")
+    ok("Двери нет вовсе" in door('git commit -m "правка"', root=Path(tempfile.mkdtemp())),
+       "дерева без двери коммит не покидает — на свежем клоне её нет, и это неотличимо от чистого")
+    основной = Path(tempfile.mkdtemp(prefix="vpm-дверь-репо-"))
+    среда = {"HOME": str(основной), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+    subprocess.run(["git", "init", "-q"], cwd=основной, env=среда, timeout=60, check=True)
+    subprocess.run(["git", "-c", "user.name=н", "-c", "user.email=н@н", "commit", "-q",
+                    "--allow-empty", "-m", "пусто"], cwd=основной, env=среда, timeout=60, check=True)
+    (основной / ".git" / "hooks" / "pre-commit").write_text("#!/bin/sh\n", encoding="utf-8")
+    отросток = основной / "ветка"
+    subprocess.run(["git", "worktree", "add", "-q", "--detach", str(отросток)],
+                   cwd=основной, env=среда, timeout=60, check=True)
+    ok(gate3["door_path"](отросток).exists(),
+       "в worktree дверь ищется у git, а не по `.git/hooks` рядом — там `.git` файл, а хуки общие")
+    ok(door("git log -n 5", root=ROOT) == "",
+       "не коммит вовсе — соседняя команда с похожим флагом не обвиняется")
+
     print("§10 форма того, что правка оставила в дереве")
     inv: dict = {"__name__": "не-главный", "__file__": str(HOOKS / "vpm-invariants.py")}
     exec(compile((HOOKS / "vpm-invariants.py").read_text(encoding="utf-8"),
