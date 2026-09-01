@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from findings_count import scan as scan_registry  # noqa: E402  разбор реестра — один на проект
 
 BASELINE = Path(__file__).with_name("invariants_baseline.txt")
+LESSON_BASELINE = Path(__file__).with_name("lesson_debt_baseline.txt")
 DISPATCH_BASELINE = Path(__file__).with_name("dispatch_baseline.txt")
 UNSCRIPTED_BASELINE = Path(__file__).with_name("unscripted_baseline.txt")
 DEAD_RECOVERY_BASELINE = Path(__file__).with_name("dead_recovery_baseline.txt")
@@ -1443,6 +1444,76 @@ def hooks_off_declaration(root: Path = ROOT) -> list[str]:
     return notes
 
 
+LESSONS = "hard-won-lessons.md"
+LESSON = re.compile(r"^- \*\*(.+?)\*\*", re.M)
+EXECUTOR = re.compile(r"⟨исполняет:\s*(.+?)⟩")
+SCENARIO_NAME = re.compile(r"^- scenario:\s*(\S+)", re.M)
+# Механизм ловит повтор ошибки сам; скилл и «НЕТ» — это слова, и они считаются ДОЛГОМ.
+MECHANISM = ("ось ", "проверка ", "сценарий ")
+
+
+def _lessons(memory: Path) -> list[tuple[str, str]]:
+    """(заголовок урока, объявленный исполнитель). Урок без метки отдаёт пустого исполнителя."""
+    path = memory / LESSONS
+    if not path.exists():
+        return []
+    text = path.read_text(encoding="utf-8")
+    границы = [m.start() for m in LESSON.finditer(text)] + [len(text)]
+    уроки = []
+    for i, начало in enumerate(границы[:-1]):
+        кусок = text[начало:границы[i + 1]]
+        имя = LESSON.match(кусок).group(1)
+        метка = EXECUTOR.search(кусок)
+        уроки.append((имя, метка.group(1).strip() if метка else ""))
+    return уроки
+
+
+def _mechanisms(root: Path) -> set[str]:
+    """Что вообще существует как исполнитель: имена осей, сценариев и скилов."""
+    имена = {имя for имя, _ in HARD} | {строка[0] for строка in RATCHETS}
+    сценарии = _at(root, ("tests", "scenarios"))
+    if сценарии.is_dir():
+        for path in сценарии.glob("*.yaml"):
+            имена |= set(SCENARIO_NAME.findall(path.read_text(encoding="utf-8", errors="replace")))
+    skills = _at(root, (".claude", "skills"))
+    if skills.is_dir():
+        имена |= {p.name for p in skills.iterdir() if (p / "SKILL.md").exists()}
+    return имена
+
+
+def lesson_without_executor(root: Path = ROOT, memory: Path | None = None) -> list[str]:
+    """Урок обязан называть ИСПОЛНИТЕЛЯ, и тот обязан существовать.
+
+    Урок, за которым не стоит механизм, повтор ошибки не ловит: он лежит прозой и пылится. Здесь
+    судится только пара «названо ↔ существует»; долг «механизма нет вовсе» считает храповик рядом.
+    """
+    home = memory or memory_dir(root)
+    if not (home / LESSONS).exists():
+        return []
+    известные = _mechanisms(root)
+    notes = []
+    for имя, исполнитель in _lessons(home):
+        if not исполнитель:
+            notes.append(f"{LESSONS}: урок «{имя[:60]}» не называет исполнителя — повтор ошибки "
+                         f"он не ловит, а пылится")
+            continue
+        названо = исполнитель.split("`")[1] if "`" in исполнитель else исполнитель.split(" ", 1)[-1]
+        if исполнитель != "НЕТ" and названо not in известные:
+            notes.append(f"{LESSONS}: урок «{имя[:50]}» зовёт исполнителя `{названо}`, которого "
+                         f"нет ни среди осей, ни среди сценариев, ни среди скилов")
+    return notes
+
+
+def lesson_without_mechanism(root: Path = ROOT, memory: Path | None = None) -> list[str]:
+    """Долг: урок, за которым стоят только слова (скилл или «НЕТ»), а не ловящий механизм."""
+    home = memory or memory_dir(root)
+    if not (home / LESSONS).exists():
+        return []
+    return [f"{LESSONS}: «{имя[:70]}» — исполнитель {исполнитель or 'не назван'}"
+            for имя, исполнитель in _lessons(home)
+            if not исполнитель.startswith(MECHANISM)]
+
+
 MEMORY_INDEX = "MEMORY.md"
 # Указатель индекса: `- [Заголовок](файл.md) — крючок`. Берём только адрес.
 MEMORY_LINK = re.compile(r"\]\(([^)]+\.md)\)")
@@ -1450,8 +1521,10 @@ MEMORY_NAME = re.compile(r"^name:\s*(\S+)\s*$", re.M)
 
 
 def memory_dir(root: Path = ROOT) -> Path:
-    """Слуг памяти считается из корня ТЕМ ЖЕ правилом, каким его строит сам Claude Code."""
-    return Path.home() / ".claude" / "projects" / str(root).replace("/", "-") / "memory"
+    """Слуг памяти из корня. Дефисом становится ЛЮБОЙ не-буквенно-цифровой знак, а не только `/`:
+    правило `/`→`-` промахивалось мимо каталога на любом пути с подчёркиванием, и оба механизма
+    молча судили пустоту (проверено на всех каталогах `~/.claude/projects`)."""
+    return Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(root)) / "memory"
 
 
 def memory_off_index(root: Path = ROOT, memory: Path | None = None) -> list[str]:
@@ -1658,6 +1731,7 @@ HARD = (("одну зону объявили два хозяина", zone_declar
         ("объявление глушит голос хука", hook_declared_muted),
         ("дверь коммита объявлена, но не ставится", door_not_installed),
         ("память разошлась со своим указателем", memory_off_index),
+        ("урок зовёт несуществующего исполнителя", lesson_without_executor),
         ("объявление наблюдения неполно", observation_incomplete),
         ("факт эмитится, а решения о наблюдении нет", facts_without_observer))
 
@@ -1727,6 +1801,9 @@ def record_field_mismatch(root: Path = ROOT) -> list[str]:
 
 
 RATCHETS = (
+    ("урок без механизма", lesson_without_mechanism, LESSON_BASELINE,
+     "Урок держится словами: заведи ось/проверку/сценарий, который ловит повтор — "
+     "или объясни в ревью, почему механизма быть не может (--bless)"),
     ("enum без значений", enum_without_values, BASELINE,
      "Долг вырос. Почини столбцы выше или объясни в ревью: --bless"),
     ("ветвление по значению вместо таблицы", dispatch_by_value, DISPATCH_BASELINE,

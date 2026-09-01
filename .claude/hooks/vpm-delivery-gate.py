@@ -27,8 +27,9 @@ from pathlib import Path
 # Корень — от места самого хука (`.claude/hooks/` в репозитории), а не зашит путём одной
 # машины: зашитый путь делает хук неперемещаемым, и у всех, кроме автора, он молчит.
 PROJ = Path(__file__).resolve().parents[2]
-# Слуг памяти считается из корня тем же правилом, каким его строит сам Claude Code.
-MEM = Path.home() / ".claude/projects" / str(PROJ).replace("/", "-") / "memory"
+# Слуг памяти: дефисом становится ЛЮБОЙ не-буквенно-цифровой знак, а не только `/` — правило
+# `/`→`-` промахивалось мимо каталога на пути с подчёркиванием, и проверка молчала впустую.
+MEM = Path.home() / ".claude/projects" / re.sub(r"[^A-Za-z0-9]", "-", str(PROJ)) / "memory"
 
 COMPLEX_EDITS = 3
 EDIT_CALL = re.compile(r'"name":\s*"(?:Edit|Write|MultiEdit|NotebookEdit)"')

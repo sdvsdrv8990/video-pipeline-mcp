@@ -19,7 +19,8 @@ from invariants import (  # noqa: E402
     declared_but_unscripted, default_instead_of_declaration, enum_without_values,
     facts_exempt_from_observation, facts_outside_registry, facts_without_emitter,
     facts_without_observer, observation_incomplete,
-    door_not_installed, guard_without_home, hook_declared_muted, memory_off_index,
+    door_not_installed, guard_without_home, hook_declared_muted,
+    lesson_without_executor, lesson_without_mechanism, memory_dir, memory_off_index,
     hooks_off_declaration,
     knob_without_reader, zone_declared_twice,
     resources_off_inventory, scenario_calls_unknown_tool, skips_without_ci,
@@ -604,6 +605,35 @@ ok(not memory_off_index(memory=память({"MEMORY.md": "- [Есть](есть
    "указатель и диск сошлись — молчим")
 ok(not memory_off_index(memory=Path("/нет/такого/каталога")),
    "каталога памяти нет (CI, чужая машина) — улики нет, а не «памяти ноль»")
+
+print("\n== урок без исполнителя — не урок, а пыль ==")
+ok(memory_dir(Path("/home/admin/projects/video_pipeline_mcp")).parent.name
+   == "-home-admin-projects-video-pipeline-mcp",
+   "слуг памяти: дефисом становится ЛЮБОЙ не-буквенно-цифровой знак, включая подчёркивание")
+УРОК = "- **{}** пояснение. ⟨исполняет: {}⟩\n"
+
+
+def уроки(текст: str) -> Path:
+    home = Path(tempfile.mkdtemp(prefix="vpm-уроки-"))
+    (home / "hard-won-lessons.md").write_text(текст, encoding="utf-8")
+    return home
+
+
+ok(len(lesson_without_executor(memory=уроки("- **Урок без метки** пояснение.\n"))) == 1,
+   "урок без метки исполнителя назван — иначе он пылится и повтор ошибки не ловит")
+ok("которого нет" in lesson_without_executor(
+       memory=уроки(УРОК.format("Урок", "ось `такой оси не бывает`")))[0],
+   "исполнитель, которого нет среди осей, сценариев и скилов, назван прямо")
+ok(not lesson_without_executor(memory=уроки(УРОК.format("Урок", "ось `отказ погашен молча`"))),
+   "названа существующая ось — молчим")
+ok(not lesson_without_executor(memory=уроки(УРОК.format("Урок", "НЕТ"))),
+   "честное «НЕТ» исполнителем считается объявленным долгом, а не ошибкой имени")
+ok(len(lesson_without_mechanism(memory=уроки(УРОК.format("Урок", "скилл test-master")))) == 1,
+   "скилл — это слова: долг, а не ловящий механизм")
+ok(not lesson_without_mechanism(memory=уроки(УРОК.format("Урок", "ось `отказ погашен молча`"))),
+   "за уроком стоит ось — долгом он не числится")
+ok(not lesson_without_executor(memory=Path("/нет/такого/каталога")),
+   "реестра уроков нет — улики нет, а не «уроков ноль»")
 
 ok(len(door_not_installed(make({".pre-commit-config.yaml": "repos: []\n",
                                 "install.sh": "pip install -e .\n"}))) == 1,
