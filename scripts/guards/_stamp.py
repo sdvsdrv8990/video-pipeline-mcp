@@ -25,6 +25,25 @@ ROOT = Path(__file__).resolve().parents[2]
 JOURNAL = ("tests", ".journal")
 ROLES = ("УЛИКА", "ОТКАЗ", "ВЕРДИКТ")
 KINDS = ("цикл", "гейт", "проба")
+# Список исполнимых слов ПОИМЁННЫЙ, а не эвристика: «первое слово без пробелов» пропускает прозу
+# («замер разделов памяти по regex» тоже начинается одним словом), и правило стало бы вакуумным.
+RUNNERS = ("python", "python3", ".venv/bin/python", ".venv/bin/", "bash", "sh", "pytest", "ruff",
+           "mypy", "bandit", "git", "grep", "sed", "awk", "ls", "find", "curl", "make", "npm",
+           "node", "docker", "cat", "wc", "diff", "PYTHONPATH=", "VPM_")
+
+
+def runnable(cmd: str) -> bool:
+    """Строка похожа на команду: начинается исполнимым словом ЛИБО присваиванием среды.
+
+    Судится ФОРМА, а не исполнимость: проверять запуском значит исполнять произвольную строку при
+    подписи. Поэтому синтаксически битая команда правило проходит — и это ловится первым же
+    повтором, а не молчанием.
+
+    Присваивание (`PYTHONPATH=`, `VPM_`) исполнимым словом не является, но команда с него
+    начинается законно — без этой половины законный повтор был бы отвергнут.
+    """
+    голова = cmd.strip()
+    return bool(голова) and голова.startswith(RUNNERS)
 
 
 def _head(root: Path) -> tuple[str, bool]:
@@ -49,6 +68,11 @@ def sign(kind: str, role: str, what: str, *, intent: str = "", expected: str = "
         raise ValueError(f"род `{kind}` не объявлен; известны {list(KINDS)}")
     if role not in ROLES:
         raise ValueError(f"роль `{role}` не объявлена; известны {list(ROLES)}")
+    if role == "УЛИКА" and not runnable(cmd):
+        raise ValueError(
+            f"улика без команды повтора: `повторить` = {cmd!r}. Улику, которую нельзя запустить, "
+            f"поднимать нечем — она стареет молча, как любая проза. Дай команду, начинающуюся с "
+            f"одного из {list(RUNNERS[:6])}…")
     stamped = time.time()
     key = hashlib.sha1(f"{stamped}|{kind}|{what}".encode()).hexdigest()[:4]
     head, dirty = _head(root)

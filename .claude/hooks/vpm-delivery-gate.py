@@ -339,6 +339,20 @@ MSG_D = """Гейт поставки: память правлена, но не �
 Выключить гейт: VPM_DELIVERY_GATE=off."""
 
 
+MSG_E = """Гейт поставки: реестр правлен, а замер не подписан.
+
+{files}
+Подписей `role=УЛИКА` за сегодня: 0.
+
+Число, попавшее в реестр без ключа, стареет молча: по строке нельзя поднять прогон, в котором оно
+родилось, и следующая сессия перемеряет с нуля либо верит устаревшему. Подпиши замер — ключ уедет
+в строку находки:
+
+    .venv/bin/python scripts/guards/_stamp.py --kind проба --role УЛИКА \\
+        --what "что доказано, одной строкой" --cmd "<команда, которой это повторить>"
+
+Выключить гейт: VPM_DELIVERY_GATE=off."""
+
 def memory_uncommitted(home: Path = MEM) -> str:
     """Незакоммиченная правка памяти. Не репозиторий или нет каталога — «улики нет», а не тревога."""
     if not (home / ".git").exists():
@@ -349,6 +363,47 @@ def memory_uncommitted(home: Path = MEM) -> str:
     except (OSError, subprocess.SubprocessError):
         return ""
     return done.stdout.strip()[:400] if done.returncode == 0 else ""
+
+
+REGISTRY = ("docs/roadmap/02_findings.md", "docs/roadmap/_sessions.md")
+
+
+def unsigned_measure(root: Path = PROJ) -> str:
+    """Реестр или журнал правлены, а улик за сегодня ноль. Пусто — упрёка нет.
+
+    Судит по ЖУРНАЛУ подписей, а не по тексту сессии: подпись — вещь на диске, а рассказ о ней
+    рассказом и остаётся. Журнала нет вовсе (свежий клон, CI) — «улики нет», а не обвинение.
+    """
+    import datetime
+    файлы: set[str] = set()
+    # Три источника, а не два: `diff`/`log` слепы к НЕОТСЛЕЖИВАЕМОМУ файлу, а реестр, заведённый
+    # в этой же сессии, отслеживаемым ещё не стал — и правка без улики прошла бы мимо.
+    for args in (["diff", "--name-only", "HEAD"],
+                 ["log", "--since=midnight", "--name-only", "--pretty="],
+                 # `-uall` обязателен: без него git схлопывает неотслеживаемый каталог в `?? docs/`,
+                 # и файл реестра внутри него не называется вовсе.
+                 ["status", "--porcelain", "-uall"]):
+        try:
+            out = subprocess.run(["git", "-C", str(root), *args],
+                                 capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        файлы |= {r.strip().split()[-1] for r in out.stdout.splitlines()
+                  if r.strip() and r.strip().split()[-1] in REGISTRY}
+    if not файлы:
+        return ""
+    день = datetime.date.today().strftime("%Y%m%d")
+    журнал = root / "tests" / ".journal" / f"stamps-{день}.jsonl"
+    if not журнал.parent.is_dir():
+        return ""
+    улик = 0
+    if журнал.exists():
+        for row in журнал.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                улик += json.loads(row).get("role") == "УЛИКА"
+            except json.JSONDecodeError:
+                continue
+    return "" if улик else "\n".join(f"  {f}" for f in sorted(файлы))
 
 
 def touched_today() -> bool:
@@ -384,14 +439,19 @@ def server_code_touched() -> list[str]:
     return sorted(f for f in files if f.endswith(".py") and f.startswith(MEASURED))
 
 
-def sign_refusal(reason: str) -> str:
-    """Подпись отказа. Нет источника подписи — отдаём строку об этом, а не роняем гейт поставки."""
+def sign_refusal(reason: str, root: Path = PROJ) -> str:
+    """Подпись отказа. Нет источника подписи — отдаём строку об этом, а не роняем гейт поставки.
+
+    Корень принимается параметром: без него дом-набор подписывал в БОЕВОЙ журнал, и каждый его
+    прогон добавлял туда отказ, которого не было. Замер: 28 из 29 отказов журнала — дословно
+    фикстура набора.
+    """
     try:
         sys.path.insert(0, str(PROJ / "scripts" / "guards"))
         import _stamp
         return _stamp.sign("гейт", "ОТКАЗ", reason.strip().splitlines()[0][:120],
                            intent="гейт поставки", expected="зелёное перед словом «сделано»",
-                           actual="отказ гейта", cmd="см. команду в тексте отказа")[1]
+                           actual="отказ гейта", cmd="см. команду в тексте отказа", root=root)[1]
     except Exception as beda:                  # noqa: BLE001 — подпись не важнее самого отказа
         return f"⟦vpm — ⟧ подписи нет ({beda})"
 
@@ -441,6 +501,10 @@ def main() -> None:
     # D. Память под версиями: незакоммиченная правка исчезает вместе с сессией
     if (грязь := memory_uncommitted()):
         block(MSG_D.format(files=грязь, home=MEM))
+
+    # E. Реестр правлен, а замер не подписан: число без ключа стареет молча
+    if (без_улики := unsigned_measure()):
+        block(MSG_E.format(files=без_улики))
 
     # C. Тронут код сервера — гоним задетое сами
     touched = server_code_touched()

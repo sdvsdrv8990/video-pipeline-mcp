@@ -151,9 +151,14 @@ def main() -> int:
        "«убедись, что гейт зелёный» — те же слова, но модальность отменяет утверждение")
     ok(not claim.search("тесты я пока не гонял"), "отсутствие заявления заявлением не считается")
 
-    подпись = gate["sign_refusal"]("Гейт поставки: прогон задетых сценариев не уложился в срок")
+    своё = Path(tempfile.mkdtemp(prefix="vpm-подпись-набора-"))
+    подпись = gate["sign_refusal"](
+        "Гейт поставки: прогон задетых сценариев не уложился в срок", своё)
     ok(подпись.startswith("⟦vpm ") and "ОТКАЗ" in подпись.splitlines()[0],
        "отказ гейта несёт подпись с ролью — скопированный в другую сессию, он говорит, чем был")
+    ok(not (ROOT / "tests" / ".journal" / "stamps-проба.jsonl").exists()
+       and any(своё.rglob("stamps-*.jsonl")),
+       "подпись набора легла в СВОЁ дерево: боевой журнал улик не засоряется прогонами")
     ok("род=гейт" in подпись and "запись=" in подпись,
        "подпись отказа даёт ключи для подъёма записи, а не только слова")
 
@@ -253,6 +258,24 @@ def main() -> int:
     ok(gate["memory_uncommitted"](склад) == "", "закоммиченная память тревоги не поднимает")
     ok(gate["memory_uncommitted"](Path(tempfile.mkdtemp())) == "",
        "каталог без git — улики нет, а не тревога: чужое отсутствие не наша находка")
+
+    print("§9в гейт поставки: реестр правлен, а замер не подписан")
+    дерево = Path(tempfile.mkdtemp(prefix="vpm-улика-"))
+    subprocess.run(["git", "init", "-q", str(дерево)], check=True)
+    (дерево / "docs" / "roadmap").mkdir(parents=True)
+    (дерево / "docs" / "roadmap" / "02_findings.md").write_text("| F1 |\n", encoding="utf-8")
+    (дерево / "tests" / ".journal").mkdir(parents=True)
+    ok(gate["unsigned_measure"](дерево).strip().endswith("02_findings.md"),
+       "реестр правлен, улик за день ноль — гейт называет ФАЙЛ, а не общую фразу")
+    день = __import__("datetime").date.today().strftime("%Y%m%d")
+    (дерево / "tests" / ".journal" / f"stamps-{день}.jsonl").write_text(
+        json.dumps({"role": "УЛИКА", "what": "замер"}, ensure_ascii=False) + "\n", encoding="utf-8")
+    ok(not gate["unsigned_measure"](дерево),
+       "улика за день есть — упрёка нет")
+    пусто = Path(tempfile.mkdtemp(prefix="vpm-без-журнала-"))
+    subprocess.run(["git", "init", "-q", str(пусто)], check=True)
+    ok(not gate["unsigned_measure"](пусто),
+       "каталога журнала нет (свежий клон, CI) — улики нет, а не обвинение")
 
     print("§10 форма того, что правка оставила в дереве")
     inv: dict = {"__name__": "не-главный", "__file__": str(HOOKS / "vpm-invariants.py")}
