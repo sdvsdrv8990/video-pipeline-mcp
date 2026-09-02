@@ -21,6 +21,7 @@ from invariants import (  # noqa: E402
     facts_without_observer, observation_incomplete,
     door_not_installed, guard_without_home, hook_declared_muted,
     lesson_without_evidence, lesson_without_executor, lesson_without_mechanism,
+    journal_off_index,
     memory_dir, memory_off_index,
     hooks_off_declaration,
     knob_without_reader, zone_declared_twice,
@@ -606,6 +607,34 @@ ok(not memory_off_index(memory=память({"MEMORY.md": "- [Есть](есть
    "указатель и диск сошлись — молчим")
 ok(not memory_off_index(memory=Path("/нет/такого/каталога")),
    "каталога памяти нет (CI, чужая машина) — улики нет, а не «памяти ноль»")
+
+print("\n== журнал разошёлся со своим указателем ==")
+
+
+def журнал(указатель: str, архив: dict[str, str]) -> Path:
+    return make({"docs/roadmap/_sessions.md": указатель,
+                 **{f"docs/roadmap/sessions/{n}": t for n, t in архив.items()}})
+
+
+ЗАПИСЬ = "### Сессия 9 — что-то закрыто\n\nтекст записи\n"
+АРХИВ = {"s9.md": f"# Сессия 9\n\n{ЗАПИСЬ}"}   # заголовок записи стоит на строке 3
+
+ok(not journal_off_index(журнал("- `s9.md:3` · Сессия 9 — что-то закрыто\n", АРХИВ)),
+   "указатель и архив сошлись — молчим")
+ok("адрес поехал" in journal_off_index(журнал("- `s9.md:4` · Сессия 9 — что-то закрыто\n", АРХИВ))[0],
+   "адрес съехал на строку — названо: читатель попал бы в середину чужой записи")
+ok("ведёт в пустоту" in journal_off_index(журнал("- `s404.md:3` · Сессия 9 — что-то закрыто\n", АРХИВ))[0],
+   "указатель зовёт файл, которого нет — названо")
+ok(any("в указателе нет" in note
+       for note in journal_off_index(журнал("- `s9.md:3` · Сессия 9 — что-то закрыто\n",
+                                            {"s9.md": f"# Сессия 9\n\n{ЗАПИСЬ}\n### Сессия 9 (доп. 1) — вторая\n"}))),
+   "запись в архиве есть, строки указателя нет — названа поимённо")
+ok("найдут только перебором" in journal_off_index(
+       журнал("", {"s9.md": f"# Сессия 9\n\n{ЗАПИСЬ}"}))[0],
+   "файл архива без единой строки указателя — назван")
+ok(not journal_off_index(make({"docs/roadmap/_sessions.md": "- `s9.md:3` · Сессия 9 — что-то\n"})),
+   "архива нет (старое дерево, чужая машина) — улики нет, а не «журнал пуст»")
+
 
 print("\n== урок без исполнителя — не урок, а пыль ==")
 ok(memory_dir(Path("/home/admin/projects/video_pipeline_mcp")).parent.name

@@ -56,6 +56,11 @@ EXEC_HEREDOC = re.compile(r"\b(?:python3?|bash|sh|zsh)\b[^\n|;&]*<<-?\s*[\'\"]?\
 PY_DIRECT = re.compile(r"""Path\(\s*['"]([^'"]+)['"]\s*\)\s*\.write_text|"""
                        r"""open\(\s*['"]([^'"]+)['"]\s*,\s*['"][wa]""")
 PY_BIND = re.compile(r"""(\w+)\s*=\s*Path\(\s*['"]([^'"]+)['"]""")
+# `корень = Path("a")` плюс `цель = корень / "b" / "c.md"`: путь собран из ЛИТЕРАЛОВ, поэтому
+# разрешается точно и судится наравне с прямым `Path("…")`. Вычисляемый (f-строка с переменной,
+# глоб) здесь не разрешим и остаётся на постфактумной половине.
+PY_JOIN = re.compile(r"""(\w+)\s*=\s*(\w+)((?:\s*/\s*['"][^'"]+['"])+)""")
+JOIN_PART = re.compile(r"""/\s*['"]([^'"]+)['"]""")
 PY_VAR_WRITE = re.compile(r"""(\w+)\.(?:write_text|writelines|write_bytes)\(""")
 REAL_PATH = re.compile(r"^/?(?:[\w.-]+/)*[\w.-]+\.(?:py|md|ya?ml|json|txt|sh|toml|cfg|ini)$")
 
@@ -243,6 +248,13 @@ def written_paths(raw: str) -> list[str]:
     if EXEC_HEREDOC.search(raw):
         found += [g for m in PY_DIRECT.finditer(raw) for g in m.groups() if g]
         bound = {m.group(1): m.group(2) for m in PY_BIND.finditer(raw)}
+        # Склейка бывает многоступенчатой (`a = Path(...)`, `b = a / "x"`, `c = b / "y.md"`),
+        # поэтому проход повторяется, пока прибавляются имена, а не один раз.
+        joins = [(m.group(1), m.group(2), m.group(3)) for m in PY_JOIN.finditer(raw)]
+        for _ in range(len(joins)):
+            for имя, база, хвост in joins:
+                if имя not in bound and база in bound:
+                    bound[имя] = "/".join([bound[база], *JOIN_PART.findall(хвост)])
         found += [bound[m.group(1)] for m in PY_VAR_WRITE.finditer(raw) if m.group(1) in bound]
     out: list[str] = []
     for cand in found:

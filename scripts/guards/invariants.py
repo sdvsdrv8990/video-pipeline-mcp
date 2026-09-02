@@ -1613,6 +1613,50 @@ def memory_off_index(root: Path = ROOT, memory: Path | None = None) -> list[str]
     return notes
 
 
+JOURNAL = ("docs", "roadmap", "_sessions.md")
+ARCHIVE = ("docs", "roadmap", "sessions")
+# Строка указателя: `- \`s25.md:30\` · Сессия 25 (доп. 101) — …`
+POINTER = re.compile(r"^- `([\w.]+):(\d+)` · (.+)$", re.M)
+
+
+def journal_off_index(root: Path = ROOT) -> list[str]:
+    """Закрытые записи журнала лежат отдельно, а указатель на них — в `_sessions.md`; они обязаны сойтись.
+
+    Указатель адресует запись СТРОКОЙ (`файл:строка`), поэтому стареет он молча: дописал абзац в
+    архив — и все адреса ниже поехали, а читатель попадёт в середину чужой записи и не заметит.
+    Судится ровно это: файл существует, строка та самая, заголовок совпадает дословно. Архива нет
+    (старое дерево, чужая машина) — «улики нет», а не «журнал пуст».
+    """
+    archive = _at(root, ARCHIVE)
+    journal = _at(root, JOURNAL)
+    if not archive.is_dir() or not journal.exists():
+        return []
+    pointers = POINTER.findall(journal.read_text(encoding="utf-8"))
+    notes = []
+    listed: dict[str, set[str]] = {}
+    for name, line, head in pointers:
+        listed.setdefault(name, set()).add(head)
+        path = archive / name
+        if not path.exists():
+            notes.append(f"указатель зовёт `sessions/{name}`, которого нет — адрес ведёт в пустоту")
+            continue
+        rows = path.read_text(encoding="utf-8").splitlines()
+        n = int(line)
+        if not (1 <= n <= len(rows)) or rows[n - 1] != f"### {head}":
+            было = rows[n - 1][:60] if 1 <= n <= len(rows) else "за концом файла"
+            notes.append(f"указатель ведёт на `{name}:{n}` за записью «{head[:50]}», а там «{было}» "
+                         f"— адрес поехал, и читатель попадёт в середину чужой записи")
+    for path in sorted(archive.glob("*.md")):
+        if path.name not in listed:
+            notes.append(f"sessions/{path.name} лежит в архиве, а строк указателя у него нет — "
+                         f"записи найдут только перебором")
+            continue
+        heads = {row[4:] for row in path.read_text(encoding="utf-8").splitlines()
+                 if row.startswith("### ")}
+        notes += [f"sessions/{path.name}: запись «{head[:60]}» в архиве есть, в указателе нет"
+                  for head in sorted(heads - listed[path.name])]
+    return notes
+
 PRECOMMIT = (".pre-commit-config.yaml",)
 INSTALL = ("install.sh",)
 
@@ -1780,6 +1824,7 @@ HARD = (("одну зону объявили два хозяина", zone_declar
         ("объявление глушит голос хука", hook_declared_muted),
         ("дверь коммита объявлена, но не ставится", door_not_installed),
         ("память разошлась со своим указателем", memory_off_index),
+        ("журнал разошёлся со своим указателем", journal_off_index),
         ("урок зовёт несуществующего исполнителя", lesson_without_executor),
         ("объявление наблюдения неполно", observation_incomplete),
         ("факт эмитится, а решения о наблюдении нет", facts_without_observer))

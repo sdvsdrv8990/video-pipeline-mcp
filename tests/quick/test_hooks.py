@@ -86,6 +86,22 @@ def main() -> int:
     _, out, _ = fire("vpm-fact-gate.py", bash("git status --porcelain"))
     ok(not out, "чтение состояния — не запись и не разрушение")
 
+    print("§3б гейт фактов: путь, СОБРАННЫЙ из литералов, виден до записи")
+    собран = ("python3 - <<'PY'\nfrom pathlib import Path\n"
+              "корень = Path('core')\nцель = корень / 'engine' / 'engine.py'\n"
+              "цель.write_text('x')\nPY")
+    _, out, _ = fire("vpm-fact-gate.py", bash(собран))
+    ok(decision(out) == "deny",
+       f"склейка `корень / 'a' / 'b.py'` разрешается точно и судится как прямой путь "
+       f"(решение {decision(out)!r})")
+    вычисляем = ("python3 - <<'PY'\nimport pathlib\n"
+                 "for имя in ['engine']:\n"
+                 "    pathlib.Path(f'core/{имя}/engine.py').write_text('x')\nPY")
+    _, out, _ = fire("vpm-fact-gate.py", bash(вычисляем))
+    ok(not out,
+       "путь, вычисляемый из данных, до записи не разрешим — у него объявленный контракт "
+       "«постфактум», и молчание здесь честное, а не дыра")
+
     print("§4 гейт фактов: обе ложные тревоги, найденные на себе же")
     _, out, _ = fire("vpm-fact-gate.py",
                      bash("cat > docs/roadmap/_sessions.md <<'EOF'\nприём записи: rm -rf лишнего\nEOF"))
