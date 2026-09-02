@@ -23,7 +23,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 JOURNAL = ("tests", ".journal")
-ROLES = ("УЛИКА", "ОТКАЗ", "ВЕРДИКТ", "ОСТАТОК")
+ROLES = ("УЛИКА", "ОТКАЗ", "ВЕРДИКТ", "ОСТАТОК", "ОТЛОЖЕН")
 KINDS = ("цикл", "гейт", "проба")
 # Список исполнимых слов ПОИМЁННЫЙ, а не эвристика: «первое слово без пробелов» пропускает прозу
 # («замер разделов памяти по regex» тоже начинается одним словом), и правило стало бы вакуумным.
@@ -108,7 +108,7 @@ def tails(root: Path = ROOT) -> list[dict]:
     Читается весь журнал, а не последний день: хвост живёт до закрытия, и «неделю назад» — самый
     частый его возраст. Журнала нет — пусто, а не выдуманный ноль.
     """
-    записи, закрыты = [], set()
+    записи, закрыты, отложены = [], set(), set()
     for path in sorted(root.joinpath(*JOURNAL).glob("stamps-*.jsonl")):
         for row in path.read_text(encoding="utf-8", errors="replace").splitlines():
             if not row.strip():
@@ -117,11 +117,20 @@ def tails(root: Path = ROOT) -> list[dict]:
                 запись = json.loads(row)
             except json.JSONDecodeError:
                 continue
-            if запись.get("closes"):
+            # Закрывает ТОЛЬКО не-отложение: иначе «отложил» тихо равнялось бы «закрыл», и хвост
+            # исчезал бы из показа вместе с запретом — ровно та потеря, ради которой всё затевалось.
+            if запись.get("closes") and запись.get("role") != "ОТЛОЖЕН":
                 закрыты.add(запись["closes"])
+            # Отложенный хвост из показа НЕ уходит: он не закрыт. Уходит он только из блокировки —
+            # иначе «отложил» стало бы способом забыть, а не решением подождать.
+            if запись.get("role") == "ОТЛОЖЕН" and запись.get("closes"):
+                отложены.add(запись["closes"])
             if запись.get("role") == "ОСТАТОК":
                 записи.append(запись)
-    return [z for z in sorted(записи, key=lambda z: z.get("ts", 0)) if z["key"] not in закрыты]
+    живые = [z for z in sorted(записи, key=lambda z: z.get("ts", 0)) if z["key"] not in закрыты]
+    for хвост in живые:
+        хвост["отложен"] = хвост["key"] in отложены
+    return живые
 
 
 def find(key: str, root: Path = ROOT) -> list[dict]:

@@ -1659,6 +1659,36 @@ def journal_off_index(root: Path = ROOT) -> list[str]:
                   for head in sorted(heads - listed[path.name])]
     return notes
 
+SKILLS_CATALOG = (".claude", "skills", "CATALOG.md")
+SKILL_ROW = re.compile(r"^\| `([a-z][a-z-]+)` \|([^|]*)\|([^|]*)\|", re.M)
+
+
+def skill_without_zone(root: Path = ROOT) -> list[str]:
+    """Скил, чья зона не объявлена, — и граница, названная в одну сторону.
+
+    Три находки, а не одна: скил без строки каталога (зона не объявлена вовсе), строка без скила
+    (каталог зовёт снесённое) и односторонняя граница. Последняя опаснее прочих: сосед, о котором
+    сказали, но который промолчал в ответ, считает зону своей — и оба развиваются в одну область,
+    пока это не всплывёт выбором не того скила.
+    """
+    каталог = _at(root, SKILLS_CATALOG)
+    дерево = _at(root, (".claude", "skills"))
+    if not каталог.exists() or not дерево.is_dir():
+        return []
+    на_диске = {p.name for p in дерево.iterdir() if (p / "SKILL.md").exists()}
+    строки = {имя: f"{зона} {границы}"
+              for имя, зона, границы in SKILL_ROW.findall(каталог.read_text(encoding="utf-8"))}
+    notes = [f"{имя}: зона не объявлена в {'/'.join(SKILLS_CATALOG)} — при выборе скила границы нет"
+             for имя in sorted(на_диске - set(строки))]
+    notes += [f"{'/'.join(SKILLS_CATALOG)} зовёт `{имя}`, которого на диске нет"
+              for имя in sorted(set(строки) - на_диске)]
+    for имя in sorted(на_диске & set(строки)):
+        соседи = {n for n in на_диске if n != имя and re.search(rf"`{re.escape(n)}`", строки[имя])}
+        notes += [f"{имя} → {сосед}: граница названа в ОДНУ сторону, обратной нет — сосед считает "
+                  f"зону своей" for сосед in sorted(соседи)
+                  if сосед in строки and not re.search(rf"`{re.escape(имя)}`", строки[сосед])]
+    return notes
+
 PRECOMMIT = (".pre-commit-config.yaml",)
 INSTALL = ("install.sh",)
 
@@ -1827,6 +1857,7 @@ HARD = (("одну зону объявили два хозяина", zone_declar
         ("дверь коммита объявлена, но не ставится", door_not_installed),
         ("память разошлась со своим указателем", memory_off_index),
         ("журнал разошёлся со своим указателем", journal_off_index),
+        ("скил без объявленной зоны", skill_without_zone),
         ("урок зовёт несуществующего исполнителя", lesson_without_executor),
         ("объявление наблюдения неполно", observation_incomplete),
         ("факт эмитится, а решения о наблюдении нет", facts_without_observer))

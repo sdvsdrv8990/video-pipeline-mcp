@@ -34,6 +34,14 @@ PROMISE = re.compile(
     r"|завтра|следующ(ей|ая) сесси|потом сдела|отложил|не успел)", re.I)
 # Слово о решении владельца — отдельным рядом: его нельзя утопить в «сделано», даже если код зелёный.
 DECISION = re.compile(r"\b(решени[ея] владельца|ждёт владельца|ждет владельца|вопрос владельцу)", re.I)
+# Инструменты, которыми правка ЛОЖИТСЯ НА ДИСК. Чтение не блокируется: чтобы закрыть или отложить
+# хвост, на него надо посмотреть, и запрет чтения дал бы тупик на первом же требовании сторожа.
+ПИШУЩИЕ = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+# `2>&1` и `>/dev/null` — перенаправление ПОТОКА, а не запись в дерево. Без этого различия сторож
+# блокирует собственную диагностическую команду: поймано на себе же при первом прогоне.
+ПИШЕТ_КОМАНДА = re.compile(
+    r">>?\s*(?!&\d|/dev/)[\w./-]+|\btee\b|\bsed\s+-i\b|write_text"
+    r"|\bmv\b|\bcp\b|\brm\b|\bgit\s+(?:commit|add|apply)\b")
 
 START = """## Незакрытые остатки — {n} шт.
 
@@ -61,6 +69,22 @@ STOP = """Сторож намерений: сессия кончается об�
         --cmd "<команда, которой продолжить>"
 
 Выключить: VPM_INTENT_GUARD=off."""
+
+
+ЗАПРЕТ = """Сторож намерений: незакрытый остаток — {n} шт. Работа не начинается, пока он не признан.
+
+{tails}
+Признать — одно из двух, и оба остаются на диске:
+
+  закрыть:   .venv/bin/python scripts/guards/_stamp.py --kind проба --role ВЕРДИКТ \\
+                 --what "чем закрыт" --closes <ключ>
+  отложить:  .venv/bin/python scripts/guards/_stamp.py --kind проба --role ОТЛОЖЕН \\
+                 --what "почему сейчас не он" --closes <ключ> --cmd "<чем вернуться>"
+
+Отложенный из показа не исчезает — он не закрыт; исчезает только запрет. Чужую развилку
+(«решение владельца», «подтвердить») своим решением не закрывают — спрашивают.
+
+Читать и смотреть можно: запрет стоит только на записи. Выключить: VPM_INTENT_GUARD=off."""
 
 
 def тексты(data: dict) -> str:
@@ -125,6 +149,22 @@ def судить_конец(data: dict, root: Path = PROJ) -> str:
     return STOP.format(цитата=кусок.strip())
 
 
+def судить_правку(data: dict, root: Path = PROJ) -> str:
+    """Причина запрета на запись — либо пустая строка, если непризнанных хвостов нет."""
+    import _stamp
+    инструмент = data.get("tool_name", "")
+    команда = (data.get("tool_input") or {}).get("command", "")
+    пишет = инструмент in ПИШУЩИЕ or (инструмент == "Bash" and ПИШЕТ_КОМАНДА.search(команда))
+    if not пишет:
+        return ""
+    непризнанные = [x for x in _stamp.tails(root) if not x.get("отложен")]
+    if not непризнанные:
+        return ""
+    строки = [f"- `{x['key']}` · {x['what']}\n  ждали: {x.get('expected') or '—'}\n"
+              f"  продолжить: `{x.get('cmd') or '—'}`\n" for x in непризнанные]
+    return ЗАПРЕТ.format(n=len(непризнанные), tails="\n".join(строки))
+
+
 def main() -> None:
     if os.environ.get("VPM_INTENT_GUARD", "").lower() in ("off", "0", "false"):
         sys.exit(0)
@@ -134,6 +174,12 @@ def main() -> None:
     except Exception:                          # noqa: BLE001 — след не важнее самой проверки
         pass
     data = json.loads(sys.stdin.read() or "{}")
+    if data.get("hook_event_name") == "PreToolUse":
+        if (запрет := судить_правку(data)):
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason": запрет}}, ensure_ascii=False))
+        sys.exit(0)
     if data.get("hook_event_name") == "SessionStart":
         if (текст := показать_остатки()):
             print(json.dumps({"hookSpecificOutput": {

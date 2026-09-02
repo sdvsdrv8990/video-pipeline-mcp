@@ -300,6 +300,39 @@ def main() -> int:
     ok(намер["показать_остатки"](Path(tempfile.mkdtemp())) == "",
        "хвостов нет — молчим, а не печатаем пустую шапку")
 
+    print("§11б остаток БЛОКИРУЕТ запись, пока не признан")
+    хвост = Path(tempfile.mkdtemp(prefix="vpm-хвост-"))
+    (хвост / "tests" / ".journal").mkdir(parents=True)
+    день2 = __import__("datetime").date.today().strftime("%Y%m%d")
+    жур = хвост / "tests" / ".journal" / f"stamps-{день2}.jsonl"
+    жур.write_text(json.dumps({"role": "ОСТАТОК", "ts": __import__("time").time(), "key": "bbbb",
+                               "what": "хвост", "cmd": "grep -n x y"}, ensure_ascii=False) + "\n",
+                   encoding="utf-8")
+    пишет = {"tool_name": "Write", "tool_input": {"file_path": "core/x.py"}}
+    ok("не признан" in намер["судить_правку"](пишет, хвост),
+       "запись при непризнанном остатке запрещена — вариант 2, а не показ после работы")
+    ok(not намер["судить_правку"]({"tool_name": "Read", "tool_input": {}}, хвост),
+       "чтение проходит: чтобы признать хвост, на него надо посмотреть")
+    ok(not намер["судить_правку"](
+        {"tool_name": "Bash", "tool_input": {"command": "grep -n x y.py 2>&1"}}, хвост),
+       "`2>&1` — перенаправление ПОТОКА, а не запись: поймано на собственной команде сторожа")
+    ok(намер["судить_правку"](
+        {"tool_name": "Bash", "tool_input": {"command": "echo x > core/y.py"}}, хвост),
+       "перенаправление В ФАЙЛ дерева — запись, и она запрещена")
+    with жур.open("a", encoding="utf-8") as дописать:
+        дописать.write(json.dumps({"role": "ОТЛОЖЕН", "ts": __import__("time").time(),
+                                   "key": "cccc", "closes": "bbbb"}, ensure_ascii=False) + "\n")
+    ok(not намер["судить_правку"](пишет, хвост),
+       "хвост отложен подписью — запрет снят: признание есть, и оно на диске")
+    sys.path.insert(0, str(ROOT / "scripts" / "guards"))
+    import _stamp as _s
+    ok(len(_s.tails(хвост)) == 1 and _s.tails(хвост)[0]["отложен"],
+       "но из ПОКАЗА отложенный не исчез — он не закрыт, исчез только запрет")
+    with жур.open("a", encoding="utf-8") as дописать:
+        дописать.write(json.dumps({"role": "ВЕРДИКТ", "ts": __import__("time").time(),
+                                   "key": "dddd", "closes": "bbbb"}, ensure_ascii=False) + "\n")
+    ok(not _s.tails(хвост), "закрыт вердиктом — ушёл и из показа тоже")
+
     print("§12 сторож дисциплины: механизм, который пылится, назван")
     дисц: dict = {"__name__": "не-главный", "__file__": str(HOOKS / "vpm-discipline-guard.py")}
     exec(compile((HOOKS / "vpm-discipline-guard.py").read_text(encoding="utf-8"),

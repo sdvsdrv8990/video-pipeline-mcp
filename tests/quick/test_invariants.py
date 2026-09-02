@@ -22,6 +22,7 @@ from invariants import (  # noqa: E402
     door_not_installed, guard_without_home, hook_declared_muted,
     lesson_without_evidence, lesson_without_executor, lesson_without_mechanism,
     journal_off_index,
+    skill_without_zone,
     memory_dir, memory_off_index,
     hooks_off_declaration,
     knob_without_reader, zone_declared_twice,
@@ -635,6 +636,31 @@ ok("найдут только перебором" in journal_off_index(
 ok(not journal_off_index(make({"docs/roadmap/_sessions.md": "- `s9.md:3` · Сессия 9 — что-то\n"})),
    "архива нет (старое дерево, чужая машина) — улики нет, а не «журнал пуст»")
 
+
+print("\n== скил без объявленной зоны ==")
+
+ШАПКА_ЗОН = "| Скил | Зона | Граничит | Когда |\n|---|---|---|---|\n"
+
+
+def зоны(строки: str, скилы: list[str]) -> Path:
+    файлы = {".claude/skills/CATALOG.md": ШАПКА_ЗОН + строки}
+    файлы.update({f".claude/skills/{s}/SKILL.md": "x" for s in скилы})
+    return make(файлы)
+
+
+ok(not skill_without_zone(зоны("| `aa` | зона | `bb` | — |\n| `bb` | зона | `aa` | — |\n", ["aa", "bb"])),
+   "зоны объявлены и границы взаимны — молчим")
+ok(any("зона не объявлена" in n for n in
+       skill_without_zone(зоны("| `aa` | зона | — | — |\n", ["aa", "bb"]))),
+   "скил на диске без строки каталога назван: при выборе границы нет")
+ok(any("которого на диске нет" in n for n in
+       skill_without_zone(зоны("| `aa` | зона | — | — |\n| `zz` | зона | — | — |\n", ["aa"]))),
+   "строка каталога без скила названа: каталог зовёт снесённое")
+ok(any("в ОДНУ сторону" in n for n in
+       skill_without_zone(зоны("| `aa` | зона | `bb` | — |\n| `bb` | зона | — | — |\n", ["aa", "bb"]))),
+   "граница названа односторонне — сосед считает зону своей")
+ok(not skill_without_zone(make({".claude/skills/CATALOG.md": ШАПКА_ЗОН})),
+   "каталог есть, скилов на диске нет — улики нет, а не обвинение")
 
 print("\n== урок без исполнителя — не урок, а пыль ==")
 ok(memory_dir(Path("/home/admin/projects/video_pipeline_mcp")).parent.name
