@@ -277,6 +277,53 @@ def main() -> int:
     ok(not gate["unsigned_measure"](пусто),
        "каталога журнала нет (свежий клон, CI) — улики нет, а не обвинение")
 
+    print("§11 сторож намерений: остаток переживает сессию")
+    намер: dict = {"__name__": "не-главный", "__file__": str(HOOKS / "vpm-intent-guard.py")}
+    exec(compile((HOOKS / "vpm-intent-guard.py").read_text(encoding="utf-8"),
+                 str(HOOKS / "vpm-intent-guard.py"), "exec"), намер)
+    дерево = Path(tempfile.mkdtemp(prefix="vpm-намерение-"))
+    (дерево / "tests" / ".journal").mkdir(parents=True)
+    обещание = {"last_assistant_message": "Остальное доделаю завтра, вернёмся к этому."}
+    ok("остаток не записан" in намер["судить_конец"](обещание, дерево),
+       "сессия кончается обещанием, а подписи ОСТАТОК нет — отказ")
+    ok(not намер["судить_конец"]({"last_assistant_message": "Всё закрыто, гейт зелёный."}, дерево),
+       "без обещания упрёка нет — сторож не наказывает за законченную работу")
+    сегодня = __import__("datetime").date.today().strftime("%Y%m%d")
+    (дерево / "tests" / ".journal" / f"stamps-{сегодня}.jsonl").write_text(
+        json.dumps({"role": "ОСТАТОК", "ts": __import__("time").time(), "key": "aaaa",
+                    "what": "хвост", "cmd": "grep -n x y"}, ensure_ascii=False) + "\n",
+        encoding="utf-8")
+    ok(not намер["судить_конец"](обещание, дерево),
+       "обещание записано подписью — упрёка нет: хвост переживёт сессию")
+    ok("aaaa" in намер["показать_остатки"](дерево) and "продолжить" in намер["показать_остатки"](дерево),
+       "начало сессии показывает хвост с ключом и командой продолжения")
+    ok(намер["показать_остатки"](Path(tempfile.mkdtemp())) == "",
+       "хвостов нет — молчим, а не печатаем пустую шапку")
+
+    print("§12 сторож дисциплины: механизм, который пылится, назван")
+    дисц: dict = {"__name__": "не-главный", "__file__": str(HOOKS / "vpm-discipline-guard.py")}
+    exec(compile((HOOKS / "vpm-discipline-guard.py").read_text(encoding="utf-8"),
+                 str(HOOKS / "vpm-discipline-guard.py"), "exec"), дисц)
+    старый = Path(tempfile.mkdtemp(prefix="vpm-след-")) / "trace.json"
+    давно = __import__("time").time() - 30 * 86400
+    старый.write_text(json.dumps({"_рождение": давно,
+                                  "vpm-fact-gate.py": {"last": давно, "count": 1}},
+                                 ensure_ascii=False), encoding="utf-8")
+    имена = дисц["объявленные"]()
+    ok(имена and "vpm-intent-guard.py" in имена and not any(n.startswith("_") for n in имена),
+       "объявленные читаются из settings.json, помощники в счёт не идут")
+    пыль = дисц["пылящиеся"](ROOT, 7.0, старый)
+    ok(any("vpm-fact-gate.py" in s and "30 дней" in s for s in пыль),
+       "сторож, молчащий 30 дней, назван с возрастом")
+    ok(any("ни разу" in s for s in пыль),
+       "сторож, не срабатывавший НИ РАЗУ, назван отдельно — это не то же, что «давно»")
+    свежий = Path(tempfile.mkdtemp(prefix="vpm-след-новый-")) / "trace.json"
+    свежий.write_text(json.dumps({"_рождение": __import__("time").time()}), encoding="utf-8")
+    ok(not дисц["пылящиеся"](ROOT, 7.0, свежий),
+       "след моложе срока — улики нет, а не обвинение всем сразу")
+    ok(not дисц["пылящиеся"](ROOT, 7.0, Path("/нет/такого/следа.json")),
+       "следа нет вовсе (чужая машина, CI) — молчим")
+
     print("§10 форма того, что правка оставила в дереве")
     inv: dict = {"__name__": "не-главный", "__file__": str(HOOKS / "vpm-invariants.py")}
     exec(compile((HOOKS / "vpm-invariants.py").read_text(encoding="utf-8"),

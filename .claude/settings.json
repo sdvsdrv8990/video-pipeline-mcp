@@ -34,6 +34,12 @@
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/vpm-skill-bundle.sh\"",
             "timeout": 5,
             "statusMessage": "Загружаю роспись скилов проекта"
+          },
+          {
+            "type": "command",
+            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/vpm-intent-guard.py",
+            "timeout": 5,
+            "statusMessage": "Проверяю незакрытые остатки"
           }
         ]
       }
@@ -107,6 +113,16 @@
           {
             "type": "command",
             "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/vpm-delivery-gate.py",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/vpm-intent-guard.py",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/vpm-discipline-guard.py",
             "timeout": 10
           }
         ]

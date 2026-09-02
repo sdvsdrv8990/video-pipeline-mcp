@@ -1434,8 +1434,10 @@ def hooks_off_declaration(root: Path = ROOT) -> list[str]:
     if declared is None:
         return [f"{'/'.join(HOOK_SETTINGS)} не разбирается как JSON — не загрузится НИ ОДИН хук, "
                 "и это выглядит как их молчание"]
+    # Имя с подчёркивания — модуль-помощник, а не хук: его никто не зовёт событием, и требовать
+    # ему объявления значит требовать объявить `_stamp.py` сторожем. Та же договорённость по дереву.
     present = {f"{'/'.join(HOOKS)}/{p.name}" for p in (directory.iterdir() if directory.is_dir() else ())
-               if p.is_file() and not p.name.startswith(".")}
+               if p.is_file() and not p.name.startswith((".", "_"))}
     notes = [f"{rel} объявлен в {'/'.join(HOOK_SETTINGS)}, а файла нет — событие приходит, "
              "запускать нечего, и отказ выглядит как молчание"
              for rel in sorted(declared - present)]

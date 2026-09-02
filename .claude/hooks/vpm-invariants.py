@@ -17,6 +17,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import _trace
+    _trace.mark(Path(__file__).name)
+except Exception:                              # noqa: BLE001 — след не важнее самой проверки
+    pass
+
 # Корень — от места самого хука (`.claude/hooks/` в репозитории), а не зашит путём одной
 # машины: зашитый путь делает хук неперемещаемым, и у всех, кроме автора, он молчит.
 PROJ = Path(__file__).resolve().parents[2]

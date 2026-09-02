@@ -10,6 +10,17 @@
 
 # Корень — от места самого хука, а не зашит: зашитый путь молчит у всех, кроме автора.
 PROJ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# Отметка в общем следе сторожей: без неё шелловый хук выглядит пылящимся у сторожа дисциплины,
+# который судит по следу, а не по существованию файла. Ошибка отметки работы хука не касается.
+python3 -c "
+import sys
+sys.path.insert(0, '$PROJ_ROOT/.claude/hooks')
+try:
+    import _trace; _trace.mark('vpm-skill-bundle.sh')
+except Exception:
+    pass
+" 2>/dev/null || true
 SKILLS_DIR="$PROJ_ROOT/.claude/skills"
 
 case "$PWD" in

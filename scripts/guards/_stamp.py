@@ -23,7 +23,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 JOURNAL = ("tests", ".journal")
-ROLES = ("УЛИКА", "ОТКАЗ", "ВЕРДИКТ")
+ROLES = ("УЛИКА", "ОТКАЗ", "ВЕРДИКТ", "ОСТАТОК")
 KINDS = ("цикл", "гейт", "проба")
 # Список исполнимых слов ПОИМЁННЫЙ, а не эвристика: «первое слово без пробелов» пропускает прозу
 # («замер разделов памяти по regex» тоже начинается одним словом), и правило стало бы вакуумным.
@@ -61,18 +61,20 @@ def _head(root: Path) -> tuple[str, bool]:
 
 
 def sign(kind: str, role: str, what: str, *, intent: str = "", expected: str = "",
-         actual: str = "", cmd: str = "", detail: dict | None = None,
+         actual: str = "", cmd: str = "", detail: dict | None = None, closes: str = "",
          root: Path = ROOT) -> tuple[str, str]:
     """Записать наблюдение и вернуть (ключ, две строки подписи)."""
     if kind not in KINDS:
         raise ValueError(f"род `{kind}` не объявлен; известны {list(KINDS)}")
     if role not in ROLES:
         raise ValueError(f"роль `{role}` не объявлена; известны {list(ROLES)}")
-    if role == "УЛИКА" and not runnable(cmd):
+    # Остаток судится тем же правилом: «чем продолжить» без команды — это пожелание, а не хвост.
+    if role in ("УЛИКА", "ОСТАТОК") and not runnable(cmd):
+        чем = "улика без команды повтора" if role == "УЛИКА" else "остаток без команды продолжения"
         raise ValueError(
-            f"улика без команды повтора: `повторить` = {cmd!r}. Улику, которую нельзя запустить, "
-            f"поднимать нечем — она стареет молча, как любая проза. Дай команду, начинающуюся с "
-            f"одного из {list(RUNNERS[:6])}…")
+            f"{чем}: `повторить` = {cmd!r}. То, что нельзя запустить, поднимать нечем — оно "
+            f"стареет молча, как любая проза. Дай команду, начинающуюся с одного из "
+            f"{list(RUNNERS[:6])}…")
     stamped = time.time()
     key = hashlib.sha1(f"{stamped}|{kind}|{what}".encode()).hexdigest()[:4]
     head, dirty = _head(root)
@@ -83,10 +85,13 @@ def sign(kind: str, role: str, what: str, *, intent: str = "", expected: str = "
     where = f"{'/'.join(JOURNAL)}/{path.name}:{line}"
     record = {"ts": stamped, "key": key, "kind": kind, "role": role, "what": what,
               "intent": intent, "expected": expected, "actual": actual, "cmd": cmd,
-              "head": head, "dirty": dirty, "where": where, "detail": detail or {}}
+              "head": head, "dirty": dirty, "where": where, "closes": closes,
+              "detail": detail or {}}
     with path.open("a", encoding="utf-8") as out:
         out.write(json.dumps(record, ensure_ascii=False) + "\n")
     keys = [f"род={kind}"]
+    if closes:
+        keys.append(f"закрывает={closes}")
     if intent:
         keys.append(f"намерение={intent}")
     if expected:
@@ -95,6 +100,28 @@ def sign(kind: str, role: str, what: str, *, intent: str = "", expected: str = "
         keys.append(f"факт={actual}")
     keys += [f"HEAD={head or 'нет git'}{' (дерево грязное)' if dirty else ''}", f"запись={where}"]
     return key, f"⟦vpm {key} {role}⟧ {what}\n⟦ключи⟧ " + " · ".join(keys)
+
+
+def tails(root: Path = ROOT) -> list[dict]:
+    """Незакрытые остатки, старые сверху. Закрытие — ДРУГАЯ подпись, назвавшая ключ хвоста.
+
+    Читается весь журнал, а не последний день: хвост живёт до закрытия, и «неделю назад» — самый
+    частый его возраст. Журнала нет — пусто, а не выдуманный ноль.
+    """
+    записи, закрыты = [], set()
+    for path in sorted(root.joinpath(*JOURNAL).glob("stamps-*.jsonl")):
+        for row in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not row.strip():
+                continue
+            try:
+                запись = json.loads(row)
+            except json.JSONDecodeError:
+                continue
+            if запись.get("closes"):
+                закрыты.add(запись["closes"])
+            if запись.get("role") == "ОСТАТОК":
+                записи.append(запись)
+    return [z for z in sorted(записи, key=lambda z: z.get("ts", 0)) if z["key"] not in закрыты]
 
 
 def find(key: str, root: Path = ROOT) -> list[dict]:
@@ -115,16 +142,27 @@ def find(key: str, root: Path = ROOT) -> list[dict]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
+    # `--tails` спрашивает журнал и ничего не подписывает, поэтому обязательные поля подписи для
+    # него не обязательны: иначе прочитать остаток можно было бы только заведя новый.
+    if "--tails" in sys.argv:
+        for хвост in tails():
+            возраст = (time.time() - хвост.get("ts", 0)) / 86400
+            print(f"⟦vpm {хвост['key']} ОСТАТОК⟧ {хвост['what']}  (дней: {возраст:.0f})")
+            print(f"  ждали: {хвост.get('expected') or '—'}")
+            print(f"  продолжить: {хвост.get('cmd') or '—'}")
+        return 0
     ap.add_argument("--kind", required=True, choices=KINDS)
     ap.add_argument("--role", required=True, choices=ROLES)
     ap.add_argument("--what", required=True, help="одна строка: что это и что доказывает")
     ap.add_argument("--intent", default="", help="имя намерения или запроса")
     ap.add_argument("--expected", default="", help="что было объявлено ожидаемым")
     ap.add_argument("--actual", default="", help="что вышло на самом деле")
-    ap.add_argument("--cmd", default="", help="команда повтора")
+    ap.add_argument("--cmd", default="", help="команда повтора (для остатка — чем продолжить)")
+    ap.add_argument("--closes", default="", help="ключ остатка, который эта подпись закрывает")
+    ap.add_argument("--tails", action="store_true", help="показать незакрытые остатки и выйти")
     a = ap.parse_args()
     print(sign(a.kind, a.role, a.what, intent=a.intent, expected=a.expected,
-               actual=a.actual, cmd=a.cmd)[1])
+               actual=a.actual, cmd=a.cmd, closes=a.closes)[1])
     return 0
 
 
