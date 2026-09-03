@@ -42,6 +42,7 @@ STUB_BASELINE = Path(__file__).with_name("stub_baseline.txt")
 MUTED_BASELINE = Path(__file__).with_name("muted_refusal_baseline.txt")
 FACT_EMITTER_BASELINE = Path(__file__).with_name("fact_emitters_baseline.txt")
 FACT_EXEMPT_BASELINE = Path(__file__).with_name("fact_exempt_baseline.txt")
+SKILL_BOUNDARY_BASELINE = Path(__file__).with_name("skill_boundary_baseline.txt")
 # Две ветки — это выбор, три и больше по одному значению — уже таблица.
 DISPATCH_LIMIT = 3
 # Диспетчеризацию не отменяет ни тип значения, ни имя вместо литерала: `if code == 404` и
@@ -1689,6 +1690,62 @@ def skill_without_zone(root: Path = ROOT) -> list[str]:
                   if сосед in строки and not re.search(rf"`{re.escape(имя)}`", строки[сосед])]
     return notes
 
+# Слово, встречающееся у половины библиотеки, признаком не является: метр, считающий `python`
+# и `server` за сходство, назвал бы путаемыми ВСЕ пары и был бы выключен в первый день.
+ФОН_ДОЛЯ = 0.5
+# Ниже порога совпадают служебные слова, а не предмет: замер дал 22 пары при 6, 35 при 3.
+БЛИЗОСТЬ = 6
+СЛОВО = re.compile(r"[a-zа-яё_]{5,}")
+
+
+def _описания(root: Path) -> dict[str, str]:
+    """`description` каждого скила — единственное, что читается в МОМЕНТ выбора."""
+    дерево = _at(root, (".claude", "skills"))
+    из_диска = {}
+    for каталог in sorted(дерево.iterdir()) if дерево.is_dir() else []:
+        файл = каталог / "SKILL.md"
+        if not файл.exists():
+            continue
+        m = re.search(r"^description:\s*(.+?)(?=^\w+:|^---)", файл.read_text(encoding="utf-8"),
+                      re.S | re.M)
+        из_диска[каталог.name] = " ".join((m.group(1) if m else "").split())
+    return из_диска
+
+
+def skill_boundary_invisible(root: Path = ROOT) -> list[str]:
+    """Пара скилов путаема по существу, а граница между ними объявлена только в каталоге.
+
+    Каталог в момент выбора скила не загружается — его читают ось и человек. Граница, живущая
+    лишь там, при выборе не существует, и обе стороны считают зону своей.
+    """
+    описания = _описания(root)
+    каталог = _at(root, SKILLS_CATALOG)
+    if len(описания) < 2 or not каталог.exists():
+        return []
+    строки = {имя: f"{зона} {границы}"
+              for имя, зона, границы in SKILL_ROW.findall(каталог.read_text(encoding="utf-8"))}
+    частота: dict[str, int] = {}
+    for текст in описания.values():
+        for слово in set(СЛОВО.findall(текст.lower())):
+            частота[слово] = частота.get(слово, 0) + 1
+    фон = {с for с, n in частота.items() if n >= len(описания) * ФОН_ДОЛЯ}
+    notes = []
+    for имя in sorted(описания):
+        for сосед in sorted(описания):
+            if сосед <= имя:
+                continue
+            if not (re.search(rf"`{re.escape(сосед)}`", строки.get(имя, ""))
+                    or re.search(rf"`{re.escape(имя)}`", строки.get(сосед, ""))):
+                continue
+            общее = ((set(СЛОВО.findall(описания[имя].lower()))
+                      & set(СЛОВО.findall(описания[сосед].lower()))) - фон)
+            взаимно = сосед in описания[имя] and имя in описания[сосед]
+            if len(общее) >= БЛИЗОСТЬ and not взаимно:
+                notes.append(f"{имя} ↔ {сосед}: общего в описаниях {len(общее)} слов, а граница "
+                             f"названа только в каталоге — при выборе скила её нет")
+    return notes
+
+
 PRECOMMIT = (".pre-commit-config.yaml",)
 INSTALL = ("install.sh",)
 
@@ -1954,6 +2011,9 @@ RATCHETS = (
     ("отказ погашен молча", muted_refusal, MUTED_BASELINE,
      "Широкий `except` превратил сбой в пустой результат: назови причину узким перехватом, "
      "либо отдай отказ кодом реестра, либо оставь след — молчание клиенту неотличимо от данных"),
+    ("граница скила невидима при выборе", skill_boundary_invisible, SKILL_BOUNDARY_BASELINE,
+     "Пара путаема по существу, а граница объявлена только в каталоге: назови соседа в ОБОИХ "
+     "`description` — каталог в момент выбора не читается — либо опусти потолок осознанно, --bless"),
     ("объявлено незавершённым", unfinished_in_server, STUB_BASELINE,
      "Незавершённого стало больше. Кричать о нём правильно, но прибавление — "
      "решение: либо доделать, либо --bless с объяснением, почему стаб остаётся"),

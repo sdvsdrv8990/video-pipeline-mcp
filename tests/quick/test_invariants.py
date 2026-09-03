@@ -22,6 +22,7 @@ from invariants import (  # noqa: E402
     door_not_installed, guard_without_home, hook_declared_muted,
     lesson_without_evidence, lesson_without_executor, lesson_without_mechanism,
     journal_off_index,
+    skill_boundary_invisible,
     skill_without_zone,
     memory_dir, memory_off_index,
     hooks_off_declaration,
@@ -661,6 +662,38 @@ ok(any("в ОДНУ сторону" in n for n in
    "граница названа односторонне — сосед считает зону своей")
 ok(not skill_without_zone(make({".claude/skills/CATALOG.md": ШАПКА_ЗОН})),
    "каталог есть, скилов на диске нет — улики нет, а не обвинение")
+
+print("\n== граница скила невидима при выборе ==")
+
+# Пять скилов, а не два: фоном считается слово у половины библиотеки, и при двух любое общее
+# слово было бы фоном — фикстура из пары не проверила бы вообще ничего.
+ОБЩИЕ = "declaration contract registry recovery boundary provenance"
+РАЗНОЕ = ("tunnel firewall throttle", "excel workbook column", "render layout typography")
+
+
+def описания(строки: str, тексты: dict[str, str]) -> Path:
+    файлы = {".claude/skills/CATALOG.md": ШАПКА_ЗОН + строки}
+    файлы.update({f".claude/skills/{имя}/SKILL.md": f"---\nname: {имя}\ndescription: {текст}\n---\n"
+                  for имя, текст in тексты.items()})
+    return make(файлы)
+
+
+ПАРА = "| `aa` | зона | `bb` | — |\n| `bb` | зона | `aa` | — |\n"
+ПРОЧИЕ = {"cc": РАЗНОЕ[0], "dd": РАЗНОЕ[1], "ee": РАЗНОЕ[2]}
+
+врозь = описания(ПАРА, {"aa": ОБЩИЕ, "bb": ОБЩИЕ, **ПРОЧИЕ})
+ok(any("aa ↔ bb" in n for n in skill_boundary_invisible(врозь)),
+   "путаемая пара без взаимной границы в description названа осью")
+
+взаимно = описания(ПАРА, {"aa": f"{ОБЩИЕ} — сосед bb владеет другим",
+                          "bb": f"{ОБЩИЕ} — сосед aa владеет другим", **ПРОЧИЕ})
+ok(not skill_boundary_invisible(взаимно),
+   "взаимная граница в description замечанием не считается")
+
+фоново = описания(ПАРА, {"aa": ОБЩИЕ, "bb": ОБЩИЕ,
+                         "cc": ОБЩИЕ, "dd": ОБЩИЕ, "ee": ОБЩИЕ})
+ok(not skill_boundary_invisible(фоново),
+   "фоновые слова путаемости не создают")
 
 print("\n== урок без исполнителя — не урок, а пыль ==")
 ok(memory_dir(Path("/home/admin/projects/video_pipeline_mcp")).parent.name
