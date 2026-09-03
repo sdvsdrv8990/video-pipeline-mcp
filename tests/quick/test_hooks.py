@@ -102,6 +102,20 @@ def main() -> int:
        "путь, вычисляемый из данных, до записи не разрешим — у него объявленный контракт "
        "«постфактум», и молчание здесь честное, а не дыра")
 
+    print("§3в гейт фактов: форма запуска границы не двигает")
+    прямой = "python3 -c \"open('core/engine/engine.py','w').write(1)\""
+    _, out, _ = fire("vpm-fact-gate.py", bash(прямой))
+    ok(decision(out) == "deny",
+       f"литерал в inline-запуске виден Pre-половине, а не только в heredoc "
+       f"(решение {decision(out)!r})")
+    глоб = ("python3 -c \"import pathlib; "
+            "[q.write_text('x') for q in pathlib.Path('core').rglob('*.py')]\"")
+    _, out, _ = fire("vpm-fact-gate.py", bash(глоб))
+    ok(not out, "вычисляемый путь в inline-запуске остаётся постфактумным")
+    чтение = "python3 -c \"print(open('core/engine/engine.py').read())\""
+    _, out, _ = fire("vpm-fact-gate.py", bash(чтение))
+    ok(not out, "inline-запуск, который только читает имя, тревоги не даёт")
+
     print("§4 гейт фактов: обе ложные тревоги, найденные на себе же")
     _, out, _ = fire("vpm-fact-gate.py",
                      bash("cat > docs/roadmap/_sessions.md <<'EOF'\nприём записи: rm -rf лишнего\nEOF"))

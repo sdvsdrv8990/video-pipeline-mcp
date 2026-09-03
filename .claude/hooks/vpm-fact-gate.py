@@ -58,6 +58,9 @@ HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1\r?\n.*?\r?\n\2\b", re.S)
 # `python3 - <<PY … write_text`. Слушать только Edit/Write значит пропустить весь рабочий день.
 REDIRECT = re.compile(r">>?\s*(?P<path>[\w./-]+\.(?:py|md|ya?ml|json|txt|sh|toml|cfg|ini))")
 EXEC_HEREDOC = re.compile(r"\b(?:python3?|bash|sh|zsh)\b[^\n|;&]*<<-?\s*[\'\"]?\w+", re.I)
+# `python3 -c` пишет ровно так же, как heredoc, и литерал в нём разрешим ТОЧНО: без этой строки
+# граница шла бы по ФОРМЕ команды, тогда как объявлена она по литералам.
+EXEC_INLINE = re.compile(r"\b(?:python3?)\b[^\n|;&]*\s-c\b", re.I)
 # Цель записи достаётся ТОЧНО, а не «любой путь в тексте»: скрипт, который читает несущий файл и
 # пишет журнал, ложного отказа получать не должен — выключенный сторож не ловит ничего.
 PY_DIRECT = re.compile(r"""Path\(\s*['"]([^'"]+)['"]\s*\)\s*\.write_text|"""
@@ -252,7 +255,7 @@ def written_paths(raw: str) -> list[str]:
     # Кавычки снимаем, как и для разрушительных: путь внутри строки — упоминание, а не цель.
     found: list[str] = [m.group("path")
                         for m in REDIRECT.finditer(QUOTED.sub("", HEREDOC.sub("", raw)))]
-    if EXEC_HEREDOC.search(raw):
+    if EXEC_HEREDOC.search(raw) or EXEC_INLINE.search(raw):
         found += [g for m in PY_DIRECT.finditer(raw) for g in m.groups() if g]
         bound = {m.group(1): m.group(2) for m in PY_BIND.finditer(raw)}
         # Склейка бывает многоступенчатой (`a = Path(...)`, `b = a / "x"`, `c = b / "y.md"`),
