@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -299,7 +300,7 @@ def report(intent: dict, before: dict[str, bool], after: dict[str, bool]) -> int
     return 0 if not (sums["missed"] or surprise) else 1
 
 
-def stamp_fields(intent: dict, sums: dict, path: Path) -> dict:
+def stamp_fields(intent: dict, sums: dict, path: Path, секунд: float = 0.0) -> dict:
     """Состав подписи цикла. Отдельно от печати, потому что подпись читает ЧЕЛОВЕК в чужой сессии.
 
     Именем зовётся файл намерения, а не список тронутых путей: по нему прогон повторяют, а список
@@ -315,7 +316,8 @@ def stamp_fields(intent: dict, sums: dict, path: Path) -> dict:
                       f"не сбылось {len(sums['missed'])}",
             "cmd": f"python3 scripts/guards/what_if.py --intent {path}",
             "detail": {"намерение": intent, "сбылось": sums["fulfilled"],
-                       "не сбылось": sums["missed"], "риск": sorted(sums["surprise"])}}
+                       "не сбылось": sums["missed"], "риск": sorted(sums["surprise"]),
+                       "секунд": round(секунд, 1)}}
 
 
 MAPS = ("tests", ".journal")
@@ -347,6 +349,7 @@ def main() -> int:
     parser.add_argument("--replay", help="ключ подписи: перестроить отчёт по сохранённым картам")
     args = parser.parse_args()
 
+    начало = time.monotonic()
     intent = load_intent(args.intent)
     if (немые := unspoken(intent)):
         print("⚠️ метки, которых нет ни в одном наборе (опечатка обойдётся в прогон):")
@@ -376,7 +379,8 @@ def main() -> int:
         drop_tree(tree)
 
     code = report(intent, before, after)
-    поля = stamp_fields(intent, compare(intent, before, after), args.intent)
+    поля = stamp_fields(intent, compare(intent, before, after), args.intent,
+                        time.monotonic() - начало)
     ключ, подпись = _stamp.sign("цикл", "ВЕРДИКТ", поля["what"], intent=поля["intent"],
                                 expected=поля["expected"], actual=поля["actual"],
                                 cmd=поля["cmd"], detail=поля["detail"])

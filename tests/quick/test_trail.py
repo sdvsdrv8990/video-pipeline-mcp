@@ -338,6 +338,33 @@ with redirect_stdout(out):
     code = resolve_stamp("0000", tree)
 ok(code == 1 and "записи нет" in out.getvalue(),
    "чужой ключ назван прямо — отсутствие улики не выдаётся за пустую улику")
+# Экономика цикла: заказ владельца «где выигрываем, где проигрываем» считается по НАМЕРЕНИЯМ.
+цена_дер = Path(tempfile.mkdtemp(prefix="vpm-цена-"))
+(цена_дер / "tests" / ".journal").mkdir(parents=True)
+_ж = цена_дер / "tests" / ".journal" / "stamps-20260101.jsonl"
+_ж.write_text("\n".join(json.dumps(з, ensure_ascii=False) for з in [
+    {"kind": "цикл", "role": "ВЕРДИКТ", "intent": "intent_один", "ts": 1,
+     "detail": {"риск": ["a"], "секунд": 100.0}},
+    {"kind": "цикл", "role": "ВЕРДИКТ", "intent": "intent_один", "ts": 2,
+     "detail": {"риск": [], "секунд": 100.0}},
+    {"kind": "цикл", "role": "ВЕРДИКТ", "intent": "intent_два", "ts": 3,
+     "detail": {"риск": [], "секунд": 50.0}},
+    {"kind": "гейт", "role": "ОТКАЗ", "intent": "не цикл", "ts": 4, "detail": {}},
+]) + "\n", encoding="utf-8")
+_итог = _stamp.цена(цена_дер)
+ok(len(_итог) == 2 and _итог["intent_один"]["прогонов"] == 2,
+   "отчёт цены считает по разным намерениям, а не по прогонам")
+
+_без = Path(tempfile.mkdtemp(prefix="vpm-безцены-"))
+(_без / "tests" / ".journal").mkdir(parents=True)
+(_без / "tests" / ".journal" / "stamps-20260101.jsonl").write_text(
+    json.dumps({"kind": "цикл", "role": "ВЕРДИКТ", "intent": "старый", "ts": 1,
+                "detail": {"риск": []}}, ensure_ascii=False) + "\n", encoding="utf-8")
+_старый = _stamp.цена(_без)
+_строка = _старый.get("старый", {})
+ok(_строка.get("секунд") == 0.0 and _строка.get("без длительности") == 1,
+   f"подпись без длительности отчёт не роняет  → {_строка or 'намерения нет вовсе'}")
+
 ok(not list((tree / "tests" / ".journal").glob("trail-*.jsonl"))
    and not list((tree / "tests" / ".journal").glob("scenarios-*.jsonl")),
    "журнал подписей своей формы — вход производителя сценариев им не отравляется")

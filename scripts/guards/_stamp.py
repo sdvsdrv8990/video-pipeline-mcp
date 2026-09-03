@@ -157,10 +157,60 @@ def find(key: str, root: Path = ROOT) -> list[dict]:
     return found
 
 
+def цена(root: Path = ROOT) -> dict[str, dict]:
+    """Экономика цикла по журналу: за что заплачено и что за это поймано.
+
+    Считается по НАМЕРЕНИЯМ, а не по прогонам: повтор после фикса — тот же вопрос, заданный
+    второй раз, и считать его отдельным наблюдением значит завышать выигрыш втрое.
+    """
+    итог: dict[str, dict] = {}
+    for path in sorted(root.joinpath(*JOURNAL).glob("stamps-*.jsonl")):
+        for row in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not row.strip():
+                continue
+            try:
+                запись = json.loads(row)
+            except json.JSONDecodeError:
+                continue
+            if запись.get("kind") != "цикл" or запись.get("role") != "ВЕРДИКТ":
+                continue
+            имя = запись.get("intent") or "(без имени)"
+            подробность = запись.get("detail") or {}
+            место = итог.setdefault(имя, {"прогонов": 0, "поймал": 0, "секунд": 0.0,
+                                          "без длительности": 0})
+            место["прогонов"] += 1
+            место["поймал"] += len(подробность.get("риск") or [])
+            секунд = float(подробность.get("секунд") or 0)
+            место["секунд"] += секунд
+            место["без длительности"] += секунд == 0
+    return итог
+
+
+def печать_цены(итог: dict[str, dict]) -> None:
+    """Отчёт для человека: что заплачено, что поймано, чего замерить не удалось."""
+    if not итог:
+        print("вердиктов цикла в журнале нет — считать нечего")
+        return
+    поймавших = sum(1 for м in итог.values() if м["поймал"])
+    прогонов = sum(м["прогонов"] for м in итог.values())
+    секунд = sum(м["секунд"] for м in итог.values())
+    немые = sum(м["без длительности"] for м in итог.values())
+    print(f"намерений {len(итог)} · прогонов {прогонов} · "
+          f"поймали незаявленное {поймавших} из {len(итог)}")
+    print(f"замерено {секунд / 60:.0f} мин; прогонов без записанной длительности: {немые}\n")
+    for имя, м in sorted(итог.items(), key=lambda x: -x[1]["поймал"]):
+        метка = f"поймал {м['поймал']}" if м["поймал"] else "вхолостую"
+        цена_ = f"{м['секунд'] / 60:.1f} мин" if м["секунд"] else "длительность не записана"
+        print(f"  {имя:26} прогонов {м['прогонов']}  {метка:12} {цена_}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     # `--tails` спрашивает журнал и ничего не подписывает, поэтому обязательные поля подписи для
     # него не обязательны: иначе прочитать остаток можно было бы только заведя новый.
+    if "--цена" in sys.argv:
+        печать_цены(цена())
+        return 0
     if "--tails" in sys.argv:
         for хвост in tails():
             возраст = (time.time() - хвост.get("ts", 0)) / 86400
@@ -177,6 +227,8 @@ def main() -> int:
     ap.add_argument("--cmd", default="", help="команда повтора (для остатка — чем продолжить)")
     ap.add_argument("--closes", default="", help="ключ остатка, который эта подпись закрывает")
     ap.add_argument("--tails", action="store_true", help="показать незакрытые остатки и выйти")
+    ap.add_argument("--цена", action="store_true",
+                    help="экономика цикла по журналу: за что заплачено и что поймано")
     a = ap.parse_args()
     print(sign(a.kind, a.role, a.what, intent=a.intent, expected=a.expected,
                actual=a.actual, cmd=a.cmd, closes=a.closes)[1])
