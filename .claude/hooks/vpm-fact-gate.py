@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -146,6 +147,9 @@ AGAIN = ("Гейт фактов: с прошлого отказа по {what} т
 # `ls` и `wc` из списка сняты намеренно: перечислить имена — не значит посмотреть содержимое,
 # а ритуал, снимаемый ритуалом, не проверяет ничего.
 PROBE = re.compile(r"\b(grep|rg|git\s+(log|show|diff|blame)|find|head|tail|sed\s+-n|cat|python3?\s+-c)\b")
+# Запоминается ИМЯ файла, а не факт хождения: без имени «смотрел вообще» отпирало бы любую правку,
+# а взгляд ДО первой правки не отпирал бы ничего — и отказ печатался бы на предъявленные факты.
+ПУТЬ_В_КОМАНДЕ = re.compile(r"[\w./-]+\.(?:py|md|ya?ml|json|txt|sh|toml|cfg|ini)")
 
 
 def load_state(sid: str) -> dict:
@@ -409,6 +413,14 @@ def pre(data: dict, st: dict, sid: str) -> None:
 
     # Повторный заход пропускается не «потому что второй», а если между отказом и им ты ХОДИЛ
     # смотреть. Иначе гейт был бы ритуалом: отклонил раз, пропустил что угодно на второй.
+    # Взгляд НА ЭТОТ файл до правки — те самые предъявленные факты. Без этой ветки гейт брал бы
+    # пошлину по одному отказу на файл даже с дисциплинированного пути: замер дал 18 отказов при
+    # 18 разных ключах и нуле упёртых.
+    if key.startswith("file:") and key[5:] in (st.get("смотрел") or {}):
+        st["cleared"].append(key)
+        save_state(sid, st)
+        sys.exit(0)
+
     denied_at = float((st.get("denied") or {}).get(key) or 0)
     if denied_at:
         looked = float(st.get("probe") or 0) > denied_at
@@ -431,8 +443,12 @@ def pre(data: dict, st: dict, sid: str) -> None:
 def post(data: dict, st: dict, sid: str) -> None:
     if data.get("tool_name") != "Bash":
         sys.exit(0)
-    if PROBE.search((data.get("tool_input") or {}).get("command", "")):
+    команда = (data.get("tool_input") or {}).get("command", "")
+    if PROBE.search(команда):
         st["probe"] = time.time()               # ходил смотреть — это и отпирает повтор правки
+        смотрел = st.setdefault("смотрел", {})
+        for путь in ПУТЬ_В_КОМАНДЕ.findall(команда):
+            смотрел[путь.lstrip("./")] = st["probe"]
         save_state(sid, st)
     new = [p for p in dirty_gated()
            if f"file:{p}" not in st["cleared"] and p not in st.get("baseline", [])]
@@ -451,7 +467,11 @@ def main() -> None:
         sys.exit(0)
 
     data = json.loads(sys.stdin.read())
-    sid = re.sub(r"[^A-Za-z0-9_-]", "", str(data.get("session_id", "nosession")))[:64] or "nosession"
+    # Хвост-хеш обязателен: вырезание не-ASCII схлопывает РАЗНЫЕ ключи сессий в одно имя,
+    # и состояние одной протекает в другую — гейт молчит там, где должен отказать.
+    сырой = str(data.get("session_id", "nosession"))
+    sid = ((re.sub(r"[^A-Za-z0-9_-]", "", сырой)[:48] or "nosession") + "-"
+           + hashlib.sha1(сырой.encode("utf-8")).hexdigest()[:8])
     st = load_state(sid)
 
     if data.get("hook_event_name", "") == "PostToolUse":

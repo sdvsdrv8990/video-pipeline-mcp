@@ -355,6 +355,16 @@ _итог = _stamp.цена(цена_дер)
 ok(len(_итог) == 2 and _итог["intent_один"]["прогонов"] == 2,
    "отчёт цены считает по разным намерениям, а не по прогонам")
 
+_трение_дом = Path(tempfile.mkdtemp(prefix="vpm-трение-"))
+(_трение_дом / "a.json").write_text(json.dumps(
+    {"denials": 18, "denied": {f"file:{i}": 1 for i in range(18)}, "denied_count": {}}),
+    encoding="utf-8")
+(_трение_дом / "b.json").write_text(json.dumps(
+    {"denials": 5, "denied": {"file:x": 1}, "denied_count": {"file:x": 4}}), encoding="utf-8")
+_ряд = _stamp.трение(_трение_дом)
+ok(_ряд and _ряд[0] == (18, 18, 0) and (5, 1, 1) in _ряд,
+   f"отчёт цены показывает трение гейта фактов  → {_ряд}")
+
 _без = Path(tempfile.mkdtemp(prefix="vpm-безцены-"))
 (_без / "tests" / ".journal").mkdir(parents=True)
 (_без / "tests" / ".journal" / "stamps-20260101.jsonl").write_text(

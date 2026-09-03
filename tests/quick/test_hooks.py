@@ -102,6 +102,35 @@ def main() -> int:
        "путь, вычисляемый из данных, до записи не разрешим — у него объявленный контракт "
        "«постфактум», и молчание здесь честное, а не дыра")
 
+    print("§3а гейт фактов: взгляд ДО правки снимает пошлину")
+    цель = "core/engine/engine.py"
+    # Общий HOME на взгляд и правку: состояние гейта лежит на диске, и свежий дом на каждый
+    # вызов стирал бы ровно то, что проверяется.
+    дом = tempfile.mkdtemp(prefix="vpm-пошлина-")
+    взгляд = lambda путь, sid: fire("vpm-fact-gate.py", {  # noqa: E731
+        "hook_event_name": "PostToolUse", "tool_name": "Bash", "session_id": sid,
+        "tool_input": {"command": f"grep -n ToolResult {путь}"}}, home=дом)
+    правка = lambda sid: fire("vpm-fact-gate.py", {  # noqa: E731
+        "hook_event_name": "PreToolUse", "tool_name": "Edit", "session_id": sid,
+        "tool_input": {"file_path": цель}}, home=дом)[1]
+    взгляд(цель, "looked-own")
+    ok(decision(правка("looked-own")) != "deny",
+       "взгляд на файл ДО правки отпирает её без отказа")
+    ok(decision(правка("looked-none")) == "deny",
+       "правка без взгляда на этот файл по-прежнему отказывает")
+    взгляд("core/auth.py", "looked-other")
+    ok(decision(правка("looked-other")) == "deny",
+       "взгляд на ЧУЖОЙ файл правку не отпирает")
+
+    слипание = tempfile.mkdtemp(prefix="vpm-слипание-")
+    for ключ in ("сессия-один", "сессия-два"):
+        fire("vpm-fact-gate.py", {"hook_event_name": "PreToolUse", "tool_name": "Edit",
+                                  "session_id": ключ, "tool_input": {"file_path": цель}},
+             home=слипание)
+    состояния = list((Path(слипание) / ".claude" / "state" / "vpm-fact-gate").glob("*.json"))
+    ok(len(состояния) == 2,
+       f"ключи сессий не слипаются — состояние одной не течёт в другую  → файлов {len(состояния)}")
+
     print("§3в гейт фактов: форма запуска границы не двигает")
     прямой = "python3 -c \"open('core/engine/engine.py','w').write(1)\""
     _, out, _ = fire("vpm-fact-gate.py", bash(прямой))
