@@ -404,6 +404,60 @@ def main() -> int:
     ok(inv["event_python"]({"tool_input": {"file_path": str(ROOT / "docs/roadmap/02_findings.md")}}) == [],
        "документ формой не судится — у прозы нет ни компиляции, ни линтера")
 
+    print("§13 читатель правила «цикл до кода»: коммит в зону цикла требует вердикта")
+    цикл_дер = Path(tempfile.mkdtemp(prefix="vpm-цикл-"))
+    окр = {"HOME": str(цикл_дер), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+    subprocess.run(["git", "init", "-q"], cwd=цикл_дер, env=окр, timeout=60, check=True)
+    (цикл_дер / "tests" / ".journal").mkdir(parents=True)
+    (цикл_дер / "core").mkdir()
+    (цикл_дер / "core" / "x.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "core/x.py"], cwd=цикл_дер, env=окр, timeout=60, check=True)
+    коммит = {"tool_name": "Bash", "tool_input": {"command": "git commit -m правка"}}
+    ok("зону цикла" in намер["судить_цикл"](коммит, цикл_дер),
+       "коммит в зону цикла без свежего вердикта запрещён")
+
+    проза = Path(tempfile.mkdtemp(prefix="vpm-проза-"))
+    окр2 = {"HOME": str(проза), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+    subprocess.run(["git", "init", "-q"], cwd=проза, env=окр2, timeout=60, check=True)
+    (проза / "tests" / ".journal").mkdir(parents=True)
+    (проза / "заметка.md").write_text("проза\n", encoding="utf-8")
+    subprocess.run(["git", "add", "заметка.md"], cwd=проза, env=окр2, timeout=60, check=True)
+    ok(not намер["судить_цикл"](коммит, проза),
+       "коммит вне зоны цикла проходит — сравнивать там нечего")
+
+    правка_мс = (цикл_дер / "core" / "x.py").stat().st_mtime
+    жур3 = цикл_дер / "tests" / ".journal" / "stamps-20260101.jsonl"
+    жур3.write_text(json.dumps({"kind": "цикл", "role": "ВЕРДИКТ", "ts": правка_мс - 100,
+                                "key": "aaaa", "what": "старый"}, ensure_ascii=False) + "\n",
+                    encoding="utf-8")
+    ok("зону цикла" in намер["судить_цикл"](коммит, цикл_дер),
+       "вердикт старее правки запрет не снимает")
+    with жур3.open("a", encoding="utf-8") as дописать:
+        дописать.write(json.dumps({"kind": "цикл", "role": "ВЕРДИКТ", "ts": правка_мс + 10,
+                                   "key": "bbbb", "what": "свежий"}, ensure_ascii=False) + "\n")
+    ok(not намер["судить_цикл"](коммит, цикл_дер),
+       "вердикт цикла свежее правки снимает запрет")
+
+    машинерия = Path(tempfile.mkdtemp(prefix="vpm-машин-"))
+    окр3 = {"HOME": str(машинерия), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+    subprocess.run(["git", "init", "-q"], cwd=машинерия, env=окр3, timeout=60, check=True)
+    (машинерия / "tests" / ".journal").mkdir(parents=True)
+    (машинерия / ".claude" / "hooks").mkdir(parents=True)
+    (машинерия / ".claude" / "hooks" / "vpm-проба.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=машинерия, env=окр3, timeout=60, check=True)
+    ok("зону цикла" in намер["судить_цикл"](коммит, машинерия),
+       "правка хука тоже в зоне цикла — машинерию не судит ни один сценарий")
+
+    жур3.unlink()
+    в_теле = {"tool_name": "Bash",
+              "tool_input": {"command": "cat <<'EOF' > сборка.sh\ngit commit -m x\nEOF"}}
+    ok(not намер["судить_цикл"](в_теле, цикл_дер),
+       "слова коммита в теле heredoc запретом не считаются")
+    в_описании = {"tool_name": "Bash", "tool_input": {"command":
+                  ".venv/bin/python scripts/guards/_stamp.py --what 'ловит git commit в тексте'"}}
+    ok(not намер["судить_цикл"](в_описании, цикл_дер),
+       "слова коммита внутри аргумента запретом не считаются")
+
     print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")
     for fail in _fails:
         print(f"  ✗ {fail}")

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -42,6 +43,13 @@ DECISION = re.compile(r"\b(решени[ея] владельца|ждёт вла
 ПИШЕТ_КОМАНДА = re.compile(
     r">>?\s*(?!&\d|/dev/)[\w./-]+|\btee\b|\bsed\s+-i\b|write_text"
     r"|\bmv\b|\bcp\b|\brm\b|\bgit\s+(?:commit|add|apply)\b")
+# Машинерия здесь наравне с сервером: правка хука ни одним сценарием не судится, и зона,
+# сужённая до core/, молчала бы ровно там, где правило и нарушают.
+ЗОНА_ЦИКЛА = re.compile(r"^(core/|tools/|server\.py|scripts/guards/[\w.]+\.py|\.claude/hooks/)")
+# Судится ПОЗИЦИЯ, а не вхождение: те же слова внутри тела heredoc — данные, а не запуск, и
+# запрет по ним блокирует даже подпись, описывающую эту самую ошибку (поймано на себе).
+ТЕЛО_HEREDOC = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?.*?^\1$", re.S | re.M)
+КОММИТ = re.compile(r"(?:\A|[\n;&|(])\s*(?:\w+=\S+\s+)*git\s+(?:-\S+\s+)*commit\b")
 
 START = """## Незакрытые остатки — {n} шт.
 
@@ -87,6 +95,72 @@ STOP = """Сторож намерений: сессия кончается об�
 («решение владельца», «подтвердить») своим решением не закрывают — спрашивают.
 
 Читать и смотреть можно: запрет стоит только на записи. Выключить: VPM_INTENT_GUARD=off."""
+
+
+ЦИКЛ = """Сторож намерений: коммит трогает зону цикла, а вердикта цикла свежее правки нет.
+
+В зоне сравнения — {n}: {файлы}
+Последний вердикт цикла: {когда}
+
+Гейт поставки на этот вопрос НЕ отвечает. Он говорит «сейчас ничего не сломано» (шесть джоб
+`ci.yml`), а цикл — «правка не сменила цвет ни одной проверки СКРЫТНО»: гоняет наборы поведения
+и дом-наборы сторожей дважды, на `HEAD` и на патче, и сравнивает исходы. Списки не пересекаются,
+поэтому зелёный гейт про скрытую смену цвета не говорит ничего.
+
+Прогнать надо СЕЙЧАС: цикл сравнивает НЕЗАКОММИЧЕННЫЙ патч, после коммита сравнивать нечем.
+
+    .venv/bin/python scripts/guards/what_if.py --intent <объявление>.yaml
+
+Объявление — `intent`, `where`, `why` и `expect` (список ожиданий либо `[]`, если утверждаешь,
+что цвет не меняется). Прогон на этом дереве стоит около 271 секунды — это осознанная плата.
+
+Выключить: VPM_INTENT_GUARD=off."""
+
+
+def зона_коммита(root: Path = PROJ) -> list[str]:
+    """Файлы будущего коммита, попадающие в зону сравнения цикла — и в индексе, и в дереве."""
+    файлы: set[str] = set()
+    for аргументы in (["diff", "--cached", "--name-only", "-z"], ["diff", "--name-only", "-z"]):
+        try:
+            вывод = subprocess.run(["git", "-C", str(root), *аргументы],
+                                   capture_output=True, text=True, timeout=30).stdout
+        except (OSError, subprocess.SubprocessError):
+            return []                          # git не ответил — молчим, а не обвиняем
+        файлы |= {p for p in вывод.split("\0") if p}
+    return sorted(p for p in файлы if ЗОНА_ЦИКЛА.match(p))
+
+
+def вердикт_цикла(root: Path = PROJ) -> float:
+    """Время последнего вердикта цикла. Журнала нет — ноль, а не отказ."""
+    свежий = 0.0
+    for path in sorted(root.joinpath("tests", ".journal").glob("stamps-*.jsonl")):
+        for row in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                запись = json.loads(row)
+            except json.JSONDecodeError:
+                continue
+            if запись.get("kind") == "цикл" and запись.get("role") == "ВЕРДИКТ":
+                свежий = max(свежий, float(запись.get("ts") or 0))
+    return свежий
+
+
+def судить_цикл(data: dict, root: Path = PROJ) -> str:
+    """Причина запрета на коммит — либо пустая строка. Свежесть судится ПРАВКОЙ, а не наличием."""
+    if data.get("tool_name") != "Bash":
+        return ""
+    команда = (data.get("tool_input") or {}).get("command", "")
+    if not КОММИТ.search(ТЕЛО_HEREDOC.sub("", команда)):
+        return ""
+    зона = зона_коммита(root)
+    if not зона:
+        return ""                              # правка вне зоны: циклу там сравнивать нечего
+    правка = max((( root / f).stat().st_mtime for f in зона if (root / f).exists()), default=0.0)
+    вердикт = вердикт_цикла(root)
+    if вердикт > правка:
+        return ""
+    когда = time.strftime("%m-%d %H:%M", time.localtime(вердикт)) if вердикт else "нет ни одного"
+    return ЦИКЛ.format(n=len(зона), файлы=", ".join(зона[:6]) + (" …" if len(зона) > 6 else ""),
+                       когда=когда)
 
 
 def тексты(data: dict) -> str:
@@ -177,7 +251,9 @@ def main() -> None:
         pass
     data = json.loads(sys.stdin.read() or "{}")
     if data.get("hook_event_name") == "PreToolUse":
-        if (запрет := судить_правку(data)):
+        # Хвосты судятся ПЕРВЫМИ: непризнанный остаток запрещает и правку, и коммит, а цикл
+        # спрашивается только у того, кому уже позволено писать.
+        if (запрет := судить_правку(data) or судить_цикл(data)):
             print(json.dumps({"hookSpecificOutput": {
                 "hookEventName": "PreToolUse", "permissionDecision": "deny",
                 "permissionDecisionReason": запрет}}, ensure_ascii=False))
