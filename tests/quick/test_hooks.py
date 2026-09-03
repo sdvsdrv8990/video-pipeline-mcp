@@ -333,6 +333,21 @@ def main() -> int:
                                    "key": "dddd", "closes": "bbbb"}, ensure_ascii=False) + "\n")
     ok(not _s.tails(хвост), "закрыт вердиктом — ушёл и из показа тоже")
 
+    взят = Path(tempfile.mkdtemp(prefix="vpm-вработе-"))
+    (взят / "tests" / ".journal").mkdir(parents=True)
+    жур2 = взят / "tests" / ".journal" / f"stamps-{день2}.jsonl"
+    жур2.write_text(json.dumps({"role": "ОСТАТОК", "ts": __import__("time").time(), "key": "eeee",
+                                "what": "хвост, который берут", "cmd": "grep -n x y"},
+                               ensure_ascii=False) + "\n", encoding="utf-8")
+    with жур2.open("a", encoding="utf-8") as дописать:
+        дописать.write(json.dumps({"role": "В РАБОТЕ", "ts": __import__("time").time(),
+                                   "key": "ffff", "closes": "eeee"}, ensure_ascii=False) + "\n")
+    ok(not намер["судить_правку"](пишет, взят) and len(_s.tails(взят)) == 1
+       and _s.tails(взят)[0]["в работе"],
+       "«в работе» снимает запрет, а хвост остаётся в показе")
+    ok(not _s.tails(взят)[0]["отложен"],
+       "«в работе» не закрывает хвост — закрытие только вердиктом")
+
     print("§12 сторож дисциплины: механизм, который пылится, назван")
     дисц: dict = {"__name__": "не-главный", "__file__": str(HOOKS / "vpm-discipline-guard.py")}
     exec(compile((HOOKS / "vpm-discipline-guard.py").read_text(encoding="utf-8"),

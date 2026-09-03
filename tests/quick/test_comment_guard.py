@@ -75,8 +75,10 @@ ok("одна строка «ключ: значение» замечанием н
 
 # Цели замера = всё, что под git, а не фиксированный список.
 _globs = ["*.py", "*.yaml", "*.yml", "*.toml", "*.sh", ".gitignore", ".env.example"]
-tracked = {p for p in subprocess.run(["git", "-C", str(ROOT), "ls-files", *_globs],
-                                     capture_output=True, text=True, check=True).stdout.split() if p}
+# `-z` тем же способом, что и сторож: без него git ЭКРАНИРУЕТ не-ASCII путь, и сравнение
+# множеств краснеет на первом же кириллическом имени файла.
+tracked = {p for p in subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z", *_globs],
+                                     capture_output=True, text=True, check=True).stdout.split("\0") if p}
 ok("замер покрывает ровно объявленные цели под git", set(G.collect()) == tracked,
    sorted(tracked ^ set(G.collect()))[:5])
 ok("цели включают декларации и CI, а не только Python",
