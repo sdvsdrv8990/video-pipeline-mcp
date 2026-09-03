@@ -663,6 +663,29 @@ ok(any("в ОДНУ сторону" in n for n in
 ok(not skill_without_zone(make({".claude/skills/CATALOG.md": ШАПКА_ЗОН})),
    "каталог есть, скилов на диске нет — улики нет, а не обвинение")
 
+print("\n== память выросла выше потолка ==")
+
+# Потолок читается из файла РЯДОМ со сторожем, поэтому в пробе подменяется он, а не дерево памяти.
+import invariants as _inv  # noqa: E402  ось судит каталог памяти, а не репозиторий
+_пам = Path(tempfile.mkdtemp(prefix="vpm-память-"))
+(_пам / "a.md").write_text("x" * 100, encoding="utf-8")
+_старый_потолок = _inv.MEMORY_SIZE_CEILING
+_потолок = Path(tempfile.mkdtemp(prefix="vpm-потолок-")) / "ceiling.txt"
+try:
+    _inv.MEMORY_SIZE_CEILING = _потолок
+    _потолок.write_text("150\n", encoding="utf-8")
+    ok(not _inv.memory_grew(memory=_пам), "объём под потолком — молчим")
+    _потолок.write_text("50\n", encoding="utf-8")
+    ok(any("память выросла" in n for n in _inv.memory_grew(memory=_пам)),
+       "рост выше потолка назван числом и разницей")
+    _потолок.write_text("проза\n", encoding="utf-8")
+    ok(any("не число" in n for n in _inv.memory_grew(memory=_пам)),
+       "битый потолок назван прямо, а не пропущен молча")
+    _потолок.unlink()
+    ok(not _inv.memory_grew(memory=_пам), "потолка нет — улики нет, а не обвинение")
+finally:
+    _inv.MEMORY_SIZE_CEILING = _старый_потолок
+
 print("\n== граница скила невидима при выборе ==")
 
 # Пять скилов, а не два: фоном считается слово у половины библиотеки, и при двух любое общее

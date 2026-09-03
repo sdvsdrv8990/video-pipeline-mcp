@@ -43,6 +43,7 @@ MUTED_BASELINE = Path(__file__).with_name("muted_refusal_baseline.txt")
 FACT_EMITTER_BASELINE = Path(__file__).with_name("fact_emitters_baseline.txt")
 FACT_EXEMPT_BASELINE = Path(__file__).with_name("fact_exempt_baseline.txt")
 SKILL_BOUNDARY_BASELINE = Path(__file__).with_name("skill_boundary_baseline.txt")
+MEMORY_SIZE_CEILING = Path(__file__).with_name("memory_size_ceiling.txt")
 # Две ветки — это выбор, три и больше по одному значению — уже таблица.
 DISPATCH_LIMIT = 3
 # Диспетчеризацию не отменяет ни тип значения, ни имя вместо литерала: `if code == 404` и
@@ -1579,6 +1580,28 @@ def memory_dir(root: Path = ROOT) -> Path:
     return Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(root)) / "memory"
 
 
+def memory_grew(root: Path = ROOT, memory: Path | None = None) -> list[str]:
+    """Память выросла выше потолка. Потолок идёт ТОЛЬКО вниз — и опускают его правкой файла.
+
+    Судится объём в символах, а не число файлов: нарезка на разделы меняет второе, не трогая
+    первого, и счёт по файлам объявлял бы победой перекладывание. Архив не считается — он в
+    сессию не грузится. Потолка нет — «улики нет», а не «ноль».
+    """
+    home = memory or memory_dir(root)
+    if not home.is_dir() or not MEMORY_SIZE_CEILING.exists():
+        return []
+    try:
+        потолок = int(MEMORY_SIZE_CEILING.read_text(encoding="utf-8").strip())
+    except ValueError:
+        return [f"{MEMORY_SIZE_CEILING.name}: потолок не число — храповик не судит ничего"]
+    объём = sum(len(f.read_text(encoding="utf-8", errors="replace")) for f in home.glob("*.md"))
+    if объём <= потолок:
+        return []
+    return [f"память выросла: {объём} символов при потолке {потолок} (+{объём - потолок}) — "
+            f"выжимка вместо накопления, либо опусти потолок осознанно правкой "
+            f"{MEMORY_SIZE_CEILING.name}"]
+
+
 def memory_off_index(root: Path = ROOT, memory: Path | None = None) -> list[str]:
     """Память живёт в двух местах — файлы на диске и указатели в `MEMORY.md`, — и они обязаны сойтись.
 
@@ -1913,6 +1936,7 @@ HARD = (("одну зону объявили два хозяина", zone_declar
         ("объявление глушит голос хука", hook_declared_muted),
         ("дверь коммита объявлена, но не ставится", door_not_installed),
         ("память разошлась со своим указателем", memory_off_index),
+        ("память выросла выше потолка", memory_grew),
         ("журнал разошёлся со своим указателем", journal_off_index),
         ("скил без объявленной зоны", skill_without_zone),
         ("урок зовёт несуществующего исполнителя", lesson_without_executor),
