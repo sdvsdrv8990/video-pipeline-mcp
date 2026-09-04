@@ -501,6 +501,47 @@ def main() -> int:
     ok(not намер["судить_цикл"](в_описании, цикл_дер),
        "слова коммита внутри аргумента запретом не считаются")
 
+    print("§11 тандем ЗНАЕТ карту потоков и больные места приёмки")
+    карта = tree / "routes.yaml"
+    карта.write_text("""- route: reaction_to_client
+  what: код отказа и рецепт
+  means: клиент не знает, чинить самому или звать человека
+  hops:
+    - at: core/reactions/reactions.py
+    - at: server.py
+  proof:
+    scenario: tables_destructive.yaml#ed1
+""", encoding="utf-8")
+    поток = inv["flows"](["core/reactions/reactions.py"], routes=карта)
+    ok(len(поток) == 1 and "reaction_to_client" in поток[0] and "tables_destructive" in поток[0],
+       "правка рубежа: назван поток, что через него течёт и каким прогоном это видно")
+    ok(not inv["flows"](["core/поиск/чужое.py"], routes=карта),
+       "файл не рубеж — тандем молчит, а не пересказывает всю карту")
+    ok(not inv["flows"](["core/reactions/reactions.py"], routes=tree / "нет-карты.yaml"),
+       "карты нет вовсе (чужой репозиторий) — улики нет, и это не «потоков ноль»")
+
+    объявление = tree / "сценарии.yaml"
+    объявление.write_text("""роды:
+  правка-сервера:
+    про: тронуто дерево сервера
+    когда: ['*.py']
+сценарии:
+- имя: файл-без-объявленной-зоны
+  улики: [правка-сервера]
+  состояние: судится
+  больно: b
+  ломается: l
+  доказать: cmd
+  журнал: docs/roadmap/21_acceptance_plan.md
+""", encoding="utf-8")
+    совет = inv["acceptance"](["core/движок/узел.py"], scenarios=объявление)
+    ok(len(совет) == 1 and "файл-без-объявленной-зоны" in совет[0] and "--совет" in совет[0],
+       "по роду улики названо больное место и команда, которой поднять доказательство")
+    ok(not inv["acceptance"](["README.md"], scenarios=объявление),
+       "род улики не выведен — тандем молчит, а не советует наугад")
+    ok(not inv["acceptance"](["core/движок/узел.py"], scenarios=tree / "нет-сценариев.yaml"),
+       "объявления сценариев нет — улики нет, и это не «сценариев ноль»")
+
     print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")
     for fail in _fails:
         print(f"  ✗ {fail}")

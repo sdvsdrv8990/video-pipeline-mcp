@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Шим межфайловых инвариантов + форма того, что правка ОСТАВИЛА в дереве.
+"""Шим межфайловых инвариантов, форма правки и ЗНАНИЕ о задетом (потоки данных, приёмка).
 
 Правило межфайловых инвариантов живёт В РЕПОЗИТОРИИ (scripts/guards/invariants.py) — там же гейт CI.
 Копия правила снаружи гнила бы молча. Нет репозитория (другой проект) — молчим, событие не наше.
@@ -29,6 +29,8 @@ except Exception:                              # noqa: BLE001 — след не 
 PROJ = Path(__file__).resolve().parents[2]
 GUARD = str(PROJ / "scripts" / "guards" / "invariants.py")
 VENV = str(PROJ / ".venv" / "bin" / "python")
+ROUTES = PROJ / "tests" / "routes" / "routes.yaml"
+SCENARIOS = PROJ / "scripts" / "guards" / "acceptance_scenarios.yaml"
 
 
 def linter(root: Path = PROJ) -> str | None:
@@ -100,6 +102,65 @@ def form_complaints(paths: list[Path], root: Path = PROJ, ruff: str | None = Non
     return notes
 
 
+def touched(data: dict, root: Path = PROJ) -> list[str]:
+    """Тронутое этой правкой: и названное событием, и оставленное в дереве."""
+    названо = (data.get("tool_input") or {}).get("file_path")
+    пути = {_rel(Path(названо), root)} if названо else set()
+    пути |= {_rel(path, root) for path in dirty_python(root)}
+    return sorted(п for п in пути if п)
+
+
+def flows(paths: list[str], routes: Path = ROUTES) -> list[str]:
+    """Какие потоки данных задеты правкой — ЗНАНИЕ, а не надзор.
+
+    Гниение карты уже судит `test_routes`; здесь польза другая: правящий рубеж узнаёт, ЧТО через
+    него течёт, что значит обрыв и каким прогоном это видно, — не отходя от правки.
+    """
+    if not routes.exists():
+        return []
+    try:
+        import yaml
+        карта = yaml.safe_load(routes.read_text(encoding="utf-8")) or []
+    except Exception:                          # noqa: BLE001 — сломанную карту судит свой набор
+        return []
+    свои, строки = set(paths), []
+    for маршрут in карта:
+        задеты = свои & {h.get("at", "") for h in (маршрут.get("hops") or [])}
+        if not задеты:
+            continue
+        опора = (маршрут.get("proof") or {}).get("scenario", "опора не объявлена")
+        строки.append(f"поток `{маршрут.get('route')}` — {маршрут.get('what')}; правишь рубеж "
+                      f"{sorted(задеты)[0]}. Обрыв значит: {маршрут.get('means')}. "
+                      f"Видно прогоном: {опора}")
+    return строки
+
+
+def acceptance(paths: list[str], scenarios: Path = SCENARIOS) -> list[str]:
+    """Что здесь ломается чаще всего — имена сценариев приёмки по роду улики, а не лекция."""
+    if not scenarios.exists() or not paths:
+        return []
+    try:
+        import fnmatch
+
+        import yaml
+        объявлено = yaml.safe_load(scenarios.read_text(encoding="utf-8")) or {}
+    except Exception:                          # noqa: BLE001 — сломанное объявление судит ось
+        return []
+    роды = {имя for имя, род in (объявлено.get("роды") or {}).items()
+            for glob in (род.get("когда") or [])
+            for путь in paths
+            if fnmatch.fnmatch(путь, glob) or fnmatch.fnmatch(Path(путь).name, glob)}
+    имена = [s["имя"] for s in (объявлено.get("сценарии") or [])
+             if set(s.get("улики", [])) & роды][:3]
+    if not имена:
+        return []
+    сервер = any(п.endswith(".py") for п in paths)
+    судья = "acceptance_server.py" if сервер else "acceptance_studio.py"
+    return [f"приёмка ({'сервер' if сервер else 'студия'}): здесь чаще всего ломается — "
+            f"{', '.join(имена)}. Совет с доказательством: scripts/guards/{судья} --совет "
+            + " ".join(f"--файл {п}" for п in paths[:2])]
+
+
 def _rel(path: Path, root: Path) -> str:
     try:
         return str(path.relative_to(root))
@@ -128,6 +189,15 @@ def main() -> int:
     if reports:
         print("\n\n".join(reports), file=sys.stderr)
         return 2                    # видно модели: правка развела файлы либо сломала форму
+    # Знание отдаётся своим каналом и НЕ отказом: «правка задевает поток X» — не нарушение, а то,
+    # чего правящий не знает. Отказом это сделало бы наказуемой каждую правку рубежа.
+    тронуто = touched(data)
+    знание = flows(тронуто) + acceptance(тронуто)
+    if знание:
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": "Задето этой правкой:\n" + "\n".join(f"• {с}" for с in знание),
+        }}, ensure_ascii=False))
     return 0
 
 
