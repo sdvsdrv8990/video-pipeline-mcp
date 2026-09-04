@@ -6,7 +6,8 @@
         "App"
       ],
       "props": [],
-      "tokens": []
+      "tokens": [],
+      "стиль": {}
     },
     "Button": {
       "file": "primitives/Button.tsx",
@@ -27,7 +28,15 @@
         "font.family",
         "space.sm",
         "space.xs"
-      ]
+      ],
+      "стиль": {
+        "background": "variant === \"primary\" ? tokens.color.accent : tokens.color.ground",
+        "color": "variant === \"primary\" ? tokens.color.ground : tokens.color.ink",
+        "fontFamily": "tokens.font.family",
+        "fontSize": "tokens.font.body",
+        "padding": "`${tokens.space.xs} ${tokens.space.sm}`",
+        "transitionDuration": "tokens.duration.enter"
+      }
     },
     "Card": {
       "file": "primitives/Card.tsx",
@@ -42,13 +51,26 @@
       "tokens": [
         "color.ground",
         "color.ink",
+        "duration.enter",
         "font.body",
         "font.family",
         "font.head",
         "radius.card",
         "space.md",
         "space.sm"
-      ]
+      ],
+      "стиль": {
+        "animationDuration": "tokens.duration.enter",
+        "animationName": "\"appear\"",
+        "animationTimingFunction": "\"cubic-bezier(0.2, 0, 0, 1)\"",
+        "background": "tokens.color.ground",
+        "borderRadius": "tokens.radius.card",
+        "color": "tokens.color.ink",
+        "fontFamily": "tokens.font.family",
+        "fontSize": "tokens.font.body",
+        "marginBottom": "tokens.space.sm",
+        "padding": "tokens.space.md"
+      }
     },
     "NicheScreen": {
       "file": "screens/NicheScreen.tsx",
@@ -61,7 +83,11 @@
       "tokens": [
         "color.ground",
         "space.lg"
-      ]
+      ],
+      "стиль": {
+        "background": "tokens.color.ground",
+        "padding": "tokens.space.lg"
+      }
     }
   },
   "tokens": {
@@ -77,5 +103,8 @@
     "space.md": "16px",
     "space.sm": "8px",
     "space.xs": "4px"
+  },
+  "кадры": {
+    "appear": "from { opacity: 0; transform: translateY(${tokens.space.sm}); } to { opacity: 1; transform: none; }"
   }
 }

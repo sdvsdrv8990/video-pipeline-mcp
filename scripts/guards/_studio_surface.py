@@ -39,6 +39,71 @@ PROPS = re.compile(r"^export\s+(?:default\s+)?(?:function\s+[A-Z]\w*|const\s+[A-
                    r"\s*\(\s*\{(?P<props>[^}]*)\}", re.M)
 INTERPOLATION = re.compile(r"\$\{[^}]*\}")
 CODE_SUFFIX = (".tsx", ".jsx", ".ts", ".js")
+STYLE_OPEN = re.compile(r"style=\{\{")
+KEYFRAMES = re.compile(r"@keyframes\s+(\w+)\s*\{")
+# Свойства, потеря которых и есть «стёртая анимация»: их значения снимок хранит дословно.
+MOTION = ("transition", "transitionDuration", "transitionTimingFunction", "transitionProperty",
+          "transitionDelay", "animation", "animationName", "animationDuration",
+          "animationTimingFunction", "animationDelay", "animationIterationCount", "transform")
+
+
+def _block(text: str, start: int, opener: str = "{", closer: str = "}") -> tuple[str, int]:
+    """Тело от `start` до парной скобки. Регуляркой это не берётся: внутри стиля есть и тернарники,
+    и подстановки `${…}`, и вложенные объекты — глубину надо считать, а не угадывать."""
+    depth, i = 0, start
+    while i < len(text):
+        if text[i] == opener:
+            depth += 1
+        elif text[i] == closer:
+            depth -= 1
+            if depth == 0:
+                return text[start + 1:i], i
+        i += 1
+    return "", len(text)
+
+
+def _pairs(body: str) -> list[tuple[str, str]]:
+    """Пары «свойство → выражение» верхнего уровня. Запятая внутри вложенного — не разделитель."""
+    out, depth, куски, буфер = [], 0, [], ""
+    for символ in body:
+        if символ in "{[(":
+            depth += 1
+        elif символ in "}])":
+            depth -= 1
+        if символ == "," and depth == 0:
+            куски.append(буфер)
+            буфер = ""
+            continue
+        буфер += символ
+    куски.append(буфер)
+    for кусок in куски:
+        имя, _, выражение = кусок.partition(":")
+        if выражение.strip() and имя.strip().isidentifier():
+            out.append((имя.strip(), " ".join(выражение.split())))
+    return out
+
+
+def style_of(text: str) -> dict[str, str]:
+    """Объявления стиля компонента: свойство → выражение ДОСЛОВНО.
+
+    Дословно — потому что смысл в восстановлении: «похожая анимация» не считается возвратом, а
+    описание словами не даёт вернуть значение. Снимок этих строк и есть бэкап, лежащий под git.
+    """
+    out: dict[str, str] = {}
+    for открытие in STYLE_OPEN.finditer(text):
+        тело, _ = _block(text, открытие.end() - 1)
+        for имя, выражение in _pairs(тело):
+            out.setdefault(имя, выражение)
+    return out
+
+
+def keyframes_of(text: str) -> dict[str, str]:
+    """Кадры анимации: имя → тело, пробелы схлопнуты. Формат не улика, значения — улика."""
+    out = {}
+    for найдено in KEYFRAMES.finditer(text):
+        тело, _ = _block(text, найдено.end() - 1)
+        out[найдено.group(1)] = " ".join(тело.split())
+    return out
 
 
 def declared_tokens(text: str) -> dict[str, str]:
@@ -68,9 +133,12 @@ def read(root: Path) -> dict:
     """Поверхность дерева `root`: компоненты, токены, чтение токенов, теги, пропсы, литералы."""
     files = sorted(p for p in root.rglob("*") if p.suffix in CODE_SUFFIX and p.is_file())
     tokens: dict[str, str] = {}
+    кадры: dict[str, str] = {}
     for path in files:
+        текст = path.read_text(encoding="utf-8")
+        кадры.update(keyframes_of(текст))
         if path.stem == "tokens":
-            tokens.update(declared_tokens(path.read_text(encoding="utf-8")))
+            tokens.update(declared_tokens(текст))
     components: dict[str, dict] = {}
     modules: dict[str, dict] = {}
     token_use: dict[str, list[str]] = {}
@@ -96,6 +164,7 @@ def read(root: Path) -> dict:
             body = text[found.start():]
             components[name] = {
                 "file": relative,
+                "стиль": style_of(body),
                 "line": text[:found.start()].count("\n") + 1,
                 "markers": markers,
                 "props": _props_of(body),
@@ -116,7 +185,7 @@ def read(root: Path) -> dict:
             literals.append({"file": relative, "line": text[:found.start()].count("\n") + 1,
                              "prop": found.group(1), "value": found.group("value")})
     return {"root": str(root), "files": [str(p.relative_to(root)) for p in files],
-            "components": components, "modules": modules, "tokens": tokens,
+            "components": components, "modules": modules, "tokens": tokens, "кадры": кадры,
             "token_use": token_use, "style_literals": literals}
 
 
@@ -131,7 +200,8 @@ def surface_json(root: Path) -> str:
     """Снимок ФОРМЫ, годный для храповика: тело компонентов в него не входит."""
     got = read(root)
     shot = {name: {"file": item["file"], "markers": sorted(set(item["markers"])),
-                   "props": sorted(item["props"]), "tokens": item["tokens"]}
+                   "props": sorted(item["props"]), "tokens": item["tokens"],
+                   "стиль": item["стиль"]}
             for name, item in sorted(got["components"].items())}
-    return json.dumps({"tokens": got["tokens"], "components": shot},
+    return json.dumps({"tokens": got["tokens"], "components": shot, "кадры": got["кадры"]},
                       ensure_ascii=False, indent=2, sort_keys=True) + "\n"

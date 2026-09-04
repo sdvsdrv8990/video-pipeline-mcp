@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """scripts/guards/acceptance_studio.py — ПРИЁМКА правки ИИ в дереве студии (React/TS).
 
-Четыре условия приёмки, каждое судится ПАРНОЙ уликой, а не счётом литералов:
+Условия приёмки, каждое на ПАРНОЙ улике, а не на счёте литералов:
   П1 компонент не сломан — тег ↔ импорт, импорт ↔ экспорт цели;
   П2 стиль не сменён — значение ↔ токен того же рода, форма ↔ снимок рядом с деревом;
-  П3 не вышел за рамки и не оставил мёртвого — тронутое ↔ зона задачи, проп ↔ читатель;
-  П4 компонент адресуем — `data-component` равен имени и уникален; `--кто` даёт файл и строку.
+  П8 стиль и анимация не потеряны — снимок хранит объявления ДОСЛОВНО, `--восстановить` печатает
+     исчезнувшее той же строкой (похожее возвратом не считается);
+  П3 в границах задачи и без мёртвого — тронутое ↔ зона, проп ↔ читатель;
+  П4 компонент адресуем — `data-component` равен имени и уникален, `--кто` даёт файл и строку.
 
-Дерево по умолчанию — эмуляция (`tests/studio_emulation/app`), потому что студии на диске ещё нет.
-Чужое дерево (копию стенда) судит `--дерево`: снимок формы лежит рядом с деревом и едет с копией.
-
-Вторая половина работы — совет: `--совет` выбирает сценарии по РОДУ УЛИКИ и говорит, что здесь
-ломается, почему и чем это доказать. Сценарии объявлены в `acceptance_scenarios.yaml`, задания стенда
-— в `tasks.yaml` рядом с деревом.
+Дерево по умолчанию — эмуляция (`tests/studio_emulation/app`): студии на диске ещё нет. Чужое
+дерево (копию стенда) судит `--дерево`; снимок лежит рядом с деревом и едет вместе с копией.
+Совет (`--совет`) выбирает сценарии по роду улики; объявление — `acceptance_scenarios.yaml`,
+задания стенда — `tasks.yaml` рядом с деревом.
 """
 import argparse
 import fnmatch
@@ -75,6 +75,11 @@ def broken(got: dict, **_) -> list[str]:
     return notes
 
 
+def _snapshot(tree: Path) -> dict | None:
+    shot = tree.parent / SNAPSHOT
+    return json.loads(shot.read_text(encoding="utf-8")) if shot.exists() else None
+
+
 def styles(got: dict, tree: Path = TREE, **_) -> list[str]:
     """П2: значение мимо токена, токен без читателя и незаявленная смена формы."""
     notes = [f"{item['file']}:{item['line']} — {item['prop']}: \"{item['value']}\" мимо токена: "
@@ -88,13 +93,69 @@ def styles(got: dict, tree: Path = TREE, **_) -> list[str]:
                         f"(создать: --bless)"]
     was = json.loads(shot.read_text(encoding="utf-8"))
     now = json.loads(surface.surface_json(tree))
-    for key in ("tokens", "components"):
-        было, стало = was.get(key, {}), now.get(key, {})
-        for name in sorted(set(было) | set(стало)):
-            if было.get(name) != стало.get(name):
-                notes.append(f"форма разошлась со снимком ({key}.{name}): было {было.get(name)!r}, "
-                             f"стало {стало.get(name)!r} — если смена стиля заявлена, --bless")
+    for name in sorted(set(was.get("tokens", {})) | set(now.get("tokens", {}))):
+        прежде, теперь = was["tokens"].get(name), now["tokens"].get(name)
+        if прежде != теперь:
+            notes.append(f"токен {name} сменился: было {прежде!r}, стало {теперь!r} — правка "
+                         f"токена меняет ВСЁ приложение, а не одно место")
+    прежние, нынешние = was.get("components", {}), now.get("components", {})
+    for name in sorted(set(прежние) | set(нынешние)):
+        было, стало = прежние.get(name), нынешние.get(name)
+        if было == стало:
+            continue
+        if было is None or стало is None:
+            notes.append(f"компонент {name} {'исчез' if стало is None else 'появился'} против "
+                         f"снимка формы — если это и есть задача, --bless")
+            continue
+        # Поля называются поимённо, а не свалкой двух словарей: свалку не читают, а «стиль»
+        # разбирает П8 подробнее — второй раз печатать его здесь значит топить обе находки.
+        разошлось = [поле for поле in sorted(set(было) | set(стало))
+                     if поле != "стиль" and было.get(поле) != стало.get(поле)]
+        for поле in разошлось:
+            notes.append(f"{name}: {поле} разошлось со снимком — было {было.get(поле)!r}, "
+                         f"стало {стало.get(поле)!r}; если смена заявлена, --bless")
     return notes
+
+
+def motion(got: dict, tree: Path = TREE, **_) -> list[str]:
+    """П8: стиль и анимация не теряются молча, а исчезнувшее называется дословно.
+
+    Отдельно от П2: там речь о смене ФОРМЫ (какие токены и пропсы), здесь — о ПОТЕРЕ значения.
+    Разница практическая: «похожая анимация» проходит сравнение формы и не проходит сравнение
+    объявлений, а вернуть без дословной строки нельзя ничем, кроме бэкапа, которого нет.
+    """
+    было = _snapshot(tree)
+    if было is None:
+        return []                       # об отсутствии снимка уже сказала П2 — второй раз молчим
+    notes = []
+    for имя, item in sorted(got["components"].items()):
+        прежде = (было.get("components", {}).get(имя) or {}).get("стиль", {})
+        теперь = item["стиль"]
+        for свойство, значение in sorted(прежде.items()):
+            if свойство not in теперь:
+                notes.append(f"{item['file']} — у {имя} ИСЧЕЗЛО объявление {свойство}: было "
+                             f"`{свойство}: {значение}`{_worth(было, значение)}")
+            elif теперь[свойство] != значение:
+                notes.append(f"{item['file']} — у {имя} подменено {свойство}: было "
+                             f"`{значение}`{_worth(было, значение)}, стало `{теперь[свойство]}`")
+    for имя, тело in sorted(было.get("кадры", {}).items()):
+        if имя not in got["кадры"]:
+            notes.append(f"кадры анимации `{имя}` исчезли: было `@keyframes {имя} {{ {тело} }}`")
+        elif got["кадры"][имя] != тело:
+            notes.append(f"кадры анимации `{имя}` подменены: было `{тело}`, стало "
+                         f"`{got['кадры'][имя]}`")
+    зовут = {выражение.strip("\"'`") for item in got["components"].values()
+             for свойство, выражение in item["стиль"].items() if свойство == "animationName"}
+    notes += [f"анимация зовёт кадры `{имя}`, которых в дереве нет: она не проиграется"
+              for имя in sorted(зовут - set(got["кадры"]))]
+    return notes
+
+
+def _worth(было: dict, выражение: str) -> str:
+    """Значение токена рядом с его именем: восстанавливают по строке, а сверяют глазами по числу."""
+    путь = выражение.removeprefix("tokens.")
+    значение = было.get("tokens", {}).get(путь)
+    return f" (= {значение})" if значение else ""
 
 
 def scope(got: dict, tree: Path = TREE, zones: tuple[str, ...] = (), root: Path = ROOT,
@@ -141,6 +202,7 @@ def addressable(got: dict, **_) -> list[str]:
 
 CHECKS = (("П1 компонент сломан", broken),
           ("П2 стиль мимо токена и смена формы", styles),
+          ("П8 стиль и анимация потеряны", motion),
           ("П3а вышел за рамки задачи", scope),
           ("П3б мёртвый код", dead),
           ("П4 адресация компонента", addressable))
@@ -190,6 +252,30 @@ def advise(config: dict, rods: list[str]) -> int:
     return 0
 
 
+def restore(got: dict, tree: Path, имя: str) -> int:
+    """`--восстановить`: что у компонента исчезло и ЧЕМ это было — строкой, годной к вставке."""
+    было = _snapshot(tree)
+    if было is None:
+        print(f"{tree.parent / SNAPSHOT} — снимка нет: восстанавливать не из чего", file=sys.stderr)
+        return 2
+    прежде = (было.get("components", {}).get(имя) or {}).get("стиль")
+    if прежде is None:
+        print(f"компонента {имя!r} в снимке нет", file=sys.stderr)
+        return 2
+    теперь = (got["components"].get(имя) or {}).get("стиль", {})
+    пропало = {с: з for с, з in прежде.items() if теперь.get(с) != з}
+    if not пропало:
+        print(f"{имя}: объявления стиля совпадают со снимком — восстанавливать нечего")
+        return 0
+    print(f"{имя} ({прежде and (было['components'][имя]['file'])}) — вернуть дословно:")
+    for свойство, значение in sorted(пропало.items()):
+        print(f"  {свойство}: {значение},{_worth(было, значение)}")
+    for кадр, тело in sorted(было.get("кадры", {}).items()):
+        if got["кадры"].get(кадр) != тело:
+            print(f"  @keyframes {кадр} {{ {тело} }}")
+    return 0
+
+
 def who(got: dict, marker: str) -> int:
     """`--кто`: маркер из скриншота или имя из описания → файл и строка."""
     for name, item in sorted(got["components"].items()):
@@ -211,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--зона", action="append", default=[], help="glob разрешённой зоны задачи")
     parser.add_argument("--кто", help="маркер или имя компонента → файл:строка")
     parser.add_argument("--bless", action="store_true", help="записать снимок формы")
+    parser.add_argument("--восстановить", help="компонент: печатает исчезнувшие объявления дословно")
     parser.add_argument("--совет", action="store_true", help="сценарии эксперта по роду улики")
     parser.add_argument("--улика", action="append", default=[], help="род улики (см. --совет без улик)")
     parser.add_argument("--файл", action="append", default=[], help="тронутый файл — род улики выводится сам")
@@ -248,6 +335,8 @@ def main(argv: list[str] | None = None) -> int:
         зоны += нашлось[0]["зона"]
         print(f"── задание {args.задача}: зона суда взята из объявления, а не из слов")
     got = surface.read(tree)
+    if args.восстановить:
+        return restore(got, tree, args.восстановить)
     if args.кто:
         return who(got, args.кто)
     if args.bless:

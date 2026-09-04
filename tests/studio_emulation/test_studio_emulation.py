@@ -103,11 +103,43 @@ def main() -> int:
        "объявленный токен без читателя — мёртвая половина декларации")
     форма = notes(advisor.styles, scene(("primitives/Card.tsx", "variant, title, children",
                                          "variant, title, children, density")))
-    ok(any("форма разошлась со снимком" in note and "Card" in note for note in форма),
+    ok(any("Card: props разошлось со снимком" in note for note in форма),
        "смена параметров компонента расходится со снимком формы")
     цвет = notes(advisor.styles, scene(("tokens.ts", 'ink: "#1a1a1a"', 'ink: "#333333"')))
-    ok(any("color.ink" in note for note in цвет),
+    ok(any("color.ink" in note and "#1a1a1a" in note and "#333333" in note for note in цвет),
        "подменённое ЗНАЧЕНИЕ токена видно, хотя читатели те же")
+
+    print("\n=== П8: стилизация и анимация не теряются, а возвращаются ДОСЛОВНО ===")
+    ok(not notes(advisor.motion, scene()), "чистая эмуляция: ни одно объявление стиля не потеряно")
+    стёрта = scene(("primitives/Card.tsx", '        animationName: "appear",\n', ""))
+    пропажа = notes(advisor.motion, стёрта)
+    ok(any('ИСЧЕЗЛО объявление animationName' in note and '"appear"' in note for note in пропажа),
+       "стёртая анимация названа дословно — тем, чем она была")
+    подмена = notes(advisor.motion, scene(("primitives/Card.tsx",
+                                           "animationDuration: tokens.duration.enter",
+                                           'animationDuration: "150ms"')))
+    ok(any("подменено animationDuration" in note and "160ms" in note and "150ms" in note
+           for note in подмена),
+       "похожая длительность не считается возвратом: названы и прежняя, и новая")
+    кадры = notes(advisor.motion, scene(("animations.ts", "opacity: 0;", "opacity: 0.5;")))
+    ok(any("кадры анимации `appear` подменены" in note and "opacity: 0;" in note for note in кадры),
+       "подменённые кадры печатаются целиком — вернуть можно, не читая историю git")
+    висит = notes(advisor.motion, scene(("app" if False else "primitives/Card.tsx",
+                                         'animationName: "appear"', 'animationName: "slide"')))
+    ok(any("зовёт кадры `slide`" in note for note in висит),
+       "анимация зовёт несуществующие кадры — она не проиграется, и это видно до запуска")
+    вся_анимация = scene(("primitives/Card.tsx", '        animationName: "appear",\n'
+                          '        animationDuration: tokens.duration.enter,\n', ""))
+    код, вывод = запуск(["--восстановить", "Card", "--дерево", str(вся_анимация)])
+    ok(код == 0 and 'animationName: "appear",' in вывод,
+       "`--восстановить` печатает исчезнувшее строкой, годной к вставке")
+    ok("animationDuration: tokens.duration.enter, (= 160ms)" in вывод,
+       "рядом со строкой стоит ЗНАЧЕНИЕ токена: возврат не требует ни бэкапа, ни истории")
+    код, вывод = запуск(["--восстановить", "Card", "--дерево", str(scene())])
+    ok(код == 0 and "восстанавливать нечего" in вывод,
+       "на чистом дереве восстановление честно говорит, что терять было нечего")
+    код, вывод = запуск(["--восстановить", "НетТакого"])
+    ok(код == 2, "восстановление несуществующего компонента — отказ, а не пустой ответ")
     без_снимка = notes(advisor.styles, scene(snapshot=False))
     ok(any("снимка формы нет" in note for note in без_снимка),
        "снимок снесён — судья говорит это вслух, а не засчитывает чистым")

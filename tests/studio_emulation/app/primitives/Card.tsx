@@ -18,6 +18,9 @@ export function Card({ variant, title, children }: {
         fontSize: tokens.font.body,
         color: tokens.color.ink,
         background: tokens.color.ground,
+        animationName: "appear",
+        animationDuration: tokens.duration.enter,
+        animationTimingFunction: "cubic-bezier(0.2, 0, 0, 1)",
       }}
     >
       <h2 style={{ fontSize: tokens.font.head, marginBottom: tokens.space.sm }}>{title}</h2>
