@@ -111,6 +111,13 @@ def main() -> int:
                                          "variant, title, children, density")))
     ok(any("Card: props разошлось со снимком" in note for note in форма),
        "смена параметров компонента расходится со снимком формы")
+    переехал = notes(advisor.styles, scene(("screens/NicheScreen.tsx",
+                                            "<Card key={niche.id} variant=\"niche\" title={niche.title}>\n"
+                                            "          <Button variant=\"primary\" label=\"Открыть\" onPress={() => onOpen(niche.id)} />\n"
+                                            "        </Card>",
+                                            "<Card key={niche.id} variant=\"niche\" title={niche.title} />")))
+    ok(any("оказался не там, где был" in note and "NicheScreen" in note for note in переехал),
+       "компонент переехал к другому родителю — видно до экрана, а не после")
     цвет = notes(advisor.styles, scene(("tokens.ts", 'ink: "#1a1a1a"', 'ink: "#333333"')))
     ok(any("color.ink" in note and "#1a1a1a" in note and "#333333" in note for note in цвет),
        "подменённое ЗНАЧЕНИЕ токена видно, хотя читатели те же")

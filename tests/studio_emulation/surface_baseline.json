@@ -7,6 +7,9 @@
       ],
       "props": [],
       "tokens": [],
+      "рисует": [
+        "NicheScreen"
+      ],
       "стиль": {}
     },
     "Button": {
@@ -29,6 +32,7 @@
         "space.sm",
         "space.xs"
       ],
+      "рисует": [],
       "стиль": {
         "background": "variant === \"primary\" ? tokens.color.accent : tokens.color.ground",
         "color": "variant === \"primary\" ? tokens.color.ground : tokens.color.ink",
@@ -59,6 +63,7 @@
         "space.md",
         "space.sm"
       ],
+      "рисует": [],
       "стиль": {
         "animationDuration": "tokens.duration.enter",
         "animationName": "\"appear\"",
@@ -83,6 +88,10 @@
       "tokens": [
         "color.ground",
         "space.lg"
+      ],
+      "рисует": [
+        "Button",
+        "Card"
       ],
       "стиль": {
         "background": "tokens.color.ground",

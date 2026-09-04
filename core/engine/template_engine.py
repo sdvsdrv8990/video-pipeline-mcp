@@ -150,7 +150,6 @@ class TemplateEngine:
         skipped: list[dict] = []
         tables_pending: list[dict] = []
 
-        # --- folders ---
         for fr in (body.get("folders") or []):
             fname = fr.get("name", "")
             if not fname:

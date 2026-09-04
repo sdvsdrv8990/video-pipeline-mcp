@@ -227,7 +227,7 @@ def surface_json(root: Path) -> str:
     got = read(root)
     shot = {name: {"file": item["file"], "markers": sorted(set(item["markers"])),
                    "props": sorted(item["props"]), "tokens": item["tokens"],
-                   "стиль": item["стиль"]}
+                   "рисует": item["tags"], "стиль": item["стиль"]}
             for name, item in sorted(got["components"].items())}
     return json.dumps({"tokens": got["tokens"], "components": shot, "кадры": got["кадры"]},
                       ensure_ascii=False, indent=2, sort_keys=True) + "\n"
