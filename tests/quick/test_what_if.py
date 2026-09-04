@@ -130,7 +130,10 @@ def main() -> int:
     guards = {p.name for p in (ROOT / "scripts" / "guards").glob("*.py") if not p.name.startswith("_")}
     ok(any("routes" in s for s in roster) and any("scenarios" in s for s in roster),
        "сравниваются и сценарии, и маршруты потоков данных")
-    ok(sum(s.startswith("tests/quick/") for s in roster) == len(guards) + 1,
+    # Дом сторожа не обязан лежать в `tests/quick/`: у эмуляции студии свой каталог, потому что
+    # предметом суда там служит дерево, а не единица кода.
+    дома = [s for s in roster if s not in what_if.BEHAVIOUR]
+    ok(len(дома) == len(guards) + 1,
        "каждый сторож представлен своим домом, и сверх них ровно один — дом хуков")
     ok("tests/quick/test_hooks.py" in roster,
        "машинерия сессии тоже сравнивается: сервер не импортирует ни сторожей, ни хуков, и без "

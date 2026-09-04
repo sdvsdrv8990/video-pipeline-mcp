@@ -1,0 +1,81 @@
+{
+  "components": {
+    "App": {
+      "file": "screens/App.tsx",
+      "markers": [
+        "App"
+      ],
+      "props": [],
+      "tokens": []
+    },
+    "Button": {
+      "file": "primitives/Button.tsx",
+      "markers": [
+        "Button"
+      ],
+      "props": [
+        "label",
+        "onPress",
+        "variant"
+      ],
+      "tokens": [
+        "color.accent",
+        "color.ground",
+        "color.ink",
+        "duration.enter",
+        "font.body",
+        "font.family",
+        "space.sm",
+        "space.xs"
+      ]
+    },
+    "Card": {
+      "file": "primitives/Card.tsx",
+      "markers": [
+        "Card"
+      ],
+      "props": [
+        "children",
+        "title",
+        "variant"
+      ],
+      "tokens": [
+        "color.ground",
+        "color.ink",
+        "font.body",
+        "font.family",
+        "font.head",
+        "radius.card",
+        "space.md",
+        "space.sm"
+      ]
+    },
+    "NicheScreen": {
+      "file": "screens/NicheScreen.tsx",
+      "markers": [
+        "NicheScreen"
+      ],
+      "props": [
+        "onOpen"
+      ],
+      "tokens": [
+        "color.ground",
+        "space.lg"
+      ]
+    }
+  },
+  "tokens": {
+    "color.accent": "#2f6fed",
+    "color.ground": "#ffffff",
+    "color.ink": "#1a1a1a",
+    "duration.enter": "160ms",
+    "font.body": "14px",
+    "font.family": "Inter, system-ui, sans-serif",
+    "font.head": "20px",
+    "radius.card": "12px",
+    "space.lg": "24px",
+    "space.md": "16px",
+    "space.sm": "8px",
+    "space.xs": "4px"
+  }
+}

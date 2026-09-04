@@ -1,0 +1,153 @@
+"""
+tests/studio_emulation/test_studio_emulation.py — приёмка правки ИИ по React на эмуляции студии.
+
+Standalone-прогон:  python tests/studio_emulation/test_studio_emulation.py
+Проверяет ОБЕ стороны каждого условия приёмки (`scripts/guards/quality_advisor.py`): проверка ловит
+своё нарушение на подставленной правке и молчит на чистом дереве. Предмет — эмуляция
+`app/`: студии на диске ещё нет, а правило без исполнителя не работает вовсе.
+"""
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from types import ModuleType
+
+ROOT = Path(__file__).resolve().parents[2]
+GUARDS = ROOT / "scripts" / "guards"
+APP = Path(__file__).resolve().parent / "app"
+sys.path.insert(0, str(GUARDS))
+sys.dont_write_bytecode = True
+
+
+def _load(path: Path, name: str):
+    """Компиляция ИЗ ИСХОДНИКА: кэш байткода признаёт свежим .pyc при том же размере и секунде."""
+    module = ModuleType(name)
+    module.__file__ = str(path)
+    exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), module.__dict__)
+    return module
+
+
+surface = _load(GUARDS / "_studio_surface.py", "_studio_surface")
+sys.modules["_studio_surface"] = surface
+advisor = _load(GUARDS / "quality_advisor.py", "quality_advisor")
+
+_checks = 0
+_fails = []
+
+
+def ok(cond, msg, detail=None):
+    """Метка проверки СТАБИЛЬНА: улика печатается отдельной строкой, иначе цикл сравнивает текст,
+    который меняется от прогона к прогону, и всякая правка выглядит появлением новой проверки."""
+    global _checks
+    _checks += 1
+    if not cond:
+        _fails.append(msg)
+    print(f"  {'✓' if cond else '✗'} {msg}")
+    if detail:
+        print(f"      · {detail}")
+
+
+def scene(*edits: tuple[str, str, str], snapshot: bool = True) -> Path:
+    """Копия эмуляции с подставленной правкой: (файл, было, стало). Живое дерево не трогаем."""
+    tmp = Path(tempfile.mkdtemp(prefix="vpm_studio_"))
+    tree = tmp / "app"
+    shutil.copytree(APP, tree)
+    for name, was, now in edits:
+        target = tree / name
+        text = target.read_text(encoding="utf-8")
+        if was and was not in text:
+            raise AssertionError(f"якорь правки не найден в {name}: {was!r}")
+        target.write_text(text.replace(was, now) if was else text + now, encoding="utf-8")
+    if snapshot:
+        # Снимок берётся с ЧИСТОГО дерева: правка обязана расходиться с принятой формой — ровно
+        # как у ИИ, который тронул стиль после того, как форму приняли.
+        (tmp / advisor.SNAPSHOT).write_text(surface.surface_json(APP), encoding="utf-8")
+    return tree
+
+
+def notes(check, tree: Path, **kw) -> list[str]:
+    return check(surface.read(tree), tree=tree, **kw)
+
+
+def main() -> int:
+    print("\n=== П1: ни один компонент не сломан ===")
+    ok(not notes(advisor.broken, scene()), "чистая эмуляция: ни одного сломанного компонента")
+    сломан = notes(advisor.broken, scene(("screens/NicheScreen.tsx",
+                                          'import { Card } from "../primitives/Card";\n', "")))
+    ok(len(сломан) == 1 and "<Card>" in сломан[0],
+       "снесённый импорт примитива назван поимённо", сломан)
+    переименован = notes(advisor.broken, scene(("primitives/Button.tsx", "export function Button",
+                                                "export function ActionButton")))
+    ok(any("Button" in note and "не экспортирует" in note for note in переименован),
+       "переименованный экспорт ловится у ИМПОРТЁРА, хотя строка импорта цела", переименован)
+
+    print("\n=== П2: стили, шрифты и отступы не сменены ===")
+    ok(not notes(advisor.styles, scene()), "чистая эмуляция: стиль весь из токенов, форма = снимку")
+    мимо = notes(advisor.styles, scene(("primitives/Card.tsx", "fontSize: tokens.font.body",
+                                        'fontSize: "13px"')))
+    ok(any('"13px"' in note and "мимо токена" in note for note in мимо),
+       "размер шрифта мимо токена назван файлом и строкой", мимо)
+    мёртвый = notes(advisor.styles, scene(("tokens.ts", 'lg: "24px"', 'lg: "24px", xl: "32px"')))
+    ok(any("space.xl" in note and "читателя нет" in note for note in мёртвый),
+       "объявленный токен без читателя — мёртвая половина декларации")
+    форма = notes(advisor.styles, scene(("primitives/Card.tsx", "variant, title, children",
+                                         "variant, title, children, density")))
+    ok(any("форма разошлась со снимком" in note and "Card" in note for note in форма),
+       "смена параметров компонента расходится со снимком формы")
+    цвет = notes(advisor.styles, scene(("tokens.ts", 'ink: "#1a1a1a"', 'ink: "#333333"')))
+    ok(any("color.ink" in note for note in цвет),
+       "подменённое ЗНАЧЕНИЕ токена видно, хотя читатели те же")
+    без_снимка = notes(advisor.styles, scene(snapshot=False))
+    ok(any("снимка формы нет" in note for note in без_снимка),
+       "снимок снесён — судья говорит это вслух, а не засчитывает чистым")
+
+    print("\n=== П3: не вышел за рамки задачи и не оставил мёртвого кода ===")
+    ok(not notes(advisor.dead, scene()), "чистая эмуляция: ни висячего компонента, ни мёртвого пропа")
+    висячий = notes(advisor.dead, scene(("primitives/Card.tsx", "", '''
+export function Ghost({ title }: { title: string }) {
+  return <div data-component="Ghost">{title}</div>;
+}
+''')))
+    ok(any("Ghost" in note and "не отрисован" in note for note in висячий),
+       "компонент, которого никто не рисует, назван мёртвым", висячий)
+    проп = notes(advisor.dead, scene(("primitives/Button.tsx", "variant, label, onPress",
+                                      "variant, label, onPress, tooltip")))
+    ok(any("Button.tooltip" in note for note in проп), "проп без читателя — мёртвая половина")
+
+    зона = Path(tempfile.mkdtemp(prefix="vpm_zone_"))
+    subprocess.run(["git", "init", "-q"], cwd=зона, check=True)
+    (зона / "app").mkdir()
+    (зона / "app" / "Card.tsx").write_text("in", encoding="utf-8")
+    (зона / "server.py").write_text("out", encoding="utf-8")
+    вне = advisor.scope({}, zones=("app/*",), root=зона)
+    ok(len(вне) == 1 and "server.py" in вне[0], "тронутое вне зоны задачи названо", вне)
+    ok(not advisor.scope({}, zones=("app/*", "server.py"), root=зона),
+       "объявленная задачей зона шире — обвинять не за что")
+    ok(not advisor.scope({}, zones=(), root=зона),
+       "зона не объявлена — судья молчит, а не выдумывает границу")
+
+    print("\n=== П4: понятно, с каким компонентом работать ===")
+    ok(not notes(advisor.addressable, scene()), "чистая эмуляция: каждый компонент адресуем маркером")
+    безымянный = notes(advisor.addressable, scene(("primitives/Button.tsx",
+                                                   'data-component="Button"\n      ', "")))
+    ok(any("Button" in note and "скриншоту" in note for note in безымянный),
+       "компонент без маркера: по скриншоту его не найти", безымянный)
+    двойной = notes(advisor.addressable, scene(("primitives/Button.tsx",
+                                                'data-component="Button"',
+                                                'data-component="Card"')))
+    ok(any("не определить" in note for note in двойной),
+       "один маркер на два файла — адресация перестала быть однозначной")
+
+    got = surface.read(APP)
+    ok(advisor.who(got, "Card") == 0, "`--кто Card` отвечает файлом и строкой")
+    ok(advisor.who(got, "Cardd") == 1, "неизвестный маркер — отказ, а не тихий ответ наугад")
+
+    print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")
+    for fail in _fails:
+        print(f"  ✗ {fail}")
+    return 1 if _fails else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

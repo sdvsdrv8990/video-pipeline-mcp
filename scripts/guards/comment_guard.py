@@ -244,10 +244,15 @@ def review(path: Path | str, text: str) -> list[str]:
     return notes
 
 
+# Цели замера объявлены ОДИН раз: копия списка в наборе слепла молча и разошлась с этим
+# перечнем — расхождение проявилось лишь тогда, когда в дереве появился первый `.tsx`.
+TARGET_GLOBS = ["*.py", "*.yaml", "*.yml", "*.toml", "*.sh", ".gitignore", ".env.example",
+                "*.ts", "*.tsx", "*.js", "*.jsx"]
+
+
 def _tracked() -> list[Path]:
     """Цели под контролем git: новый пакет и новая декларация попадают в замер сами."""
-    globs = ["*.py", "*.yaml", "*.yml", "*.toml", "*.sh", ".gitignore", ".env.example",
-             "*.ts", "*.tsx", "*.js", "*.jsx"]
+    globs = TARGET_GLOBS
     try:
         out = subprocess.run(["git", "-C", str(PROJECT), "ls-files", "-z", *globs],
                              capture_output=True, text=True, check=True).stdout
