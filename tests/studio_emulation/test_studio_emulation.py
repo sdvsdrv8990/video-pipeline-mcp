@@ -32,6 +32,8 @@ def _load(path: Path, name: str):
 
 surface = _load(GUARDS / "_studio_surface.py", "_studio_surface")
 sys.modules["_studio_surface"] = surface
+общее = _load(GUARDS / "_acceptance.py", "_acceptance")
+sys.modules["_acceptance"] = общее
 advisor = _load(GUARDS / "acceptance_studio.py", "acceptance_studio")
 
 _checks = 0
@@ -67,7 +69,7 @@ def scene(*edits: tuple[str, str, str], snapshot: bool = True) -> Path:
         (tmp / advisor.SNAPSHOT).write_text(surface.surface_json(APP), encoding="utf-8")
     # Объявления живут РЯДОМ с деревом и едут вместе с копией — иначе сцена судится без структуры
     # и без заданий, то есть проверка молчит по причине, которой в правке нет.
-    for рядом in (advisor.STRUCTURE, advisor.TASKS):
+    for рядом in (advisor.STRUCTURE, общее.TASKS):
         shutil.copy(APP.parent / рядом, tmp / рядом)
     return tree
 
@@ -194,11 +196,11 @@ export function Ghost({ title }: { title: string }) {
     (зона / "app").mkdir()
     (зона / "app" / "Card.tsx").write_text("in", encoding="utf-8")
     (зона / "server.py").write_text("out", encoding="utf-8")
-    вне = advisor.scope({}, zones=("app/*",), root=зона)
+    вне = общее.outside(("app/*",), root=зона)
     ok(len(вне) == 1 and "server.py" in вне[0], "тронутое вне зоны задачи названо", вне)
-    ok(not advisor.scope({}, zones=("app/*", "server.py"), root=зона),
+    ok(not общее.outside(("app/*", "server.py"), root=зона),
        "объявленная задачей зона шире — обвинять не за что")
-    ok(not advisor.scope({}, zones=(), root=зона),
+    ok(not общее.outside((), root=зона),
        "зона не объявлена — судья молчит, а не выдумывает границу")
 
     print("\n=== П4: понятно, с каким компонентом работать ===")
@@ -218,10 +220,10 @@ export function Ghost({ title }: { title: string }) {
     ok(advisor.who(got, "Cardd") == 1, "неизвестный маркер — отказ, а не тихий ответ наугад")
 
     print("\n=== эксперт: сценарии выбираются по роду улики ===")
-    config = advisor.scenarios()
-    ok(advisor.rods_of(["app/tokens.ts"], config) == ["правка-токенов"],
+    config = общее.scenarios()
+    ok(общее.rods_of(["app/tokens.ts"], config) == ["правка-токенов"],
        "род улики выведен из тронутого файла, а не спрошен у правщика")
-    ok(advisor.rods_of(["app/primitives/Card.tsx"], config) == ["правка-компонента"],
+    ok(общее.rods_of(["app/primitives/Card.tsx"], config) == ["правка-компонента"],
        "компонент и объявление стиля — разные роды улики, и совет к ним разный")
     код, вывод = запуск(["--совет", "--файл", "app/tokens.ts"])
     ok(код == 0 and "размер-или-шрифт-мимо-токена" in вывод,
@@ -231,11 +233,14 @@ export function Ghost({ title }: { title: string }) {
     код, вывод = запуск(["--совет", "--улика", "выдуманный-род"])
     ok(код == 2, "род улики вне объявления — отказ, а не молчаливый пустой совет")
     код, вывод = запуск(["--совет"])
-    ok(код == 0 and вывод.count("▸") == len(config["сценарии"]),
-       "без улики показаны ВСЕ сценарии — это штурм идей, а не отказ")
+    студийные = [s for s in config["сценарии"] if s.get("дерево", "студия") == "студия"]
+    ok(код == 0 and вывод.count("▸") == len(студийные),
+       "без улики показаны все сценарии СВОЕГО дерева — это штурм идей, а не отказ")
+    ok(вывод.count("▸") < len(config["сценарии"]),
+       "сценарии сервера в совет по студии не подмешиваются: дерево — часть выбора")
 
     print("\n=== эксперт: задания стенда ===")
-    задания = advisor.tasks(APP)["задания"]
+    задания = общее.tasks(APP.parent)["задания"]
     ok(len(задания) >= 6 and all(z["зона"] and z["приёмка"] for z in задания),
        "у каждого задания стенда объявлена зона и приёмка")
     код, вывод = запуск(["--задания"])

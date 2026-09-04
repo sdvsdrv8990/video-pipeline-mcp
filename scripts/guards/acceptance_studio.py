@@ -17,7 +17,6 @@
 import argparse
 import fnmatch
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -25,14 +24,13 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import _acceptance as общее                                                # noqa: E402
 import _studio_surface as surface                                          # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 TREE = ROOT / "tests" / "studio_emulation" / "app"
 SNAPSHOT = "surface_baseline.json"
 STRUCTURE = "structure.yaml"
-SCENARIOS = Path(__file__).resolve().parent / "acceptance_scenarios.yaml"
-TASKS = "tasks.yaml"
 ROOTS = ("App",)          # компоненты, которых законно не рисует никто: вершина дерева отрисовки
 
 
@@ -218,19 +216,6 @@ def naming(got: dict, tree: Path = TREE, **_) -> list[str]:
     return notes
 
 
-def scope(got: dict, tree: Path = TREE, zones: tuple[str, ...] = (), root: Path = ROOT,
-          **_) -> list[str]:
-    """П3а: тронутое вне объявленной зоны задачи. Зона не объявлена — судить нечем."""
-    if not zones:
-        return []
-    done = subprocess.run(["git", "status", "--porcelain"], cwd=root,
-                          capture_output=True, text=True)
-    touched = [line[3:].strip().split(" -> ")[-1] for line in done.stdout.splitlines() if line[3:]]
-    return [f"{path} — тронуто вне зоны задачи {list(zones)}: правка вышла за рамки поставленного"
-            for path in touched
-            if not any(fnmatch.fnmatch(path, zone) for zone in zones)]
-
-
 def dead(got: dict, **_) -> list[str]:
     """П3б: компонент, которого никто не рисует, и проп, которого никто не читает."""
     drawn = {tag for item in got["components"].values() for tag in item["tags"]}
@@ -265,53 +250,10 @@ CHECKS = (("П1 компонент сломан", broken),
           ("П8 стиль и анимация потеряны", motion),
           ("П5/П6 зона файла и структура дерева", place),
           ("П7 имена говорят сами за себя", naming),
-          ("П3а вышел за рамки задачи", scope),
+          ("П3а вышел за рамки задачи", общее.outside),
           ("П3б мёртвый код", dead),
           ("П4 адресация компонента", addressable))
 
-
-def scenarios(path: Path = SCENARIOS) -> dict:
-    if not path.exists():
-        sys.exit(f"acceptance_studio: нет объявления сценариев {path} — советовать не из чего")
-    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-
-
-def tasks(tree: Path) -> dict:
-    """Задания стенда лежат рядом с деревом — копия дерева увозит их с собой."""
-    path = tree.parent / TASKS
-    return (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
-
-
-def rods_of(files: list[str], config: dict) -> list[str]:
-    """Род улики выводится из тронутых файлов: спрашивать его у ИИ значило бы верить ему на слово."""
-    out = []
-    for name, item in config.get("роды", {}).items():
-        globs = item.get("когда") or []
-        if any(fnmatch.fnmatch(name_of, glob)
-               for name_of in [*files, *(Path(f).name for f in files)] for glob in globs):
-            out.append(name)
-    return out
-
-
-def advise(config: dict, rods: list[str]) -> int:
-    """Совет эксперта: что здесь ломается, почему и ЧЕМ это доказать. Вердикта не выносит."""
-    выбранные = [s for s in config.get("сценарии", [])
-                 if not rods or set(s.get("улики", [])) & set(rods)]
-    print(f"── улика: {', '.join(rods) if rods else 'не названа — показаны все сценарии'}; "
-          f"сценариев: {len(выбранные)}")
-    for item in выбранные:
-        print(f"\n▸ {item['имя']}  [{item['состояние']}]")
-        print(f"  больно:    {item['больно']}")
-        print(f"  ломается:  {item['ломается']}")
-        print(f"  доказать:  {item['доказать']}")
-        если = item.get("исполнитель")
-        print(f"  ловит:     {если['набор']} :: {если['метка']}" if если
-              else f"  судимым станет: {item['станет-судимым']}")
-        print(f"  журнал:    {item['журнал']}")
-    if not выбранные:
-        print("  сценария на эту улику нет — это находка, а не тишина: заведи его в "
-              "scripts/guards/acceptance_scenarios.yaml")
-    return 0
 
 
 def restore(got: dict, tree: Path, имя: str) -> int:
@@ -368,20 +310,20 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.совет:
-        config = scenarios()
-        роды = list(dict.fromkeys(args.улика + rods_of(args.файл, config)))
+        config = общее.scenarios()
+        роды = list(dict.fromkeys(args.улика + общее.rods_of(args.файл, config)))
         неизвестные = [r for r in роды if r not in config.get("роды", {})]
         if неизвестные:
             print(f"acceptance_studio: род улики не объявлен: {неизвестные}; известны "
                   f"{sorted(config.get('роды', {}))}", file=sys.stderr)
             return 2
-        return advise(config, роды)
+        return общее.advise(config, роды, "студия")
 
     tree = args.дерево
     if not tree.is_dir():
         print(f"acceptance_studio: дерева студии нет: {tree}", file=sys.stderr)
         return 2
-    задания = tasks(tree)
+    задания = общее.tasks(tree.parent)
     if args.задания:
         for item in задания.get("задания", []):
             print(f"▸ {item['id']}  (приёмка {' '.join(item['приёмка'])})\n  {item['что']}\n"
@@ -389,12 +331,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     зоны = list(args.зона)
     if args.задача:
-        нашлось = [i for i in задания.get("задания", []) if i["id"] == args.задача]
-        if not нашлось:
-            print(f"acceptance_studio: задания {args.задача!r} нет в {tree.parent / TASKS}",
+        нашлось = общее.zones_of(задания, args.задача)
+        if нашлось is None:
+            print(f"acceptance_studio: задания {args.задача!r} нет в {tree.parent / общее.TASKS}",
                   file=sys.stderr)
             return 2
-        зоны += нашлось[0]["зона"]
+        зоны += нашлось
         print(f"── задание {args.задача}: зона суда взята из объявления, а не из слов")
     got = surface.read(tree)
     if args.восстановить:
@@ -412,9 +354,10 @@ def main(argv: list[str] | None = None) -> int:
         print("── П3а вышел за рамки задачи: зона не объявлена (--зона/--задача), критерий не судится")
     failed = False
     for title, check in CHECKS:
-        if check is scope and not зоны:
+        if check is общее.outside and not зоны:
             continue
-        notes = check(got, tree=tree, zones=tuple(зоны))
+        notes = (общее.outside(tuple(зоны)) if check is общее.outside
+                 else check(got, tree=tree))
         print(f"── {title}: {'чисто' if not notes else str(len(notes)) + ' шт.'}")
         for note in notes:
             print(f"   ✗ {note}")
