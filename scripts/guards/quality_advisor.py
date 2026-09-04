@@ -9,6 +9,10 @@
 
 Дерево по умолчанию — эмуляция (`tests/studio_emulation/app`), потому что студии на диске ещё нет.
 Чужое дерево (копию стенда) судит `--дерево`: снимок формы лежит рядом с деревом и едет с копией.
+
+Вторая половина работы — совет: `--совет` выбирает сценарии по РОДУ УЛИКИ и говорит, что здесь
+ломается, почему и чем это доказать. Сценарии объявлены в `quality_scenarios.yaml`, задания стенда
+— в `tasks.yaml` рядом с деревом.
 """
 import argparse
 import fnmatch
@@ -17,6 +21,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import _studio_surface as surface                                          # noqa: E402
@@ -24,6 +30,8 @@ import _studio_surface as surface                                          # noq
 ROOT = Path(__file__).resolve().parents[2]
 TREE = ROOT / "tests" / "studio_emulation" / "app"
 SNAPSHOT = "surface_baseline.json"
+SCENARIOS = Path(__file__).resolve().parent / "quality_scenarios.yaml"
+TASKS = "tasks.yaml"
 ROOTS = ("App",)          # компоненты, которых законно не рисует никто: вершина дерева отрисовки
 
 
@@ -138,6 +146,50 @@ CHECKS = (("П1 компонент сломан", broken),
           ("П4 адресация компонента", addressable))
 
 
+def scenarios(path: Path = SCENARIOS) -> dict:
+    if not path.exists():
+        sys.exit(f"quality_advisor: нет объявления сценариев {path} — советовать не из чего")
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def tasks(tree: Path) -> dict:
+    """Задания стенда лежат рядом с деревом — копия дерева увозит их с собой."""
+    path = tree.parent / TASKS
+    return (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
+
+
+def rods_of(files: list[str], config: dict) -> list[str]:
+    """Род улики выводится из тронутых файлов: спрашивать его у ИИ значило бы верить ему на слово."""
+    out = []
+    for name, item in config.get("роды", {}).items():
+        globs = item.get("когда") or []
+        if any(fnmatch.fnmatch(name_of, glob)
+               for name_of in [*files, *(Path(f).name for f in files)] for glob in globs):
+            out.append(name)
+    return out
+
+
+def advise(config: dict, rods: list[str]) -> int:
+    """Совет эксперта: что здесь ломается, почему и ЧЕМ это доказать. Вердикта не выносит."""
+    выбранные = [s for s in config.get("сценарии", [])
+                 if not rods or set(s.get("улики", [])) & set(rods)]
+    print(f"── улика: {', '.join(rods) if rods else 'не названа — показаны все сценарии'}; "
+          f"сценариев: {len(выбранные)}")
+    for item in выбранные:
+        print(f"\n▸ {item['имя']}  [{item['состояние']}]")
+        print(f"  больно:    {item['больно']}")
+        print(f"  ломается:  {item['ломается']}")
+        print(f"  доказать:  {item['доказать']}")
+        если = item.get("исполнитель")
+        print(f"  ловит:     {если['набор']} :: {если['метка']}" if если
+              else f"  судимым станет: {item['станет-судимым']}")
+        print(f"  журнал:    {item['журнал']}")
+    if not выбранные:
+        print("  сценария на эту улику нет — это находка, а не тишина: заведи его в "
+              "scripts/guards/quality_scenarios.yaml")
+    return 0
+
+
 def who(got: dict, marker: str) -> int:
     """`--кто`: маркер из скриншота или имя из описания → файл и строка."""
     for name, item in sorted(got["components"].items()):
@@ -159,12 +211,42 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--зона", action="append", default=[], help="glob разрешённой зоны задачи")
     parser.add_argument("--кто", help="маркер или имя компонента → файл:строка")
     parser.add_argument("--bless", action="store_true", help="записать снимок формы")
+    parser.add_argument("--совет", action="store_true", help="сценарии эксперта по роду улики")
+    parser.add_argument("--улика", action="append", default=[], help="род улики (см. --совет без улик)")
+    parser.add_argument("--файл", action="append", default=[], help="тронутый файл — род улики выводится сам")
+    parser.add_argument("--задания", action="store_true", help="спектр заданий стенда")
+    parser.add_argument("--задача", help="id задания: его зона становится границей суда")
     args = parser.parse_args(argv)
+
+    if args.совет:
+        config = scenarios()
+        роды = list(dict.fromkeys(args.улика + rods_of(args.файл, config)))
+        неизвестные = [r for r in роды if r not in config.get("роды", {})]
+        if неизвестные:
+            print(f"quality_advisor: род улики не объявлен: {неизвестные}; известны "
+                  f"{sorted(config.get('роды', {}))}", file=sys.stderr)
+            return 2
+        return advise(config, роды)
 
     tree = args.дерево
     if not tree.is_dir():
         print(f"quality_advisor: дерева студии нет: {tree}", file=sys.stderr)
         return 2
+    задания = tasks(tree)
+    if args.задания:
+        for item in задания.get("задания", []):
+            print(f"▸ {item['id']}  (приёмка {' '.join(item['приёмка'])})\n  {item['что']}\n"
+                  f"  зона: {' '.join(item['зона'])}")
+        return 0
+    зоны = list(args.зона)
+    if args.задача:
+        нашлось = [i for i in задания.get("задания", []) if i["id"] == args.задача]
+        if not нашлось:
+            print(f"quality_advisor: задания {args.задача!r} нет в {tree.parent / TASKS}",
+                  file=sys.stderr)
+            return 2
+        зоны += нашлось[0]["зона"]
+        print(f"── задание {args.задача}: зона суда взята из объявления, а не из слов")
     got = surface.read(tree)
     if args.кто:
         return who(got, args.кто)
@@ -175,13 +257,13 @@ def main(argv: list[str] | None = None) -> int:
     if not args.суд:
         parser.print_help()
         return 2
-    if not args.зона:
-        print("── П3а вышел за рамки задачи: зона не объявлена (--зона), критерий не судится")
+    if not зоны:
+        print("── П3а вышел за рамки задачи: зона не объявлена (--зона/--задача), критерий не судится")
     failed = False
     for title, check in CHECKS:
-        if check is scope and not args.зона:
+        if check is scope and not зоны:
             continue
-        notes = check(got, tree=tree, zones=tuple(args.зона))
+        notes = check(got, tree=tree, zones=tuple(зоны))
         print(f"── {title}: {'чисто' if not notes else str(len(notes)) + ' шт.'}")
         for note in notes:
             print(f"   ✗ {note}")

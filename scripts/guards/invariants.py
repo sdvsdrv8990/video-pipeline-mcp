@@ -28,6 +28,7 @@ from findings_count import scan as scan_registry  # noqa: E402  разбор р�
 
 BASELINE = Path(__file__).with_name("invariants_baseline.txt")
 LESSON_BASELINE = Path(__file__).with_name("lesson_debt_baseline.txt")
+EXPERT_BASELINE = Path(__file__).with_name("expert_advice_baseline.txt")
 EVIDENCE_BASELINE = Path(__file__).with_name("lesson_evidence_baseline.txt")
 DISPATCH_BASELINE = Path(__file__).with_name("dispatch_baseline.txt")
 UNSCRIPTED_BASELINE = Path(__file__).with_name("unscripted_baseline.txt")
@@ -1868,6 +1869,73 @@ def zone_declared_twice(root: Path = ROOT) -> list[str]:
     return notes
 
 
+def _expert(root: Path) -> dict:
+    путь = _at(root, ("scripts", "guards", "quality_scenarios.yaml"))
+    if not путь.exists():
+        return {}
+    try:
+        return yaml.safe_load(путь.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as beda:
+        return {"__битый__": str(beda)}
+
+
+def expert_calls_missing(root: Path = ROOT) -> list[str]:
+    """Сценарий эксперта качества обязан звать существующее — исполнителя, род улики, журнал.
+
+    Названный, но несуществующий исполнитель ХУЖЕ отсутствующего: сценарий выглядит покрытым.
+    Судится только пара «названо ↔ существует»; долг «исполнителя нет вовсе» считает храповик
+    рядом, а зона задания сверяется с деревом, потому что стенд ведёт суд именно по ней.
+    """
+    config = _expert(root)
+    if not config:
+        return []
+    if "__битый__" in config:
+        return [f"scripts/guards/quality_scenarios.yaml не разбирается ({config['__битый__'][:80]}) — "
+                f"эксперт молчит, и это не отличить от «сценариев нет»"]
+    роды, notes = set(config.get("роды", {})), []
+    тексты = _suite_text(root)
+    for сценарий in config.get("сценарии", []):
+        имя = сценарий.get("имя", "?")
+        for род in сценарий.get("улики", []):
+            if род not in роды:
+                notes.append(f"quality_scenarios.yaml: сценарий «{имя}» зовёт род улики «{род}», "
+                             f"которого нет в объявлении — по этой улике он не включится никогда")
+        журнал = сценарий.get("журнал", "")
+        if журнал and not _at(root, tuple(журнал.split("/"))).exists():
+            notes.append(f"quality_scenarios.yaml: сценарий «{имя}» ссылается на {журнал}, "
+                         f"которого нет — совет опирается на запись, которой не существует")
+        исполнитель = сценарий.get("исполнитель")
+        if сценарий.get("состояние") == "судится" and not исполнитель:
+            notes.append(f"quality_scenarios.yaml: сценарий «{имя}» объявлен судимым без "
+                         f"исполнителя — «судится» держится словом")
+        if сценарий.get("состояние") == "совет" and not сценарий.get("станет-судимым"):
+            notes.append(f"quality_scenarios.yaml: сценарий «{имя}» советует, но не говорит, чем "
+                         f"станет судимым — долг без выхода")
+        if not исполнитель:
+            continue
+        набор = _at(root, tuple(исполнитель.get("набор", "").split("/")))
+        if not набор.exists():
+            notes.append(f"quality_scenarios.yaml: сценарий «{имя}» зовёт набор "
+                         f"{исполнитель.get('набор')}, которого нет в дереве")
+        elif исполнитель.get("метка", "") not in тексты:
+            notes.append(f"quality_scenarios.yaml: сценарий «{имя}» зовёт проверку "
+                         f"«{исполнитель.get('метка', '')[:45]}», которой нет ни в одном наборе")
+    задания = _at(root, ("tests", "studio_emulation", "tasks.yaml"))
+    if задания.exists():
+        for задание in (yaml.safe_load(задания.read_text(encoding="utf-8")) or {}).get("задания", []):
+            for зона in задание.get("зона", []):
+                if not _at(root, tuple(зона.split("/"))).exists():
+                    notes.append(f"tasks.yaml: задание «{задание.get('id')}» объявляет зоной {зона}, "
+                                 f"которой нет — суд по границам задачи станет пустым")
+    return notes
+
+
+def expert_advice_only(root: Path = ROOT) -> list[str]:
+    """Долг эксперта: сценарий, который советует, но никем не судится."""
+    return [f"quality_scenarios.yaml: «{s.get('имя')}» пока только советует — судить его некому"
+            for s in _expert(root).get("сценарии", []) if s.get("состояние") == "совет"]
+
+
 def guard_without_home(root: Path = ROOT) -> list[str]:
     """Сторож, которого не судит ни один набор: его правку цикл сравнить не может.
 
@@ -1941,7 +2009,8 @@ HARD = (("одну зону объявили два хозяина", zone_declar
         ("скил без объявленной зоны", skill_without_zone),
         ("урок зовёт несуществующего исполнителя", lesson_without_executor),
         ("объявление наблюдения неполно", observation_incomplete),
-        ("факт эмитится, а решения о наблюдении нет", facts_without_observer))
+        ("факт эмитится, а решения о наблюдении нет", facts_without_observer),
+        ("сценарий эксперта зовёт несуществующее", expert_calls_missing))
 
 # Храповик: вниз можно, вверх нет. Потолок — в файле рядом, совет — как долг закрывается.
 
@@ -2012,6 +2081,9 @@ RATCHETS = (
     ("урок без ключа улики", lesson_without_evidence, EVIDENCE_BASELINE,
      "Урок не ведёт в прогон, где родился: подпиши наблюдение (`_stamp.py`) и поставь ключ "
      "меткой ⟨улика: ⟦vpm КЛЮЧ⟧⟩ — или объясни в ревью, почему улики быть не может (--bless)"),
+    ("сценарий эксперта без исполнителя", expert_advice_only, EXPERT_BASELINE,
+     "Сценарий советует, но не судится: заведи исполнителя (набор + метку проверки) "
+     "или объясни в ревью, почему судить его сегодня нечем — --bless"),
     ("урок без механизма", lesson_without_mechanism, LESSON_BASELINE,
      "Урок держится словами: заведи ось/проверку/сценарий, который ловит повтор — "
      "или объясни в ревью, почему механизма быть не может (--bless)"),

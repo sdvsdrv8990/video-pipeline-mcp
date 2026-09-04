@@ -125,6 +125,15 @@ def main() -> int:
     ok("НОВОГО ПРОГОНА НЕ БЫЛО" in вывод.getvalue(),
        "перестроенный отчёт говорит, что измерения не было — иначе он выдаёт себя за прогон")
 
+    print("§4а усечённая карта не выдаётся за полную")
+    упал = subprocess.CompletedProcess([], 1, stdout="  ✓ первая\n",
+                                       stderr="Traceback (most recent call last):\n"
+                                              "IndexError: list index out of range\n")
+    ok((обрыв := what_if.truncated(упал)) and "IndexError" in обрыв,
+       "набор, умерший трейсом, назван вместе с причиной: остальные его проверки не «исчезли»")
+    ok(what_if.truncated(subprocess.CompletedProcess([], 1, stdout="  ✗ вторая\n", stderr="")) is None,
+       "честный красный набор трейса не печатает — обвинять его не в чем")
+
     print("§5 три карты объявлены источником вердиктов")
     roster = what_if.suites(ROOT)
     guards = {p.name for p in (ROOT / "scripts" / "guards").glob("*.py") if not p.name.startswith("_")}

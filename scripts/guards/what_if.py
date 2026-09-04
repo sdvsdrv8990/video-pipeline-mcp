@@ -82,6 +82,13 @@ def verdicts(cwd: Path) -> dict[str, bool]:
             continue
         done = subprocess.run([sys.executable, suite], cwd=cwd, capture_output=True,
                               text=True, timeout=3600)
+        if (обрыв := truncated(done)):
+            # Набор, умерший на середине, отдаёт ЧАСТЬ проверок, и остальные выглядят
+            # несуществующими: упади он в одном дереве из двух — они прочитались бы как
+            # «появились». Молчать об этом нельзя, а отказывать — нельзя тоже: на боевом дереве
+            # такой набор бывает, и цикл нужен именно тогда.
+            print(f"  ⚠ {suite} в {cwd.name}: {обрыв} — карта усечена, сравнение по этому набору "
+                  f"неполно")
         rows = [found for row in done.stdout.splitlines() if (found := LINE.match(row))]
         if not rows:
             sys.exit(f"{suite} в {cwd} не дал ни одной проверки:\n"
@@ -95,6 +102,15 @@ def verdicts(cwd: Path) -> dict[str, bool]:
     if not out:
         sys.exit(f"Прогон в {cwd} не дал ни одной проверки — сравнивать нечего")
     return out
+
+
+def truncated(done: subprocess.CompletedProcess) -> str | None:
+    """Набор упал трейсом, а не отчитался о провале. Разница видна только в stderr — оба выходят
+    кодом 1, и по коду возврата усечённая карта неотличима от честного красного."""
+    if "Traceback (most recent call last)" not in (done.stderr or ""):
+        return None
+    последняя = [row for row in done.stderr.strip().splitlines() if row.strip()][-1]
+    return f"упал трейсом ({последняя.strip()[:80]})"
 
 
 def load_intent(path: Path) -> dict:
