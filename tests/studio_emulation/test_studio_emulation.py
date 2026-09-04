@@ -65,6 +65,10 @@ def scene(*edits: tuple[str, str, str], snapshot: bool = True) -> Path:
         # Снимок берётся с ЧИСТОГО дерева: правка обязана расходиться с принятой формой — ровно
         # как у ИИ, который тронул стиль после того, как форму приняли.
         (tmp / advisor.SNAPSHOT).write_text(surface.surface_json(APP), encoding="utf-8")
+    # Объявления живут РЯДОМ с деревом и едут вместе с копией — иначе сцена судится без структуры
+    # и без заданий, то есть проверка молчит по причине, которой в правке нет.
+    for рядом in (advisor.STRUCTURE, advisor.TASKS):
+        shutil.copy(APP.parent / рядом, tmp / рядом)
     return tree
 
 
@@ -143,6 +147,34 @@ def main() -> int:
     без_снимка = notes(advisor.styles, scene(snapshot=False))
     ok(any("снимка формы нет" in note for note in без_снимка),
        "снимок снесён — судья говорит это вслух, а не засчитывает чистым")
+
+    print("\n=== П5/П6: зона ответственности файла и структура дерева ===")
+    ok(not notes(advisor.place, scene()), "чистая эмуляция: каждый файл в своём каталоге и по делу")
+    сеть = notes(advisor.place, scene(("primitives/Card.tsx", "import { tokens }",
+                                       "const ответ = fetch('/mcp');\nimport { tokens }")))
+    ok(any("сетевой-вызов" in note and "подвернувшийся файл" in note for note in сеть),
+       "сетевой вызов в примитиве: код лёг в подвернувшийся файл, а не в дверь наружу")
+    дерево = scene()
+    (дерево / "склад").mkdir()
+    (дерево / "склад" / "Быстро.tsx").write_text(
+        'export function Быстро() { return <div data-component="Быстро" />; }\n', encoding="utf-8")
+    ok(any("в структуре не объявлен" in note for note in notes(advisor.place, дерево)),
+       "файл в необъявленном каталоге: дерево нарушено, и это видно до ревью")
+
+    print("\n=== П7: имена говорят сами за себя ===")
+    ok(not notes(advisor.naming, scene()), "чистая эмуляция: имена файлов, экспортов и пропсов честны")
+    переименован = scene(("primitives/Card.tsx", "export function Card", "export function Плитка"))
+    ok(any("а называется иначе" in note for note in notes(advisor.naming, переименован)),
+       "файл отдаёт не то, чем назван — по имени файла компонент не найти")
+    свалка = scene()
+    (свалка / "mcp" / "utils.ts").write_text("export const данные = 1;\n", encoding="utf-8")
+    ok(any("не говорит ни о чём" in note and "utils" in note
+           for note in notes(advisor.naming, свалка)),
+       "файл `utils` — имя ни о чём: словарь пустых имён объявлен, а не выдуман на месте")
+    алиас = scene(("screens/NicheScreen.tsx", 'import { Card } from "../primitives/Card";',
+                   'import { Card as C } from "../primitives/Card";'))
+    ok(any("стёрто на входе" in note for note in notes(advisor.naming, алиас)),
+       "алиас стирает имя компонента на входе — по разметке его больше не найти")
 
     print("\n=== П3: не вышел за рамки задачи и не оставил мёртвого кода ===")
     ok(not notes(advisor.dead, scene()), "чистая эмуляция: ни висячего компонента, ни мёртвого пропа")

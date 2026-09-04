@@ -24,22 +24,24 @@ STYLE_PROPS = ("padding", "margin", "gap", "font", "fontSize", "fontFamily", "fo
                "lineHeight", "letterSpacing", "boxShadow")
 STYLE_LITERAL = re.compile(
     r"\b(" + "|".join(STYLE_PROPS) + r")\s*:\s*(?P<quote>[\"'`])(?P<value>[^\"'`]*)(?P=quote)")
-COMPONENT = re.compile(r"^export\s+(?:default\s+)?(?:function\s+(?P<fn>[A-Z]\w*)|"
-                       r"const\s+(?P<const>[A-Z]\w*)\s*[:=])", re.M)
+COMPONENT = re.compile(r"^export\s+(?:default\s+)?(?:function\s+(?P<fn>[A-ZА-ЯЁ]\w*)|"
+                       r"const\s+(?P<const>[A-ZА-ЯЁ]\w*)\s*[:=])", re.M)
 MARKER = re.compile(r'data-component=(?:"([^"]+)"|\{`([^`]+)`\})')
 IMPORT_NAMES = re.compile(r"import\s+(?:type\s+)?\{([^}]*)\}\s+from\s+[\"']([^\"']+)[\"']")
 IMPORT_DEFAULT = re.compile(r"import\s+(?:type\s+)?([A-Za-z_]\w*)\s*(?:,|\s+from)")
 # Тег, а не дженерик: `useState<Niche[]>` — то же начало, но прилеплено к имени, а после
 # имени у дженерика идёт `[`/`>`, а у тега — пробел, `/` или `>` после атрибутов.
-JSX_TAG = re.compile(r"(?<![\w\]])<([A-Z]\w*)(?=[\s/>])")
+JSX_TAG = re.compile(r"(?<![\w\]])<([A-ZА-ЯЁ]\w*)(?=[\s/>])")
 TOKEN_USE = re.compile(r"\btokens\.([\w.]+)")
 EXPORTED = re.compile(r"^export\s+(?:default\s+)?(?:async\s+)?"
                       r"(?:function|const|let|var|type|interface|class|enum)\s+(\w+)", re.M)
-PROPS = re.compile(r"^export\s+(?:default\s+)?(?:function\s+[A-Z]\w*|const\s+[A-Z]\w*\s*[:=][^(]*)"
+PROPS = re.compile(r"^export\s+(?:default\s+)?(?:function\s+[A-ZА-ЯЁ]\w*|const\s+[A-ZА-ЯЁ]\w*\s*[:=][^(]*)"
                    r"\s*\(\s*\{(?P<props>[^}]*)\}", re.M)
 INTERPOLATION = re.compile(r"\$\{[^}]*\}")
 CODE_SUFFIX = (".tsx", ".jsx", ".ts", ".js")
 STYLE_OPEN = re.compile(r"style=\{\{")
+NETWORK = re.compile(r"\b(fetch|XMLHttpRequest|EventSource|axios)\s*[(.]")
+ALIAS = re.compile(r"\b([A-Za-z_]\w*)\s+as\s+([A-Za-z_]\w*)")
 KEYFRAMES = re.compile(r"@keyframes\s+(\w+)\s*\{")
 # Свойства, потеря которых и есть «стёртая анимация»: их значения снимок хранит дословно.
 MOTION = ("transition", "transitionDuration", "transitionTimingFunction", "transitionProperty",
@@ -129,6 +131,27 @@ def _props_of(text: str) -> list[str]:
             for name in found.group("props").split(",") if name.strip()]
 
 
+def kinds_of(text: str) -> list[str]:
+    """Роды, определённые в файле. Зона ответственности судится по ним, а не по имени файла."""
+    роды = set()
+    # Разметка узнаётся по ЛЮБОМУ тегу, а не только по компонентному: примитив рисует `<section>`
+    # и `<button>`, и требование заглавного тега объявляло бы его не компонентом.
+    if COMPONENT.search(text) and re.search(r"<[A-Za-z]", text):
+        роды.add("компонент")
+    if NETWORK.search(text):
+        роды.add("сетевой-вызов")
+    for объявлено in re.finditer(r"^export\s+(?:default\s+)?(?:async\s+)?(\w+)\s+(\w+)", text,
+                                 re.M):
+        вид, имя = объявлено.group(1), объявлено.group(2)
+        if вид in ("type", "interface", "enum"):
+            роды.add("тип")
+        elif вид == "function" and not имя[:1].isupper():
+            роды.add("функция")
+        elif вид in ("const", "let", "var") and not имя[:1].isupper():
+            роды.add("объявление")
+    return sorted(роды)
+
+
 def read(root: Path) -> dict:
     """Поверхность дерева `root`: компоненты, токены, чтение токенов, теги, пропсы, литералы."""
     files = sorted(p for p in root.rglob("*") if p.suffix in CODE_SUFFIX and p.is_file())
@@ -152,6 +175,9 @@ def read(root: Path) -> dict:
         imported |= set(IMPORT_DEFAULT.findall(text))
         modules[relative] = {
             "exports": sorted(set(EXPORTED.findall(text))),
+            "роды": kinds_of(text),
+            "алиасы": [(было, стало) for группа, _ in IMPORT_NAMES.findall(text)
+                       for было, стало in ALIAS.findall(группа)],
             "imports": [{"names": [name.split(" as ")[0].strip().removeprefix("type ").strip()
                                    for name in group.split(",") if name.strip()],
                          "from": где} for group, где in IMPORT_NAMES.findall(text)],

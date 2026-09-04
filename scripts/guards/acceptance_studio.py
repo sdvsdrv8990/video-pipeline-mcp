@@ -30,6 +30,7 @@ import _studio_surface as surface                                          # noq
 ROOT = Path(__file__).resolve().parents[2]
 TREE = ROOT / "tests" / "studio_emulation" / "app"
 SNAPSHOT = "surface_baseline.json"
+STRUCTURE = "structure.yaml"
 SCENARIOS = Path(__file__).resolve().parent / "acceptance_scenarios.yaml"
 TASKS = "tasks.yaml"
 ROOTS = ("App",)          # компоненты, которых законно не рисует никто: вершина дерева отрисовки
@@ -158,6 +159,65 @@ def _worth(было: dict, выражение: str) -> str:
     return f" (= {значение})" if значение else ""
 
 
+def _structure(tree: Path) -> dict:
+    путь = tree.parent / STRUCTURE
+    return (yaml.safe_load(путь.read_text(encoding="utf-8")) or {}) if путь.exists() else {}
+
+
+def place(got: dict, tree: Path = TREE, **_) -> list[str]:
+    """П5/П6: файл лежит в объявленном каталоге, и в нём только то, за что каталог отвечает."""
+    объявлено = _structure(tree)
+    каталоги = объявлено.get("каталоги")
+    if not каталоги:
+        return []
+    notes = []
+    for файл, модуль in sorted(got.get("modules", {}).items()):
+        каталог = str(Path(файл).parent).replace("\\", "/")
+        роль = каталоги.get(каталог)
+        if роль is None:
+            notes.append(f"{файл} — каталог {каталог!r} в структуре не объявлен: файл положен "
+                         f"мимо дерева, а не в него")
+            continue
+        лишние = [род for род in модуль["роды"] if род not in роль.get("можно", [])]
+        for род in лишние:
+            notes.append(f"{файл} — здесь определён род «{род}», а зона каталога другая: "
+                         f"{роль.get('роль')}. Код лёг в подвернувшийся файл")
+    return notes
+
+
+def naming(got: dict, tree: Path = TREE, **_) -> list[str]:
+    """П7: имя файла равно имени того, что он отдаёт; имена не из словаря «ни о чём»; алиас не
+    стирает имя компонента при импорте."""
+    объявлено = _structure(tree).get("имена")
+    if not объявлено:
+        return []
+    запрещённые = set(объявлено.get("запрещённые", []))
+    notes = []
+    for имя, item in sorted(got["components"].items()):
+        файл = item["file"]
+        if any(fnmatch.fnmatch(файл, шаблон) for шаблон in объявлено.get("файл_равен_экспорту", [])):
+            if Path(файл).stem != имя and имя not in ("default",):
+                notes.append(f"{файл} — отдаёт {имя}, а называется иначе: по имени файла "
+                             f"компонент не найти ни поиском, ни глазами")
+    for файл, модуль in sorted(got.get("modules", {}).items()):
+        основа = Path(файл).stem
+        if основа.lower() in запрещённые:
+            notes.append(f"{файл} — имя {основа!r} не говорит ни о чём: словарь пустых имён "
+                         f"объявлен в {STRUCTURE}")
+        for экспорт in модуль["exports"]:
+            if экспорт.lower() in запрещённые:
+                notes.append(f"{файл} — экспорт {экспорт!r} не говорит ни о чём")
+        for было, стало in модуль["алиасы"]:
+            if было[:1].isupper():
+                notes.append(f"{файл} — импорт {было} переименован в {стало}: имя компонента "
+                             f"стёрто на входе, и по разметке его больше не найти")
+    for имя, item in sorted(got["components"].items()):
+        for проп in item["props"]:
+            if проп.lower() in запрещённые:
+                notes.append(f"{item['file']} — проп {имя}.{проп} не говорит ни о чём")
+    return notes
+
+
 def scope(got: dict, tree: Path = TREE, zones: tuple[str, ...] = (), root: Path = ROOT,
           **_) -> list[str]:
     """П3а: тронутое вне объявленной зоны задачи. Зона не объявлена — судить нечем."""
@@ -203,6 +263,8 @@ def addressable(got: dict, **_) -> list[str]:
 CHECKS = (("П1 компонент сломан", broken),
           ("П2 стиль мимо токена и смена формы", styles),
           ("П8 стиль и анимация потеряны", motion),
+          ("П5/П6 зона файла и структура дерева", place),
+          ("П7 имена говорят сами за себя", naming),
           ("П3а вышел за рамки задачи", scope),
           ("П3б мёртвый код", dead),
           ("П4 адресация компонента", addressable))
