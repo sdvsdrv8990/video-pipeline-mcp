@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""scripts/guards/quality_advisor.py — сторож качества студии: приёмка правки ИИ по React.
+"""scripts/guards/acceptance_studio.py — ПРИЁМКА правки ИИ в дереве студии (React/TS).
 
 Четыре условия приёмки, каждое судится ПАРНОЙ уликой, а не счётом литералов:
   П1 компонент не сломан — тег ↔ импорт, импорт ↔ экспорт цели;
@@ -11,7 +11,7 @@
 Чужое дерево (копию стенда) судит `--дерево`: снимок формы лежит рядом с деревом и едет с копией.
 
 Вторая половина работы — совет: `--совет` выбирает сценарии по РОДУ УЛИКИ и говорит, что здесь
-ломается, почему и чем это доказать. Сценарии объявлены в `quality_scenarios.yaml`, задания стенда
+ломается, почему и чем это доказать. Сценарии объявлены в `acceptance_scenarios.yaml`, задания стенда
 — в `tasks.yaml` рядом с деревом.
 """
 import argparse
@@ -30,7 +30,7 @@ import _studio_surface as surface                                          # noq
 ROOT = Path(__file__).resolve().parents[2]
 TREE = ROOT / "tests" / "studio_emulation" / "app"
 SNAPSHOT = "surface_baseline.json"
-SCENARIOS = Path(__file__).resolve().parent / "quality_scenarios.yaml"
+SCENARIOS = Path(__file__).resolve().parent / "acceptance_scenarios.yaml"
 TASKS = "tasks.yaml"
 ROOTS = ("App",)          # компоненты, которых законно не рисует никто: вершина дерева отрисовки
 
@@ -148,7 +148,7 @@ CHECKS = (("П1 компонент сломан", broken),
 
 def scenarios(path: Path = SCENARIOS) -> dict:
     if not path.exists():
-        sys.exit(f"quality_advisor: нет объявления сценариев {path} — советовать не из чего")
+        sys.exit(f"acceptance_studio: нет объявления сценариев {path} — советовать не из чего")
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
 
@@ -186,7 +186,7 @@ def advise(config: dict, rods: list[str]) -> int:
         print(f"  журнал:    {item['журнал']}")
     if not выбранные:
         print("  сценария на эту улику нет — это находка, а не тишина: заведи его в "
-              "scripts/guards/quality_scenarios.yaml")
+              "scripts/guards/acceptance_scenarios.yaml")
     return 0
 
 
@@ -223,14 +223,14 @@ def main(argv: list[str] | None = None) -> int:
         роды = list(dict.fromkeys(args.улика + rods_of(args.файл, config)))
         неизвестные = [r for r in роды if r not in config.get("роды", {})]
         if неизвестные:
-            print(f"quality_advisor: род улики не объявлен: {неизвестные}; известны "
+            print(f"acceptance_studio: род улики не объявлен: {неизвестные}; известны "
                   f"{sorted(config.get('роды', {}))}", file=sys.stderr)
             return 2
         return advise(config, роды)
 
     tree = args.дерево
     if not tree.is_dir():
-        print(f"quality_advisor: дерева студии нет: {tree}", file=sys.stderr)
+        print(f"acceptance_studio: дерева студии нет: {tree}", file=sys.stderr)
         return 2
     задания = tasks(tree)
     if args.задания:
@@ -242,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.задача:
         нашлось = [i for i in задания.get("задания", []) if i["id"] == args.задача]
         if not нашлось:
-            print(f"quality_advisor: задания {args.задача!r} нет в {tree.parent / TASKS}",
+            print(f"acceptance_studio: задания {args.задача!r} нет в {tree.parent / TASKS}",
                   file=sys.stderr)
             return 2
         зоны += нашлось[0]["зона"]

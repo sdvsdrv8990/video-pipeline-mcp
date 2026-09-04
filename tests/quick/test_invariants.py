@@ -20,7 +20,7 @@ from invariants import (  # noqa: E402
     facts_exempt_from_observation, facts_outside_registry, facts_without_emitter,
     facts_without_observer, observation_incomplete,
     door_not_installed, guard_without_home, hook_declared_muted,
-    expert_advice_only, expert_calls_missing,
+    acceptance_advice_only, acceptance_calls_missing,
     lesson_without_evidence, lesson_without_executor, lesson_without_mechanism,
     journal_off_index,
     skill_boundary_invisible,
@@ -961,35 +961,35 @@ def эксперт(улика="правка-компонента", состоя�
             станет="") -> Path:
     хвост = (ИСПОЛНИТЕЛЬ.format(набор=набор, метка=метка) if исполнитель
              else (f"  станет-судимым: {станет}\n" if станет else ""))
-    return make({"scripts/guards/quality_scenarios.yaml":
+    return make({"scripts/guards/acceptance_scenarios.yaml":
                  ЭКСПЕРТ.format(улика=улика, состояние=состояние, журнал=журнал,
                                 исполнитель=хвост),
                  "tests/наш/test_наш.py": '  ok(True, "метка проверки")\n',
                  "есть.md": "запись\n"})
 
 
-ok(not expert_calls_missing(эксперт()),
+ok(not acceptance_calls_missing(эксперт()),
    "сценарий эксперта зовёт существующее — молчим")
-ok("которой нет ни в одном наборе" in " ".join(expert_calls_missing(эксперт(метка="выдуманная"))),
+ok("которой нет ни в одном наборе" in " ".join(acceptance_calls_missing(эксперт(метка="выдуманная"))),
    "сценарий зовёт метку, которой нет ни в одном наборе — назван прямо")
-ok("которого нет в дереве" in " ".join(expert_calls_missing(эксперт(набор="tests/нет/test_нет.py"))),
+ok("которого нет в дереве" in " ".join(acceptance_calls_missing(эксперт(набор="tests/нет/test_нет.py"))),
    "сценарий зовёт несуществующий набор — исполнитель обязан быть на диске")
-ok("не включится никогда" in " ".join(expert_calls_missing(эксперт(улика="выдуманный-род"))),
+ok("не включится никогда" in " ".join(acceptance_calls_missing(эксперт(улика="выдуманный-род"))),
    "род улики вне объявления: сценарий молча не включится ни разу")
-ok("которого нет" in " ".join(expert_calls_missing(эксперт(журнал="снесённый.md"))),
+ok("которого нет" in " ".join(acceptance_calls_missing(эксперт(журнал="снесённый.md"))),
    "совет опирается на запись журнала, которой нет")
-ok("держится словом" in " ".join(expert_calls_missing(эксперт(исполнитель=False))),
+ok("держится словом" in " ".join(acceptance_calls_missing(эксперт(исполнитель=False))),
    "объявлен судимым, а исполнителя нет — «судится» держится словом")
 ok("долг без выхода" in " ".join(
-       expert_calls_missing(эксперт(состояние="совет", исполнитель=False))),
+       acceptance_calls_missing(эксперт(состояние="совет", исполнитель=False))),
    "советующий сценарий обязан сказать, чем станет судимым")
-ok(not expert_calls_missing(
+ok(not acceptance_calls_missing(
        эксперт(состояние="совет", исполнитель=False, станет="когда появится жест")),
    "советующий сценарий с объявленным выходом — честный долг, а не ошибка")
-ok(len(expert_advice_only(эксперт(состояние="совет", исполнитель=False, станет="потом"))) == 1,
+ok(len(acceptance_advice_only(эксперт(состояние="совет", исполнитель=False, станет="потом"))) == 1,
    "храповик считает советующих отдельно от жёсткой оси")
-ok(not expert_advice_only(эксперт()), "судимый сценарий в долг не попадает")
-ok(not expert_calls_missing(make({"нет": "сценариев"})),
+ok(not acceptance_advice_only(эксперт()), "судимый сценарий в долг не попадает")
+ok(not acceptance_calls_missing(make({"нет": "сценариев"})),
    "объявления сценариев нет — улики нет, а не «сценарии все битые»")
 
 

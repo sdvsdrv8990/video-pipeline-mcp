@@ -2,7 +2,7 @@
 tests/studio_emulation/test_studio_emulation.py — приёмка правки ИИ по React на эмуляции студии.
 
 Standalone-прогон:  python tests/studio_emulation/test_studio_emulation.py
-Проверяет ОБЕ стороны каждого условия приёмки (`scripts/guards/quality_advisor.py`): проверка ловит
+Проверяет ОБЕ стороны каждого условия приёмки (`scripts/guards/acceptance_studio.py`): проверка ловит
 своё нарушение на подставленной правке и молчит на чистом дереве. Предмет — эмуляция
 `app/`: студии на диске ещё нет, а правило без исполнителя не работает вовсе.
 """
@@ -32,7 +32,7 @@ def _load(path: Path, name: str):
 
 surface = _load(GUARDS / "_studio_surface.py", "_studio_surface")
 sys.modules["_studio_surface"] = surface
-advisor = _load(GUARDS / "quality_advisor.py", "quality_advisor")
+advisor = _load(GUARDS / "acceptance_studio.py", "acceptance_studio")
 
 _checks = 0
 _fails = []
