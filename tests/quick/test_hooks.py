@@ -9,9 +9,11 @@ Standalone-прогон:  python tests/quick/test_hooks.py
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -152,7 +154,7 @@ def main() -> int:
     _, out, _ = fire("vpm-fact-gate.py", bash("echo 'core/engine/engine.py' | wc -l"))
     ok(not out, "путь в кавычках — упоминание, а не цель записи")
 
-    print("§5 рубильники сторожей живы")
+    print("§5 рубильники сторожей живы (у сторожа остатков рубильника больше нет — §15)")
     _, out, _ = fire("vpm-fact-gate.py", edit("core/engine/engine.py"), VPM_FACT_GATE="off")
     ok(not out, "VPM_FACT_GATE=off — сторож выключается объявленным способом")
     home = tempfile.mkdtemp(prefix="vpm-hooks-home-")
@@ -556,6 +558,61 @@ def main() -> int:
     без_git = Path(tempfile.mkdtemp(prefix="vpm-нет-git-"))
     ok(свои(["scripts/guards/новичок.py — нет дома"], без_git)[1],
        "git не ответил (чужое дерево) — отказ остаётся: улики о возрасте нет")
+
+
+    print("§15 дверь человека: запрет сторожа остатков снимает не ИИ")
+    просьба = ('.venv/bin/python scripts/guards/_permit.py --запрос VPM_INTENT_GUARD '
+               '--почему "правлю сам механизм остатков"')
+    _, out, _ = fire("vpm-permit.py", bash(просьба))
+    ok(decision(out) == "ask" and "решение человека" in reason(out),
+       "просьба снять запрет выносится человеку вопросом да/нет, а не исполняется молча")
+    _, out, _ = fire("vpm-permit.py", bash("VPM_INTENT" + "_GUARD=off .venv/bin/pytest -q"))
+    ok(decision(out) == "deny", "снятие своей рукой отклонено и показывает дверь")
+    _, out, _ = fire("vpm-permit.py", bash("echo 'VPM_INTENT" + "_GUARD=off' >> заметка.md"))
+    ok(not out, "рассказ о выключателе в кавычках — данные, а не команда (поймано на себе же)")
+    _, out, _ = fire("vpm-permit.py", bash("ls -la"))
+    ok(not out, "чужая команда двери не касается")
+
+    дом = tempfile.mkdtemp(prefix="vpm-permit-home-")
+    прежний, os.environ["HOME"] = os.environ.get("HOME", ""), дом
+    sys.path.insert(0, str(ROOT / "scripts" / "guards"))
+    import _permit
+    корень = Path(tempfile.mkdtemp(prefix="vpm-permit-root-"))
+    ok(not _permit.снят("VPM_INTENT_GUARD", корень), "без разрешения запрет стоит")
+    _permit.выдать("VPM_INTENT_GUARD", "правлю сам механизм остатков", корень)
+    ok(_permit.снят("VPM_INTENT_GUARD", корень), "после «да» человека запрет снят")
+    ok(not _permit.снят("VPM_INTENT_GUARD", Path(tempfile.mkdtemp())),
+       "разрешение без своей подписи в журнале не действует: подделка файла не проходит")
+    запись = json.loads(_permit.файл("VPM_INTENT_GUARD").read_text(encoding="utf-8"))
+    _permit.файл("VPM_INTENT_GUARD").write_text(
+        json.dumps({**запись, "истекает": time.time() - 1}), encoding="utf-8")
+    ok(not _permit.снят("VPM_INTENT_GUARD", корень), "разрешение истекает само: «снял и ушёл» не вечно")
+
+    # Замер на дереве, где сторож ОБЯЗАН отказать: в боевом все хвосты признаны, и там прибор
+    # молчит независимо от переменной — ноль отказов означал бы «не мерил», а не «выключен».
+    хвостатое = Path(tempfile.mkdtemp(prefix="vpm-хвост-"))
+    (хвостатое / "tests" / ".journal").mkdir(parents=True)
+    (хвостатое / "scripts" / "guards").mkdir(parents=True)
+    for имя in ("_stamp.py", "_permit.py"):
+        shutil.copy(ROOT / "scripts" / "guards" / имя, хвостатое / "scripts" / "guards" / имя)
+    (хвостатое / "tests" / ".journal" / f"stamps-{time.strftime('%Y%m%d')}.jsonl").write_text(
+        json.dumps({"ts": time.time(), "key": "aaaa", "kind": "проба", "role": "ОСТАТОК",
+                    "what": "хвост для замера", "expected": "закроется", "cmd": "ls",
+                    "closes": "", "detail": {}}, ensure_ascii=False) + "\n", encoding="utf-8")
+    правка = {"hook_event_name": "PreToolUse", "tool_name": "Edit", "session_id": "проба",
+              "tool_input": {"file_path": str(хвостатое / "core" / "engine.py")}}
+    _, слепой, _ = fire("vpm-intent-guard.py", правка, home=tempfile.mkdtemp(),
+                        CLAUDE_PROJECT_DIR=str(хвостатое))
+    ok(decision(слепой) == "deny", "непризнанный остаток запрещает запись — прибор мерит")
+    _, с_рубильником, _ = fire("vpm-intent-guard.py", правка, home=tempfile.mkdtemp(),
+                               CLAUDE_PROJECT_DIR=str(хвостатое), **{"VPM_INTENT" + "_GUARD": "off"})
+    ok(decision(с_рубильником) == "deny",
+       "переменная среды сторожа остатков больше не выключает: рубильник мёртв")
+    _permit.выдать("VPM_INTENT_GUARD", "правлю сам механизм остатков", хвостатое)
+    _, с_разрешением, _ = fire("vpm-intent-guard.py", правка, home=дом,
+                               CLAUDE_PROJECT_DIR=str(хвостатое))
+    ok(not с_разрешением, "после разрешения человека сторож пропускает правку")
+    os.environ["HOME"] = прежний
 
 
     print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")

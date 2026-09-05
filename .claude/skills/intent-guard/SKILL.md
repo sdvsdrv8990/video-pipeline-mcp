@@ -6,7 +6,21 @@ description: Use when a task in the video_pipeline_mcp project ends without bein
 # Сторож намерений — чтобы остаток не пылился
 
 Механизм: `.claude/hooks/vpm-intent-guard.py` (`SessionStart` + `Stop`), словарь — `scripts/guards/_stamp.py`.
-Проверки: `tests/quick/test_hooks.py §11`. Выключатель: `VPM_INTENT_GUARD=off`.
+Проверки: `tests/quick/test_hooks.py §11` и `§15`. Дверь снятия — `scripts/guards/_permit.py`.
+
+**Выключателя у этого сторожа нет (F228).** Переменная среды сама по себе не значит ничего:
+он держит ПАМЯТЬ о незакрытом, и снятый запрет теряет не проверку, а хвост. Просьба снять
+выносится ЧЕЛОВЕКУ вопросом «да/нет» в консоли (хук `vpm-permit.py`, `permissionDecision: ask`),
+разрешение живёт 30 минут, уходит подписью в общий журнал и истекает само:
+
+```bash
+.venv/bin/python scripts/guards/_permit.py --запрос VPM_INTENT_GUARD --почему "зачем именно"
+.venv/bin/python scripts/guards/_permit.py --список      # что снято и надолго ли
+.venv/bin/python scripts/guards/_permit.py --отозвать VPM_INTENT_GUARD
+```
+
+Просить — законный ход, а не поражение: остаток чужой развилки ИИ закрывать не вправе, и
+разрешение человека здесь дешевле, чем работа в обход сторожа.
 
 ## 1. Остаток записывается УЛИКОЙ, а не статусом
 
