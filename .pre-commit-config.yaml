@@ -17,6 +17,19 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+      # Сравнение с HEAD: слом виден в момент рождения, а не через сутки в CI.
+      # Пакеты перечислены явно — `griffe check` берёт ровно один за прогон.
+      # `env -u GIT_INDEX_FILE`: при КОММИТЕ pre-commit подставляет относительный `.git/index`, а
+      # griffe работает во временном worktree, где `.git` это файл, — без снятия падает только
+      # на настоящем коммите, а `pre-commit run` проходит. Перед прогоном снимается мусор
+      # аварийного предыдущего: осиротевшая ветка `griffe-HEAD` блокирует следующий запуск.
+      - id: griffe
+        name: griffe (слом публичной поверхности)
+        entry: env -u GIT_INDEX_FILE bash -c 'git worktree prune; git branch -D griffe-HEAD >/dev/null 2>&1; .venv/bin/griffe check core -s . -a HEAD && .venv/bin/griffe check tools -s . -a HEAD'
+        language: system
+        types: [python]
+        pass_filenames: false
+
       - id: import-linter
         name: import-linter (этажность и границы групп)
         entry: .venv/bin/lint-imports

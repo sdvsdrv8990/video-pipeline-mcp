@@ -20,6 +20,8 @@ jobs:
         python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2      # griffe сравнивает поверхность с HEAD~1
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
@@ -30,6 +32,11 @@ jobs:
         run: mypy
       - name: import-linter (архитектурные контракты)
         run: lint-imports
+      - name: griffe (слом публичной поверхности)
+        run: |
+          git rev-parse HEAD~1 >/dev/null 2>&1 || { echo "нет предыдущей ревизии — сравнить не с чем"; exit 1; }
+          griffe check core -s . -a HEAD~1 -b HEAD
+          griffe check tools -s . -a HEAD~1 -b HEAD
 
   test:
     name: test (in-process, script exit-code = gate)

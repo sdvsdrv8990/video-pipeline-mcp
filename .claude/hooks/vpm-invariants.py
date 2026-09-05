@@ -12,6 +12,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -161,6 +162,30 @@ def _rel(path: Path, root: Path) -> str:
         return str(path)
 
 
+def newborn(lines: list[str], root: Path = PROJ) -> tuple[list[str], list[str]]:
+    """Разделить находки на «про новорождённого» и остальные. Решение владельца 2026-09-05.
+
+    Сторож не рождается одной правкой: файл → строка каталога → набор-дом → строка росписи, и
+    каждое промежуточное состояние законно неполно. Отсрочка живёт ТОЛЬКО здесь: в гейте
+    (pre-commit и CI) та же ось судит в полную силу, поэтому недекларированным ничего не уедет.
+    Признак новорождённого — упомянутое имя, которого git ещё не знает.
+    """
+    try:
+        done = subprocess.run(["git", "ls-files", "-z"], cwd=str(root),
+                              capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return [], lines
+    if done.returncode != 0:
+        return [], lines           # git не ответил: возраст файла неизвестен, отсрочки нет
+    известные = {item for item in done.stdout.split("\0") if item}
+    известные |= {Path(item).name for item in известные}
+    молодые, взрослые = [], []
+    for line in lines:
+        имена = set(re.findall(r"[\w./-]+\.(?:py|yaml|md|json)", line))
+        (молодые if имена and not (имена & известные) else взрослые).append(line)
+    return молодые, взрослые
+
+
 def main() -> int:
     if not os.path.exists(GUARD):
         return 0                    # не наш репозиторий — событие чужое
@@ -177,8 +202,9 @@ def main() -> int:
                        + "\n".join(f"  {note}" for note in broken))
     done = subprocess.run([VENV if os.path.exists(VENV) else sys.executable, GUARD, "--hook"],
                           capture_output=True, text=True, timeout=60)
-    if done.stdout.strip():
-        reports.append("⚠️ Межфайловые инварианты нарушены:\n" + done.stdout.strip())
+    молодые, взрослые = newborn([с for с in done.stdout.splitlines() if с.strip()])
+    if взрослые:
+        reports.append("⚠️ Межфайловые инварианты нарушены:\n" + "\n".join(взрослые))
     if reports:
         print("\n\n".join(reports), file=sys.stderr)
         return 2                    # видно модели: правка развела файлы либо сломала форму
@@ -186,6 +212,10 @@ def main() -> int:
     # чего правящий не знает. Отказом это сделало бы наказуемой каждую правку рубежа.
     тронуто = touched(data)
     знание = flows(тронуто) + acceptance(тронуто)
+    if молодые:
+        знание.append("новорождённый ещё не под git, поэтому это ЗНАНИЕ, а не отказ — но в "
+                      "коммит так не пройдёт: pre-commit судит той же осью в полную силу:\n  "
+                      + "\n  ".join(молодые))
     if знание:
         print(json.dumps({"hookSpecificOutput": {
             "hookEventName": "PostToolUse",
