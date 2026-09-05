@@ -28,6 +28,8 @@ from invariants import (  # noqa: E402
     skill_boundary_invisible,
     ceiling_moved_unrecorded,
     _bless_stamp,
+    acceptance_state_unproven,
+    acceptance_subject_gap,
     evidence_roster_off_disk,
     judge_off_journal,
     quality_axis_without_parameter,
@@ -750,6 +752,59 @@ ok(any("без строки" in n for n in
    "сторож на диске без строки каталога: зона не объявлена, и правило «не плодить» слепо")
 ok(not judge_off_journal(make({"README.md": "x"})),
    "каталога сторожей нет вовсе — улики нет, а не обвинение")
+
+
+print("\n== приёмка по предметам: состояние обязано быть ДОКАЗАНО ==")
+
+ПРЕДМЕТЫ = """предметы:
+  сервер:
+    про: дерево сервера
+    условия:
+      С1:
+        про: контракт не сломан
+        механизм: опись ↔ сценарии
+        состояние: судится
+        улика: .venv/bin/python scripts/guards/invariants.py --check
+      С2:
+        про: типы сходятся везде
+        механизм: нет
+        состояние: нет
+        ждёт: зона гейта типов уже мала
+        улика: .venv/bin/python -m mypy scripts/guards/
+"""
+
+
+def приёмка(текст: str = ПРЕДМЕТЫ) -> Path:
+    return make({"scripts/guards/acceptance_subjects.yaml": текст,
+                 "scripts/guards/invariants.py": "x = 1\n"})
+
+
+ok(not acceptance_state_unproven(приёмка()),
+   "каждое состояние несёт запускаемую улику, ведущую на диск — молчим")
+ok(any("не доказано командой" in n for n in acceptance_state_unproven(приёмка(
+       ПРЕДМЕТЫ.replace("улика: .venv/bin/python scripts/guards/invariants.py --check",
+                        "улика: судится и так")))),
+   "состояние без ЗАПУСКАЕМОЙ улики — пожелание: рукописная таблица состояний уже гнила однажды")
+ok(any("которого на диске нет" in n for n in acceptance_state_unproven(приёмка(
+       ПРЕДМЕТЫ.replace("scripts/guards/invariants.py --check", "scripts/guards/выдумка.py --check")))),
+   "улика ведёт в несуществующий файл — доказательство мнимое")
+ok(any("не сказано, чего ждём" in n for n in acceptance_state_unproven(приёмка(
+       ПРЕДМЕТЫ.replace("        ждёт: зона гейта типов уже мала\n", "")))),
+   "«механизма нет» без `ждёт` — это пожелание, а не план")
+ok(any("не из" in n for n in acceptance_state_unproven(приёмка(
+       ПРЕДМЕТЫ.replace("состояние: судится", "состояние: почти")))),
+   "состояние не из трёх объявленных названо: третьего толкования у слова быть не должно")
+ok(any("без формулировки" in n for n in acceptance_state_unproven(приёмка(
+       ПРЕДМЕТЫ.replace("        про: контракт не сломан\n", "")))),
+   "условие без формулировки названо — судить нечего")
+ok(any("не разбирается" in n for n in acceptance_state_unproven(приёмка("предметы: [битый\n"))),
+   "битое объявление названо вслух, а не прочитано как «условий нет»")
+ok(not acceptance_state_unproven(make({"README.md": "x"})),
+   "объявления приёмки нет вовсе (чужое дерево) — улики нет, а не обвинение")
+ok([n for n in acceptance_subject_gap(приёмка()) if "С2" in n],
+   "условие без механизма попадает в долг — это и есть вектор развития, выраженный числом")
+ok(not acceptance_subject_gap(приёмка(ПРЕДМЕТЫ.replace("состояние: нет", "состояние: судится"))),
+   "заведён исполнитель — долг ушёл; храповик двигается только вниз")
 
 
 print("\n== роспись улик разошлась ==")

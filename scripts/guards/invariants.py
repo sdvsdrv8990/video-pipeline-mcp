@@ -31,6 +31,8 @@ from findings_count import scan as scan_registry  # noqa: E402  разбор р�
 BASELINE = Path(__file__).with_name("invariants_baseline.txt")
 LESSON_BASELINE = Path(__file__).with_name("lesson_debt_baseline.txt")
 ACCEPTANCE_BASELINE = Path(__file__).with_name("acceptance_advice_baseline.txt")
+SUBJECTS_DECL = ("scripts", "guards", "acceptance_subjects.yaml")
+SUBJECTS_BASELINE = Path(__file__).with_name("acceptance_gap_baseline.txt")
 EVIDENCE_BASELINE = Path(__file__).with_name("lesson_evidence_baseline.txt")
 DISPATCH_BASELINE = Path(__file__).with_name("dispatch_baseline.txt")
 UNSCRIPTED_BASELINE = Path(__file__).with_name("unscripted_baseline.txt")
@@ -1876,6 +1878,73 @@ def evidence_roster_off_disk(root: Path = ROOT) -> list[str]:
     return notes
 
 
+СОСТОЯНИЯ = ("судится", "совет", "нет")
+
+
+def _предметы(root: Path = ROOT) -> dict:
+    """Объявление приёмки по предметам. Нет файла — «улики нет», а не пустая карта."""
+    путь = _at(root, SUBJECTS_DECL)
+    if not путь.exists():
+        return {}
+    try:
+        return (yaml.safe_load(путь.read_text(encoding="utf-8")) or {}).get("предметы") or {}
+    except yaml.YAMLError:
+        return {}
+
+
+def acceptance_state_unproven(root: Path = ROOT) -> list[str]:
+    """Состояние приёмки объявлено, но не доказано: улики нет, она мимо диска, «нет» без `ждёт`.
+
+    Рукописная таблица состояний гниёт молча — эта уже расходилась с деревом. Поэтому каждое
+    состояние обязано нести КОМАНДУ, которой доказывается, и команда обязана указывать на то,
+    что на диске есть.
+    """
+    путь = _at(root, SUBJECTS_DECL)
+    if not путь.exists():
+        return []
+    try:
+        yaml.safe_load(путь.read_text(encoding="utf-8"))
+    except yaml.YAMLError as беда:
+        return [f"{'/'.join(SUBJECTS_DECL)} не разбирается ({str(беда)[:60]}) — карта приёмки "
+                f"молчит целиком, и это неотличимо от «условий нет»"]
+    import _stamp                              # локально, как у соседних осей: словарь у сторожей
+    notes = []
+    for предмет, тело in sorted(_предметы(root).items()):
+        for имя, у in sorted((тело or {}).get("условия", {}).items()):
+            у = у or {}
+            адрес = f"{предмет}/{имя}"
+            if not у.get("про"):
+                notes.append(f"{адрес}: условие без формулировки — судить нечего")
+            состояние = у.get("состояние")
+            if состояние not in СОСТОЯНИЯ:
+                notes.append(f"{адрес}: состояние «{состояние}» не из {list(СОСТОЯНИЯ)}")
+            if состояние == "нет" and not у.get("ждёт"):
+                notes.append(f"{адрес}: механизма нет и не сказано, чего ждём — это пожелание, "
+                             f"а не план")
+            улика = str(у.get("улика") or "")
+            if not _stamp.runnable(улика):
+                notes.append(f"{адрес}: состояние не доказано командой — `улика` = {улика!r}")
+                continue
+            # Первое слово — ЗАПУСКАЮЩЕЕ (`.venv/bin/python`, `npm`), а не цель: в CI виртуального
+            # окружения по этому пути нет, и ось краснела бы там на каждой строке.
+            цели = улика.split(maxsplit=1)[1] if " " in улика.strip() else ""
+            for кусок in re.findall(r"[\w./-]+", цели):
+                if "/" in кусок and not кусок.startswith("-") and not (root / кусок).exists():
+                    notes.append(f"{адрес}: улика ведёт в `{кусок}`, которого на диске нет")
+    return notes
+
+
+def acceptance_subject_gap(root: Path = ROOT) -> list[str]:
+    """Долг приёмки по предметам: условие объявлено, а механизма у него нет.
+
+    Это и есть вектор развития, выраженный числом: список только вниз.
+    """
+    return [f"{предмет}/{имя}: {(у or {}).get('про') or '—'} — механизма нет"
+            for предмет, тело in sorted(_предметы(root).items())
+            for имя, у in sorted((тело or {}).get("условия", {}).items())
+            if (у or {}).get("состояние") == "нет"]
+
+
 SKILLS_CATALOG = (".claude", "skills", "CATALOG.md")
 SKILL_ROW = re.compile(r"^\| `([a-z][a-z-]+)` \|([^|]*)\|([^|]*)\|", re.M)
 
@@ -2266,7 +2335,8 @@ HARD = (("одну зону объявили два хозяина", zone_declar
         ("урок зовёт несуществующего исполнителя", lesson_without_executor),
         ("объявление наблюдения неполно", observation_incomplete),
         ("факт эмитится, а решения о наблюдении нет", facts_without_observer),
-        ("сценарий приёмки зовёт несуществующее", acceptance_calls_missing))
+        ("сценарий приёмки зовёт несуществующее", acceptance_calls_missing),
+        ("состояние приёмки не доказано", acceptance_state_unproven))
 
 # Храповик: вниз можно, вверх нет. Потолок — в файле рядом, совет — как долг закрывается.
 
@@ -2337,6 +2407,9 @@ RATCHETS = (
     ("урок без ключа улики", lesson_without_evidence, EVIDENCE_BASELINE,
      "Урок не ведёт в прогон, где родился: подпиши наблюдение (`_stamp.py`) и поставь ключ "
      "меткой ⟨улика: ⟦vpm КЛЮЧ⟧⟩ — или объясни в ревью, почему улики быть не может (--bless)"),
+    ("условие приёмки без механизма", acceptance_subject_gap, SUBJECTS_BASELINE,
+     "Условие объявлено, а судить его нечем — это и есть вектор развития: заведи исполнителя "
+     "либо опусти потолок осознанно (--bless). Карта целиком: invariants.py --приёмка"),
     ("сценарий приёмки без исполнителя", acceptance_advice_only, ACCEPTANCE_BASELINE,
      "Сценарий советует, но не судится: заведи исполнителя (набор + метку проверки) "
      "или объясни в ревью, почему судить его сегодня нечем — --bless"),
@@ -2434,9 +2507,35 @@ def _bless_stamp(сдвинутые: list[tuple[str, int, int, str]], причи
     return 0
 
 
+def карта_приёмки(root: Path = ROOT) -> int:
+    """Печать карты: предмет × условие × состояние. Пять строк «нет» и есть вектор развития."""
+    предметы = _предметы(root)
+    if not предметы:
+        print("объявления приёмки нет — улики нет, а не «условий ноль»")
+        return 1
+    знак = {"судится": "✓", "совет": "·", "нет": "✗"}
+    долг = 0
+    for предмет, тело in предметы.items():
+        print(f"\n▸ {предмет} — {(тело or {}).get('про', '')}")
+        for имя, у in (тело or {}).get("условия", {}).items():
+            у = у or {}
+            состояние = у.get("состояние", "?")
+            долг += состояние == "нет"
+            print(f"   {знак.get(состояние, '?')} {имя:4} {у.get('про', '')}")
+            if состояние == "нет":
+                print(f"        ждёт: {' '.join(str(у.get('ждёт', '')).split())}")
+    судимых = sum(1 for т in предметы.values() for у in (т or {}).get("условия", {}).values()
+                  if (у or {}).get("состояние") == "судится")
+    всего = sum(len((т or {}).get("условия", {})) for т in предметы.values())
+    print(f"\nсудится {судимых} из {всего} · без механизма {долг} — это и есть вектор развития")
+    return 0
+
+
 def main() -> int:
     # Режим хука: молчим, когда чисто. Сторож, печатающий «всё хорошо» после каждой правки,
     # превращается в шум, и его перестают читать.
+    if "--приёмка" in sys.argv:
+        return карта_приёмки(_named_tree(sys.argv) or ROOT)
     quiet = "--hook" in sys.argv
     named = _named_tree(sys.argv)
     root = named or ROOT
