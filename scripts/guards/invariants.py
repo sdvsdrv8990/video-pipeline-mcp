@@ -1928,9 +1928,18 @@ def acceptance_state_unproven(root: Path = ROOT) -> list[str]:
             # Первое слово — ЗАПУСКАЮЩЕЕ (`.venv/bin/python`, `npm`), а не цель: в CI виртуального
             # окружения по этому пути нет, и ось краснела бы там на каждой строке.
             цели = улика.split(maxsplit=1)[1] if " " in улика.strip() else ""
+            предмет = None
             for кусок in re.findall(r"[\w./-]+", цели):
-                if "/" in кусок and not кусок.startswith("-") and not (root / кусок).exists():
-                    notes.append(f"{адрес}: улика ведёт в `{кусок}`, которого на диске нет")
+                if "/" in кусок and not кусок.startswith("-"):
+                    if not (root / кусок).exists():
+                        notes.append(f"{адрес}: улика ведёт в `{кусок}`, которого на диске нет")
+                    elif предмет is None and кусок.endswith(".py"):
+                        предмет = (root / кусок).read_text(encoding="utf-8", errors="replace")
+            # Флаг проверяется по тексту предмета: файл на месте, а ключа у него нет — улика мнимая
+            # ровно так же, только незаметнее (поймано на себе: объявлен `--объявление` при `--список`).
+            for флаг in re.findall(r"(?<!\S)--[\w-]+", цели):
+                if предмет is not None and флаг not in предмет:
+                    notes.append(f"{адрес}: улика зовёт ключ `{флаг}`, которого у предмета нет")
     return notes
 
 

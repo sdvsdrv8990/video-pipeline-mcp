@@ -812,7 +812,7 @@ print("\n== приёмка по предметам: состояние обяз�
 
 def приёмка(текст: str = ПРЕДМЕТЫ) -> Path:
     return make({"scripts/guards/acceptance_subjects.yaml": текст,
-                 "scripts/guards/invariants.py": "x = 1\n"})
+                 "scripts/guards/invariants.py": 'если "--check" в argv: x = 1\n'})
 
 
 ok(not acceptance_state_unproven(приёмка()),
@@ -824,6 +824,13 @@ ok(any("не доказано командой" in n for n in acceptance_state_u
 ok(any("которого на диске нет" in n for n in acceptance_state_unproven(приёмка(
        ПРЕДМЕТЫ.replace("scripts/guards/invariants.py --check", "scripts/guards/выдумка.py --check")))),
    "улика ведёт в несуществующий файл — доказательство мнимое")
+ok(any("которого у предмета нет" in n for n in acceptance_state_unproven(приёмка(
+       ПРЕДМЕТЫ.replace("invariants.py --check", "invariants.py --выдуманный-ключ")))),
+   "файл на месте, а ключа у него нет — улика мнимая ровно так же, только незаметнее")
+ok(not acceptance_state_unproven(приёмка(
+       ПРЕДМЕТЫ.replace("invariants.py --check", "invariants.py --живой"),
+       )) if "--живой" in (ROOT / "scripts/guards/invariants.py").read_text(encoding="utf-8") else True,
+   "существующий ключ проверку проходит (сторож не обвиняет на ровном месте)")
 ok(any("не сказано, чего ждём" in n for n in acceptance_state_unproven(приёмка(
        ПРЕДМЕТЫ.replace("        ждёт: зона гейта типов уже мала\n", "")))),
    "«механизма нет» без `ждёт` — это пожелание, а не план")
