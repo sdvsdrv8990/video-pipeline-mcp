@@ -7,6 +7,8 @@ Standalone-прогон:  python tests/quick/test_invariants.py
 упоминание бинаря в комментарии), закреплены как регрессия.
 """
 import sys
+import json
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -24,6 +26,8 @@ from invariants import (  # noqa: E402
     lesson_without_evidence, lesson_without_executor, lesson_without_mechanism,
     journal_off_index,
     skill_boundary_invisible,
+    ceiling_moved_unrecorded,
+    _bless_stamp,
     evidence_roster_off_disk,
     judge_off_journal,
     quality_axis_without_parameter,
@@ -788,6 +792,54 @@ ok(any("не разбирается" in n for n in evidence_roster_off_disk(ро
    "битое объявление названо вслух: молчаливый пустой наряд неотличим от «сторожей нет»")
 ok(not evidence_roster_off_disk(make({"README.md": "x"})),
    "объявления нет вовсе (чужое дерево) — улики нет, а не обвинение")
+
+
+print("\n== потолок сдвинут без записи ==")
+
+
+def потолки(было: str, стало: str, журнал: str = "") -> Path:
+    """Дерево под git: ось сверяет число в дереве с числом в HEAD, значит HEAD обязан быть."""
+    корень = make({"scripts/guards/пример_baseline.txt": было})
+    subprocess.run(["git", "init", "-q"], cwd=корень, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=корень, check=True, capture_output=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "потолок"],
+                   cwd=корень, check=True, capture_output=True)
+    (корень / "scripts/guards/пример_baseline.txt").write_text(стало, encoding="utf-8")
+    if журнал:
+        дом = корень / "tests" / ".journal"
+        дом.mkdir(parents=True)
+        (дом / "stamps-20260101.jsonl").write_text(журнал, encoding="utf-8")
+    return корень
+
+
+ЗАПИСЬ = json.dumps({"intent": "сдвиг потолка", "detail": {"файл": "пример_baseline.txt",
+                                                           "стало": "13"}}, ensure_ascii=False) + "\n"
+
+ok(not ceiling_moved_unrecorded(потолки("12\n", "12\n", ЗАПИСЬ)),
+   "потолок не двигался — молчим, даже когда журнал есть")
+ok(any("сдвинут без записи" in n for n in ceiling_moved_unrecorded(потолки("12\n", "13\n", ЗАПИСЬ.replace('"13"', '"99"')))),
+   "потолок сдвинут, а запись о ДРУГОМ числе — это не запись об этом сдвиге")
+ok(not ceiling_moved_unrecorded(потолки("12\n", "13\n", ЗАПИСЬ)),
+   "сдвиг подписан в журнале — молчим: решение записано и поднимается ключом")
+ok(any("12 → 13" in n for n in ceiling_moved_unrecorded(потолки("12\n", "13\n", ЗАПИСЬ.replace("сдвиг потолка", "другое")))),
+   "запись есть, но не о сдвиге — долг двинулся молча, и это названо")
+ok(not ceiling_moved_unrecorded(потолки("12\n", "13\n")),
+   "журнала нет вовсе (клон, CI, свежее дерево) — улики нет, а не «записи не было»")
+
+print("\n== сдвиг потолка уходит в журнал ==")
+дом = make({})
+(дом / "tests" / ".journal").mkdir(parents=True)
+_bless_stamp([("ось вниз", 40, 28, "a_baseline.txt")], "долг закрыт правкой", дом)
+_bless_stamp([("ось вверх", 10, 13, "b_baseline.txt")], "прибор стал точнее", дом)
+записи = [json.loads(с) for с in
+          sorted((дом / "tests" / ".journal").glob("stamps-*.jsonl"))[0]
+          .read_text(encoding="utf-8").splitlines() if с.strip()]
+ok(записи[0]["role"] == "ВЕРДИКТ" and "долг закрыт вниз" in записи[0]["what"],
+   "потолок вниз — вердикт: долг закрыт, и причина уехала в запись")
+ok(записи[1]["role"] == "ОСТАТОК" and "ДОЛГ ВЫРОС" in записи[1]["what"] and записи[1]["cmd"],
+   "потолок ВВЕРХ — остаток с командой возврата: выросший долг обязан показываться на старте сессий")
+ok(_bless_stamp([], "нечего", make({})) == 0,
+   "потолки не двигались — записывать нечего, и это не отказ")
 
 print("\n== память выросла выше потолка ==")
 

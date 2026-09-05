@@ -17,6 +17,7 @@ import importlib.util
 import json
 import builtins
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -2158,6 +2159,52 @@ def guards_off_catalog(root: Path = ROOT) -> list[str]:
                          "расширять предлагается несуществующее")
     return notes
 
+def ceiling_moved_unrecorded(root: Path = ROOT) -> list[str]:
+    """Потолок сдвинут в дереве, а записи об этом в журнале нет: долг двинулся молча.
+
+    Сверяются ДВА источника — число в `*_baseline.txt` рабочего дерева и то же число в `HEAD`.
+    Разошлись — в журнале обязана быть подпись сдвига с этим файлом и этим новым числом.
+    Журнала нет (клон, CI, свежее дерево) — улики нет, и это не «записи не было».
+    """
+    дом = _at(root, GUARDS)
+    if not дом.is_dir():
+        return []
+    журнал = sorted(_at(root, ("tests", ".journal")).glob("stamps-*.jsonl"))
+    if not журнал:
+        return []
+    записано = set()
+    for файл in журнал:
+        for строка in файл.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                запись = json.loads(строка)
+            except json.JSONDecodeError:
+                continue
+            подробность = запись.get("detail") or {}
+            if запись.get("intent") == "сдвиг потолка":
+                записано.add((str(подробность.get("файл")), str(подробность.get("стало"))))
+    notes = []
+    for baseline in sorted(дом.glob("*_baseline.txt")):
+        было = _git_show(root, f"scripts/guards/{baseline.name}")
+        стало = baseline.read_text(encoding="utf-8").strip()
+        if было is None or было.strip() == стало:
+            continue
+        if (baseline.name, стало) not in записано:
+            notes.append(f"{baseline.name}: потолок {было.strip()} → {стало} сдвинут без записи в "
+                         f"журнале — через месяц это неотличимо от опечатки. Двигай его через "
+                         f"`--bless --почему \"<причина>\"`, тогда сдвиг подписан")
+    return notes
+
+
+def _git_show(root: Path, путь: str) -> str | None:
+    """Значение файла в HEAD. Нет git либо нет файла в HEAD — «улики нет», а не пустая строка."""
+    try:
+        done = subprocess.run(["git", "show", f"HEAD:{путь}"], cwd=str(root),
+                              capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
 HARD = (("одну зону объявили два хозяина", zone_declared_twice),
         ("сторож без набора-дома", guard_without_home),
         ("пропуск набора без покрытия в CI", skips_without_ci),
@@ -2180,6 +2227,7 @@ HARD = (("одну зону объявили два хозяина", zone_declar
         ("скил без объявленной зоны", skill_without_zone),
         ("судья мимо общего журнала", judge_off_journal),
         ("роспись улик разошлась", evidence_roster_off_disk),
+        ("потолок сдвинут без записи", ceiling_moved_unrecorded),
         ("ось качества без объявленного параметра", quality_axis_without_parameter),
         ("урок зовёт несуществующего исполнителя", lesson_without_executor),
         ("объявление наблюдения неполно", observation_incomplete),
@@ -2321,6 +2369,37 @@ def _named_tree(argv: list[str]) -> Path | None:
     return None
 
 
+
+def _named_value(argv: list[str], flag: str) -> str:
+    """Значение именованного ключа из argv: у сторожа нет argparse, а ключ нужен один."""
+    return argv[argv.index(flag) + 1] if flag in argv and len(argv) > argv.index(flag) + 1 else ""
+
+
+def _bless_stamp(сдвинутые: list[tuple[str, int, int, str]], причина: str,
+                 root: Path = ROOT) -> int:
+    """Сдвиг потолка уходит в журнал: вниз — вердиктом, ВВЕРХ — остатком.
+
+    Вверх это не запись, а обещание: долг вырос, и до его закрытия остаток будет показываться
+    на старте каждой сессии. Иначе «поднял потолок» стоит ровно одну строку в диффе и забывается.
+    """
+    if not сдвинутые:
+        print("потолки не сдвинулись — записывать нечего")
+        return 0
+    import _stamp
+    for ось, было, стало, файл in сдвинутые:
+        вверх = стало > было
+        _, подпись = _stamp.sign(
+            "проба", "ОСТАТОК" if вверх else "ВЕРДИКТ",
+            f"потолок «{ось}»: {было} → {стало} ({'ДОЛГ ВЫРОС' if вверх else 'долг закрыт вниз'}) — {причина}",
+            intent="сдвиг потолка", expected=f"{было}", actual=f"{стало}",
+            cmd=(f".venv/bin/python scripts/guards/invariants.py --check 2>&1 | grep '{ось}'"
+                 if вверх else ""),
+            detail={"ось": ось, "было": было, "стало": стало, "файл": файл, "причина": причина},
+            root=root)
+        print(подпись)
+    return 0
+
+
 def main() -> int:
     # Режим хука: молчим, когда чисто. Сторож, печатающий «всё хорошо» после каждой правки,
     # превращается в шум, и его перестают читать.
@@ -2331,10 +2410,12 @@ def main() -> int:
         print("invariants: --bless по чужому дереву запрещён — потолок принадлежит СВОЕМУ дереву, "
               "и запись чужого числа сюда была бы тихой ложью", file=sys.stderr)
         return 2
-    failed, нарушений = False, 0
+    failed, нарушений, поимённо = False, 0, {}
     for title, check in HARD:
         notes = check(root)
         нарушений += len(notes)
+        if notes:
+            поимённо[title] = {"нашёл": len(notes)}
         if not quiet:
             print(f"── {title}: {'чисто' if not notes else str(len(notes)) + ' шт.'}")
         elif notes:
@@ -2344,6 +2425,14 @@ def main() -> int:
         failed = failed or bool(notes)
 
     bless = "--bless" in sys.argv
+    # Причина у сдвига потолка спрашивается ДО записи: число, изменившееся без объяснения,
+    # через месяц неотличимо от опечатки, и «долг вырос» читается как «так и было».
+    причина = _named_value(sys.argv, "--почему")
+    if bless and not причина:
+        print("invariants: --bless без --почему запрещён. Потолок — это долг, и его сдвиг решение: "
+              "назови причину одной строкой, она уедет в подпись журнала.", file=sys.stderr)
+        return 2
+    сдвинутые: list[tuple[str, int, int, str]] = []
     for title, check, baseline, advice in RATCHETS:
         notes = check(root)
         if named is not None:
@@ -2354,21 +2443,26 @@ def main() -> int:
         limit = int(baseline.read_text(encoding="utf-8").strip()) if baseline.exists() else len(notes)
         if not quiet or len(notes) > limit:
             print(f"── {title}: {len(notes)} при потолке {limit}")
+        поимённо[title] = {"нашёл": len(notes), "потолок": limit}
         if bless:
             baseline.write_text(f"{len(notes)}\n", encoding="utf-8")
             print(f"   потолок записан: {len(notes)}")
+            if len(notes) != limit:
+                сдвинутые.append((title, limit, len(notes), baseline.name))
         elif len(notes) > limit:
             for note in notes:
                 print(f"   ✗ {note}")
             print(f"   {advice}")
             failed = True
             нарушений += len(notes) - limit
-    if bless or named is not None or quiet:
-        # Подписи нет там, где нет вердикта о СВОЁМ дереве: `--bless` пишет потолок, чужое дерево
-        # судится не нашей меркой, а режим хука бьёт на каждую правку и залил бы журнал.
-        return 0 if bless else (1 if failed else 0)
+    if bless:
+        return _bless_stamp(сдвинутые, причина or "", root)
+    if named is not None or quiet:
+        # Чужое дерево судится не нашей меркой, а режим хука бьёт на каждую правку и залил бы журнал.
+        return 1 if failed else 0
     return _verdict.close("инварианты", нарушений,
-                          ".venv/bin/python scripts/guards/invariants.py --check", root=root)
+                          ".venv/bin/python scripts/guards/invariants.py --check", root=root,
+                          детали={"оси": поимённо})
 
 
 if __name__ == "__main__":
