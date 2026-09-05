@@ -1684,6 +1684,63 @@ def journal_off_index(root: Path = ROOT) -> list[str]:
                   for head in sorted(heads - listed[path.name])]
     return notes
 
+QUALITY_SKILL = (".claude", "skills", "code-quality", "SKILL.md")
+QUALITY_PARAM = re.compile(r"^\| \*\*([А-Яа-яЁё][^*|]+?)\*\* \|", re.M)
+QUALITY_AXIS = re.compile(r"^(\d+[a-z]?)\. \*\*(.+?)\*\*(.*)$", re.M)
+QUALITY_TAG = re.compile(r"⟨двигает: ([^⟩]+)⟩")
+QUALITY_NONE = "ничего"
+QUALITY_DECL = "## ЧЕМУ служат оси"
+QUALITY_DICTS = "### Два словаря"
+
+
+def quality_axis_without_parameter(root: Path = ROOT) -> list[str]:
+    """Ось качества, не назвавшая параметр владельца, и параметр, которого не двигает ни одна ось.
+
+    Разрез «качество ↔ обслуживаемость» держится меткой у оси, а не памятью читающего. Обратная
+    сторона важнее прямой: параметр, за которым не стоит ни одной оси, пылится молча — ровно то, с
+    чего разрез и начался.
+    """
+    файл = _at(root, QUALITY_SKILL)
+    if not файл.exists():
+        return []
+    текст = файл.read_text(encoding="utf-8")
+    if "## Оси качества" not in текст:
+        return []
+    тело = текст.split("## Оси качества", 1)[1].split("\n## ", 1)[0]
+    # Параметры берутся ТОЛЬКО из таблицы владельца: навигационная таблица словарей ниже устроена
+    # так же, и по всему файлу её строки прочлись бы четвёртым параметром, которого он не объявлял.
+    объявление = текст.split(QUALITY_DECL, 1)[1].split("\n#", 1)[0] if QUALITY_DECL in текст else ""
+    параметры = [имя.strip().lower() for имя in QUALITY_PARAM.findall(объявление)]
+    оси = {ид: QUALITY_TAG.search(хвост) for ид, _, хвост in QUALITY_AXIS.findall(тело)}
+    notes = [f"ось {ид} скила code-quality не называет параметр владельца: к какому словарю она "
+             f"относится, известно только читавшему" for ид, метка in sorted(оси.items())
+             if метка is None]
+    двигают = set()
+    for ид, метка in sorted(оси.items()):
+        if метка is None:
+            continue
+        значение = метка.group(1).strip().lower()
+        совпало = [имя for имя in параметры if имя.startswith(значение)]
+        if значение != QUALITY_NONE and not совпало:
+            notes.append(f"ось {ид}: метка «{значение}» не из объявленной четвёрки параметров "
+                         f"({параметры}) — словарь назван словом, которого нет в декларации")
+        двигают |= set(совпало)
+    notes += [f"параметр «{имя}» объявлен, но его не двигает НИ ОДНА ось: требование владельца "
+              f"записано и пылится" for имя in параметры if имя not in двигают]
+    # Навигационная таблица стоит ВЫШЕ списка осей, поэтому ищется в своём разделе, а не в теле:
+    # взятая из тела, она всегда пуста, и половина сверки молчала бы, выглядя чистой.
+    словари = текст.split(QUALITY_DICTS, 1)[1].split("\n## ", 1)[0] if QUALITY_DICTS in текст else ""
+    названы = set()
+    for строка in словари.splitlines():
+        if строка.startswith("| **") and строка.count("|") >= 4:
+            названы |= set(re.findall(r"\b(\d+[a-z]?)\b", строка.rsplit("|", 2)[1]))
+    notes += [f"ось {ид} не названа ни в одном словаре навигационной таблицы"
+              for ид in sorted(set(оси) - названы) if названы]
+    notes += [f"навигационная таблица зовёт ось {ид}, которой в скиле нет"
+              for ид in sorted(названы - set(оси))]
+    return notes
+
+
 SKILLS_CATALOG = (".claude", "skills", "CATALOG.md")
 SKILL_ROW = re.compile(r"^\| `([a-z][a-z-]+)` \|([^|]*)\|([^|]*)\|", re.M)
 
@@ -2007,6 +2064,7 @@ HARD = (("одну зону объявили два хозяина", zone_declar
         ("память выросла выше потолка", memory_grew),
         ("журнал разошёлся со своим указателем", journal_off_index),
         ("скил без объявленной зоны", skill_without_zone),
+        ("ось качества без объявленного параметра", quality_axis_without_parameter),
         ("урок зовёт несуществующего исполнителя", lesson_without_executor),
         ("объявление наблюдения неполно", observation_incomplete),
         ("факт эмитится, а решения о наблюдении нет", facts_without_observer),
