@@ -56,6 +56,10 @@ jobs:
         run: npm run typecheck
       - name: eslint (правило хуков и полнота зависимостей)
         run: npm run lint
+      - name: браузер (chromium для прогона геометрии)
+        run: npx playwright install --with-deps chromium
+      - name: геометрия (наложение, выход текста, уход из окна)
+        run: npm run geometry
 
   test:
     name: test (in-process, script exit-code = gate)

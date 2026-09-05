@@ -1,7 +1,11 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022", "DOM"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "jsx": "react-jsx",
     "module": "ESNext",
     "moduleResolution": "bundler",
@@ -11,5 +15,11 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["app"]
+  "include": [
+    "app",
+    "main.tsx",
+    "vite.config.ts",
+    "geometry.spec.ts",
+    "playwright.config.ts"
+  ]
 }

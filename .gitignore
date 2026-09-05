@@ -71,3 +71,7 @@ tests/.blast/
 
 # Дерево студии ставит свой инструмент (tsc, eslint) — чужие пакеты не под git.
 node_modules/
+
+# Стенд геометрии: отчёты и следы прогона — не исходник.
+test-results/
+playwright-report/
