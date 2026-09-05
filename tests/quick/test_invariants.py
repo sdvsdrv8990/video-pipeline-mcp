@@ -955,6 +955,12 @@ ok(not muted_refusal(make({"core/z.py": "def f():\n    try:\n        g()\n    ex
    "исключение поднято дальше — гасить нечего")
 ok(not muted_refusal(make({"core/z.py": "def f():\n    try:\n        g()\n    except Exception:\n        print('сбой')\n"})),
    "след оставлен — отказ не нем, даже если наверх ушла пустота")
+ok(len(muted_refusal(make({"core/z.py": "import contextlib\n\n\ndef f():\n"
+                                        "    with contextlib.suppress(Exception):\n        g()\n"}))) == 1,
+   "`suppress(Exception)` — тот же немой перехват: узла `except` у него нет, а отказ гасится так же")
+ok(not muted_refusal(make({"core/z.py": "import contextlib\n\n\ndef f():\n"
+                                        "    with contextlib.suppress(OSError):\n        g()\n"})),
+   "узкий `suppress(OSError)` — решение о конкретной причине, не улика")
 
 print(f"\n{'='*50}")
 print("== поле записи мимо объявления: промах немой по природе ==")

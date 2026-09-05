@@ -1252,6 +1252,18 @@ def muted_refusal(root: Path = ROOT) -> list[str]:
         except SyntaxError:
             continue
         for node in ast.walk(tree):
+            # `suppress` — тот же немой перехват, но узла ExceptHandler у него нет: пока ось
+            # смотрела только на `except`, переписанный на него отказ уходил из-под потолка.
+            if isinstance(node, ast.With):
+                for item in node.items:
+                    зов = item.context_expr
+                    if (isinstance(зов, ast.Call)
+                            and ast.unparse(зов.func).endswith("suppress")
+                            and {ast.unparse(a) for a in зов.args} & BROAD):
+                        notes.append(f"{source.relative_to(root)}:{node.lineno} — `suppress` "
+                                     "гасит широкий отказ молча: сказать о нём здесь нечем "
+                                     "по построению")
+                continue
             if not isinstance(node, ast.ExceptHandler) or node.type is None:
                 continue
             caught = {ast.unparse(part) for part in
