@@ -29,6 +29,7 @@ from invariants import (  # noqa: E402
     ceiling_moved_unrecorded,
     _bless_stamp,
     acceptance_state_unproven,
+    dead_command,
     acceptance_subject_gap,
     evidence_roster_off_disk,
     judge_off_journal,
@@ -752,6 +753,41 @@ ok(any("без строки" in n for n in
    "сторож на диске без строки каталога: зона не объявлена, и правило «не плодить» слепо")
 ok(not judge_off_journal(make({"README.md": "x"})),
    "каталога сторожей нет вовсе — улики нет, а не обвинение")
+
+
+print("\n== живая команда ведёт в несуществующее ==")
+
+import time as _время
+
+
+def дерево_с_остатком(команда: str, скил: str = "") -> Path:
+    """Дерево с одним незакрытым остатком и, по желанию, со скилом."""
+    запись = {"ts": _время.time(), "key": "aaaa", "kind": "проба", "role": "ОСТАТОК",
+              "what": "хвост", "expected": "закроется", "cmd": команда, "closes": "", "detail": {}}
+    дерево = {f"tests/.journal/stamps-{_время.strftime('%Y%m%d')}.jsonl":
+                  json.dumps(запись, ensure_ascii=False) + "\n",
+              "scripts/guards/_stamp.py": (ROOT / "scripts/guards/_stamp.py").read_text(encoding="utf-8"),
+              "scripts/guards/живой.py": "x = 1\n"}
+    if скил:
+        дерево[".claude/skills/проба/SKILL.md"] = скил
+    return make(дерево)
+
+
+ok(not dead_command(дерево_с_остатком(".venv/bin/python scripts/guards/живой.py --check")),
+   "остаток ведёт в существующего сторожа — молчим")
+ok(any("предлагает запустить" in n for n in
+       dead_command(дерево_с_остатком(".venv/bin/python scripts/guards/снесённый.py --совет"))),
+   "остаток предлагает запустить переименованного сторожа — его печатают КАЖДУЮ сессию")
+ok(any("зовёт" in n for n in dead_command(дерево_с_остатком(
+       ".venv/bin/python scripts/guards/живой.py",
+       "# скил\n\n```bash\n.venv/bin/python scripts/guards/нетуеё.py --суд\n```\n"))),
+   "скил зовёт несуществующее в блоке команд — инструкцию читают перед работой")
+ok(not dead_command(дерево_с_остатком(
+       ".venv/bin/python scripts/guards/живой.py",
+       "# скил\n\nПрежде лежал `scripts/guards/снесённый.py`, удалён как мёртвый.\n")),
+   "в ПРОЗЕ скила имя удалённого — урок о прошлом, а не инструкция: запрещать его нельзя")
+ok(not dead_command(make({"README.md": "x"})),
+   "ни журнала, ни скилов (чужое дерево) — улики нет, а не обвинение")
 
 
 print("\n== приёмка по предметам: состояние обязано быть ДОКАЗАНО ==")

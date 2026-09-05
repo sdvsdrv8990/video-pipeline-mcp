@@ -1945,6 +1945,41 @@ def acceptance_subject_gap(root: Path = ROOT) -> list[str]:
             if (у or {}).get("состояние") == "нет"]
 
 
+ЖИВЫЕ_ЦЕЛИ = re.compile(r"(?:scripts/guards|\.claude/hooks|tests)/[\w./-]+\.(?:py|sh|yaml)")
+
+
+def dead_command(root: Path = ROOT) -> list[str]:
+    """Команда, которую ПРЕДЛАГАЮТ запустить, ведёт в несуществующее.
+
+    Судятся только живые места: команда остатка (её печатают каждую сессию) и блоки команд
+    скилов (это инструкция к исполнению). Журнал и проза скила не судятся — там имя снесённого
+    файла законно, как урок; запрет на него запретил бы записывать прошлое.
+    """
+    notes = []
+    sys.path.insert(0, str(_at(root, ("scripts", "guards"))))
+    import _stamp
+    for хвост in _stamp.tails(root):
+        команда = str(хвост.get("cmd") or "")
+        цели = ЖИВЫЕ_ЦЕЛИ.findall(команда.split(maxsplit=1)[-1] if " " in команда else "")
+        for цель in цели:
+            if not (root / цель).exists():
+                notes.append(f"остаток `{хвост.get('key')}` предлагает запустить `{цель}`, которого "
+                             f"на диске нет: его печатают каждую сессию, и ИИ идёт в пустоту")
+    скилы = _at(root, (".claude", "skills"))
+    if скилы.is_dir():
+        for файл in sorted(скилы.rglob("SKILL.md")):
+            # Только блоки команд: в прозе скила `tests/runner.py` — это УРОК про удалённое
+            # («лежала декларация, ссылавшаяся на несуществующий…»), и обвинять её значит
+            # запрещать записывать прошлое. Тот же разбор, что у тела here-document.
+            блоки = "\n".join(re.findall(r"```(?:bash|sh|console)?\n(.*?)```",
+                                          файл.read_text(encoding="utf-8", errors="replace"), re.S))
+            for цель in sorted(set(ЖИВЫЕ_ЦЕЛИ.findall(блоки))):
+                if not (root / цель).exists():
+                    notes.append(f"скил `{файл.parent.name}` зовёт `{цель}`, которого на диске нет: "
+                                 f"инструкция ведёт в пустоту, а читают её перед работой")
+    return notes
+
+
 SKILLS_CATALOG = (".claude", "skills", "CATALOG.md")
 SKILL_ROW = re.compile(r"^\| `([a-z][a-z-]+)` \|([^|]*)\|([^|]*)\|", re.M)
 
@@ -2336,7 +2371,8 @@ HARD = (("одну зону объявили два хозяина", zone_declar
         ("объявление наблюдения неполно", observation_incomplete),
         ("факт эмитится, а решения о наблюдении нет", facts_without_observer),
         ("сценарий приёмки зовёт несуществующее", acceptance_calls_missing),
-        ("состояние приёмки не доказано", acceptance_state_unproven))
+        ("состояние приёмки не доказано", acceptance_state_unproven),
+        ("живая команда ведёт в несуществующее", dead_command))
 
 # Храповик: вниз можно, вверх нет. Потолок — в файле рядом, совет — как долг закрывается.
 
