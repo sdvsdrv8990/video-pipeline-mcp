@@ -4,48 +4,87 @@
 и «чисто», и «меня не позвали». Отличить их можно только следом, поэтому каждый хук отмечается здесь
 при входе, а судит след `vpm-discipline-guard.py`.
 
+Файл у каждого сторожа СВОЙ. Один общий рвался на полуслове: на событие `Bash` три хука стартуют
+одновременно, рваную запись `json` не разбирает, след обнулялся вместе с датой рождения — и после
+обнуления `dusty()` молчит по построению, то есть прибор врал «всё в порядке». Запись атомарная
+(`os.replace`), чтение прощает любой мусор: улика о срабатывании не вправе ронять сторожа.
+
 След лежит ВНЕ репозитория (`~/.claude/state/`): он про работу конкретной машины, а не про продукт.
-Любая ошибка записи проглатывается молча — сторож не вправе падать из-за собственного журнала.
+
+    python3 .claude/hooks/_trace.py        # показать след целиком
 """
 
 from __future__ import annotations
 
 import json
+import os
+import threading
 import time
 from pathlib import Path
 
-TRACE = Path.home() / ".claude" / "state" / "vpm-trace.json"
+СЛЕД = Path.home() / ".claude" / "state" / "vpm-trace"
+РОЖДЕНИЕ = "_рождение"
 
 
-def _read(path: Path = TRACE) -> dict:
+def _файл(каталог: Path, имя: str) -> Path:
+    return каталог / f"{имя}.json"
+
+
+def _прочесть(путь: Path) -> dict:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        return json.loads(путь.read_text(encoding="utf-8"))
+    except (OSError, ValueError):              # рваный хвост даёт UnicodeDecodeError — тоже ValueError
         return {}
 
 
-def mark(name: str, path: Path = TRACE) -> None:
-    """Отметить срабатывание. Имя — файла хука, чтобы сходилось с объявлением в settings.json."""
+def _записать(путь: Path, данные: dict) -> None:
+    """Сначала во временный файл рядом, потом подмена: читатель видит либо старое, либо новое."""
+    # Имя временного файла уникально и по потоку: два писателя одного файла делили одно имя, и
+    # `os.replace` второго падал уже без своего файла — вместе с ним терялась чужая отметка.
+    врем = путь.with_name(f"{путь.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    врем.write_text(json.dumps(данные, ensure_ascii=False), encoding="utf-8")
+    os.replace(врем, путь)
+
+
+def mark(имя: str, каталог: Path = СЛЕД) -> bool:
+    """Отметить срабатывание; вернуть, записалась ли отметка.
+
+    Ответ нужен не хуку (тот и так не вправе падать из-за своего журнала), а НАБОРУ: молчаливая
+    потеря отметки — ровно тот дефект, из-за которого след однажды обнулился целиком.
+    """
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        след = _read(path)
+        каталог.mkdir(parents=True, exist_ok=True)
         # Рождение самого следа: без него в первый день ВСЕ сторожа выглядят пылящимися — они и не
         # могли отметиться, механизма ещё не было. Обвинять за это значит краснеть на пустом месте.
-        след.setdefault("_рождение", time.time())
-        строка = след.setdefault(name, {})
-        строка["last"] = time.time()
-        строка["count"] = int(строка.get("count") or 0) + 1
-        path.write_text(json.dumps(след, ensure_ascii=False, indent=1), encoding="utf-8")
+        рожд = _файл(каталог, РОЖДЕНИЕ)
+        if not рожд.exists():
+            _записать(рожд, {"ts": time.time()})
+        файл = _файл(каталог, имя)
+        было = _прочесть(файл)
+        _записать(файл, {"last": time.time(), "count": int(было.get("count") or 0) + 1})
+        return True
     except OSError:
-        pass
+        return False
 
 
-def seen(name: str, path: Path = TRACE) -> float:
+def след(каталог: Path = СЛЕД) -> dict[str, dict]:
+    """Весь след: {имя сторожа: {last, count}}. Каталога нет — пусто, а не отказ."""
+    if not каталог.is_dir():
+        return {}
+    return {p.stem: _прочесть(p) for p in sorted(каталог.glob("*.json"))
+            if p.stem != РОЖДЕНИЕ and not p.name.endswith(".tmp")}
+
+
+def seen(имя: str, каталог: Path = СЛЕД) -> float:
     """Когда сторож срабатывал в последний раз. Ноль — не срабатывал ни разу."""
-    return float((_read(path).get(name) or {}).get("last") or 0)
+    return float(_прочесть(_файл(каталог, имя)).get("last") or 0)
 
 
-def dusty(names: list[str], days: float, path: Path = TRACE) -> list[tuple[str, float]]:
+def рождение(каталог: Path = СЛЕД) -> float:
+    return float(_прочесть(_файл(каталог, РОЖДЕНИЕ)).get("ts") or 0)
+
+
+def dusty(имена: list[str], дней: float, каталог: Path = СЛЕД) -> list[tuple[str, float]]:
     """(имя, дней назад) для тех, кто не срабатывал дольше срока. Ни разу — бесконечность.
 
     Судится СРОК, а не «не сработал в этой сессии»: часть сторожей законно молчит целыми сессиями
@@ -53,13 +92,22 @@ def dusty(names: list[str], days: float, path: Path = TRACE) -> list[tuple[str, 
     выключать сторожа, чтобы не мешал.
     """
     сейчас = time.time()
-    рождение = float(_read(path).get("_рождение") or 0)
-    if not рождение or (сейчас - рождение) / 86400 < days:
+    рожд = рождение(каталог)
+    if not рожд or (сейчас - рожд) / 86400 < дней:
         return []                              # след моложе срока — улики нет, а не обвинение
-    out = []
-    for name in names:
-        когда = seen(name, path)
+    итог = []
+    for имя in имена:
+        когда = seen(имя, каталог)
         прошло = float("inf") if not когда else (сейчас - когда) / 86400
-        if прошло > days:
-            out.append((name, прошло))
-    return out
+        if прошло > дней:
+            итог.append((имя, прошло))
+    return итог
+
+
+if __name__ == "__main__":
+    сейчас = time.time()
+    рожд = рождение()
+    print(f"след с {time.strftime('%Y-%m-%d %H:%M', time.localtime(рожд)) if рожд else 'не заведён'}")
+    for имя, строка in sorted(след().items()):
+        часов = (сейчас - float(строка.get("last") or 0)) / 3600
+        print(f"  {имя:26} срабатываний {строка.get('count', 0):5} · последний {часов:.1f} ч назад")

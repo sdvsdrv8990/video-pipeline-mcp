@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -397,11 +398,12 @@ def main() -> int:
     дисц: dict = {"__name__": "не-главный", "__file__": str(HOOKS / "vpm-discipline-guard.py")}
     exec(compile((HOOKS / "vpm-discipline-guard.py").read_text(encoding="utf-8"),
                  str(HOOKS / "vpm-discipline-guard.py"), "exec"), дисц)
-    старый = Path(tempfile.mkdtemp(prefix="vpm-след-")) / "trace.json"
-    давно = __import__("time").time() - 30 * 86400
-    старый.write_text(json.dumps({"_рождение": давно,
-                                  "vpm-fact-gate.py": {"last": давно, "count": 1}},
-                                 ensure_ascii=False), encoding="utf-8")
+    старый = Path(tempfile.mkdtemp(prefix="vpm-след-")) / "vpm-trace"
+    старый.mkdir()
+    давно = time.time() - 30 * 86400
+    (старый / "_рождение.json").write_text(json.dumps({"ts": давно}), encoding="utf-8")
+    (старый / "vpm-fact-gate.py.json").write_text(
+        json.dumps({"last": давно, "count": 1}), encoding="utf-8")
     имена = дисц["объявленные"]()
     ok(имена and "vpm-intent-guard.py" in имена and not any(n.startswith("_") for n in имена),
        "объявленные читаются из settings.json, помощники в счёт не идут")
@@ -410,12 +412,58 @@ def main() -> int:
        "сторож, молчащий 30 дней, назван с возрастом")
     ok(any("ни разу" in s for s in пыль),
        "сторож, не срабатывавший НИ РАЗУ, назван отдельно — это не то же, что «давно»")
-    свежий = Path(tempfile.mkdtemp(prefix="vpm-след-новый-")) / "trace.json"
-    свежий.write_text(json.dumps({"_рождение": __import__("time").time()}), encoding="utf-8")
+    свежий = Path(tempfile.mkdtemp(prefix="vpm-след-новый-")) / "vpm-trace"
+    свежий.mkdir()
+    (свежий / "_рождение.json").write_text(json.dumps({"ts": time.time()}), encoding="utf-8")
     ok(not дисц["пылящиеся"](ROOT, 7.0, свежий),
        "след моложе срока — улики нет, а не обвинение всем сразу")
-    ok(not дисц["пылящиеся"](ROOT, 7.0, Path("/нет/такого/следа.json")),
+    ok(not дисц["пылящиеся"](ROOT, 7.0, Path("/нет/такого/следа")),
        "следа нет вовсе (чужая машина, CI) — молчим")
+
+    print("§12а след переживает одновременную запись: улику о срабатывании нельзя терять")
+    трасса: dict = {"__name__": "не-главный"}
+    exec(compile((HOOKS / "_trace.py").read_text(encoding="utf-8"),
+                 str(HOOKS / "_trace.py"), "exec"), трасса)
+    гнездо = Path(tempfile.mkdtemp(prefix="vpm-след-гонка-")) / "vpm-trace"
+    имена = [f"хук-{i}.py" for i in range(6)]
+    with ThreadPoolExecutor(max_workers=12) as пул:
+        list(пул.map(lambda имя: [трасса["mark"](имя, гнездо) for _ in range(40)], имена))
+    счёт = {и: (трасса["след"](гнездо).get(и) or {}).get("count") for и in имена}
+    ok(all(c == 40 for c in счёт.values()),
+       "шесть хуков по 40 отметок разом — ни одна не потеряна")
+    ok(трасса["рождение"](гнездо), "дата рождения следа пережила гонку — иначе отсрочка встаёт заново")
+    (гнездо / "хук-0.py.json").write_bytes(b"{\xd1")
+    try:                                       # мусор не вправе ронять читателя — иначе слепнет всё
+        живые = [и for и, з in трасса["след"](гнездо).items() if з]
+    except Exception as беда:                  # noqa: BLE001 — предмет проверки и есть «что угодно»
+        живые = [f"чтение упало: {беда!r}"]
+    ok(живые == sorted(имена[1:]) and трасса["рождение"](гнездо),
+       "рваная запись уносит только свой файл, а не весь след с рождением")
+    ok(трасса["seen"]("нет-такого.py", гнездо) == 0,
+       "не срабатывавший сторож — ноль, а не отказ чтения")
+
+    # Один и тот же хук ДВАЖДЫ разом — не выдумка: параллельные вызовы инструментов будят его
+    # столько раз, сколько команд. Здесь проверяется не счёт (последний писатель законно
+    # затирает), а два свойства: отметка не теряется молча и читатель не видит рванья.
+    один = Path(tempfile.mkdtemp(prefix="vpm-след-один-")) / "vpm-trace"
+    рвань, стоп = [], []
+    def читатель():
+        # Существование спрашивается ДО чтения: спросив после, ловишь собственный первый заход,
+        # случившийся раньше создания файла, — проверка мигала именно на этом.
+        while not стоп:
+            файлик = один / "хук.py.json"
+            было = файлик.exists()
+            if было and not трасса["_прочесть"](файлик):
+                рвань.append(1)
+    with ThreadPoolExecutor(max_workers=9) as пул:
+        глаз = пул.submit(читатель)
+        отметки = list(пул.map(lambda _: [трасса["mark"]("хук.py", один) for _ in range(40)],
+                               range(8)))
+        стоп.append(1)
+        глаз.result()
+    ok(all(all(партия) for партия in отметки),
+       "восемь писателей одного файла — ни одной молча потерянной отметки")
+    ok(not рвань, "читатель ни разу не увидел рваную запись: подмена файла атомарна")
 
     print("§10 форма того, что правка оставила в дереве")
     inv: dict = {"__name__": "не-главный", "__file__": str(HOOKS / "vpm-invariants.py")}

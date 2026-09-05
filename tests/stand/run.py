@@ -5,7 +5,7 @@
 его исполнитель и сколько прогон стоил. Многоконсольность не изобретается: её даёт консоль
 (`-p`, `--output-format json`, свои `--settings`), а стенд объявляет изоляцию и судит улики.
 
-Улик четыре, и все машинные: след хуков (`~/.claude/state/vpm-trace.json` в СВОЁМ доме), отказы
+Улик четыре, и все машинные: след хуков (`~/.claude/state/vpm-trace/` в СВОЁМ доме), отказы
 в отчёте консоли, изменился ли файл на диске и цена прогона (ходы, секунды, доллары).
 
     run.py --список          # что объявлено
@@ -125,9 +125,10 @@ def прогон(сценарий: dict, свод: dict, корень: Path) -> 
     # а повтор стоит денег и даёт другой путь модели.
     (корень / "отчёт.json").write_text(json.dumps(отчёт, ensure_ascii=False, indent=1),
                                        encoding="utf-8")
-    след = свой_дом / ".claude" / "state" / "vpm-trace.json"
+    след = свой_дом / ".claude" / "state" / "vpm-trace"
     return {
-        "сработали": json.loads(след.read_text(encoding="utf-8")) if след.exists() else {},
+        "сработали": {p.stem: json.loads(p.read_text(encoding="utf-8"))
+                      for p in sorted(след.glob("*.json"))} if след.is_dir() else {},
         "отказы": len(отчёт.get("permission_denials") or []),
         "итог": отчёт.get("terminal_reason", "?"),
         "ходов": отчёт.get("num_turns"),

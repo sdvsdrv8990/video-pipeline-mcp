@@ -34,7 +34,7 @@ MSG = """Сторож дисциплины: объявленные сторож�
 прячущий все его настоящие проверки.
 
 Посмотреть след:
-    .venv/bin/python -c "import json,pathlib;print(json.dumps(json.loads((pathlib.Path.home()/'.claude/state/vpm-trace.json').read_text()),ensure_ascii=False,indent=1))"
+    python3 .claude/hooks/_trace.py
 
 Выключить: VPM_DISCIPLINE_GUARD=off."""
 
@@ -56,8 +56,8 @@ def пылящиеся(root: Path = PROJ, дней: float = ПЫЛЬ_ДНЕЙ, �
         import _trace
     except ImportError:
         return []
-    путь = след or _trace.TRACE
-    if not путь.exists():
+    путь = след or _trace.СЛЕД
+    if not путь.is_dir():
         return []
     return [f"  {имя} — срабатывал {'ни разу' if math.isinf(прошло) else f'{прошло:.0f} дней назад'}"
             for имя, прошло in _trace.dusty(объявленные(root), дней, путь)]

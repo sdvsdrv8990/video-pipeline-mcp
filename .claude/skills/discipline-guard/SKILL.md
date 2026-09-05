@@ -6,6 +6,14 @@ description: Use when a mechanism of the video_pipeline_mcp project stops being 
 # Сторож дисциплины — чтобы механизмы не пылились
 
 Механизм: `.claude/hooks/vpm-discipline-guard.py` (`Stop`), общий след — `.claude/hooks/_trace.py`.
+
+След — КАТАЛОГ `~/.claude/state/vpm-trace/`, файл на сторожа: один общий файл рвался, когда
+три хука одного события писали разом, и обнулялся вместе с датой рождения — а после сброса
+отсрочка встаёт заново и сторож дисциплины молчит по построению. Посмотреть:
+
+```bash
+python3 .claude/hooks/_trace.py
+```
 Проверки: `tests/quick/test_hooks.py §12`. Выключатель: `VPM_DISCIPLINE_GUARD=off`.
 
 ## 1. Тишина сторожа двузначна, и это его главный дефект
