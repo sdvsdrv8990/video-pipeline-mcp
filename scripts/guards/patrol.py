@@ -10,12 +10,14 @@
     patrol.py --улика редактирование # главная улика; --файл X выведет род сам
     patrol.py --кто --улика создание # сухой ход: кто отзовётся, без запуска
     patrol.py --улики                # словарь: три главные и привязанные к ним роды
+    patrol.py --факт --улика создание # кто ОБЯЗАН был сработать по улике — и сработал ли
 """
 from __future__ import annotations
 
 import argparse
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -36,6 +38,34 @@ def словарь() -> int:
         print(f"  роды:      {', '.join(роды) or '—'}")
         print(f"  поднимает: {', '.join(отзыв) or 'никого — улика объявлена, а сторожей на неё нет'}")
     return 0
+
+
+def факт(улики: list[str], минут: float) -> int:
+    """Обязанные сработать хуки против СЛЕДА: молчание объявленного — пропуск срабатывания.
+
+    Правило срабатывания живёт в одном месте — в самом следе (`.claude/hooks/_trace.py`); здесь
+    только сверка ожидаемого с фактическим. Окно нужно, потому что вчерашняя отметка про
+    сегодняшнюю работу не говорит ничего.
+    """
+    sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
+    import _trace                                                          # noqa: PLC0415
+
+    ожидаемые = _evidence.ожидаются(улики)
+    if not ожидаемые:
+        print(f"   на улику {', '.join(улики)} не встаёт ни один хук — события у неё нет "
+              f"(у «чтения» это остаток 75e4, а не забытая строка)")
+        return 0
+    сейчас, молчали = time.time(), []
+    for имя in ожидаемые:
+        когда = _trace.seen(имя)
+        свежо = когда and (сейчас - когда) / 60 <= минут
+        назад = "ни разу" if not когда else f"{(сейчас - когда) / 60:.0f} мин назад"
+        print(f"   {'✓' if свежо else '✗'} {имя} — {назад}")
+        молчали += [] if свежо else [имя]
+    if молчали:
+        print(f"   промолчали за {минут:.0f} мин: {', '.join(молчали)}. Либо событие до них не "
+              f"дошло (правка мимо инструмента, чужой matcher), либо сторож сломан молча.")
+    return len(молчали)
 
 
 def улики_наряда(args: argparse.Namespace) -> list[str]:
@@ -60,6 +90,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--файл", action="append", default=[], help="тронутый файл — род выведется сам")
     parser.add_argument("--кто", action="store_true", help="сухой ход: кто отзовётся, без запуска")
     parser.add_argument("--улики", action="store_true", help="словарь улик и кого они поднимают")
+    parser.add_argument("--факт", action="store_true",
+                        help="сверить след: кто из обязанных хуков сработал, а кто промолчал")
+    parser.add_argument("--за", type=float, default=60.0, metavar="МИНУТ",
+                        help="окно свежести отметки для --факт (по умолчанию 60)")
     args = parser.parse_args(argv)
 
     if args.улики:
@@ -78,6 +112,13 @@ def main(argv: list[str] | None = None) -> int:
     набор = _evidence.наряд(улики)
     главные = _evidence.expand(улики)
     print(f"── наряд по улике: {', '.join(улики)} → главные: {', '.join(главные) or '—'}")
+
+    if args.факт:
+        молчали = факт(главные or улики, args.за)
+        return _verdict.close(f"факт срабатывания по улике {', '.join(главные) or '—'}", молчали,
+                              " ".join([".venv/bin/python scripts/guards/patrol.py",
+                                        *(argv if argv is not None else sys.argv[1:])]),
+                              детали={"окно_минут": args.за})
     if not набор:
         print("   на эту улику не отзывается никто — это находка, а не тишина: "
               "объяви сторожа в scripts/guards/evidence.yaml")

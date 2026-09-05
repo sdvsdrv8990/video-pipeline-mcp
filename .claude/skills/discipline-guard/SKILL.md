@@ -12,8 +12,14 @@ description: Use when a mechanism of the video_pipeline_mcp project stops being 
 отсрочка встаёт заново и сторож дисциплины молчит по построению. Посмотреть:
 
 ```bash
-python3 .claude/hooks/_trace.py
+python3 .claude/hooks/_trace.py                                  # весь след
+.venv/bin/python scripts/guards/patrol.py --факт --улика редактирование  # кто ОБЯЗАН был
 ```
+
+`--факт` отвечает на вопрос таска «активация сработала?»: берёт из росписи улик (`scripts/guards/evidence.yaml`, раздел `хуки`) тех, кого эта улика обязана разбудить, и
+сверяет со следом в окне `--за` (минуты). Молчание объявленного — ОТКАЗ с именем, а не
+тишина. Первый же прогон нашёл `F233`: хуки на `PostToolUse Write|Edit|MultiEdit` не видят
+правок скриптом, а прямой запуск сторожа из набора ставит отметку наравне с событием.
 Проверки: `tests/quick/test_hooks.py §12`. Выключатель: `VPM_DISCIPLINE_GUARD=off`.
 
 ## 1. Тишина сторожа двузначна, и это его главный дефект

@@ -56,7 +56,7 @@ def пылящиеся(root: Path = PROJ, дней: float = ПЫЛЬ_ДНЕЙ, �
         import _trace
     except ImportError:
         return []
-    путь = след or _trace.СЛЕД
+    путь = _trace.дом(след)
     if not путь.is_dir():
         return []
     return [f"  {имя} — срабатывал {'ни разу' if math.isinf(прошло) else f'{прошло:.0f} дней назад'}"
