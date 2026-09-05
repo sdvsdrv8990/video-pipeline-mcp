@@ -12,7 +12,7 @@
 превышение = exit 1), `--bless` (переписать потолок после прополки).
 Границы текста в Python даёт `ast`+`tokenize`, в остальных языках — лексер `pygments`
 (правило не зависит от стека, новый язык не требует правки сторожа); цель без лексера
-разбирается по решётке. Цели — `git ls-files`, иначе новый пакет не виден.
+разбирается по решётке. Цели — `git ls-files` вместе с неотслеживаемым: иначе новый файл не судится вовсе.
 """
 
 import argparse
@@ -273,7 +273,10 @@ def _tracked() -> list[Path]:
     """Цели под контролем git: новый пакет и новая декларация попадают в замер сами."""
     globs = TARGET_GLOBS
     try:
-        out = subprocess.run(["git", "-C", str(PROJECT), "ls-files", "-z", *globs],
+        # `--others --exclude-standard`: файл, созданный в этой сессии, до индекса не судился
+        # ничем, и храповик печатал «0 при потолке 0» — зелёное, которого не было.
+        out = subprocess.run(["git", "-C", str(PROJECT), "ls-files", "-z",
+                              "--cached", "--others", "--exclude-standard", *globs],
                              capture_output=True, text=True, check=True).stdout
     except (OSError, subprocess.CalledProcessError) as e:
         raise SystemExit(

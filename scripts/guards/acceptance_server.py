@@ -38,7 +38,10 @@ def declared(path: Path = STRUCTURE) -> dict:
 
 def sources(root: Path = ROOT) -> list[str]:
     """Файлы дерева сервера под git. Наборы не судятся здесь: у них свой каталог зон."""
-    done = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "*.py"],
+    # Неотслеживаемое берётся наравне с индексом: новый файл — самый частый предмет приёмки,
+    # и до `git add` он не имел ни зоны, ни структуры, ни имени, которое кто-то проверил.
+    done = subprocess.run(["git", "-C", str(root), "ls-files", "-z",
+                           "--cached", "--others", "--exclude-standard", "*.py"],
                           capture_output=True, text=True)
     return sorted(p for p in done.stdout.split("\0")
                   if p and not any(часть in SKIP for часть in Path(p).parts))

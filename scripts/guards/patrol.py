@@ -12,6 +12,7 @@
     patrol.py --улики                # словарь: три главные и привязанные к ним роды
     patrol.py --факт --улика создание # кто ОБЯЗАН был сработать по улике — и сработал ли
     patrol.py --задача правка-сервера # что рождает этот тип работы и кого поднять сверх авто
+    patrol.py --новый [--таски]      # НОВЫЙ файл под набором судей; --таски пишет несделанное остатком
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import _evidence                                                           # noqa: E402
+import _stamp                                                              # noqa: E402
 import _verdict                                                            # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -101,13 +103,75 @@ def улики_наряда(args: argparse.Namespace) -> list[str]:
     return названы or _evidence.rods_of(_verdict.touched(ROOT))
 
 
-def поднять(имя: str, команда: list[str]) -> tuple[str, int, str]:
+def поднять(имя: str, команда: list[str], полностью: bool = False) -> tuple[str, int, str]:
     """Сторож поднимается СВОИМ путём и своим питоном: вердикт принадлежит ему, а не оболочке."""
     исполнитель = str(PYTHON) if PYTHON.exists() else sys.executable
     done = subprocess.run([исполнитель, str(Path(__file__).with_name(имя)), *команда],
                           cwd=str(ROOT), capture_output=True, text=True)
-    хвост = [с for с in (done.stdout or done.stderr or "").splitlines() if с.strip()]
-    return имя, done.returncode, (хвост[-1] if хвост else "(молча)")
+    вывод = done.stdout or done.stderr or ""
+    хвост = [с for с in вывод.splitlines() if с.strip()]
+    return имя, done.returncode, (вывод if полностью else (хвост[-1] if хвост else "(молча)"))
+
+
+def неотслеживаемые() -> list[str]:
+    """Файлы, которых git ещё не знает. Игнорируемое не берём — это артефакты, а не правка."""
+    done = subprocess.run(["git", "ls-files", "--others", "--exclude-standard", "-z"],
+                          cwd=str(ROOT), capture_output=True, text=True)
+    return sorted(и for и in done.stdout.split("\0") if и.endswith((".py", ".yaml", ".md", ".sh")))
+
+
+def свести(файлы: list[str], выводы: dict[str, str]) -> dict[str, list[str]]:
+    """Слова судей, названные ПО ИМЕНИ файла. Чужие строки не берём: сведение — не пересказ."""
+    слова: dict[str, list[str]] = {ф: [] for ф in файлы}
+    for имя, вывод in sorted(выводы.items()):
+        for строка in вывод.splitlines():
+            for ф in файлы:
+                if ф in строка and строка.strip():
+                    слова[ф].append(f"{имя}: {строка.strip()[:150]}")
+    return слова
+
+
+def новый(цели: list[str], таски: bool) -> int:
+    """Новый файл судится НАБОРОМ судей: что каждый сказал ПРО НЕГО, и что осталось несделанным.
+
+    Правила не дублируются — судьи поднимаются свои, а наряд лишь сводит их слова по имени файла.
+    Несделанное с `--таски` уходит подписью ОСТАТОК: дальше его читают сторож намерений (запрещает
+    запись, пока не признано) и сторож дисциплины — двойная проверка от лени.
+    """
+    try:                                       # след: без отметки механизм выглядит пылящимся
+        sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
+        import _trace
+        _trace.mark("patrol.py")
+    except Exception:                          # noqa: BLE001 — след не важнее самой работы
+        pass
+    файлы = цели or неотслеживаемые()
+    if not файлы:
+        print("новых файлов нет — улики нет, а не «всё в порядке»: назови файл через --файл")
+        return 0
+    # Улика «создание» плюс РОДЫ самих файлов: новый `.py` дерева сервера — это ещё и
+    # `правка-сервера`, и приёмка сервера обязана его увидеть, а не только храповик текста.
+    судьи = _evidence.наряд(["создание", *_evidence.rods_of(файлы)])
+    слова = свести(файлы, {и: поднять(и, к, полностью=True)[2] for и, к in судьи})
+    долг = 0
+    for ф in файлы:
+        сказано = слова[ф]
+        print(f"\n▸ {ф} — судей поднято {len(судьи)}: {', '.join(и for и, _ in судьи)}")
+        for с in сказано:
+            print(f"   ✗ {с}")
+        if not сказано:
+            print("   ✓ ни один судья не назвал этот файл — он уже в их наборах и конфигурациях")
+        долг += len(сказано)
+        if таски and сказано:
+            for с in сказано:
+                _stamp.sign("проба", "ОСТАТОК", f"новый файл {ф}: {с[:120]}",
+                            intent="новый файл под набором судей",
+                            expected="файл входит в наборы и конфигурации судей",
+                            cmd=f".venv/bin/python scripts/guards/patrol.py --новый --файл {ф}",
+                            root=ROOT)
+    if долг and not таски:
+        print(f"\nнесделанного {долг}. Записать остатками (их прочтут сторожа намерений и "
+              f"дисциплины): повтори с --таски")
+    return долг
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -117,6 +181,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--файл", action="append", default=[], help="тронутый файл — род выведется сам")
     parser.add_argument("--кто", action="store_true", help="сухой ход: кто отзовётся, без запуска")
     parser.add_argument("--улики", action="store_true", help="словарь улик и кого они поднимают")
+    parser.add_argument("--новый", action="store_true",
+                        help="новый файл под набором судей: что каждый сказал про него")
+    parser.add_argument("--таски", action="store_true",
+                        help="несделанное записать остатками — их читают оба сторожа")
     parser.add_argument("--задача", metavar="ТИП",
                         help="разбор типа работы: улика, кто проснётся сам, кого поднять рукой")
     parser.add_argument("--факт", action="store_true",
@@ -129,6 +197,11 @@ def main(argv: list[str] | None = None) -> int:
         return словарь()
     if args.задача:
         return задача(args.задача)
+    if args.новый:
+        долг = новый(list(args.файл), args.таски)
+        return _verdict.close("новый файл под набором судей", долг,
+                              " ".join([".venv/bin/python scripts/guards/patrol.py",
+                                        *(argv if argv is not None else sys.argv[1:])]))
 
     улики = улики_наряда(args)
     известные = set(_evidence.главные()) | set(_evidence.роды())
