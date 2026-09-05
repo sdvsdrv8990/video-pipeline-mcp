@@ -160,7 +160,7 @@ exclude = ["tests*", "workspace*", "docs*"]
 [tool.ruff]
 target-version = "py311"
 line-length = 120
-exclude = ["workspace", ".venv", "docs"]
+exclude = ["workspace", ".venv", "docs", "node_modules"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "W"]

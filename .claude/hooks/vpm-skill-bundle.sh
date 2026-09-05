@@ -97,7 +97,7 @@ ctx = f"""## Скилы проекта: что установлено ПРЯМО
 Механизм берём библиотечный, себе оставляем политику — ось 1a в `code-quality`. Перед тем как
 писать обход под частный случай, проверь сигнатуру чужого API вызовом, а не памятью.
 
-**Гейт — это ШЕСТЬ джоб `ci.yml`, а не один `pytest`.** Прогонять из `.venv` и смотреть exit-код каждой:
+**Гейт — это СЕМЬ джоб `ci.yml`, а не один `pytest`.** Прогонять из `.venv` и смотреть exit-код каждой:
 `lint` (`ruff check .` + `mypy`) · `test` (`pytest`) · `conformance` (`python tests/conformance/test_conformance.py`) ·
 `security` (`bandit -r core server.py -ll` + `pip-audit`) · `comment-guard` (`python scripts/guards/comment_guard.py --check`) ·
 `gitleaks`. Считать по `python3 -c "import yaml;print(list(yaml.safe_load(open('.github/workflows/ci.yml'))['jobs']))"`, а не по этой строке и не грепом (`push:` — триггер, а не джоба). Локально зелёное ещё не

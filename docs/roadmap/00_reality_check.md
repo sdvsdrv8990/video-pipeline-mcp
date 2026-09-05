@@ -22,7 +22,7 @@
 | Деклараций `config/` | **8** YAML + `config/templates/` (6 схем таблиц) | `ls config/*.yaml \| wc -l` |
 | Тестов в git | **40** файлов под `tests/` (в т.ч. `tests/harness/` — живой сервер под тестом) | `git ls-files tests \| wc -l` |
 | Коммитов | **205** | `git rev-list --count HEAD` |
-| CI | **6 джоб**: `lint` · `test` · `conformance` · `security` · `comment-guard` · `gitleaks` | `python3 -c "import yaml;print(list(yaml.safe_load(open('.github/workflows/ci.yml'))['jobs']))"` |
+| CI | **7 джоб**: `lint` · `test` · `conformance` · `security` · `comment-guard` · `gitleaks` | `python3 -c "import yaml;print(list(yaml.safe_load(open('.github/workflows/ci.yml'))['jobs']))"` |
 | Packaging | `pyproject.toml` — единственный файл зависимостей, разведённый по зонам (состав групп печатает сам манифест) | файл на диске |
 | Локальные модели | 4 каталога весов (`img/sd-turbo`, `img/sdxl-turbo`, `bg/modnet`, `upscale/swin2SR`) + 4 голоса piper; подъём **на видеокарте** (ROCm, без root) | `ls vendor/models/*` |
 
@@ -61,7 +61,7 @@
 | `server.py` = 1521 строка, монолит; `tools/` подпапки пусты | ✅ закрыто (A2): 465 строк, 8 групп |
 | `tests/` в `.gitignore` — тесты не в git | ✅ закрыто (I1): 36 файлов в git; игнорится только `.pytest_cache`/`__pycache__`/`.coverage` |
 | `docs/dev/` в `.gitignore` | ✅ снято: `docs/dev/` удалён, документация = `docs/roadmap/` в git |
-| Нет `.github/workflows/` | ✅ закрыто (I3): CI, сегодня 6 джоб — состав в §1 |
+| Нет `.github/workflows/` | ✅ закрыто (I3): CI, сегодня 7 джоб — состав в §1 |
 | Нет `pyproject.toml`, зависимости не объявлены | ✅ закрыто: `pyproject.toml` (полы по advisory) |
 | Нет `mypy`/`ruff` | ✅ закрыто: оба в `[dev]` и в CI |
 | `scripts/` пусто | ✅ закрыто: `spec_to_schema.py`, `models.py`, `set_provider_key.py` + этаж сторожей `scripts/guards/`. `config_to_schema.py` снят S25 по завершении переноса |

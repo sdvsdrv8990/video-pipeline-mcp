@@ -38,6 +38,25 @@ jobs:
           griffe check core -s . -a HEAD~1 -b HEAD
           griffe check tools -s . -a HEAD~1 -b HEAD
 
+  studio:
+    name: studio (tsc + eslint)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tests/studio_emulation
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tests/studio_emulation/package-lock.json
+      - run: npm ci
+      - name: tsc (настоящий разбор .tsx вместо текстового)
+        run: npm run typecheck
+      - name: eslint (правило хуков и полнота зависимостей)
+        run: npm run lint
+
   test:
     name: test (in-process, script exit-code = gate)
     runs-on: ubuntu-latest

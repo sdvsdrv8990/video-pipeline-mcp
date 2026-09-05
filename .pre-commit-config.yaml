@@ -30,6 +30,23 @@ repos:
         types: [python]
         pass_filenames: false
 
+      # Дерево студии судится НАСТОЯЩИМ разбором, а не текстом. Гоняется только на правке
+      # `.ts/.tsx`: node-прогон дороже питоновских, и платить им за каждый коммит незачем.
+      # Нет `node_modules` — это «не судил», а не «чисто», поэтому отказ, а не пропуск.
+      - id: studio-typecheck
+        name: tsc (разбор дерева студии)
+        entry: bash -c 'cd tests/studio_emulation && { [ -d node_modules ] || { echo "нет node_modules — сперва npm ci в tests/studio_emulation; прогон НЕ состоялся"; exit 1; }; } && npm run --silent typecheck'
+        language: system
+        files: ^tests/studio_emulation/.*\.(ts|tsx)$
+        pass_filenames: false
+
+      - id: studio-lint
+        name: eslint (правило хуков и полнота зависимостей)
+        entry: bash -c 'cd tests/studio_emulation && { [ -d node_modules ] || { echo "нет node_modules — сперва npm ci в tests/studio_emulation; прогон НЕ состоялся"; exit 1; }; } && npm run --silent lint'
+        language: system
+        files: ^tests/studio_emulation/.*\.(ts|tsx)$
+        pass_filenames: false
+
       - id: import-linter
         name: import-linter (этажность и границы групп)
         entry: .venv/bin/lint-imports
