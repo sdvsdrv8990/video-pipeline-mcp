@@ -1794,6 +1794,53 @@ def judge_off_journal(root: Path = ROOT) -> list[str]:
     return notes
 
 
+EVIDENCE_DECL = ("scripts", "guards", "evidence.yaml")
+
+
+def evidence_roster_off_disk(root: Path = ROOT) -> list[str]:
+    """Роспись улик разошлась с диском: словарь есть, а поднимает он не то и не тех.
+
+    Расхождение здесь выключает РУЧНОЙ режим молча: наряд отвечает пустым набором, и пустота
+    неотличима от «на эту улику никто и не нужен».
+    """
+    объявление = _at(root, EVIDENCE_DECL)
+    дом = _at(root, GUARDS)
+    if not объявление.exists() or not дом.is_dir():
+        return []
+    try:
+        свод = yaml.safe_load(объявление.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as beda:
+        return [f"{'/'.join(EVIDENCE_DECL)} не разбирается ({str(beda)[:60]}) — ручной режим "
+                f"поднимает пустой набор, и это неотличимо от «сторожей на улику нет»"]
+    главные, роды = свод.get("главные") or {}, свод.get("роды") or {}
+    роспись, notes = свод.get("сторожа") or {}, []
+    for имя, род in sorted(роды.items()):
+        главная = (род or {}).get("главная")
+        if not главная:
+            notes.append(f"род улики «{имя}» не привязан ни к одной главной — по трём главным "
+                         f"он не поднимается, то есть не поднимается вовсе")
+        elif главная not in главные:
+            notes.append(f"род улики «{имя}» привязан к «{главная}», которой нет среди главных "
+                         f"{sorted(главные)}")
+    на_диске = {p.name for p in дом.glob("*.py") if not p.name.startswith("_")}
+    notes += [f"роспись зовёт сторожа `{имя}`, которого нет на диске — наряд по его улике "
+              f"поднимет пустоту" for имя in sorted(set(роспись) - на_диске)]
+    notes += [f"{имя} на диске, но в росписи улик его нет: по улике он не поднимется никогда, "
+              f"сколько бы ни судил" for имя in sorted(на_диске - set(роспись))]
+    for имя, дело in sorted(роспись.items()):
+        for улика in (дело or {}).get("улики") or []:
+            if улика not in главные:
+                notes.append(f"{имя} объявлен на улику «{улика}», которой нет среди главных: "
+                             f"роспись читается по главным, и эта строка мертва")
+    for имя in sorted(главные):
+        привязан = any((род or {}).get("главная") == имя for род in роды.values())
+        отзывается = any(имя in ((дело or {}).get("улики") or []) for дело in роспись.values())
+        if not привязан and not отзывается:
+            notes.append(f"главная улика «{имя}» объявлена, но к ней не привязан ни один род и на "
+                         f"неё не отзывается ни один сторож — она пылится")
+    return notes
+
+
 SKILLS_CATALOG = (".claude", "skills", "CATALOG.md")
 SKILL_ROW = re.compile(r"^\| `([a-z][a-z-]+)` \|([^|]*)\|([^|]*)\|", re.M)
 
@@ -1989,6 +2036,18 @@ def _acceptance(root: Path) -> dict:
         return {"__битый__": str(beda)}
 
 
+
+def _evidence_роды(root: Path = ROOT) -> dict:
+    """Единый словарь улик читается своим источником; нет его — родов нет, а не «род неизвестен»."""
+    объявление = _at(root, ("scripts", "guards", "evidence.yaml"))
+    if not объявление.exists():
+        return {}
+    try:
+        return (yaml.safe_load(объявление.read_text(encoding="utf-8")) or {}).get("роды") or {}
+    except yaml.YAMLError:
+        return {}
+
+
 def acceptance_calls_missing(root: Path = ROOT) -> list[str]:
     """Сценарий приёмки обязан звать существующее — исполнителя, род улики, журнал.
 
@@ -2002,7 +2061,9 @@ def acceptance_calls_missing(root: Path = ROOT) -> list[str]:
     if "__битый__" in config:
         return [f"scripts/guards/acceptance_scenarios.yaml не разбирается ({config['__битый__'][:80]}) — "
                 f"эксперт молчит, и это не отличить от «сценариев нет»"]
-    роды, notes = set(config.get("роды", {})), []
+    # Роды улики объявлены единым словарём (`evidence.yaml`), а не рядом со сценариями:
+    # вторая копия словаря разъехалась бы с первой на первой же новой улике.
+    роды, notes = set(_evidence_роды(root)), []
     тексты = _suite_text(root)
     for сценарий in config.get("сценарии", []):
         имя = сценарий.get("имя", "?")
@@ -2118,6 +2179,7 @@ HARD = (("одну зону объявили два хозяина", zone_declar
         ("журнал разошёлся со своим указателем", journal_off_index),
         ("скил без объявленной зоны", skill_without_zone),
         ("судья мимо общего журнала", judge_off_journal),
+        ("роспись улик разошлась", evidence_roster_off_disk),
         ("ось качества без объявленного параметра", quality_axis_without_parameter),
         ("урок зовёт несуществующего исполнителя", lesson_without_executor),
         ("объявление наблюдения неполно", observation_incomplete),

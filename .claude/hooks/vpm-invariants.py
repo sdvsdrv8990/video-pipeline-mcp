@@ -127,20 +127,22 @@ def flows(paths: list[str], routes: Path = ROUTES) -> list[str]:
 
 
 def acceptance(paths: list[str], scenarios: Path = SCENARIOS) -> list[str]:
-    """Что здесь ломается чаще всего — имена сценариев приёмки по роду улики, а не лекция."""
+    """Что здесь ломается чаще всего — имена сценариев приёмки по роду улики, а не лекция.
+
+    Род улики выводит ЕДИНЫЙ словарь (`scripts/guards/_evidence.py`) — тот же, по которому
+    поднимается наряд и советует приёмка; своей копии разбора у шима нет.
+    """
     if not scenarios.exists() or not paths:
         return []
     try:
-        import fnmatch
-
+        sys.path.insert(0, str(PROJ / "scripts" / "guards"))
         import yaml
+
+        import _evidence
         объявлено = yaml.safe_load(scenarios.read_text(encoding="utf-8")) or {}
     except Exception:                          # noqa: BLE001 — сломанное объявление судит ось
         return []
-    роды = {имя for имя, род in (объявлено.get("роды") or {}).items()
-            for glob in (род.get("когда") or [])
-            for путь in paths
-            if fnmatch.fnmatch(путь, glob) or fnmatch.fnmatch(Path(путь).name, glob)}
+    роды = set(_evidence.rods_of(paths))
     имена = [s["имя"] for s in (объявлено.get("сценарии") or [])
              if set(s.get("улики", [])) & роды][:3]
     if not имена:

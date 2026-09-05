@@ -14,6 +14,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import _evidence                                                           # noqa: E402
 import _verdict                                                            # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -33,15 +34,8 @@ def tasks(рядом: Path) -> dict:
     return (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
 
 
-def rods_of(files: list[str], config: dict) -> list[str]:
-    """Род улики выводится из тронутых файлов: спрашивать его у ИИ значило бы верить ему на слово."""
-    out = []
-    for name, item in config.get("роды", {}).items():
-        globs = item.get("когда") or []
-        if any(fnmatch.fnmatch(имя, glob)
-               for имя in [*files, *(Path(f).name for f in files)] for glob in globs):
-            out.append(name)
-    return out
+# Род улики выводится из тронутых файлов ЕДИНЫМ словарём: своей копии разбора у приёмки нет.
+rods_of = _evidence.rods_of
 
 
 def advise(config: dict, rods: list[str], дерево: str) -> int:

@@ -25,6 +25,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import _acceptance as общее                                                # noqa: E402
+import _evidence                                                           # noqa: E402
 import _verdict                                                            # noqa: E402
 import _studio_surface as surface                                          # noqa: E402
 
@@ -317,11 +318,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.совет:
         config = общее.scenarios()
-        роды = list(dict.fromkeys(args.улика + общее.rods_of(args.файл, config)))
-        неизвестные = [r for r in роды if r not in config.get("роды", {})]
+        роды = list(dict.fromkeys(args.улика + общее.rods_of(args.файл)))
+        известные = _evidence.роды()
+        неизвестные = [r for r in роды if r not in известные]
         if неизвестные:
             print(f"acceptance_studio: род улики не объявлен: {неизвестные}; известны "
-                  f"{sorted(config.get('роды', {}))}", file=sys.stderr)
+                  f"{sorted(известные)}", file=sys.stderr)
             return 2
         return общее.advise(config, роды, "студия")
 
