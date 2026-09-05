@@ -19,6 +19,10 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import _verdict                                                            # noqa: E402
+
 REGISTRY = Path(__file__).resolve().parents[2] / "docs" / "roadmap" / "02_findings.md"
 FLOOR = Path(__file__).with_name("findings_count_baseline.txt")
 ROW = re.compile(r"^\| (~~)?\*{0,2}(F\d+)\*{0,2}(?:~~)?\s*\|([^|]*)\|")
@@ -92,7 +96,11 @@ def main() -> int:
               "с ним ослеп status_off_registry", file=sys.stderr)
         return 1
     print(f"реестр читается машиной: {len(rows)} строк при поле {floor}")
-    return 0
+    # Чужое дерево судится не нашим полом, и подпись туда была бы вердиктом о чужой мерке.
+    if named is not None:
+        return 0
+    return _verdict.close("реестр находок", 0,
+                          ".venv/bin/python scripts/guards/findings_count.py --check")
 
 
 if __name__ == "__main__":

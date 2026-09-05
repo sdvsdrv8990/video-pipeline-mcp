@@ -24,6 +24,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _verdict                                   # noqa: E402  общий хвост суда
 from findings_count import scan as scan_registry  # noqa: E402  разбор реестра — один на проект
 
 BASELINE = Path(__file__).with_name("invariants_baseline.txt")
@@ -1753,6 +1754,46 @@ def quality_axis_without_parameter(root: Path = ROOT) -> list[str]:
     return notes
 
 
+GUARDS_CATALOG = ("scripts", "guards", "CATALOG.md")
+# Имя берётся любым непробельным, а не `[a-z_]+`: кириллическое имя файла здесь законно,
+# и ASCII-шаблон пропускал бы такого сторожа молча.
+GUARD_ROW = re.compile(r"^\| `(\S+\.py)` \|([^|]*)\|", re.M)
+# Дверей в общий журнал две: общий хвост (по умолчанию) и своя подпись у судьи с
+# собственным родом записи (`what_if` пишет род `цикл` с полями отчёта, которых у
+# хвоста нет). Обе ведут в один журнал и один словарь — ось судит именно это.
+GUARD_TAIL = ("_verdict.close", "_stamp.sign")
+
+
+def judge_off_journal(root: Path = ROOT) -> list[str]:
+    """Судья, чей вердикт не уходит в ОБЩИЙ журнал тандема: завтра его нечем поднять.
+
+    Производители (их зона так и объявлена) вердикта не выносят и сюда не попадают — иначе
+    ось требовала бы подписи под тем, что подписывать нечем.
+    """
+    каталог = _at(root, GUARDS_CATALOG)
+    дом = _at(root, ("scripts", "guards"))
+    if not каталог.exists() or not дом.is_dir():
+        return []
+    объявлено = dict(GUARD_ROW.findall(каталог.read_text(encoding="utf-8")))
+    notes = []
+    for имя, зона in sorted(объявлено.items()):
+        файл = дом / имя
+        if not файл.exists():
+            notes.append(f"{'/'.join(GUARDS_CATALOG)} зовёт `{имя}`, которого на диске нет")
+            continue
+        if "производител" in зона.lower():
+            continue
+        текст = файл.read_text(encoding="utf-8")
+        if not any(дверь in текст for дверь in GUARD_TAIL):
+            notes.append(f"{имя}: вердикт не доезжает до общего журнала — ни хвоста "
+                         f"`_verdict.close`, ни своей подписи `_stamp.sign`; завтра его "
+                         f"нечем поднять, и тандем о нём не знает")
+    на_диске = {f.name for f in дом.glob("*.py") if not f.name.startswith("_")}
+    notes += [f"{имя}: сторож на диске без строки в {'/'.join(GUARDS_CATALOG)} — зона не объявлена"
+              for имя in sorted(на_диске - set(объявлено))]
+    return notes
+
+
 SKILLS_CATALOG = (".claude", "skills", "CATALOG.md")
 SKILL_ROW = re.compile(r"^\| `([a-z][a-z-]+)` \|([^|]*)\|([^|]*)\|", re.M)
 
@@ -2076,6 +2117,7 @@ HARD = (("одну зону объявили два хозяина", zone_declar
         ("память выросла выше потолка", memory_grew),
         ("журнал разошёлся со своим указателем", journal_off_index),
         ("скил без объявленной зоны", skill_without_zone),
+        ("судья мимо общего журнала", judge_off_journal),
         ("ось качества без объявленного параметра", quality_axis_without_parameter),
         ("урок зовёт несуществующего исполнителя", lesson_without_executor),
         ("объявление наблюдения неполно", observation_incomplete),
@@ -2227,9 +2269,10 @@ def main() -> int:
         print("invariants: --bless по чужому дереву запрещён — потолок принадлежит СВОЕМУ дереву, "
               "и запись чужого числа сюда была бы тихой ложью", file=sys.stderr)
         return 2
-    failed = False
+    failed, нарушений = False, 0
     for title, check in HARD:
         notes = check(root)
+        нарушений += len(notes)
         if not quiet:
             print(f"── {title}: {'чисто' if not notes else str(len(notes)) + ' шт.'}")
         elif notes:
@@ -2257,7 +2300,13 @@ def main() -> int:
                 print(f"   ✗ {note}")
             print(f"   {advice}")
             failed = True
-    return 0 if bless else (1 if failed else 0)
+            нарушений += len(notes) - limit
+    if bless or named is not None or quiet:
+        # Подписи нет там, где нет вердикта о СВОЁМ дереве: `--bless` пишет потолок, чужое дерево
+        # судится не нашей меркой, а режим хука бьёт на каждую правку и залил бы журнал.
+        return 0 if bless else (1 if failed else 0)
+    return _verdict.close("инварианты", нарушений,
+                          ".venv/bin/python scripts/guards/invariants.py --check", root=root)
 
 
 if __name__ == "__main__":

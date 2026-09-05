@@ -25,6 +25,10 @@ import sys
 import tokenize
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import _verdict                                                            # noqa: E402
+
 from pygments.lexers import get_lexer_for_filename
 from pygments.token import Comment
 from pygments.util import ClassNotFound
@@ -406,7 +410,9 @@ def main() -> int:
     ap.add_argument("paths", nargs="*", help="цели для --scan")
     a = ap.parse_args()
     if a.check:
-        return cmd_check()
+        return _verdict.close("текст в коде", cmd_check(),
+                              ".venv/bin/python scripts/guards/comment_guard.py --check",
+                              точный=False)
     if a.bless:
         return cmd_bless()
     if a.scan:

@@ -2,12 +2,11 @@
 """scripts/guards/_acceptance.py — общее для обеих приёмок: сценарии, задания, границы задачи.
 
 Сам не судит и не советует: держит то, что у приёмки студии и приёмки сервера одинаково по
-существу — объявление сценариев, роды улик, спектр заданий, вычисление тронутого вне зоны и хвост
-суда: задетые потоки данных плюс подпись вердикта в общий журнал тандема. Две копии этого кода
-разъехались бы на первой правке, а разъехавшаяся половина работает наполовину.
+существу — объявление сценариев, роды улик, спектр заданий и вычисление тронутого вне зоны. Хвост
+суда (потоки + подпись) сюда не входит: он один на ВСЕХ сторожей и живёт в `_verdict.py`. Две копии
+этого кода разъехались бы на первой правке, а разъехавшаяся половина работает наполовину.
 """
 import fnmatch
-import subprocess
 import sys
 from pathlib import Path
 
@@ -15,8 +14,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import _routes                                                             # noqa: E402
-import _stamp                                                              # noqa: E402
+import _verdict                                                            # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 SCENARIOS = Path(__file__).resolve().parent / "acceptance_scenarios.yaml"
@@ -68,11 +66,7 @@ def advise(config: dict, rods: list[str], дерево: str) -> int:
     return 0
 
 
-def touched(root: Path = ROOT) -> list[str]:
-    return [line[3:].strip().split(" -> ")[-1]
-            for line in subprocess.run(["git", "status", "--porcelain"], cwd=root,
-                                       capture_output=True, text=True).stdout.splitlines()
-            if line[3:]]
+touched = _verdict.touched
 
 
 def outside(zones: tuple[str, ...], root: Path = ROOT) -> list[str]:
@@ -87,39 +81,3 @@ def outside(zones: tuple[str, ...], root: Path = ROOT) -> list[str]:
 def zones_of(задания: dict, ключ: str) -> list[str] | None:
     нашлось = [i for i in задания.get("задания", []) if i["id"] == ключ]
     return нашлось[0]["зона"] if нашлось else None
-
-
-def flows(paths: list[str], root: Path = ROOT) -> list[str]:
-    """Что течёт через тронутый рубеж — ЗНАНИЕ приёмки, а не её вердикт.
-
-    Правка рубежа нарушением не является; молчание о ней — является: правящий не узнаёт, что через
-    место течёт значение до клиента и чем это видно.
-    """
-    return _routes.lines(paths, root=root)
-
-
-def stamp(дерево: str, нарушений: int, потоки: list[str], команда: str,
-          root: Path = ROOT) -> str:
-    """Вердикт приёмки — в ОБЩИЙ журнал тандема, иначе он живёт до закрытия терминала.
-
-    Роль `УЛИКА` здесь запрещена намеренно: её подписи считает гейт поставки, и приёмка,
-    подписавшись уликой, удовлетворяла бы его собственным прогоном.
-    """
-    роль = "ОТКАЗ" if нарушений else "ВЕРДИКТ"
-    итог = f"{нарушений} нарушений" if нарушений else "чисто"
-    _, подпись = _stamp.sign("гейт", роль, f"приёмка правки в дереве «{дерево}»: {итог}",
-                             intent=f"приёмка-{дерево}", expected="правка принимается",
-                             actual=итог, cmd=команда,
-                             detail={"дерево": дерево, "нарушений": нарушений,
-                                     "потоки": потоки}, root=root)
-    return подпись
-
-
-def close(дерево: str, нарушений: int, команда: str, root: Path = ROOT) -> int:
-    """Хвост суда, общий у обеих приёмок: задетые потоки + подпись в журнал тандема."""
-    потоки = flows(touched(root), root=root)
-    print(f"── задетые потоки данных: {len(потоки) or 'нет'}")
-    for строка in потоки:
-        print(f"   ⇢ {строка}")
-    print(stamp(дерево, нарушений, потоки, команда, root=root))
-    return 1 if нарушений else 0

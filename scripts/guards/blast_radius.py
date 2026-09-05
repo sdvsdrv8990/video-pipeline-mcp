@@ -25,6 +25,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import _verdict                                                            # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
@@ -371,12 +375,20 @@ def main() -> int:
         query(args.query)
     if args.changed:
         changed()
+    # Судящие режимы закрываются общим хвостом; `--build`/`--query`/`--changed` вердикта не выносят,
+    # и подпись под справкой означала бы прогон, которого не было.
     if args.affected:
-        return affected()
+        return _verdict.close("радиус правки", affected(),
+                              ".venv/bin/python scripts/guards/blast_radius.py --affected",
+                              точный=False)
     if args.check_routes:
-        return check_routes()
+        return _verdict.close("рубежи потоков", check_routes(),
+                              ".venv/bin/python scripts/guards/blast_radius.py --check-routes",
+                              точный=False)
     if args.blind:
-        return blind()
+        return _verdict.close("слепая зона", blind(),
+                              ".venv/bin/python scripts/guards/blast_radius.py --blind",
+                              точный=False)
     if not any([args.build, args.query, args.changed, args.check_routes, args.affected, args.blind]):
         parser.print_help()
     return 0

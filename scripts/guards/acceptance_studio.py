@@ -25,6 +25,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import _acceptance as общее                                                # noqa: E402
+import _verdict                                                            # noqa: E402
 import _studio_surface as surface                                          # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -367,7 +368,7 @@ def main(argv: list[str] | None = None) -> int:
         for note in notes:
             print(f"   ✗ {note}")
         нарушений += len(notes)
-    return общее.close("студия", нарушений,
+    return _verdict.close("приёмка студия", нарушений,
                        " ".join([".venv/bin/python scripts/guards/acceptance_studio.py",
                                  *(argv if argv is not None else sys.argv[1:])]))
 

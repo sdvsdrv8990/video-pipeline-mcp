@@ -24,6 +24,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import _acceptance as общее                                                # noqa: E402
+import _verdict                                                            # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 STRUCTURE = Path(__file__).resolve().parent / "structure_server.yaml"
@@ -196,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
         for note in notes:
             print(f"   ✗ {note}")
         нарушений += len(notes)
-    return общее.close("сервер", нарушений,
+    return _verdict.close("приёмка сервер", нарушений,
                        " ".join([".venv/bin/python scripts/guards/acceptance_server.py",
                                  *(argv if argv is not None else sys.argv[1:])]))
 
