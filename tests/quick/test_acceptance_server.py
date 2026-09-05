@@ -5,7 +5,12 @@ Standalone-прогон:  python tests/quick/test_acceptance_server.py
 Проверяет `scripts/guards/acceptance_server.py` на временных деревьях: шапка модуля, объявленный
 каталог, роды верхнего уровня, словарь пустых имён, звёздный импорт и стирающий алиас — каждая
 проверка ловит своё нарушение и молчит на чистом; отчёт `ruff` о чистоте находкой не считается.
+Здесь же обе стороны тандемной части (П12): задетый поток данных назван, а вердикт уходит подписью
+в общий журнал — всё на ВРЕМЕННОМ дереве, чтобы прогон не зависел от состояния боевого.
 """
+import contextlib
+import io
+import json
 import subprocess
 import sys
 import tempfile
@@ -117,6 +122,60 @@ def main() -> int:
     (зона / "лишний.py").write_text(ШАПКА, encoding="utf-8")
     ok(any("вне зоны задачи" in note for note in общее.outside(("core/*",), root=зона)),
        "тронутое вне зоны задачи названо и здесь — механизм границ общий у обеих приёмок")
+
+    print("\n=== П12 тандем: карта потоков и общий журнал ===")
+    КАРТА = """- route: reaction_to_client
+  what: код отказа и рецепт восстановления
+  means: клиент не знает, чинить самому или звать человека
+  hops:
+    - at: core/reactions/reactions.py
+    - at: server.py
+  proof:
+    scenario: tables_destructive.yaml#ed1
+"""
+
+    def с_картой(файлы: dict[str, str]) -> Path:
+        корень = дерево(файлы)
+        (корень / "tests" / "routes").mkdir(parents=True)
+        (корень / "tests" / "routes" / "routes.yaml").write_text(КАРТА, encoding="utf-8")
+        return корень
+
+    карта = с_картой({"core/reactions/reactions.py": ШАПКА})
+    поток = общее.flows(["core/reactions/reactions.py"], root=карта)
+    ok(len(поток) == 1 and "reaction_to_client" in поток[0] and "tables_destructive" in поток[0],
+       "правка рубежа: приёмка называет поток, что через него течёт и чем это видно")
+    ok(not общее.flows(["core/движок/узел.py"], root=карта),
+       "файл не рубеж — приёмка молчит, а не пересказывает всю карту")
+    ok(not общее.flows(["core/reactions/reactions.py"], root=дерево(чистое)),
+       "карты нет вовсе — улики нет, и это не «потоков ноль»")
+
+    def запись(корень: Path) -> dict:
+        журналы = sorted((корень / "tests" / ".journal").glob("stamps-*.jsonl"))
+        return json.loads(журналы[-1].read_text(encoding="utf-8").splitlines()[-1])
+
+    чистый = дерево(чистое)
+    общее.stamp("сервер", 0, [], ".venv/bin/python x.py", root=чистый)
+    ok(запись(чистый)["role"] == "ВЕРДИКТ" and запись(чистый)["kind"] == "гейт",
+       "чистая приёмка подписана ВЕРДИКТОМ в общий журнал тандема, а не только напечатана")
+    красный = дерево(чистое)
+    общее.stamp("сервер", 3, ["поток X"], ".venv/bin/python x.py", root=красный)
+    отказ = запись(красный)
+    ok(отказ["role"] == "ОТКАЗ" and отказ["detail"]["нарушений"] == 3
+       and отказ["detail"]["потоки"] == ["поток X"],
+       "красная приёмка подписана ОТКАЗОМ и уносит число нарушений и задетые потоки")
+    ok("УЛИКА" not in (отказ["role"], запись(чистый)["role"]),
+       "приёмка НЕ подписывается уликой: их считает гейт поставки, и он удовлетворялся бы сам собой")
+
+    рубеж = с_картой({"core/reactions/reactions.py": ШАПКА})
+    (рубеж / "core" / "reactions" / "reactions.py").write_text(ШАПКА + "x = 1\n", encoding="utf-8")
+    буфер = io.StringIO()
+    with contextlib.redirect_stdout(буфер):
+        код = общее.close("сервер", 0, ".venv/bin/python x.py", root=рубеж)
+    печать = буфер.getvalue()
+    ok(код == 0 and "reaction_to_client" in печать and "⟦vpm" in печать,
+       "хвост суда: правя рубеж, приёмка называет поток И подписывает вердикт одним ходом")
+    ok(общее.close("сервер", 2, ".venv/bin/python x.py", root=дерево(чистое)) == 1,
+       "нарушения приёмки доезжают до кода возврата, а подпись их не гасит")
 
     print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")
     for fail in _fails:

@@ -114,25 +114,16 @@ def flows(paths: list[str], routes: Path = ROUTES) -> list[str]:
     """Какие потоки данных задеты правкой — ЗНАНИЕ, а не надзор.
 
     Гниение карты уже судит `test_routes`; здесь польза другая: правящий рубеж узнаёт, ЧТО через
-    него течёт, что значит обрыв и каким прогоном это видно, — не отходя от правки.
+    него течёт, что значит обрыв и каким прогоном это видно, — не отходя от правки. Разбор карты
+    живёт источником улики в репозитории (`scripts/guards/_routes.py`), и его же читает приёмка:
+    вторая копия правила снаружи гнила бы молча.
     """
-    if not routes.exists():
-        return []
     try:
-        import yaml
-        карта = yaml.safe_load(routes.read_text(encoding="utf-8")) or []
-    except Exception:                          # noqa: BLE001 — сломанную карту судит свой набор
+        sys.path.insert(0, str(PROJ / "scripts" / "guards"))
+        import _routes
+    except ImportError:                        # чужое дерево либо нет yaml — улики нет
         return []
-    свои, строки = set(paths), []
-    for маршрут in карта:
-        задеты = свои & {h.get("at", "") for h in (маршрут.get("hops") or [])}
-        if not задеты:
-            continue
-        опора = (маршрут.get("proof") or {}).get("scenario", "опора не объявлена")
-        строки.append(f"поток `{маршрут.get('route')}` — {маршрут.get('what')}; правишь рубеж "
-                      f"{sorted(задеты)[0]}. Обрыв значит: {маршрут.get('means')}. "
-                      f"Видно прогоном: {опора}")
-    return строки
+    return _routes.lines(paths, path=routes)
 
 
 def acceptance(paths: list[str], scenarios: Path = SCENARIOS) -> list[str]:

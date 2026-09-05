@@ -186,7 +186,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if not args.зона:
         print("── П3а вышел за рамки задачи: зона не объявлена (--зона), критерий не судится")
-    failed = False
+    нарушений = 0
     for title, check in CHECKS:
         if check is общее.outside and not args.зона:
             continue
@@ -195,8 +195,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"── {title}: {'чисто' if not notes else str(len(notes)) + ' шт.'}")
         for note in notes:
             print(f"   ✗ {note}")
-        failed = failed or bool(notes)
-    return 1 if failed else 0
+        нарушений += len(notes)
+    return общее.close("сервер", нарушений,
+                       " ".join([".venv/bin/python scripts/guards/acceptance_server.py",
+                                 *(argv if argv is not None else sys.argv[1:])]))
 
 
 if __name__ == "__main__":
