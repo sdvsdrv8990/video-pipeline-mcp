@@ -95,11 +95,11 @@ def build() -> dict:
     for source in sorted(SCENARIOS.glob("*.map.yaml")):
         smap = load_map(source, vocab)
         for number, path in enumerate(plan(smap), 1):
-            def run(smap=smap, path=path, number=number):
+            def пройти(smap=smap, path=path, number=number):
                 with live_server() as srv:
                     srv.rpc.timeout = 180.0
                     MapRunner().walk_path(smap, path, number, Runner(srv, steps=STEPS))
-            remember(f"{smap.id}#путь{number}", _coverage_of(run))
+            remember(f"{smap.id}#путь{number}", _coverage_of(пройти))
 
     RADIUS.parent.mkdir(parents=True, exist_ok=True)
     RADIUS.write_text(json.dumps(radius, ensure_ascii=False), encoding="utf-8")

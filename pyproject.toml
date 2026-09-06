@@ -202,7 +202,9 @@ skip_covered = false
 # установленного numpy как 3.11-синтаксис — на 3.12-раннере это падало `Type statement is only
 # supported in Python 3.12` ещё до проверки нашего кода. Пусть анализирует ту версию, на
 # которой запущен: именно она и исполняет код.
-files = ["core", "tools", "server.py"]
+files = ["core", "tools", "server.py", "scripts/guards"]
+# Зона растёт этапами, и остаток назван числом в храповике «дерево, которым судим, вне
+# гейта типов»: без него ужать `files` обратно можно было бы молча.
 ignore_missing_imports = true
 explicit_package_bases = true
 namespace_packages = true
@@ -210,6 +212,12 @@ namespace_packages = true
 # `exclude = "core/providers/"` СНЯТ: он не работал — mypy идёт в провайдеров по импортам
 # из tools/media, а не обходом каталога, — и потому 15 ошибок типов там жили, пока сессии писали
 # «mypy PASS». Провайдеры давно не стабы: локальные адаптеры реальны и типизируются наравне.
+
+[[tool.mypy.overrides]]
+# Харнесс сторожа тянут импортом, но судится он ЭТАПОМ 3: без этой строки 20 чужих ошибок
+# приехали бы в зону этапа 1 и гейт нельзя было бы включить вовсе.
+module = "tests.harness.*"
+ignore_errors = true
 
 [tool.importlinter]
 # Корни графа — ПАКЕТЫ: `server.py` это модуль, и grimp его в корни не берёт. Этаж сервера

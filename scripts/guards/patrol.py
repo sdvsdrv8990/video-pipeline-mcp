@@ -117,7 +117,8 @@ def неотслеживаемые() -> list[str]:
     """Файлы, которых git ещё не знает. Игнорируемое не берём — это артефакты, а не правка."""
     done = subprocess.run(["git", "ls-files", "--others", "--exclude-standard", "-z"],
                           cwd=str(ROOT), capture_output=True, text=True)
-    return sorted(и for и in done.stdout.split("\0") if и.endswith((".py", ".yaml", ".md", ".sh")))
+    return sorted(и for и in done.stdout.split("\0")
+                  if и.endswith((".py", ".yaml", ".md", ".sh", ".txt", ".toml")))
 
 
 def свести(файлы: list[str], выводы: dict[str, str]) -> dict[str, list[str]]:

@@ -15,6 +15,7 @@ import os
 import shlex
 import subprocess
 from itertools import count
+from typing import Any
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Команда — политика, а не константа кода: сервер ставится в Claude, а не в дерево проекта.
@@ -28,6 +29,11 @@ class _Server:
     def __init__(self, timeout: float):
         self.proc = subprocess.Popen(COMMAND, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, text=True, bufsize=1)
+        # Каналы `Popen` с PIPE даёт всегда, но по типу они `IO | None`: без проверки
+        # отсутствие канала обвалилось бы немым `AttributeError` посреди диалога.
+        if self.proc.stdin is None or self.proc.stdout is None or self.proc.stderr is None:
+            raise OSError("процесс поднялся без каналов — спросить его нечем")
+        self.вход, self.выход, self.ошибки = self.proc.stdin, self.proc.stdout, self.proc.stderr
         self.ids = count(1)
         self.timeout = timeout
         self._rpc("initialize", {"protocolVersion": "2024-11-05", "capabilities": {},
@@ -35,17 +41,17 @@ class _Server:
         self._rpc("notifications/initialized", {}, notify=True)
 
     def _rpc(self, method: str, params: dict, notify: bool = False) -> dict:
-        body = {"jsonrpc": "2.0", "method": method, "params": params}
+        body: dict[str, Any] = {"jsonrpc": "2.0", "method": method, "params": params}
         if not notify:
             body["id"] = next(self.ids)
-        self.proc.stdin.write(json.dumps(body) + "\n")
-        self.proc.stdin.flush()
+        self.вход.write(json.dumps(body) + "\n")
+        self.вход.flush()
         if notify:
             return {}
         while True:
-            line = self.proc.stdout.readline()
+            line = self.выход.readline()
             if not line:
-                raise OSError("сервер закрыл вывод: " + (self.proc.stderr.read() or "")[-500:])
+                raise OSError("сервер закрыл вывод: " + (self.ошибки.read() or "")[-500:])
             try:
                 message = json.loads(line)
             except ValueError:

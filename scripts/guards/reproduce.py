@@ -20,6 +20,7 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Set as AbstractSet
 from itertools import combinations
 from pathlib import Path
 
@@ -379,8 +380,8 @@ def _reject_fiction(text: str) -> None:
 
 
 def exemptions(entries: list[dict], unscripted: set[str], exempt: set[str],
-               claimed: set[tuple[str, str]] = frozenset(),
-               scripted: set[str] = frozenset()) -> tuple[list[str], list[str]]:
+               claimed: AbstractSet[tuple[str, str]] = frozenset(),
+               scripted: AbstractSet[str] = frozenset()) -> tuple[list[str], list[str]]:
     """Вердикт по ПОСЛАБЛЕНИЯМ: что из объявленных исключений живой прогон опроверг.
 
     Решаемых по записи вопросов два: код, объявленный непокрытым, ВЫСТРЕЛИЛ у клиента, и факт,

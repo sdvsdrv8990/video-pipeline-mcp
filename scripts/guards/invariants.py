@@ -19,6 +19,7 @@ import builtins
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import yaml
@@ -44,6 +45,7 @@ KNOB_BASELINE = Path(__file__).with_name("knob_reader_baseline.txt")
 RECORD_FIELD_BASELINE = Path(__file__).with_name("record_field_baseline.txt")
 ABSENT_KNOB_BASELINE = Path(__file__).with_name("absent_knob_baseline.txt")
 STUB_BASELINE = Path(__file__).with_name("stub_baseline.txt")
+TYPEGATE_BASELINE = Path(__file__).with_name("typegate_baseline.txt")
 MUTED_BASELINE = Path(__file__).with_name("muted_refusal_baseline.txt")
 FACT_EMITTER_BASELINE = Path(__file__).with_name("fact_emitters_baseline.txt")
 FACT_EXEMPT_BASELINE = Path(__file__).with_name("fact_exempt_baseline.txt")
@@ -268,7 +270,8 @@ def codes_outside_registry(root: Path = ROOT, known: set[str] | None = None) -> 
         return []
     if known is None:
         sys.path.insert(0, str(root))
-        from core.contracts.error_detail import KNOWN_ERROR_CODES as known
+        from core.contracts.error_detail import KNOWN_ERROR_CODES
+        known = KNOWN_ERROR_CODES
 
     registry = set(yaml.safe_load(registry_file.read_text(encoding="utf-8")) or {})
     notes = []
@@ -956,9 +959,9 @@ def _named_literals(tree: ast.AST) -> list[tuple[str, ast.AST, int]]:
             positional = node.args.posonlyargs + node.args.args
             for arg, default in zip(positional[len(positional) - len(node.args.defaults):], node.args.defaults):
                 out.append((arg.arg, default, default.lineno))
-            for arg, default in zip(node.args.kwonlyargs, node.args.kw_defaults):
-                if default is not None:
-                    out.append((arg.arg, default, default.lineno))
+            for arg, умолчание in zip(node.args.kwonlyargs, node.args.kw_defaults):
+                if умолчание is not None:
+                    out.append((arg.arg, умолчание, умолчание.lineno))
         elif isinstance(node, ast.keyword) and node.arg:
             out.append((node.arg, node.value, node.value.lineno))
         elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
@@ -1026,17 +1029,19 @@ def _receiver_path(node: ast.AST, assigns: dict[str, ast.AST], depth: int = 0) -
     key = _addressed_by(node)
     if key is None:
         return None
-    outer = _receiver_path(node.func.value if isinstance(node, ast.Call) else node.value, assigns, depth + 1)
+    приёмник = node.func if isinstance(node, ast.Call) else node
+    внутри = приёмник.value if isinstance(приёмник, (ast.Attribute, ast.Subscript)) else None
+    outer = _receiver_path(внутри, assigns, depth + 1) if внутри is not None else None
     return None if outer is None else outer + (key,)
 
 
 def _config_reads(tree: ast.AST) -> list[tuple[tuple[str, ...], ast.AST, int]]:
     """`X.get("ключ", запасное)`, у которых путь приёмника разрешился до декларации."""
     assigns: dict[str, ast.AST] = {}
+    out: list[tuple[tuple[str, ...], ast.AST, int]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             assigns.setdefault(node.targets[0].id, node.value)
-    out = []
     for node in ast.walk(tree):
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get"
                 and len(node.args) == 2 and isinstance(node.args[0], ast.Constant)
@@ -1482,8 +1487,9 @@ def _lesson_blocks(memory: Path) -> list[tuple[str, str]]:
         return []
     text = path.read_text(encoding="utf-8")
     границы = [m.start() for m in LESSON.finditer(text)] + [len(text)]
-    return [(LESSON.match(text[начало:границы[i + 1]]).group(1), text[начало:границы[i + 1]])
-            for i, начало in enumerate(границы[:-1])]
+    куски = [text[начало:границы[i + 1]] for i, начало in enumerate(границы[:-1])]
+    return [(заголовок.group(1), кусок) for кусок in куски
+            if (заголовок := LESSON.match(кусок)) is not None]
 
 
 def _lessons(memory: Path) -> list[tuple[str, str]]:
@@ -2448,6 +2454,25 @@ def record_field_mismatch(root: Path = ROOT) -> list[str]:
     return notes
 
 
+# Список поимённый: «все каталоги со сторожами» вывести нельзя — хуки лежат в `.claude`,
+# харнесс в `tests`, и производная тихо недосчитала бы обоих.
+JUDGING_TREES = ("scripts/guards", ".claude/hooks", "tests/harness")
+
+
+def typegate_uncovered(root: Path = ROOT) -> list[str]:
+    """Дерево, которым мы судим проект, само вне зоны гейта типов.
+
+    Зона читается из манифеста, а не повторяется здесь вторым списком: иначе `files` можно
+    было бы ужать обратно молча — храповик считал бы по своей копии и остался бы зелёным.
+    """
+    манифест = root / "pyproject.toml"
+    if not манифест.exists():
+        return []
+    зона = tomllib.loads(манифест.read_text(encoding="utf-8")).get("tool", {}).get("mypy", {}).get("files", [])
+    return [f"{дерево} судит проект, а гейт типов его не видит: `[tool.mypy] files` = {зона}"
+            for дерево in JUDGING_TREES if дерево not in зона]
+
+
 RATCHETS = (
     ("урок без ключа улики", lesson_without_evidence, EVIDENCE_BASELINE,
      "Урок не ведёт в прогон, где родился: подпиши наблюдение (`_stamp.py`) и поставь ключ "
@@ -2455,6 +2480,9 @@ RATCHETS = (
     ("условие приёмки без механизма", acceptance_subject_gap, SUBJECTS_BASELINE,
      "Условие объявлено, а судить его нечем — это и есть вектор развития: заведи исполнителя "
      "либо опусти потолок осознанно (--bless). Карта целиком: invariants.py --приёмка"),
+    ("дерево, которым судим, вне гейта типов", typegate_uncovered, TYPEGATE_BASELINE,
+     "Код, которым мы судим проект, сам не судится по типам: внеси дерево в `[tool.mypy] files` "
+     "и погаси его ошибки ЭТАПОМ — либо опусти потолок осознанно (--bless)"),
     ("сценарий приёмки без исполнителя", acceptance_advice_only, ACCEPTANCE_BASELINE,
      "Сценарий советует, но не судится: заведи исполнителя (набор + метку проверки) "
      "или объясни в ревью, почему судить его сегодня нечем — --bless"),

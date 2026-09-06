@@ -92,11 +92,11 @@ def _spans(text: str) -> tuple[list[tuple[int, int, bool]], list[tuple[int, str,
                 if isinstance(stmt.value, ast.Constant) and not isinstance(stmt.value.value, (str, bytes)):
                     continue
                 docs[stmt.lineno] = ((stmt.end_lineno or stmt.lineno) - stmt.lineno + 1, stmt is head)
-    docs = [(n, length, is_head) for n, (length, is_head) in docs.items()]
+    плоско = [(n, length, is_head) for n, (length, is_head) in docs.items()]
     comments = [(t.start[0], t.string, t.line.strip().startswith("#"))
                 for t in tokenize.generate_tokens(io.StringIO(text).readline)
                 if t.type == tokenize.COMMENT]
-    return sorted(docs), comments
+    return sorted(плоско), comments
 
 
 def _tag_note(path: Path | str, n: int, tag: str) -> str:
@@ -125,8 +125,9 @@ def _report_labels(text: str) -> list[tuple[int, str]]:
                 out.append((arg.lineno, arg.value))
             elif isinstance(arg, ast.JoinedStr):
                 # Подстановки заменяем меткой: координата ищется в постоянной части шаблона.
-                out.append((arg.lineno, "".join(v.value if isinstance(v, ast.Constant) else "\u00b7"
-                                                for v in arg.values)))
+                out.append((arg.lineno, "".join(
+                    v.value if isinstance(v, ast.Constant) and isinstance(v.value, str) else "\u00b7"
+                    for v in arg.values)))
     return out
 
 

@@ -18,6 +18,7 @@ import argparse
 import fnmatch
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import yaml
@@ -25,6 +26,10 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import _acceptance as общее                                                # noqa: E402
+
+# Проверки зовутся по имени параметра, и подписи у них разные: общий тип нужен таблице,
+# иначе `check is общее.outside` сужает саму функцию до подписи соседки по таблице.
+Проверка = Callable[..., list[str]]
 import _evidence                                                           # noqa: E402
 import _verdict                                                            # noqa: E402
 import _studio_surface as surface                                          # noqa: E402
@@ -252,7 +257,7 @@ def addressable(got: dict, **_) -> list[str]:
     return notes
 
 
-CHECKS = (("П1 компонент сломан", broken),
+CHECKS: tuple[tuple[str, Проверка], ...] = (("П1 компонент сломан", broken),
           ("П2 стиль мимо токена и смена формы", styles),
           ("П8 стиль и анимация потеряны", motion),
           ("П5/П6 зона файла и структура дерева", place),

@@ -10,6 +10,7 @@ Standalone-прогон:  python tests/quick/test_patrol.py
 import contextlib
 import io
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -194,6 +195,21 @@ def main() -> int:
         код = наряд.main(["--факт", "--улика", "редактирование", "--за", "0"])
     ok(код != 0 and "vpm-первый.py" in буфер.getvalue(),
        "вчерашняя отметка про сегодняшнюю работу не говорит ничего: окно судит свежесть")
+
+    # Потолки храповиков в этом дереве всегда `.txt`: набиратель, глухой к ним, оставлял бы
+    # без суда самый частый род новорождённых файлов.
+    дерево = Path(tempfile.mkdtemp(prefix="vpm-новые-"))
+    subprocess.run(["git", "init", "-q", str(дерево)], check=True)
+    (дерево / "потолок.txt").write_text("2\n", encoding="utf-8")
+    (дерево / "сторож.py").write_text("x = 1\n", encoding="utf-8")
+    старый_корень = наряд.ROOT
+    try:
+        наряд.ROOT = дерево
+        найдено = наряд.неотслеживаемые()
+    finally:
+        наряд.ROOT = старый_корень
+    ok("потолок.txt" in найдено and "сторож.py" in найдено,
+       f"новый потолок храповика — тоже новый файл, а не артефакт: {найдено}")
 
     print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")
     for fail in _fails:

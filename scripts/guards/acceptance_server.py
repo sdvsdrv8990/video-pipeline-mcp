@@ -17,6 +17,7 @@ import fnmatch
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import yaml
@@ -24,6 +25,10 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import _acceptance as общее                                                # noqa: E402
+
+# Проверки зовутся по имени параметра, и подписи у них разные: общий тип нужен таблице,
+# иначе `check is общее.outside` сужает саму функцию до подписи соседки по таблице.
+Проверка = Callable[..., list[str]]
 import _evidence                                                           # noqa: E402
 import _verdict                                                            # noqa: E402
 
@@ -102,7 +107,7 @@ def header(root: Path = ROOT, **_) -> list[str]:
         return []
     notes = []
     for файл in sources(root):
-        _, роль = _role(файл, объявлено)
+        _шаблон, роль = _role(файл, объявлено)
         if not (роль or {}).get("нужна_шапка"):
             continue
         try:
@@ -143,8 +148,8 @@ def naming(root: Path = ROOT, **_) -> list[str]:
             if isinstance(узел, ast.Import | ast.ImportFrom):
                 notes += [f"{файл}:{узел.lineno} — {и.name} переименован в {и.asname!r}: имя стёрто "
                           f"на входе" for и in узел.names if и.asname and len(и.asname) == 1]
-        notes += [f"{файл} — {узел.name!r} не говорит ни о чём" for узел in дерево.body
-                  if getattr(узел, "name", "") and узел.name.lower() in запрещённые]
+        notes += [f"{файл} — {имя!r} не говорит ни о чём" for узел in дерево.body
+                  if (имя := getattr(узел, "name", "")) and имя.lower() in запрещённые]
     return notes
 
 
@@ -161,7 +166,7 @@ def errors(root: Path = ROOT, zones: tuple[str, ...] = (), **_) -> list[str]:
             if re.match(r"\S+:\d+:\d+:", строка.strip())]
 
 
-CHECKS = (("П5 файл объявляет свою зону", header),
+CHECKS: tuple[tuple[str, Проверка], ...] = (("П5 файл объявляет свою зону", header),
           ("П6 структура дерева", place),
           ("П7 имена говорят сами за себя", naming),
           ("П11 явные ошибки и мёртвое (ruff)", errors),

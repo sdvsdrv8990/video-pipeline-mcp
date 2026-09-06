@@ -1327,6 +1327,21 @@ ok(not acceptance_calls_missing(make({"нет": "сценариев"})),
    "объявления сценариев нет — улики нет, а не «сценарии все битые»")
 
 
+print("\n== дерево, которым судим, вне гейта типов ==")
+
+_зона = Path(tempfile.mkdtemp(prefix="vpm-зона-")) / "pyproject.toml"
+_зона.write_text('[tool.mypy]\nfiles = ["core", "scripts/guards"]\n', encoding="utf-8")
+ok(not [н for н in _inv.typegate_uncovered(_зона.parent) if н.startswith("scripts/guards")],
+   "дерево внесено в зону — обвинения по нему нет")
+ok(len(_inv.typegate_uncovered(_зона.parent)) == len(_inv.JUDGING_TREES) - 1,
+   "остальные названы поимённо: долг виден числом, а не одним обвинением")
+_зона.write_text('[tool.mypy]\nfiles = ["core"]\n', encoding="utf-8")
+ok(any(н.startswith("scripts/guards") for н in _inv.typegate_uncovered(_зона.parent)),
+   "зону ужали — храповик увидел это ПО МАНИФЕСТУ, а не по своей копии")
+_зона.unlink()
+ok(not _inv.typegate_uncovered(_зона.parent), "манифеста нет — улики нет, а не обвинение")
+
+
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:
     print("ПРОВАЛЫ:")
