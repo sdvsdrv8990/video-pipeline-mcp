@@ -17,6 +17,8 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Literal, assert_never
 
@@ -65,6 +67,16 @@ class TunnelError(RuntimeError):
     """Отказ туннеля с сохранением реального текста ошибки cloudflared."""
 
 
+class TunnelCancelled(TunnelError):
+    """Туннель остановлен ИЗВНЕ, а не сломался: cloudflared вышел кодом 0.
+
+    Ctrl+C в терминале уходит всей группе процессов, поэтому дочерний cloudflared завершается
+    штатно (`code=0`, `context canceled`) РАНЬШЕ, чем сервер успевает обработать сигнал. Без
+    отдельного рода отмена читалась как отказ туннеля, и консоль объявляла «Статус: ГОТОВ»
+    после того, как оператор уже остановил сервер.
+    """
+
+
 class CloudflaredTunnel:
     """Управление туннелем cloudflared: запуск, ожидание URL, keepalive, стоп.
 
@@ -93,6 +105,15 @@ class CloudflaredTunnel:
         self.retry_base = float(cfg.get("retry_base_seconds", 2))     # старт паузы
         self.retry_max = float(cfg.get("retry_max_seconds", 60))      # потолок паузы
         self.retry_reset = float(cfg.get("retry_reset_seconds", 60))  # «стабильный» прогон
+        # Предел ПЕРВОГО подъёма: cloudflared, которому режут путь до края (VPN, firewall), живёт
+        # и молчит — без предела ожидание было бесконечным, и вывод обрывался на полуслове.
+        # Запасное значение ПРОИЗВОДНОЕ, а не второй литерал: потолок пауз уже объявлен, и число,
+        # написанное здесь ещё раз, разошлось бы с декларацией молча.
+        self.ready_timeout = float(cfg.get("ready_timeout_seconds") or self.retry_max)
+        # Повтор ПЕРВОГО подъёма: супервизор сторожит только туннель, который хотя бы раз
+        # соединился, поэтому у самой хрупкой попытки повторов не было вовсе. Нет объявления —
+        # нет и повтора: одна попытка, как было до этой правки.
+        self.first_attempts = int(cfg.get("first_attempts") or 1)
 
         self._proc: subprocess.Popen | None = None
         self._public_url: str | None = None
@@ -106,6 +127,9 @@ class CloudflaredTunnel:
         self._attempts = 0             # подряд неудачных перезапусков процесса
         self._last_error: str | None = None
         self._proc_started: float | None = None
+        # Кто убил процесс, знает только тот, кто убил: код -9 сам по себе неотличим от чужого
+        # `kill`, и вердикт «завершился code=-9» ничего не объясняет тому, кто его читает.
+        self._killed_by_watchdog = False
 
     @staticmethod
     def _load_config(config_path: str | Path | None) -> dict:
@@ -187,7 +211,7 @@ class CloudflaredTunnel:
             return ("error", text)
         return (None, None)
 
-    def _await_ready(self, lines, poll_fn) -> str:
+    def _await_ready(self, lines, poll_fn, deadline: float | None = None) -> str:
         """Готовность по СОСТОЯНИЮ СОЕДИНЕНИЯ, а не по таймеру.
 
         Читает поток строк cloudflared:
@@ -201,6 +225,9 @@ class CloudflaredTunnel:
             poll_fn: функция → код возврата процесса или None (жив ли он).
         """
         url = None
+        # Срок ждут ВСЕГДА: у прежнего ожидания предела не было вовсе, и туннель, которому режут
+        # путь до края (VPN, firewall), держал подъём молча — вывод обрывался, вердикта не было.
+        предел = deadline if deadline is not None else time.monotonic() + self.ready_timeout
         # Счётчик, а не признак: cloudflared держит НЕСКОЛЬКО рёбер, и `Unregistered connIndex=2`
         # при живых остальных не означает «связи нет». Супервизор считает так же — один словарь,
         # одна арифметика.
@@ -210,6 +237,12 @@ class CloudflaredTunnel:
         for raw in lines:
             if not raw:
                 break
+            if time.monotonic() > предел:
+                raise TunnelError(
+                    f"соединение не установлено за {self.ready_timeout:.0f} с"
+                    + (f" (последнее от cloudflared: {last_err})" if last_err else "")
+                    + ". Путь до края Cloudflare (порт 7844) закрыт или идёт через сеть, которая "
+                      "его режет — проверь VPN/файрвол")
             kind, val = self._classify_line(raw)
             if kind == "url":
                 url = val
@@ -233,6 +266,20 @@ class CloudflaredTunnel:
 
         # Поток закрылся → процесс завершился, соединение не установлено.
         code = poll_fn()
+        if code == 0:
+            # УСПЕШНЫЙ код — не отказ ни при каком тексте лога: cloudflared так выходит по сигналу,
+            # который получил вместе с нами (Ctrl+C уходит всей группе процессов).
+            raise TunnelCancelled(
+                "cloudflared остановлен извне (code=0)"
+                + (f": {last_err}" if last_err else "") )
+        if self._killed_by_watchdog or time.monotonic() > предел:
+            почему = ("cloudflared молчал и остановлен по сроку" if self._killed_by_watchdog
+                      else f"cloudflared завершился code={code}")
+            raise TunnelError(
+                f"соединение не установлено за {self.ready_timeout:.0f} с: {почему}"
+                + (f"; последнее от него: {last_err}" if last_err else "")
+                + ". Путь до края Cloudflare (порт 7844) закрыт или идёт через сеть, которая его "
+                  "режет — проверь VPN/файрвол")
         if last_err:
             raise TunnelError(f"cloudflared завершился (code={code}) без соединения: {last_err}")
         raise TunnelError(f"cloudflared завершился (code={code}) без установки соединения")
@@ -252,18 +299,66 @@ class CloudflaredTunnel:
         if not self._binary_available():
             raise RuntimeError(_INSTALL_HINT)
 
-        self._proc = self._spawn()
-        assert self._proc.stdout is not None
-        try:
-            url = self._await_ready(self._proc.stdout, self._proc.poll)
-        except TunnelError:
-            self.stop()
-            raise
+        последняя: TunnelError | None = None
+        for попытка in range(1, max(1, self.first_attempts) + 1):
+            try:
+                url = self._one_attempt()
+                break
+            except TunnelCancelled:
+                # Отмена не повторяется: нас останавливают, а не мы не смогли подняться.
+                self.stop()
+                raise
+            except TunnelError as beda:
+                self.stop()
+                последняя = beda
+                if попытка >= max(1, self.first_attempts) or self._fatal(beda):
+                    raise
+                пауза = self._backoff_delay(попытка)
+                print(f"⏳ Туннель не поднялся ({beda}); повтор {попытка + 1} из "
+                      f"{self.first_attempts} через {пауза:.0f} с")
+                self._sleep_interruptible(пауза)
+        else:  # pragma: no cover — цикл всегда выходит через break или raise
+            raise последняя or TunnelError("туннель не поднят")
         with self._status_lock:
             self._connected = True
             self._connections = max(self._connections, 1)
         self._start_supervisor()
         return url
+
+    @staticmethod
+    def _fatal(beda: TunnelError) -> bool:
+        """Непоправимое повтором: те же маркеры, по которым судит разбор строк.
+
+        Список один на оба читателя — второй его копией разошёлся бы молча, и повтор молотил бы
+        по неверному токену до конца попыток.
+        """
+        текст = str(beda).lower()
+        return any(marker in текст for marker in _FATAL_MARKERS)
+
+    def _one_attempt(self) -> str:
+        """Один подъём под сторожевым таймером.
+
+        Таймер нужен рядом с проверкой срока внутри `_await_ready`: та ловит «строки идут, а
+        соединения нет», а этот — «строк нет вовсе», когда чтение потока блокируется намертво.
+        Без него молчащий cloudflared держал бы подъём столько, сколько живёт терминал.
+        """
+        self._proc = self._spawn()
+        assert self._proc.stdout is not None
+        self._killed_by_watchdog = False
+        сторож = threading.Timer(self.ready_timeout + 2.0, self._kill_silent)
+        сторож.daemon = True
+        сторож.start()
+        try:
+            return self._await_ready(self._proc.stdout, self._proc.poll)
+        finally:
+            сторож.cancel()
+
+    def _kill_silent(self) -> None:
+        """Убить процесс, который не сказал ничего: чтение потока разблокируется закрытием."""
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            self._killed_by_watchdog = True
+            proc.kill()
 
     def _spawn(self) -> "subprocess.Popen":
         """Запуск процесса cloudflared (с фиксацией времени старта)."""
@@ -367,6 +462,45 @@ class CloudflaredTunnel:
 
         self._supervisor = threading.Thread(target=_run, daemon=True)
         self._supervisor.start()
+
+    @staticmethod
+    def _край_ответил(код: int, сервер: str) -> bool:
+        """Кто автор ответа — край Cloudflare или наш процесс.
+
+        Судится ЗАГОЛОВКОМ: он называет автора прямо, а код — нет (405 на GET законен у нас, 530
+        бывает только у края). Заголовка нет — тогда по коду: 5xx снаружи означает, что до нас
+        запрос не дошёл, наш транспорт таких не отдаёт на пустой GET.
+        """
+        return "cloudflare" in сервер.lower() or (not сервер and код >= 500)
+
+    def probe(self, timeout: float = 8.0) -> dict:
+        """Независимая улика: ДОЕЗЖАЕТ ли запрос по публичному адресу до нашего процесса.
+
+        Лог cloudflared — свидетельство заинтересованной стороны: он говорит «Registered tunnel
+        connection», когда ребро поднялось, и молчит о том, что край Cloudflare отдаёт 530 всем,
+        кто пришёл снаружи. Здесь состояние спрашивается у самой сети.
+
+        Автор ответа определяется ЗАГОЛОВКОМ, а не кодом: `Server: cloudflare` — ответил край,
+        свой заголовок — доехало до нас. Код 405 на GET нормален (наш транспорт принимает POST),
+        поэтому «дошло» и «ok» не одно и то же.
+        """
+        адрес = self._public_url or (self._named_url() if self.mode == "named" else "")
+        if not адрес or адрес.startswith("https://<"):
+            return {"дошло": False, "код": None, "кто": "адреса нет",
+                    "текст": "публичный адрес неизвестен — спрашивать нечего"}
+        запрос = urllib.request.Request(адрес, method="GET",
+                                        headers={"User-Agent": "vpm-tunnel-probe"})
+        try:
+            with urllib.request.urlopen(запрос, timeout=timeout) as ответ:
+                код, кто = ответ.status, ответ.headers.get("Server", "")
+        except urllib.error.HTTPError as ответ:
+            код, кто = ответ.code, ответ.headers.get("Server", "")
+        except (urllib.error.URLError, TimeoutError, OSError) as beda:
+            return {"дошло": False, "код": None, "кто": "нет ответа", "текст": str(beda)}
+        край = self._край_ответил(код, кто)
+        return {"дошло": not край, "код": код, "кто": кто or ("край" if край else "неизвестен"),
+                "текст": (f"край Cloudflare отвечает {код} — до нашего процесса запрос не доходит"
+                          if край else f"ответил наш процесс ({код})")}
 
     def status(self) -> dict:
         """Снимок здоровья туннеля (для мониторинга/логов сервера)."""

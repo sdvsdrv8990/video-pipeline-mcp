@@ -432,16 +432,27 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
     tunnel = None
     tunnel_status_str = "нет"
     if use_tunnel:
-        from core.transport.tunnel import CloudflaredTunnel
+        from core.transport.tunnel import CloudflaredTunnel, TunnelCancelled
         tunnel = CloudflaredTunnel(port=port, config_path=CONFIG_PATH / "tunnel.yaml")
         try:
             public_url = tunnel.start()
-            # Проверяем реальный статус соединения (не просто "процесс запущен").
+            # Статус спрашивается ДВАЖДЫ и у разных свидетелей: лог cloudflared говорит, что ребро
+            # поднялось, а проба — доходит ли запрос снаружи до нашего процесса. Одного лога мало:
+            # край Cloudflare отдаёт 530 при живом с виду туннеле.
             st = tunnel.status()
-            if st["connected"]:
+            улика = tunnel.probe()
+            if st["connected"] and улика["дошло"]:
                 tunnel_status_str = f"поднят → {public_url}/mcp"
                 print()
                 print(f"🌐 Публичный URL (вставь в коннектор Claude): {public_url}/mcp")
+                print(f"   проверено снаружи: {улика['текст']}")
+            elif st["connected"]:
+                tunnel_status_str = f"ребро есть, снаружи НЕ отвечает ({улика['текст']})"
+                print()
+                print("⚠️  ПУБЛИЧНОГО АДРЕСА НЕТ: cloudflared соединился, но снаружи запрос не "
+                      "доходит.")
+                print(f"   проверено: {улика['текст']}")
+                print(f"   локально сервер работает: http://{host}:{port}/mcp")
                 # Рекомендация: quick → named для продакшена.
                 if "trycloudflare.com" in (public_url or ""):
                     print()
@@ -461,10 +472,21 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
                 print("   • quick (без аккаунта): работает сразу, URL эфемерный (*.trycloudflare.com)")
                 print("   • named + token: нужен токен из дашборда (env MCP_TUNNEL_TOKEN)")
                 print("   • named + credentials: нужен домен + credentials файл")
+        except TunnelCancelled as e:
+            # Отмена оператора, а не поломка: Ctrl+C ушёл всей группе процессов и до нас дошёл
+            # позже, чем до cloudflared. Продолжать запуск и объявлять «ГОТОВ» после этого значит
+            # переработать стоп в поломку чужого механизма.
+            print(f"\n⏹  Остановка: туннель получил тот же сигнал, что и сервер ({e}).")
+            try:
+                await runner.cleanup()
+            except (OSError, RuntimeError) as сбой:
+                print(f"   (сокет закрылся не чисто — порт {port} мог остаться занятым: {сбой})")
+            raise SystemExit(0) from None
         except Exception as e:
             tunnel_status_str = f"ошибка: {e}"
             print(f"⚠️  Туннель не поднят: {e}")
-            print("   Сервер работает локально.")
+            print("   ПУБЛИЧНОГО АДРЕСА НЕТ — Claude AI Web подключиться не сможет.")
+            print(f"   Локально сервер работает: http://{host}:{port}/mcp")
             tunnel = None
 
     # Статус готовности (по спецификации MCP SDK).
