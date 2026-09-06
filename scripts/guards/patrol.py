@@ -22,6 +22,8 @@ import sys
 import time
 from pathlib import Path
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import _evidence                                                           # noqa: E402
@@ -132,6 +134,84 @@ def свести(файлы: list[str], выводы: dict[str, str]) -> dict[st
     return слова
 
 
+
+TIERS = ("tests", "tiers.yaml")
+CATALOG = ("tests", "CATALOG.md")
+
+
+def сам_себе_дом(файл: str) -> bool:
+    """Дом не требуется с того, кто им и является: набор — сам себе дом, каталог — их опись.
+
+    Без этого правка любого набора обвиняла бы сама себя, и обвинение стало бы фоном.
+    """
+    имя = Path(файл).name
+    return имя.startswith("test_") or файл.endswith(("CATALOG.md", "tiers.yaml", "conftest.py"))
+
+
+def дома(файлы: list[str]) -> dict[str, list[str]]:
+    """Набор-дом каждого тронутого файла: его ЗОНА из каталога называет этот файл.
+
+    Связь выводится, а не держится вторым списком: каталог и так обязан называть зону, а список
+    рядом разошёлся бы с ним в первый же переезд.
+    """
+    найдено: dict[str, list[str]] = {ф: [] for ф in файлы}
+    for строка in (ROOT.joinpath(*CATALOG)).read_text(encoding="utf-8").splitlines():
+        ячейки = строка.split("|")
+        if not строка.startswith("|") or len(ячейки) < 3:
+            continue
+        набор = ячейки[1].strip().strip("*").strip("`").strip()
+        if not набор.startswith("test_"):
+            continue
+        for ф in файлы:
+            if Path(ф).name in ячейки[2] or ф in ячейки[2]:
+                найдено[ф].append(набор)
+    return найдено
+
+
+def выбор(файлы: list[str], объявление: dict) -> tuple[set[str], list[tuple[str, dict]], list[dict]]:
+    """Чистый выбор: задетые деревья, нужные ярусы и условия вне графика.
+
+    Отделено от печати, потому что судится именно решение: ярус, выбранный по одному дереву из
+    пяти, выглядит как «минимальный» ровно так же, как выбранный по всем.
+    """
+    задеты = {имя for имя, пути in (объявление["деревья"]).items()
+              for ф in файлы if any(ф == п or ф.startswith(п) for п in пути)}
+    нужны = [(имя, тело) for имя, тело in объявление["ярусы"].items()
+             if задеты & set(тело.get("поднимает") or [])]
+    вне = [у for у in объявление.get("вне_графика") or []
+           if any(ф.startswith(у["место"]) for ф in файлы)]
+    return задеты, нужны, вне
+
+
+def ярус() -> int:
+    """Какой ярус прогонов нужен ЭТОЙ правке — по радиусу, а не по типу работы «на глаз»."""
+    объявление = yaml.safe_load(ROOT.joinpath(*TIERS).read_text(encoding="utf-8"))
+    файлы = _verdict.touched(ROOT)
+    if not файлы:
+        print("правки нет — улики нет, а не «ярус нулевой»")
+        return 0
+    задеты, нужны, вне = выбор(файлы, объявление)
+    print(f"── тронуто файлов: {len(файлы)} · деревьев: {', '.join(sorted(задеты)) or 'вне объявленных'}")
+    их_дома = дома(файлы)
+    без_дома = [ф for ф, н in их_дома.items() if not н and not сам_себе_дом(ф)]
+    for ф, наборы in sorted(их_дома.items()):
+        if наборы:
+            print(f"   {ф} → {', '.join(sorted(set(наборы)))}")
+    if без_дома:
+        print(f"   ✗ без набора-дома: {len(без_дома)} — {', '.join(без_дома[:3])}"
+              f"{' …' if len(без_дома) > 3 else ''}")
+    print(f"\n── ярусы, которые поднимает эта правка: {len(нужны)}")
+    for имя, тело in нужны:
+        print(f"   ▸ {имя} — {тело['про']}")
+        print(f"     цена: {тело['цена']}")
+        print(f"     чем:  {тело['чем']}")
+    if вне:
+        print("\n── вне графика (правка этих мест поднимает ярус независимо от радиуса):")
+        for у in вне:
+            print(f"   ▸ {у['место']} → ярус `{у['ярус']}`: {у['почему']}")
+    return 0
+
+
 def новый(цели: list[str], таски: bool) -> int:
     """Новый файл судится НАБОРОМ судей: что каждый сказал ПРО НЕГО, и что осталось несделанным.
 
@@ -188,6 +268,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="несделанное записать остатками — их читают оба сторожа")
     parser.add_argument("--задача", metavar="ТИП",
                         help="разбор типа работы: улика, кто проснётся сам, кого поднять рукой")
+    parser.add_argument("--ярус", action="store_true",
+                        help="какой ярус прогонов нужен этой правке — по радиусу, не «на глаз»")
     parser.add_argument("--факт", action="store_true",
                         help="сверить след: кто из обязанных хуков сработал, а кто промолчал")
     parser.add_argument("--за", type=float, default=60.0, metavar="МИНУТ",
@@ -198,6 +280,8 @@ def main(argv: list[str] | None = None) -> int:
         return словарь()
     if args.задача:
         return задача(args.задача)
+    if args.ярус:
+        return ярус()
     if args.новый:
         долг = новый(list(args.файл), args.таски)
         return _verdict.close("новый файл под набором судей", долг,
