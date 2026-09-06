@@ -46,6 +46,7 @@ RECORD_FIELD_BASELINE = Path(__file__).with_name("record_field_baseline.txt")
 ABSENT_KNOB_BASELINE = Path(__file__).with_name("absent_knob_baseline.txt")
 STUB_BASELINE = Path(__file__).with_name("stub_baseline.txt")
 TYPEGATE_BASELINE = Path(__file__).with_name("typegate_baseline.txt")
+MEMORY_STATUS_BASELINE = Path(__file__).with_name("memory_status_baseline.txt")
 MUTED_BASELINE = Path(__file__).with_name("muted_refusal_baseline.txt")
 FACT_EMITTER_BASELINE = Path(__file__).with_name("fact_emitters_baseline.txt")
 FACT_EXEMPT_BASELINE = Path(__file__).with_name("fact_exempt_baseline.txt")
@@ -1625,6 +1626,40 @@ def memory_grew(root: Path = ROOT, memory: Path | None = None) -> list[str]:
             f"{MEMORY_SIZE_CEILING.name}"]
 
 
+
+# Три сигнала статуса, отобранные разбором КАЖДОЙ находки на живой памяти: зачёркнутое (= «это
+# больше не так»), «ЗАКРЫТА» с датой и галка готовности. Метки важности (🔴 🟠) и «не взято» (⬜)
+# сюда не входят намеренно — они знание, а не отчёт о сделанном, и ловились бы ложно.
+СТАТУС_ЗАЧЁРК = re.compile(r"~~.+?~~")
+СТАТУС_ЗАКРЫТО = re.compile(r"\b(?:ЗАКРЫТ[АЫО]?|СДЕЛАН[АОЫ]|ВЫПОЛНЕН[АОЫ])\b")
+СТАТУС_ДАТА = re.compile(r"20\d\d-\d\d-\d\d")
+СТАТУС_ГАЛКА = re.compile("✅")
+
+
+def memory_status(root: Path = ROOT, memory: Path | None = None) -> list[str]:
+    """Статус в памяти: то, чей хозяин — git, реестр или журнал, а не раздел памяти.
+
+    Статус протухает молча и стоит токенов в каждой сессии: память грузится целиком, а «✅» о
+    подсистеме или «ЗАКРЫТА 2026-09-02» о задаче проверить нечем — на диске они уже есть и там
+    судятся. Каталога нет (CI, чужая машина) — «улики нет», а не «памяти ноль».
+    """
+    home = memory or memory_dir(root)
+    if not home.is_dir():
+        return []
+    notes = []
+    for файл in sorted(home.glob("*.md")):
+        for н, строка in enumerate(файл.read_text(encoding="utf-8").splitlines(), 1):
+            повод = ("зачёркнутое: «больше не так» — это история, её хозяин git"
+                     if СТАТУС_ЗАЧЁРК.search(строка) else
+                     "«закрыто» с датой — хозяин реестр находок и журнал сессий"
+                     if СТАТУС_ЗАКРЫТО.search(строка) and СТАТУС_ДАТА.search(строка) else
+                     "галка готовности — хозяин диск: она протухает молча"
+                     if СТАТУС_ГАЛКА.search(строка) else None)
+            if повод:
+                notes.append(f"{файл.name}:{н} — {повод}: {строка.strip()[:80]}")
+    return notes
+
+
 def memory_off_index(root: Path = ROOT, memory: Path | None = None) -> list[str]:
     """Память живёт в двух местах — файлы на диске и указатели в `MEMORY.md`, — и они обязаны сойтись.
 
@@ -2480,6 +2515,10 @@ RATCHETS = (
     ("условие приёмки без механизма", acceptance_subject_gap, SUBJECTS_BASELINE,
      "Условие объявлено, а судить его нечем — это и есть вектор развития: заведи исполнителя "
      "либо опусти потолок осознанно (--bless). Карта целиком: invariants.py --приёмка"),
+    ("в памяти статус, а не знание", memory_status, MEMORY_STATUS_BASELINE,
+     "Статус протухает молча и грузится в КАЖДУЮ сессию: его хозяин — git, реестр находок "
+     "или журнал, а память держит только не выводимое с диска. Убери строку либо опусти "
+     "потолок осознанно (--bless)"),
     ("дерево, которым судим, вне гейта типов", typegate_uncovered, TYPEGATE_BASELINE,
      "Код, которым мы судим проект, сам не судится по типам: внеси дерево в `[tool.mypy] files` "
      "и погаси его ошибки ЭТАПОМ — либо опусти потолок осознанно (--bless)"),
