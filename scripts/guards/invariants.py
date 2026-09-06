@@ -1660,6 +1660,37 @@ def memory_status(root: Path = ROOT, memory: Path | None = None) -> list[str]:
     return notes
 
 
+
+def tails_off_home(root: Path = ROOT) -> list[str]:
+    """Остаток записан мимо своего дома: он есть в следе дня, а в `tails.jsonl` его нет.
+
+    След дня игнорируется git и чистится, дом — нет. Запись мимо двери `_stamp.sign` обнаружилась
+    бы иначе только пустым показом через месяц, когда автора записи уже не спросишь.
+    """
+    sys.path.insert(0, str(_at(root, ("scripts", "guards"))))
+    import _stamp
+    дом = root.joinpath(*_stamp.TAILS)
+    свои = set()
+    if дом.exists():
+        for row in дом.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                свои.add(json.loads(row).get("key"))
+            except json.JSONDecodeError:
+                continue
+    notes = []
+    for path in sorted(root.joinpath(*_stamp.JOURNAL).glob("stamps-*.jsonl")):
+        for row in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                запись = json.loads(row)
+            except json.JSONDecodeError:
+                continue
+            если_хвост = запись.get("role") == "ОСТАТОК" or запись.get("closes")
+            if если_хвост and запись.get("key") not in свои:
+                notes.append(f"подпись `{запись.get('key')}` ({запись.get('role')}) есть в следе "
+                             f"дня и нет в {'/'.join(_stamp.TAILS)}: остаток не переживёт чистку")
+    return notes
+
+
 def memory_off_index(root: Path = ROOT, memory: Path | None = None) -> list[str]:
     """Память живёт в двух местах — файлы на диске и указатели в `MEMORY.md`, — и они обязаны сойтись.
 
@@ -2409,6 +2440,7 @@ HARD = (("одну зону объявили два хозяина", zone_declar
         ("хук мимо объявления", hooks_off_declaration),
         ("объявление глушит голос хука", hook_declared_muted),
         ("дверь коммита объявлена, но не ставится", door_not_installed),
+        ("остаток записан мимо своего дома", tails_off_home),
         ("память разошлась со своим указателем", memory_off_index),
         ("память выросла выше потолка", memory_grew),
         ("журнал разошёлся со своим указателем", journal_off_index),

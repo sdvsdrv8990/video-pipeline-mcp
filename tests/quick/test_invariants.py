@@ -764,8 +764,7 @@ def дерево_с_остатком(команда: str, скил: str = "") ->
     """Дерево с одним незакрытым остатком и, по желанию, со скилом."""
     запись = {"ts": _время.time(), "key": "aaaa", "kind": "проба", "role": "ОСТАТОК",
               "what": "хвост", "expected": "закроется", "cmd": команда, "closes": "", "detail": {}}
-    дерево = {f"tests/.journal/stamps-{_время.strftime('%Y%m%d')}.jsonl":
-                  json.dumps(запись, ensure_ascii=False) + "\n",
+    дерево = {"scripts/guards/tails.jsonl": json.dumps(запись, ensure_ascii=False) + "\n",
               "scripts/guards/_stamp.py": (ROOT / "scripts/guards/_stamp.py").read_text(encoding="utf-8"),
               "scripts/guards/живой.py": "x = 1\n"}
     if скил:
@@ -1326,6 +1325,23 @@ ok(not acceptance_advice_only(эксперт()), "судимый сценари�
 ok(not acceptance_calls_missing(make({"нет": "сценариев"})),
    "объявления сценариев нет — улики нет, а не «сценарии все битые»")
 
+
+print("\n== остаток записан мимо своего дома ==")
+
+_мимо = Path(tempfile.mkdtemp(prefix="vpm-мимо-"))
+(_мимо / "tests" / ".journal").mkdir(parents=True)
+(_мимо / "scripts" / "guards").mkdir(parents=True)
+(_мимо / "scripts" / "guards" / "_stamp.py").write_text(
+    (ROOT / "scripts" / "guards" / "_stamp.py").read_text(encoding="utf-8"), encoding="utf-8")
+(_мимо / "tests" / ".journal" / "stamps-20260101.jsonl").write_text(
+    json.dumps({"role": "ОСТАТОК", "key": "мимо", "ts": 1}, ensure_ascii=False) + "\n",
+    encoding="utf-8")
+ok(any("мимо" in н for н in _inv.tails_off_home(_мимо)),
+   "подпись есть в следе и нет в доме — обход двери назван, а не обнаружен пустым показом")
+(_мимо / "scripts" / "guards" / "tails.jsonl").write_text(
+    json.dumps({"role": "ОСТАТОК", "key": "мимо", "ts": 1}, ensure_ascii=False) + "\n",
+    encoding="utf-8")
+ok(not _inv.tails_off_home(_мимо), "запись в доме есть — обвинения нет")
 
 print("\n== в памяти статус, а не знание ==")
 

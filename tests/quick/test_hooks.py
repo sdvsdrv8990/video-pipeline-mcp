@@ -20,6 +20,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HOOKS = ROOT / ".claude" / "hooks"
 
+
+def дом_хвостов(корень: Path) -> Path:
+    """Дом остатков в подставном дереве — там же, где в настоящем: под git, а не в следе."""
+    путь = корень / "scripts" / "guards" / "tails.jsonl"
+    путь.parent.mkdir(parents=True, exist_ok=True)
+    return путь
+
 _checks = 0
 _fails = []
 
@@ -335,7 +342,7 @@ def main() -> int:
     ok(not намер["судить_конец"]({"last_assistant_message": "Всё закрыто, гейт зелёный."}, дерево),
        "без обещания упрёка нет — сторож не наказывает за законченную работу")
     сегодня = __import__("datetime").date.today().strftime("%Y%m%d")
-    (дерево / "tests" / ".journal" / f"stamps-{сегодня}.jsonl").write_text(
+    дом_хвостов(дерево).write_text(
         json.dumps({"role": "ОСТАТОК", "ts": __import__("time").time(), "key": "aaaa",
                     "what": "хвост", "cmd": "grep -n x y"}, ensure_ascii=False) + "\n",
         encoding="utf-8")
@@ -350,7 +357,7 @@ def main() -> int:
     хвост = Path(tempfile.mkdtemp(prefix="vpm-хвост-"))
     (хвост / "tests" / ".journal").mkdir(parents=True)
     день2 = __import__("datetime").date.today().strftime("%Y%m%d")
-    жур = хвост / "tests" / ".journal" / f"stamps-{день2}.jsonl"
+    жур = дом_хвостов(хвост)
     жур.write_text(json.dumps({"role": "ОСТАТОК", "ts": __import__("time").time(), "key": "bbbb",
                                "what": "хвост", "cmd": "grep -n x y"}, ensure_ascii=False) + "\n",
                    encoding="utf-8")
@@ -365,7 +372,7 @@ def main() -> int:
     двое = Path(tempfile.mkdtemp(prefix="vpm-двое-"))
     (двое / "tests" / ".journal").mkdir(parents=True)
     время = __import__("time").time()
-    (двое / "tests" / ".journal" / f"stamps-{день2}.jsonl").write_text("\n".join(
+    дом_хвостов(двое).write_text("\n".join(
         json.dumps({"role": "ОСТАТОК", "ts": t, "key": k, "what": k, "cmd": "grep -n x y"},
                    ensure_ascii=False) for k, t in (("млад", время), ("стар", время - 86400))) + "\n",
         encoding="utf-8")
@@ -395,7 +402,7 @@ def main() -> int:
 
     взят = Path(tempfile.mkdtemp(prefix="vpm-вработе-"))
     (взят / "tests" / ".journal").mkdir(parents=True)
-    жур2 = взят / "tests" / ".journal" / f"stamps-{день2}.jsonl"
+    жур2 = дом_хвостов(взят)
     жур2.write_text(json.dumps({"role": "ОСТАТОК", "ts": __import__("time").time(), "key": "eeee",
                                 "what": "хвост, который берут", "cmd": "grep -n x y"},
                                ensure_ascii=False) + "\n", encoding="utf-8")
@@ -676,7 +683,7 @@ def main() -> int:
     (хвостатое / "scripts" / "guards").mkdir(parents=True)
     for имя in ("_stamp.py", "_permit.py"):
         shutil.copy(ROOT / "scripts" / "guards" / имя, хвостатое / "scripts" / "guards" / имя)
-    (хвостатое / "tests" / ".journal" / f"stamps-{time.strftime('%Y%m%d')}.jsonl").write_text(
+    дом_хвостов(хвостатое).write_text(
         json.dumps({"ts": time.time(), "key": "aaaa", "kind": "проба", "role": "ОСТАТОК",
                     "what": "хвост для замера", "expected": "закроется", "cmd": "ls",
                     "closes": "", "detail": {}}, ensure_ascii=False) + "\n", encoding="utf-8")

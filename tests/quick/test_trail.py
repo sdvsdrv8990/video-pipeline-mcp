@@ -381,6 +381,25 @@ ok(not list((tree / "tests" / ".journal").glob("trail-*.jsonl"))
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
+
+print("\n== дом остатков живёт под git, а не в игнорируемом следе ==")
+
+_дерево = Path(tempfile.mkdtemp(prefix="vpm-дом-"))
+_ключ, _ = _stamp.sign("проба", "ОСТАТОК", "хвост под git", expected="закроется",
+                       cmd="ls", root=_дерево)
+_дом = _дерево.joinpath(*_stamp.TAILS)
+ok(_дом.exists() and _ключ in _дом.read_text(encoding="utf-8"),
+   "остаток лёг в дом рядом со сторожем — туда, откуда его не унесёт чистка следа")
+ok([x["key"] for x in _stamp.tails(_дерево)] == [_ключ],
+   "читается он оттуда же: у остатка один хозяин, а не два источника")
+_ = _stamp.sign("проба", "ВЕРДИКТ", "закрыт", closes=_ключ, root=_дерево)
+ok(not _stamp.tails(_дерево), "закрытие тоже попало в дом — иначе хвост воскрес бы после чистки")
+for _файл in (_дерево / "tests" / ".journal").glob("stamps-*.jsonl"):
+    _файл.unlink()
+ok([x["key"] for x in _stamp.tails(_дерево)] == [] and _дом.exists(),
+   "след дня снесён целиком — дом на месте: ровно это и значит «переживёт чистку»")
+
+
 if _fails:
     print("ПРОВАЛЫ:")
     for f in _fails:

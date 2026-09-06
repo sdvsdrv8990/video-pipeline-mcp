@@ -23,6 +23,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 JOURNAL = ("tests", ".journal")
+# Дом остатков — под git, рядом со сторожем, который их читает. След дня объявлен рантаймом
+# и игнорируется, поэтому остаток, живший только там, не переживал `git clean` и клон.
+TAILS = ("scripts", "guards", "tails.jsonl")
 ROLES = ("УЛИКА", "ОТКАЗ", "ВЕРДИКТ", "ОСТАТОК", "ОТЛОЖЕН", "В РАБОТЕ")
 # Членство здесь отнимает право ЗАКРЫВАТЬ хвост, а не меняет показ: признание — не итог.
 ПРИЗНАНИЯ = ("ОТЛОЖЕН", "В РАБОТЕ")
@@ -91,6 +94,11 @@ def sign(kind: str, role: str, what: str, *, intent: str = "", expected: str = "
               "detail": detail or {}}
     with path.open("a", encoding="utf-8") as out:
         out.write(json.dumps(record, ensure_ascii=False) + "\n")
+    if role == "ОСТАТОК" or closes:
+        дом = root.joinpath(*TAILS)
+        дом.parent.mkdir(parents=True, exist_ok=True)
+        with дом.open("a", encoding="utf-8") as в_дом:
+            в_дом.write(json.dumps(record, ensure_ascii=False) + "\n")
     keys = [f"род={kind}"]
     if closes:
         keys.append(f"закрывает={closes}")
@@ -107,12 +115,13 @@ def sign(kind: str, role: str, what: str, *, intent: str = "", expected: str = "
 def tails(root: Path = ROOT) -> list[dict]:
     """Незакрытые остатки, старые сверху. Закрытие — ДРУГАЯ подпись, назвавшая ключ хвоста.
 
-    Читается весь журнал, а не последний день: хвост живёт до закрытия, и «неделю назад» — самый
-    частый его возраст. Журнала нет — пусто, а не выдуманный ноль.
+    Дом один и он в git (`TAILS`): хвост живёт до закрытия, а «неделю назад» — самый частый его
+    возраст, поэтому день-журнала мало. Дома нет — пусто, а не выдуманный ноль.
     """
     записи, закрыты, отложены, в_работе = [], set(), set(), set()
-    for path in sorted(root.joinpath(*JOURNAL).glob("stamps-*.jsonl")):
-        for row in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    дом = root.joinpath(*TAILS)
+    if дом.exists():
+        for row in дом.read_text(encoding="utf-8", errors="replace").splitlines():
             if not row.strip():
                 continue
             try:
