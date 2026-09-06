@@ -32,6 +32,11 @@ def словарь(path: Path | None = None) -> dict:
         return {}
 
 
+def понятия(path: Path | None = None) -> dict:
+    """Значения слова «улика»: их три, и все машинные — без этого правила пишутся по примеру."""
+    return словарь(path).get("понятия") or {}
+
+
 def главные(path: Path | None = None) -> dict:
     return словарь(path).get("главные") or {}
 
