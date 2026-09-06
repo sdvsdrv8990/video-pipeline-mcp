@@ -47,6 +47,7 @@ ABSENT_KNOB_BASELINE = Path(__file__).with_name("absent_knob_baseline.txt")
 STUB_BASELINE = Path(__file__).with_name("stub_baseline.txt")
 TYPEGATE_BASELINE = Path(__file__).with_name("typegate_baseline.txt")
 MEMORY_STATUS_BASELINE = Path(__file__).with_name("memory_status_baseline.txt")
+TAUTOLOGY_BASELINE = Path(__file__).with_name("tautology_baseline.txt")
 MUTED_BASELINE = Path(__file__).with_name("muted_refusal_baseline.txt")
 FACT_EMITTER_BASELINE = Path(__file__).with_name("fact_emitters_baseline.txt")
 FACT_EXEMPT_BASELINE = Path(__file__).with_name("fact_exempt_baseline.txt")
@@ -1691,6 +1692,36 @@ def tails_off_home(root: Path = ROOT) -> list[str]:
     return notes
 
 
+ЦИКЛОВ_В_ОКНЕ = 10
+РОДЫ_В_ПОДПИСИ = re.compile(r"предсказаний (\d+) из (\d+)")
+
+
+def cycle_tautology(root: Path = ROOT) -> list[str]:
+    """Ожидания цикла, выводимые из текста собственной правки: прогон их не проверяет.
+
+    Считается по ОКНУ последних прогонов, а не по всей истории: сумма за всё время может только
+    расти, и храповик из неё превратился бы в вечный красный, который перестают читать. Судятся
+    подписи, несущие счёт родов; старые его не несут, и вменять им сегодняшнее правило нечем.
+    """
+    sys.path.insert(0, str(_at(root, ("scripts", "guards"))))
+    import _stamp
+    циклы = []
+    for path in sorted(root.joinpath(*_stamp.JOURNAL).glob("stamps-*.jsonl")):
+        for row in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                запись = json.loads(row)
+            except json.JSONDecodeError:
+                continue
+            счёт = РОДЫ_В_ПОДПИСИ.search(запись.get("expected", "")) if запись.get("kind") == "цикл" else None
+            if счёт:
+                циклы.append((запись.get("ts", 0), запись.get("key"), int(счёт[1]), int(счёт[2])))
+    notes = []
+    for _, ключ, предсказаний, всего in sorted(циклы)[-ЦИКЛОВ_В_ОКНЕ:]:
+        notes += [f"⟦vpm {ключ}⟧ ожидание выводилось из самой правки, прогон его не проверял "
+                  f"(предсказаний {предсказаний} из {всего})"] * (всего - предсказаний)
+    return notes
+
+
 def memory_off_index(root: Path = ROOT, memory: Path | None = None) -> list[str]:
     """Память живёт в двух местах — файлы на диске и указатели в `MEMORY.md`, — и они обязаны сойтись.
 
@@ -2551,6 +2582,10 @@ RATCHETS = (
      "Статус протухает молча и грузится в КАЖДУЮ сессию: его хозяин — git, реестр находок "
      "или журнал, а память держит только не выводимое с диска. Убери строку либо опусти "
      "потолок осознанно (--bless)"),
+    ("цикл судит тавтологию, а не предсказание", cycle_tautology, TAUTOLOGY_BASELINE,
+     "Ожидание читается в тексте патча — прогон его не проверяет. Предсказывай смену цвета у "
+     "СУЩЕСТВУЮЩЕЙ проверки; тавтология допустима с объявленным `ломается:`, но доля её обязана "
+     "идти вниз — либо опусти потолок осознанно (--bless)"),
     ("дерево, которым судим, вне гейта типов", typegate_uncovered, TYPEGATE_BASELINE,
      "Код, которым мы судим проект, сам не судится по типам: внеси дерево в `[tool.mypy] files` "
      "и погаси его ошибки ЭТАПОМ — либо опусти потолок осознанно (--bless)"),

@@ -8,6 +8,7 @@ Standalone-прогон:  python tests/quick/test_invariants.py
 """
 import sys
 import json
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -1374,6 +1375,45 @@ ok(any(н.startswith("scripts/guards") for н in _inv.typegate_uncovered(_зон
    "зону ужали — храповик увидел это ПО МАНИФЕСТУ, а не по своей копии")
 _зона.unlink()
 ok(not _inv.typegate_uncovered(_зона.parent), "манифеста нет — улики нет, а не обвинение")
+
+
+print("\n§ ось: цикл судит тавтологию, а не предсказание")
+_цикл = Path(tempfile.mkdtemp(prefix="vpm-цикл-"))
+_след = _цикл / "tests" / ".journal"
+_след.mkdir(parents=True)
+
+
+def _подпись(key, expected, kind="цикл", ts=1.0):
+    return json.dumps({"ts": ts, "key": key, "kind": kind, "expected": expected},
+                      ensure_ascii=False)
+
+
+(_след / "stamps-1.jsonl").write_text("\n".join([
+    _подпись("aaaa", "3×appeared · предсказаний 0 из 3", ts=1),
+    _подпись("bbbb", "2×appeared + 1×red · предсказаний 1 из 3", ts=2),
+    _подпись("cccc", "5×appeared", ts=3),
+    _подпись("dddd", "2×appeared · предсказаний 0 из 2", kind="гейт", ts=4),
+]) + "\n", encoding="utf-8")
+_обвинения = _inv.cycle_tautology(_цикл)
+ok(len(_обвинения) == 5,
+   f"считаются ОЖИДАНИЯ, а не прогоны: 3 слепых + 2 при одном предсказании ({len(_обвинения)})")
+ok(all("aaaa" in н or "bbbb" in н for н in _обвинения),
+   "подпись без счёта родов не судится: сегодняшнее правило нечем вменить вчерашней записи")
+ok(not [н for н in _обвинения if "dddd" in н],
+   "род записи проверяется: гейт со словом «предсказаний» циклом не считается")
+(_след / "stamps-2.jsonl").write_text("\n".join(
+    _подпись(f"n{i:03d}", "1×appeared · предсказаний 0 из 1", ts=10 + i) for i in range(15)
+) + "\n", encoding="utf-8")
+ok(len(_inv.cycle_tautology(_цикл)) == _inv.ЦИКЛОВ_В_ОКНЕ,
+   "судится ОКНО последних прогонов: сумма за всю историю росла бы только вверх")
+(_след / "stamps-2.jsonl").write_text("\n".join(
+    _подпись(f"g{i:03d}", "1×red · предсказаний 1 из 1", ts=100 + i) for i in range(12)
+) + "\n", encoding="utf-8")
+ok(not _inv.cycle_tautology(_цикл),
+   "окно вышло чистым — долг УХОДИТ, а не остаётся памятником старым прогонам")
+shutil.rmtree(_цикл, ignore_errors=True)
+ok(any(ось[0] == "цикл судит тавтологию, а не предсказание" for ось in _inv.RATCHETS),
+   "ось стоит в храповиках — иначе она считает в пустоту и потолок не судит никто")
 
 
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

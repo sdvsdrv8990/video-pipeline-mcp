@@ -65,7 +65,16 @@ INTENT_KEYS = {"intent", "where", "why", "expect"}
 # врать «заявленное не сбылось». Исчезновение объявляется так же — иначе снятую проверку не отличить
 # от переименованной.
 OUTCOMES = {"red", "green", "appeared", "vanished"}
-EXPECT_KEYS = {"scenario", "becomes", "why"}
+EXPECT_KEYS = {"scenario", "becomes", "why", "ломается"}
+# Выводим ли исход ИЗ ТЕКСТА патча. Если да — прогон ничего не проверяет: «появится проверка,
+# которую я сам и добавил» сбывается всегда. Таблица, а не цепочка условий: новый род исхода
+# обязан назвать свою выводимость явно, иначе он молча станет «предсказанием» и ось ослепнет.
+ВЫВОДИМОСТЬ = {
+    "appeared": lambda метка, плюс, минус: метка in плюс,
+    "vanished": lambda метка, плюс, минус: метка in минус and метка not in плюс,
+    "red": lambda метка, плюс, минус: False,
+    "green": lambda метка, плюс, минус: False,
+}
 
 
 def verdicts(cwd: Path) -> dict[str, bool]:
@@ -163,6 +172,45 @@ def unspoken(intent: dict, root: Path = ROOT) -> list[str]:
     свод = "\n".join(тексты)
     return [str(item["scenario"]) for item in intent["expect"]
             if str(item["scenario"]) not in свод]
+
+
+def _знаком(patch: str, знак: str) -> str:
+    """Строки патча одного знака, без заголовков файлов (`+++`/`---`)."""
+    return "\n".join(row[1:] for row in patch.splitlines()
+                      if row.startswith(знак) and not row.startswith(знак * 3))
+
+
+def роды(intent: dict, patch: str, root: Path = ROOT) -> list[tuple[str, str, str]]:
+    """Род каждого ожидания: «тавтология» — исход читается в тексте патча, «предсказание» — нет.
+
+    Новые файлы входят в добавленное целиком: метка, приехавшая новым набором, объявлена этой же
+    правкой ровно так же, как строка со знаком `+`, и считать её предсказанием значило бы хвалить
+    себя за самый частый вид тавтологии.
+    """
+    плюс = _знаком(patch, "+")
+    for rel in untracked(root):
+        файл = root / rel
+        if файл.is_file():
+            плюс += "\n" + файл.read_text(encoding="utf-8", errors="replace")
+    минус = _знаком(patch, "-")
+    итог = []
+    for item in intent["expect"]:
+        метка, исход = str(item["scenario"]), str(item["becomes"])
+        выводим = ВЫВОДИМОСТЬ.get(исход, lambda *_: False)(метка, плюс, минус)
+        итог.append((метка, исход, "тавтология" if выводим else "предсказание"))
+    return итог
+
+
+def без_условия(intent: dict, судимые: list[tuple[str, str, str]]) -> list[str]:
+    """Тавтологичные ожидания, у которых не назван обратный случай.
+
+    Тавтология не запрещена — правка, ВЕСЬ смысл которой в новой проверке, законна. Запрещено
+    выдавать её за предсказание: у такого ожидания обязано быть `ломается` — условие, при котором
+    исход был бы другим. Это и делает утверждение опровержимым.
+    """
+    условие = {str(item["scenario"]): item.get("ломается") for item in intent["expect"]}
+    return [f"{метка} → {исход}" for метка, исход, род in судимые
+            if род == "тавтология" and not условие.get(метка)]
 
 
 def untracked(root: Path = ROOT) -> list[str]:
@@ -264,26 +312,36 @@ def compare(intent: dict, before: dict[str, bool], after: dict[str, bool]) -> di
 
     fulfilled = [(name, out) for name, outs in sorted(declared.items())
                  for out in sorted(outs) if out in got.get(name, set())]
+    # Риск — это изменение УЖЕ СУЩЕСТВУЮЩЕГО наблюдения: смена цвета и исчезновение. Прибавление
+    # наблюдения риском не является ни при каких условиях, и требовать его объявления значило
+    # требовать пересказ собственной правки: замер 2026-09-06 — 538 из 547 ожиданий за всю
+    # историю были именно такими, потому что иначе цикл возвращал 1.
     surprise = {(name, out) for name, outs in got.items() for out in outs
-                if out not in declared.get(name, set())}
+                if out != "appeared" and out not in declared.get(name, set())}
     missed = [(name, out) for name, outs in sorted(declared.items())
               for out in sorted(outs) if out not in got.get(name, set())]
     news = [(label, "appeared" if label in appeared else "vanished")
             for label in sorted(appeared | vanished)]
     return {"common": len(common), "colour": len(turned_red | turned_green),
             "declared": declared, "got": got, "fulfilled": fulfilled, "surprise": surprise,
+            # НЕЗАЯВЛЕННОЕ, а не «рисковое»: появление риском больше не считается, и фильтр по
+            # `surprise` вычёркивал бы прибавку наблюдений вместе с ним — колонка молчала бы.
             "missed": missed, "news": [(label, out) for label, out in news
-                                       if (key(label), out) in surprise],
+                                       if out not in declared.get(key(label), set())],
             "gone": {key(label) for label in vanished}}
 
 
-def report(intent: dict, before: dict[str, bool], after: dict[str, bool]) -> int:
+def report(intent: dict, before: dict[str, bool], after: dict[str, bool],
+           судимые: list[tuple[str, str, str]] | None = None) -> int:
     sums = compare(intent, before, after)
     declared, got, surprise = sums["declared"], sums["got"], sums["surprise"]
 
     print(f"\n═══ НАМЕРЕНИЕ: {intent['intent']} ═══")
     print(f"  где: {intent['where']}\n  зачем: {intent['why']}")
     print(f"  проверок сравнено {sums['common']}; сменили цвет {sums['colour']}")
+    if судимые:
+        print(f"  ожиданий {len(судимые)}: предсказаний {предсказаний(судимые)}, "
+              f"тавтологий {len(судимые) - предсказаний(судимые)}")
 
     print("\n── ЗАЯВЛЕННОЕ СБЫЛОСЬ ──")
     for name, out in sums["fulfilled"]:
@@ -298,9 +356,17 @@ def report(intent: dict, before: dict[str, bool], after: dict[str, bool]) -> int
         if out in ("red", "green"):
             print(f"  ⚠ {name} → {out} — намерение об этом не говорило")
     for label, outcome in sums["news"]:
-        print(f"  ⚠ проверка {'появилась' if outcome == 'appeared' else 'исчезла'}: {label}")
+        if outcome == "vanished":
+            print(f"  ⚠ проверка исчезла: {label}")
     if not surprise:
         print("  (ничего — правка задела ровно то, что заявлено)")
+    прибавилось = [label for label, outcome in sums["news"] if outcome == "appeared"]
+    if прибавилось:
+        print(f"\n── ПРИБАВИЛОСЬ НАБЛЮДЕНИЙ: {len(прибавилось)} ──")
+        for label in прибавилось[:5]:
+            print(f"  + {label}")
+        if len(прибавилось) > 5:
+            print(f"  … ещё {len(прибавилось) - 5}")
 
     print("\n── ЗАЯВЛЕННОЕ НЕ СБЫЛОСЬ ──")
     for name, out in sums["missed"]:
@@ -316,7 +382,12 @@ def report(intent: dict, before: dict[str, bool], after: dict[str, bool]) -> int
     return 0 if not (sums["missed"] or surprise) else 1
 
 
-def stamp_fields(intent: dict, sums: dict, path: Path, секунд: float = 0.0) -> dict:
+def предсказаний(судимые: list[tuple[str, str, str]]) -> int:
+    return sum(1 for *_, род in судимые if род == "предсказание")
+
+
+def stamp_fields(intent: dict, sums: dict, path: Path, секунд: float = 0.0,
+                 судимые: list[tuple[str, str, str]] | None = None) -> dict:
     """Состав подписи цикла. Отдельно от печати, потому что подпись читает ЧЕЛОВЕК в чужой сессии.
 
     Именем зовётся файл намерения, а не список тронутых путей: по нему прогон повторяют, а список
@@ -326,14 +397,16 @@ def stamp_fields(intent: dict, sums: dict, path: Path, секунд: float = 0.0
     return {"what": f"цикл по «{path.stem}» — сравнено {sums['common']} проверок, цвет сменили "
                     f"{sums['colour']}, скрытых рисков {len(sums['surprise'])}",
             "intent": path.stem,
-            "expected": " + ".join(f"{n}×{out}" for out, n in sorted(ждали.items()))
-                        or "цвет не меняется",
+            "expected": (" + ".join(f"{n}×{out}" for out, n in sorted(ждали.items()))
+                         or "цвет не меняется")
+                        + (f" · предсказаний {предсказаний(судимые)} из {len(судимые)}"
+                           if судимые else ""),
             "actual": f"сбылось {len(sums['fulfilled'])} · риска {len(sums['surprise'])} · "
                       f"не сбылось {len(sums['missed'])}",
             "cmd": f"python3 scripts/guards/what_if.py --intent {path}",
             "detail": {"намерение": intent, "сбылось": sums["fulfilled"],
                        "не сбылось": sums["missed"], "риск": sorted(sums["surprise"]),
-                       "секунд": round(секунд, 1)}}
+                       "роды": судимые or [], "секунд": round(секунд, 1)}}
 
 
 MAPS = ("tests", ".journal")
@@ -375,6 +448,15 @@ def main() -> int:
         return replay(args.replay, intent)
     patch = args.patch.read_text(encoding="utf-8") if args.patch else subprocess.run(
         ["git", "diff", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout
+    судимые = роды(intent, patch)
+    if (слепые := без_условия(intent, судимые)):
+        # Отказ ДО прогонов: цикл стоит минуты, а тавтологичное ожидание не станет предсказанием
+        # ни от одной из них. Замер 2026-09-06: 538 из 547 ожиданий были именно такими.
+        sys.exit("Ожидание выводится из текста самой правки — прогон его не проверяет:\n"
+                 + "\n".join(f"   • {строка}" for строка in слепые)
+                 + "\n\nНазови `ломается:` — условие, при котором исход был бы ДРУГИМ "
+                   "(и тогда утверждение опровержимо), либо объяви ожидание, которое "
+                   "предсказывает смену цвета (`red`/`green`) у СУЩЕСТВУЮЩЕЙ проверки.")
     if not patch.strip() and not untracked():
         # Правка бывает и БЕЗ диффа — из одних новых файлов. Отвергать её как «патча нет» значит
         # не судить самый частый вид прибавления: новый сторож, новый набор, новый модуль.
@@ -394,9 +476,9 @@ def main() -> int:
     finally:
         drop_tree(tree)
 
-    code = report(intent, before, after)
+    code = report(intent, before, after, судимые)
     поля = stamp_fields(intent, compare(intent, before, after), args.intent,
-                        time.monotonic() - начало)
+                        time.monotonic() - начало, судимые)
     ключ, подпись = _stamp.sign("цикл", "ВЕРДИКТ", поля["what"], intent=поля["intent"],
                                 expected=поля["expected"], actual=поля["actual"],
                                 cmd=поля["cmd"], detail=поля["detail"])
