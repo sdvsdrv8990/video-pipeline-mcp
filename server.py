@@ -12,6 +12,9 @@ Host → Origin → Content-Type → тело → Auth → Firewall → Engine �
 
 import asyncio
 import contextlib
+import errno
+import re
+import subprocess
 import json
 import os
 import sys
@@ -198,6 +201,21 @@ def _report_origin(origin: str) -> None:
 def _jsonrpc_error(request_id, code: int, message: str) -> dict:
     """Сборка JSON-RPC ошибки (для транспортного уровня)."""
     return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+
+
+
+def _port_holder(port: int) -> str:
+    """Кто слушает порт — именем и pid. Не удалось узнать — молчим, а не выдумываем."""
+    try:
+        готово = subprocess.run(["ss", "-ltnp"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    for строка in готово.stdout.splitlines():
+        if f":{port} " not in строка:
+            continue
+        имя = re.search(r'users:\(\("([^"]+)",pid=(\d+)', строка)
+        return f" процессом {имя.group(1)} (pid {имя.group(2)})" if имя else " другим процессом"
+    return ""
 
 
 async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = False):
@@ -394,7 +412,17 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
-    await site.start()
+    try:
+        await site.start()
+    except OSError as beda:
+        if beda.errno != errno.EADDRINUSE:
+            raise
+        # Трейс называет наши строки, а не ВИНОВНИКА: без имени держателя оператор идёт читать
+        # код вместо того, чтобы остановить прошлый запуск.
+        держит = _port_holder(port)
+        print(f"\nПорт {port} занят{держит} — сервер не поднялся.", file=sys.stderr)
+        print("Останови прошлый запуск: ./run.sh --stop\n", file=sys.stderr)
+        raise SystemExit(1) from None
     socket_task = wire.start_socket_watch(runner, engine.trail, _load_yaml(CONFIG_PATH / "observability.yaml"))
 
     print(f"Сервер запущен на http://{host}:{port}")
