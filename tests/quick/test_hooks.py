@@ -692,6 +692,28 @@ def main() -> int:
     ok("--приёмка" in контекст and "--задача" in контекст,
        "названы две двери: кого звать по задаче и что уже судится")
 
+    print("§16 вердикт у ХВОСТА конвейера: прогон в конвейере называется, чтение — нет")
+    import importlib.util as _iu
+    _s = _iu.spec_from_file_location("_fg", HOOKS / "vpm-fact-gate.py")
+    _fg = _iu.module_from_spec(_s); _s.loader.exec_module(_fg)
+    for _cmd, _ждём, _что in (
+        (".venv/bin/python -m pytest -q 2>&1 | tail -15", True, "прогон в конвейере"),
+        (".venv/bin/python scripts/guards/invariants.py --check | grep чисто", True, "сторож в конвейере"),
+        ("npm run --silent typecheck | tail -3", True, "джоба студии в конвейере"),
+        # Голова звена, а не вхождение: имя набора аргументом grep дало ложную тревогу на
+        # первой же команде после правки — сторож поймал сам себя.
+        ('grep -n "PostToolUse" tests/quick/test_hooks.py | head -6', False, "имя набора аргументом grep"),
+        ("cat tests/quick/test_hooks.py | wc -l", False, "чтение файла, не прогон"),
+        (".venv/bin/python -m pytest -q 2>&1 | tail; echo ${PIPESTATUS[0]}", False, "код взят у команды"),
+        (".venv/bin/python -m pytest -q > /tmp/п.log 2>&1; echo $?", False, "вывод в файл, код отдельно"),
+        ("git status --short | head", False, "обычная команда"),
+    ):
+        ok(bool(_fg.вердикт_у_хвоста(_cmd)) is _ждём, f"§16 {_что}: ждали {_ждём}")
+    _код, _вых, _ = fire("vpm-fact-gate.py", {
+        "hook_event_name": "PostToolUse", "tool_name": "Bash", "session_id": "хвост-конвейера",
+        "tool_input": {"command": ".venv/bin/python -m pytest -q 2>&1 | tail -15"}})
+    ok("ХВОСТА конвейера" in reason(_вых), "§16 хук говорит вслух на живом событии")
+
     print("§15 дверь человека: запрет сторожа остатков снимает не ИИ")
     просьба = ('.venv/bin/python scripts/guards/_permit.py --запрос VPM_INTENT_GUARD '
                '--почему "правлю сам механизм остатков"')

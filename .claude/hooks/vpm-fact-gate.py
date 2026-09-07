@@ -63,6 +63,19 @@ SHELL_NON_ASCII = re.compile(
     rf"|\b(?:unset|read|for)\s+{ИМЯ_ASCII}{ЧУЖАЯ}",              # слово забирает имя без «=»
     re.M)
 COMMIT = re.compile(r"\bgit\s+(?:-\S+\s+)*commit\b")
+# Команды, чей ВЕРДИКТ читают по коду возврата. Список поимённый: у произвольной команды кода
+# возврата тоже ждут, но обвинять каждый конвейер значило бы выключить сторожа в первый же день.
+# Судится ГОЛОВА звена, а не вхождение: имя набора встречается аргументом `grep` куда чаще,
+# чем прогоном, и вхождение дало ложную тревогу на первой же команде после правки.
+ЗАПУСК = re.compile(r"""^\s*(?:\w+=\S+\s+)*                      # env-присваивания
+                        (?:sudo\s+|timeout\s+\d+\s+|npx\s+)*      # обёртки
+                        (?:\S*(?:python3?|/python)\s+(?:-m\s+)?)? # интерпретатор
+                        (pytest|ruff\s+check|mypy|bandit|pip-audit|gitleaks
+                         |npm\s+run\s+(?:--silent\s+)?(?:typecheck|lint|build|geometry)
+                         |\S*scripts/guards/\w+\.py
+                         |\S*tests/\S+\.py)\b""", re.X)
+# Код возврата берётся у самой команды: `${PIPESTATUS[0]}` либо вывод в файл, а код отдельно.
+КОД_У_КОМАНДЫ = re.compile(r"PIPESTATUS|\|\s*tee\b")
 SKIP_DOOR = re.compile(r"--no-verify\b|\s-n\b")
 # Тело here-document — ДАННЫЕ, а не команда. Без этого файл, в тексте которого упомянута
 # опасная команда, запрещает сам себя записать (поймано на этом же хуке).
@@ -110,6 +123,22 @@ EDIT_MSG = f"""Гейт фактов: {{path}} — правка несущего
 {FACTS}
 
 Не отвечай по памяти: смысл гейта в самом поиске. Выключить: VPM_FACT_GATE=off."""
+
+ХВОСТ_MSG = """⚠️ Вердикт читается у ХВОСТА конвейера, а не у прогона: `{кусок}`
+
+Код возврата конвейера — это код ПОСЛЕДНЕЙ команды. `pytest … | tail` вернёт 0 при красных
+тестах, и «зелёно» будет названо по коду `tail` (F247, поймано на этом проекте 2026-09-07:
+рапорт «exit code 0» при `1 failed, 35 passed`).
+
+Прочитать вердикт у самой команды — одно из двух:
+    <команда> > /tmp/прогон.log 2>&1; echo "код=$?"; tail -20 /tmp/прогон.log
+    <команда> 2>&1 | tail -20; echo "код=${{PIPESTATUS[0]}}"
+
+Если конвейер здесь ради ЧТЕНИЯ вывода, а не ради вердикта — это сообщение не про тебя.
+
+Выключить: VPM_FACT_GATE=off.
+"""
+
 
 POST_MSG = f"""⚠️ Гейт фактов (постфактум): команда изменила несущие файлы мимо Edit/Write — {{paths}}
 
@@ -396,6 +425,24 @@ def commit_door(command: str, root: Path = PROJ) -> str:
     return ""
 
 
+def вердикт_у_хвоста(command: str) -> str:
+    """Кусок конвейера, чей код возврата припишут прогону, — либо пустая строка.
+
+    Судится ПЕРВОЕ звено: код отдаёт последнее, поэтому виноват тот конвейер, что начинается
+    прогоном. Конвейер ради чтения вывода законен и встречается всюду; отличает их только
+    попытка взять код — `${PIPESTATUS[0]}` или `tee`, — и при ней сторож молчит.
+    """
+    if КОД_У_КОМАНДЫ.search(command):
+        return ""
+    for кусок in re.split(r"&&|\|\||;|\n", command):
+        if "|" not in кусок:
+            continue
+        первое = кусок.split("|", 1)[0]
+        if ЗАПУСК.match(первое):
+            return кусок.strip()[:120]
+    return ""
+
+
 def verdict(rel: str, added: str = "") -> tuple[str, str, str] | None:
     """(ключ, о чём, сообщение) для пути в дереве — либо None, если гейта он не касается."""
     if suite_birth(rel):
@@ -487,6 +534,11 @@ def post(data: dict, st: dict, sid: str) -> None:
         for путь in ПУТЬ_В_КОМАНДЕ.findall(команда):
             смотрел[путь.lstrip("./")] = st["probe"]
         save_state(sid, st)
+    if (кусок := вердикт_у_хвоста(команда)) and f"хвост:{кусок}" not in st["cleared"]:
+        st["cleared"].append(f"хвост:{кусок}")
+        save_state(sid, st)
+        emit({"hookSpecificOutput": {"hookEventName": "PostToolUse",
+                                     "additionalContext": ХВОСТ_MSG.format(кусок=кусок)}})
     new = [p for p in dirty_gated()
            if f"file:{p}" not in st["cleared"] and p not in st.get("baseline", [])]
     if not new:
