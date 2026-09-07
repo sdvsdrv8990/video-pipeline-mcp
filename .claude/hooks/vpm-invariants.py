@@ -179,7 +179,8 @@ def newborn(lines: list[str], root: Path = PROJ) -> tuple[list[str], list[str]]:
         return [], lines           # git не ответил: возраст файла неизвестен, отсрочки нет
     известные = {item for item in done.stdout.split("\0") if item}
     известные |= {Path(item).name for item in известные}
-    молодые, взрослые = [], []
+    молодые: list[str] = []
+    взрослые: list[str] = []
     for line in lines:
         имена = set(re.findall(r"[\w./-]+\.(?:py|yaml|md|json)", line))
         (молодые if имена and not (имена & известные) else взрослые).append(line)
