@@ -240,9 +240,10 @@
 > **пруф**: файл на диске, прогон или номер находки. Где пруф не появился — уровень не тронут, и это
 > написано словом. Замеры сделаны командами в день записи, а не переписаны из прошлой таблицы.
 
-**Гейт на S24 — замер по `.github/workflows/ci.yml`:** **8 джоб** (`lint`, `studio`, `studio-app`, `test`, `conformance`,
-`security`, `comment-guard`, `gitleaks`) = **8 хард-проверок** (`ruff`, `mypy`, `pytest`+порог покрытия,
-`bandit -ll`, `pip-audit`, `conformance`, `comment-guard`, `gitleaks`). Локальный прогон в день записи:
+**Гейт на S26 — замер по `.github/workflows/ci.yml`:** **8 джоб** (`lint`, `studio`, `studio-app`, `test`, `conformance`,
+`security`, `comment-guard`, `gitleaks`) = **14 хард-проверок** (`ruff`, `mypy`, `tsc`+`eslint`+геометрия
+эмуляции, `tsc`+`eslint`+сборка студии, `pytest`+порог покрытия, `bandit -ll`, `pip-audit`,
+`conformance`, `comment-guard`, `gitleaks`). Локальный прогон в день записи:
 `pytest` **20/20 наборов** (325 с), `ruff` чисто, `mypy` **81 файл** без ошибок, `bandit -ll` Medium 0 /
 High 0, `comment-guard` **0 замечаний в 112 файлах** при потолке 0, `conformance` **19/19**.
 

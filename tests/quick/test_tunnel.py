@@ -13,6 +13,7 @@ named-credentials, событийная готовность (триггер —
 """
 
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -282,6 +283,19 @@ def test_probe_names_the_responder():
           улика["кто"] == "адреса нет" and улика["дошло"] is False, улика)
 
 
+def test_probe_refuses_foreign_scheme():
+    """Публичный адрес приходит СНАРУЖИ — схему выбирает транспорт, а не доверие к строке."""
+    подложка = Path(tempfile.mkdtemp()) / "секрет.txt"
+    подложка.write_text("СОДЕРЖИМОЕ ДИСКА", encoding="utf-8")
+
+    t = CloudflaredTunnel(port=8080); t.mode = "quick"; t._public_url = подложка.as_uri()
+    улика = t.probe()
+    check("чужая схема — «нет ответа», а не ответ сети",
+          улика["дошло"] is False and улика["кто"] == "нет ответа", улика)
+    check("содержимое диска не выдаётся за ответ сети",
+          "СОДЕРЖИМОЕ ДИСКА" not in str(улика), улика)
+
+
 def main():
     test_command_building()
     test_readiness_event_driven()
@@ -290,6 +304,7 @@ def main():
     test_ready_has_a_limit()
     test_first_attempt_retries()
     test_probe_names_the_responder()
+    test_probe_refuses_foreign_scheme()
     print()
     passed, total = sum(results), len(results)
     print(f"ИТОГО: {passed}/{total} проверок пройдено")

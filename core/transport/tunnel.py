@@ -17,10 +17,10 @@ import shutil
 import subprocess
 import threading
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Literal, assert_never
+
+import httpx
 
 from core.contracts import ContractError
 from core.declaration import Declaration
@@ -482,20 +482,18 @@ class CloudflaredTunnel:
 
         Автор ответа определяется ЗАГОЛОВКОМ, а не кодом: `Server: cloudflare` — ответил край,
         свой заголовок — доехало до нас. Код 405 на GET нормален (наш транспорт принимает POST),
-        поэтому «дошло» и «ok» не одно и то же.
+        поэтому «дошло» и «ok» не одно и то же. Спрашивает `httpx`: адрес приходит СНАРУЖИ, а
+        `urlopen` открыл бы и `file://`, отдав содержимое диска за ответ сети.
         """
         адрес = self._public_url or (self._named_url() if self.mode == "named" else "")
         if not адрес or адрес.startswith("https://<"):
             return {"дошло": False, "код": None, "кто": "адреса нет",
                     "текст": "публичный адрес неизвестен — спрашивать нечего"}
-        запрос = urllib.request.Request(адрес, method="GET",
-                                        headers={"User-Agent": "vpm-tunnel-probe"})
         try:
-            with urllib.request.urlopen(запрос, timeout=timeout) as ответ:
-                код, кто = ответ.status, ответ.headers.get("Server", "")
-        except urllib.error.HTTPError as ответ:
-            код, кто = ответ.code, ответ.headers.get("Server", "")
-        except (urllib.error.URLError, TimeoutError, OSError) as beda:
+            with httpx.Client(timeout=timeout) as клиент:
+                ответ = клиент.get(адрес, headers={"User-Agent": "vpm-tunnel-probe"})
+            код, кто = ответ.status_code, ответ.headers.get("Server", "")
+        except (httpx.HTTPError, httpx.InvalidURL) as beda:
             return {"дошло": False, "код": None, "кто": "нет ответа", "текст": str(beda)}
         край = self._край_ответил(код, кто)
         return {"дошло": not край, "код": код, "кто": кто or ("край" if край else "неизвестен"),

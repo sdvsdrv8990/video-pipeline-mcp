@@ -95,7 +95,8 @@ pip install -e ".[dev]"          # линт, типы, тесты, bandit, pip-a
 Версию скрипт берёт из `.github/workflows/ci.yml`, чтобы локально гонялся ровно тот бинарь, что и в CI.
 
 Гейт — восемь джоб `ci.yml`, и «зелёно» считается по exit-коду каждой, а не по одному `pytest`:
-`lint` · `test` · `conformance` · `security` · `comment-guard` · `gitleaks`. Локально гоняются все шесть.
+`lint` · `studio` · `studio-app` · `test` · `conformance` · `security` · `comment-guard` · `gitleaks`.
+Локально гоняются все восемь.
 `pip-audit` — единственная проверка, которой нужна сеть: он ходит в PyPI за advisory.
 
 План развития, находки и канон спек: [`docs/roadmap/`](docs/roadmap/README.md).
