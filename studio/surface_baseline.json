@@ -1,0 +1,151 @@
+{
+  "components": {
+    "App": {
+      "file": "screens/App.tsx",
+      "markers": [
+        "App"
+      ],
+      "props": [],
+      "tokens": [],
+      "рисует": [
+        "ProjectsListView"
+      ],
+      "стиль": {}
+    },
+    "Badge": {
+      "file": "primitives/Badge.tsx",
+      "markers": [
+        "Badge"
+      ],
+      "props": [
+        "label",
+        "mono",
+        "onPress",
+        "tone"
+      ],
+      "tokens": [],
+      "рисует": [],
+      "стиль": {}
+    },
+    "Button": {
+      "file": "primitives/Button.tsx",
+      "markers": [
+        "Button"
+      ],
+      "props": [
+        "icon",
+        "label",
+        "onPress",
+        "tone"
+      ],
+      "tokens": [],
+      "рисует": [],
+      "стиль": {}
+    },
+    "Panel": {
+      "file": "primitives/Panel.tsx",
+      "markers": [
+        "Panel"
+      ],
+      "props": [
+        "children",
+        "label",
+        "onOpen",
+        "tone"
+      ],
+      "tokens": [],
+      "рисует": [],
+      "стиль": {}
+    },
+    "Pill": {
+      "file": "primitives/Pill.tsx",
+      "markers": [
+        "Pill"
+      ],
+      "props": [
+        "count",
+        "label",
+        "onPress",
+        "selected",
+        "tone"
+      ],
+      "tokens": [],
+      "рисует": [],
+      "стиль": {}
+    },
+    "ProjectsListView": {
+      "file": "screens/ProjectsListView.tsx",
+      "markers": [
+        "CreateProjectCard",
+        "ProjectsListView"
+      ],
+      "props": [
+        "channels",
+        "niches",
+        "onAddNiche",
+        "onCreateProject",
+        "onOpenProject",
+        "projects"
+      ],
+      "tokens": [],
+      "рисует": [
+        "Badge",
+        "Button",
+        "ChevronRight",
+        "Layers",
+        "Network",
+        "Panel",
+        "Pill",
+        "Plus",
+        "SectionHeader",
+        "X"
+      ],
+      "стиль": {}
+    },
+    "SectionHeader": {
+      "file": "primitives/SectionHeader.tsx",
+      "markers": [
+        "SectionHeader"
+      ],
+      "props": [
+        "children",
+        "icon",
+        "title"
+      ],
+      "tokens": [],
+      "рисует": [],
+      "стиль": {}
+    }
+  },
+  "tokens": {
+    "accent": "#60a5fa",
+    "accent-hover": "#3b82f6",
+    "accent-soft": "#93c5fd",
+    "accent-solid": "#2563eb",
+    "ground": "#0b0f17",
+    "ground-deep": "#0d131f",
+    "ink": "#e2e8f0",
+    "ink-faint": "#64748b",
+    "ink-muted": "#94a3b8",
+    "ink-soft": "#cbd5e1",
+    "ink-strong": "#f8fafc",
+    "line": "#1b2538",
+    "line-soft": "#182133",
+    "line-strong": "#1f2a3d",
+    "micro": "11px",
+    "nano": "10px",
+    "niche": "#22d3ee",
+    "niche-ground": "#083344",
+    "niche-line": "#155e75",
+    "niche-soft": "#67e8f9",
+    "own-ground": "#101929",
+    "own-line": "#1e3a8a",
+    "own-soft": "#93c5fd",
+    "rival-ground": "#24131d",
+    "rival-line": "#881337",
+    "rival-soft": "#fda4af",
+    "surface": "#111724",
+    "surface-hover": "#162032"
+  },
+  "кадры": {}
+}

@@ -61,6 +61,27 @@ jobs:
       - name: геометрия (наложение, выход текста, уход из окна)
         run: npm run geometry
 
+  studio-app:
+    name: studio-app (tsc + eslint + сборка)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: studio
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: studio/package-lock.json
+      - run: npm ci
+      - name: tsc (настоящий разбор .tsx вместо текстового)
+        run: npm run typecheck
+      - name: eslint (правило хуков и полнота зависимостей)
+        run: npm run lint
+      - name: сборка (токен из @theme обязан доехать до CSS)
+        run: npm run build
+
   test:
     name: test (in-process, script exit-code = gate)
     runs-on: ubuntu-latest

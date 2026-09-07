@@ -39,6 +39,23 @@ PROPS = re.compile(r"^export\s+(?:default\s+)?(?:function\s+[A-ZА-ЯЁ]\w*|cons
                    r"\s*\(\s*\{(?P<props>[^}]*)\}", re.M)
 INTERPOLATION = re.compile(r"\$\{[^}]*\}")
 CODE_SUFFIX = (".tsx", ".jsx", ".ts", ".js")
+THEME_SUFFIX = ".css"        # объявление токенов на языке Tailwind живёт в CSS, а не в .ts
+# Токен объявляется `--<род>-<имя>` внутри `@theme`, а читается утилитой, чей ХВОСТ равен имени:
+# `--color-ink-muted` → `text-ink-muted`, `--radius-card` → `rounded-card`. Поэтому дом токена
+# ищется по хвосту класса, а не по полному совпадению: префикс утилиты выбирает сам Tailwind.
+THEME_BLOCK = re.compile(r"@theme[^{]*\{")
+THEME_VAR = re.compile(r"--([\w-]+)\s*:\s*([^;]+);")
+CLASS_ATTR = re.compile(r'className=(?:"([^"]*)"|\{`([^`]*)`\}|\{"([^"]*)"\})')
+CLASS_IN_STRING = re.compile(r"[\"'`]([^\"'`\n]*\b(?:bg|text|border|ring|from|to|via|fill|stroke|"
+                             r"shadow|divide|outline|decoration|accent|caret|placeholder)-[\w\[#/.-]+"
+                             r"[^\"'`\n]*)[\"'`]")
+# Палитра Tailwind по умолчанию: у каждого её оттенка ЕСТЬ объявленный дом в `@theme`, поэтому
+# `text-blue-400` — это хардкод класса 2, а не «просто класс». Белое и чёрное сюда же: у них дом
+# `ink-strong`/`ground`.
+PALETTE = ("slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|"
+           "sky|blue|indigo|violet|purple|fuchsia|pink|rose")
+RAW_UTILITY = re.compile(r"^(?:[\w-]+:)*-?[a-z][\w-]*-(?:(?:" + PALETTE + r")-\d{2,3}|white|black)$")
+ARBITRARY = re.compile(r"^(?:[\w-]+:)*-?[a-z][\w-]*-\[[^\]]+\]$")
 STYLE_OPEN = re.compile(r"style=\{\{")
 NETWORK = re.compile(r"\b(fetch|XMLHttpRequest|EventSource|axios)\s*[(.]")
 ALIAS = re.compile(r"\b([A-Za-z_]\w*)\s+as\s+([A-Za-z_]\w*)")
@@ -123,6 +140,33 @@ def declared_tokens(text: str) -> dict[str, str]:
     return out
 
 
+def declared_theme(text: str) -> dict[str, str]:
+    """Токены, объявленные в `@theme` (Tailwind v4): имя без рода → значение.
+
+    Род (`color`, `radius`, `text`) отбрасывается: он выбирает ПРЕФИКС утилиты, а не адресует
+    токен. Без этого `--color-surface` пришлось бы искать как `bg-color-surface`, чего Tailwind
+    не порождает, и любой объявленный токен читался бы мёртвым.
+    """
+    out: dict[str, str] = {}
+    for открытие in THEME_BLOCK.finditer(text):
+        тело, _ = _block(text, открытие.end() - 1)
+        for имя, значение in THEME_VAR.findall(тело):
+            out[имя.split("-", 1)[-1] if "-" in имя else имя] = значение.strip()
+    return out
+
+
+def classes_of(text: str) -> list[tuple[int, str]]:
+    """Классы из разметки и из строк-данных: (строка файла, класс) по одному."""
+    out: dict[tuple[int, str], None] = {}
+    # Строка внутри `className="…"` попадает под ОБА образца, поэтому пары складываются в
+    # словарь: иначе один класс печатается уликой дважды и счёт нарушений врёт вдвое.
+    for найдено in list(CLASS_ATTR.finditer(text)) + list(CLASS_IN_STRING.finditer(text)):
+        строка = text[:найдено.start()].count("\n") + 1
+        группа = next((g for g in найдено.groups() if g), "")
+        out.update({(строка, класс.split("/")[0]): None for класс in группа.split() if класс})
+    return sorted(out)
+
+
 def _props_of(text: str) -> list[str]:
     found = PROPS.search(text)
     if not found:
@@ -162,6 +206,9 @@ def read(root: Path) -> dict:
         кадры.update(keyframes_of(текст))
         if path.stem == "tokens":
             tokens.update(declared_tokens(текст))
+    for path in sorted(root.rglob("*" + THEME_SUFFIX)):
+        if path.is_file() and path.stem == "tokens":
+            tokens.update(declared_theme(path.read_text(encoding="utf-8")))
     components: dict[str, dict] = {}
     modules: dict[str, dict] = {}
     token_use: dict[str, list[str]] = {}
@@ -184,6 +231,18 @@ def read(root: Path) -> dict:
         }
         for used in TOKEN_USE.findall(text):
             token_use.setdefault(used, []).append(relative)
+        for строка, класс in classes_of(text):
+            хвост = класс.rsplit(":", 1)[-1].lstrip("-")
+            # Дом ищется САМЫМ ДЛИННЫМ совпадением хвоста: у `bg-niche-ground` подходят и
+            # `ground`, и `niche-ground`, и короткое читалось бы вместо длинного — длинный токен
+            # оказывался бы мёртвым, хотя разметка его читает.
+            прочитан = max((имя for имя in tokens if хвост.endswith("-" + имя)),
+                           key=len, default=None)
+            if прочитан:
+                token_use.setdefault(прочитан, []).append(relative)
+            elif RAW_UTILITY.match(класс) or ARBITRARY.match(класс):
+                literals.append({"file": relative, "line": строка,
+                                 "prop": "class", "value": класс})
         markers = [name or braced for name, braced in MARKER.findall(text)]
         for found in COMPONENT.finditer(text):
             name = found.group("fn") or found.group("const")

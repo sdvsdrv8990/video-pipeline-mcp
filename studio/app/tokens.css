@@ -1,0 +1,67 @@
+@import "tailwindcss";
+
+/* Единственный источник цвета, размера и шрифта студии. Утилита в компоненте берёт значение
+   ОТСЮДА; `bg-[#111724]` или `text-blue-400` внутри разметки — хардкод класса 2 (anti-hardcode).
+   Значения сняты с дизайна владельца: роль каждого определена по тому, чем он там БЫЛ, а не
+   назначена заново. Читатель объявления — scripts/guards/acceptance_studio.py (П2). */
+@theme {
+  /* Подложка. В дизайне один и тот же фон панели написан тремя разными шестнадцатеричными
+     числами (#111724 — 59 раз, #121826 — 36, #131926 — 11): глазами они неотличимы, и это
+     ровно та беда, которую снимает объявление. */
+  --color-ground: #0b0f17;
+  --color-ground-deep: #0d131f;
+  --color-surface: #111724;
+  --color-surface-hover: #162032;
+
+  /* Линии. Порядок по контрасту: мягкая делит разделы, обычная обводит карточку,
+     сильная зовёт к действию (пунктир «создать»). */
+  --color-line-soft: #182133;
+  --color-line: #1b2538;
+  --color-line-strong: #1f2a3d;
+
+  /* Текст: лесенка от заголовка к подписи. */
+  --color-ink-strong: #f8fafc;
+  --color-ink: #e2e8f0;
+  --color-ink-soft: #cbd5e1;
+  --color-ink-muted: #94a3b8;
+  --color-ink-faint: #64748b;
+
+  /* Действие и переход. */
+  --color-accent: #60a5fa;
+  --color-accent-soft: #93c5fd;
+  --color-accent-solid: #2563eb;
+  --color-accent-hover: #3b82f6;
+
+  /* Ниша — свой род, а не оттенок действия: в дизайне она везде бирюзовая именно затем,
+     чтобы «открыть проект» и «отфильтровать по нише» не путались. */
+  --color-niche: #22d3ee;
+  --color-niche-soft: #67e8f9;
+  --color-niche-ground: #083344;
+  --color-niche-line: #155e75;
+
+  /* Сетка конкурентов противопоставлена личной сетке цветом, а не подписью. */
+  --color-rival-soft: #fda4af;
+  --color-rival-ground: #24131d;
+  --color-rival-line: #881337;
+
+  --color-own-soft: #93c5fd;
+  --color-own-ground: #101929;
+  --color-own-line: #1e3a8a;
+
+  /* Две ступени мельче `text-xs`: в дизайне они писались как text-[11px] и text-[10px]. */
+  --text-micro: 11px;
+  --text-nano: 10px;
+}
+
+body {
+  background-color: var(--color-ground);
+  color: var(--color-ink);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  overflow-x: hidden;
+}
+
+/* Тёмная полоса прокрутки: настольный вид студии. Значения из объявления выше. */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--color-ground-deep); }
+::-webkit-scrollbar-thumb { background: var(--color-line-strong); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-ink-faint); }

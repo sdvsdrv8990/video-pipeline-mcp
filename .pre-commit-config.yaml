@@ -47,6 +47,20 @@ repos:
         files: ^tests/studio_emulation/.*\.(ts|tsx)$
         pass_filenames: false
 
+      - id: studio-app-typecheck
+        name: tsc (разбор дерева студии)
+        entry: bash -c 'cd studio && { [ -d node_modules ] || { echo "нет node_modules — сперва npm ci в studio; прогон НЕ состоялся"; exit 1; }; } && npm run --silent typecheck'
+        language: system
+        files: ^studio/.*\.(ts|tsx)$
+        pass_filenames: false
+
+      - id: studio-app-lint
+        name: eslint (правило хуков и полнота зависимостей)
+        entry: bash -c 'cd studio && { [ -d node_modules ] || { echo "нет node_modules — сперва npm ci в studio; прогон НЕ состоялся"; exit 1; }; } && npm run --silent lint'
+        language: system
+        files: ^studio/.*\.(ts|tsx)$
+        pass_filenames: false
+
       - id: import-linter
         name: import-linter (этажность и границы групп)
         entry: .venv/bin/lint-imports

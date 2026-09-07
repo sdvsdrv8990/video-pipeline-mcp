@@ -52,6 +52,22 @@ def ok(cond, msg, detail=None):
         print(f"      · {detail}")
 
 
+def tailwind() -> Path:
+    """Крошечное дерево на Tailwind: эмуляция написана инлайновыми стилями и этот диалект не
+    покрывает, а судить его сторож обязан — студия владельца написана именно так."""
+    корень = Path(tempfile.mkdtemp(prefix="vpm_tw_"))
+    (корень / "app").mkdir()
+    (корень / "app" / "tokens.css").write_text(
+        "@theme {\n  --color-ground: #0b0f17;\n  --color-surface: #111724;\n"
+        "  --color-niche-ground: #083344;\n  --color-ink-faint: #64748b;\n"
+        "  --text-micro: 11px;\n}\n", encoding="utf-8")
+    (корень / "app" / "Проба.tsx").write_text(
+        'export function Проба() {\n'
+        '  return <div data-component="Проба" className="bg-surface text-micro '
+        'bg-niche-ground text-blue-400 bg-[#0b0f17]" />;\n}\n', encoding="utf-8")
+    return корень
+
+
 def scene(*edits: tuple[str, str, str], snapshot: bool = True) -> Path:
     """Копия эмуляции с подставленной правкой: (файл, было, стало). Живое дерево не трогаем."""
     tmp = Path(tempfile.mkdtemp(prefix="vpm_studio_"))
@@ -260,6 +276,26 @@ export function Ghost({ title }: { title: string }) {
     ok("зона суда взята из объявления" in вывод and "критерий не судится" not in вывод
        and "П3а вышел за рамки задачи:" in вывод,
        "граница суда приходит из задания: критерий границ реально судится, а не объявлен")
+
+    print("\n=== П2 на языке Tailwind: объявление в @theme, чтение классом ===")
+    дерево = tailwind()
+    поверхность = surface.read(дерево)
+    прочитано = поверхность["token_use"]
+    улики = [item["value"] for item in поверхность["style_literals"]]
+
+    ok("surface" in прочитано and "micro" in прочитано,
+       "токен из @theme читается классом: bg-surface и text-micro нашли свой дом", sorted(прочитано))
+    ok("text-blue-400" in улики,
+       "сырая палитра Tailwind — тот же хардкод класса 2, что и литерал в style", улики)
+    ok("bg-[#0b0f17]" in улики,
+       "произвольное значение в утилите названо уликой: у него есть объявленный дом", улики)
+    # Регрессия: `bg-niche-ground` подходит и под токен `ground`, и под `niche-ground`. Короткое
+    # совпадение засчитывало чтение не тому токену, и длинный оказывался мёртвым при живой разметке.
+    ok("niche-ground" in прочитано and "ground" not in прочитано,
+       "дом токена — САМОЕ ДЛИННОЕ совпадение хвоста, а не первое", sorted(прочитано))
+    ok(any("ink-faint" in note and "читателя нет" in note
+           for note in advisor.styles({**поверхность, "tokens": поверхность["tokens"]}, tree=дерево / "app")),
+       "объявленный в @theme токен без класса-читателя — мёртвая половина декларации")
 
     print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")
     for fail in _fails:

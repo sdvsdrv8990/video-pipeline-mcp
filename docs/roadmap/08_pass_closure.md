@@ -48,7 +48,7 @@
 | ~~`LICENSE`~~ | публичный репо без лицензии = «all rights reserved» (F19); DIM-9 | ✅ есть |
 | `SECURITY.md` | канал репорта уязвимостей [M8]; DIM-9 | ⬜ нет — I8 |
 | `CONTRIBUTING.md` | как контрибьютить [M8]; DIM-9 | ⬜ нет — I8 |
-| ~~`.github/workflows/ci.yml`~~ | линт+типы+тесты+security-scan на PR (F13); DIM-6/8 | ✅ есть, и вырос: **7 джоб = 8 хард-проверок** (`ruff`, `mypy`, `pytest`+порог покрытия, `bandit -ll`, `pip-audit`, `conformance`, `comment-guard`, `gitleaks`). `pip-audit` — хард-гейт и в шапке файла тоже (`F121`) |
+| ~~`.github/workflows/ci.yml`~~ | линт+типы+тесты+security-scan на PR (F13); DIM-6/8 | ✅ есть, и вырос: **8 джоб = 8 хард-проверок** (`ruff`, `mypy`, `pytest`+порог покрытия, `bandit -ll`, `pip-audit`, `conformance`, `comment-guard`, `gitleaks`). `pip-audit` — хард-гейт и в шапке файла тоже (`F121`) |
 | ~~`.pre-commit-config.yaml`~~ | ruff/mypy/bandit локально до пуша; DIM-6 | ✅ есть |
 | ~~`conftest.py` + pytest-раннер~~ | канонический раннер; DIM-6 | ✅ есть: `tests/conftest.py` + `tests/test_suites.py` (наборы находятся сами, F50) |
 | ~~`ruff`/`mypy` секции (в `pyproject`)~~ | типы/линт (I4); DIM-6 | ✅ есть; `mypy` зелёный без исключений (`F88`) — на **81 файле** после сноса мёртвой P-оси (было 87 до волны 2.6) |
