@@ -27,6 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import _evidence                                                           # noqa: E402
 import _verdict                                                            # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -129,9 +130,15 @@ def query(target: str, radius: dict | None = None) -> list[str]:
     if covered is None:
         # Область замера — код сервера. Тест или скрипт «не покрыт» не потому, что заброшен,
         # а потому, что не измеряется: путать эти два случая значит кричать на каждую правку.
-        measured = path.startswith(("core/", "tools/")) or path == "server.py"
-        print(f"  {target}: " + ("файл не исполняется НИ ОДНИМ сценарием — правка здесь сценариям невидима"
-                                 if measured else "вне области замера (мерятся core/, tools/, server.py)"))
+        дерево = дерево_файла(path)
+        if дерево is None:
+            причина = ("вне объявленных деревьев замера — объявление в scripts/guards/evidence.yaml")
+        elif "слепая-зона" in дерево[1]:
+            причина = "файл не исполняется НИ ОДНИМ сценарием — правка здесь сценариям невидима"
+        else:
+            причина = (f"дерево «{дерево[0]}» судится только радиусом: сценарий зовёт его "
+                       "ПОДПРОЦЕССОМ, а покрытие в подпроцесс не ходит")
+        print(f"  {target}: {причина}")
         return []
     if not line:
         hits = sorted(covered)
@@ -170,6 +177,7 @@ def affected() -> int:
     diff = subprocess.run(["git", "diff", "-U0", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout
     radius, current = _load(), ""
     hit: set[str] = set()
+    вне_покрытия: dict[str, set[str]] = {}
     blind: list[str] = []
     touched_lines: dict[str, set[int]] = {}
     for row in diff.splitlines():
@@ -178,8 +186,13 @@ def affected() -> int:
         head = HUNK.match(row)
         if not (head and current.endswith(".py")):
             continue
-        measured = current.startswith(("core/", "tools/")) or current == "server.py"
-        if not measured:
+        дерево = дерево_файла(current)
+        if дерево is None:
+            continue
+        if "слепая-зона" not in дерево[1]:
+            # Дерево объявлено, но покрытие его не видит: сценарий зовёт его подпроцессом.
+            # Молча пропустить — значит ответить «правка ничего не задела», а это неправда.
+            вне_покрытия.setdefault(дерево[0], set()).add(current)
             continue
         covered = radius.get(str(Path(current))) or {}
         start, count = int(head.group(1)), int(head.group(2) or 1)
@@ -189,6 +202,11 @@ def affected() -> int:
             hit |= names
             if not names:
                 blind.append(f"{current}:{line}")
+    for имя, файлы in sorted(вне_покрытия.items()):
+        print(f"  дерево «{имя}» ({len(файлы)}): {', '.join(sorted(файлы)[:3])}"
+              + (" …" if len(файлы) > 3 else ""))
+        print("    судится радиусом, но не покрытием: сценарий зовёт его ПОДПРОЦЕССОМ, "
+              "и что именно исполнилось — не измерено")
     stale = sorted(rel for rel in touched_lines
                    if RADIUS.exists() and (ROOT / rel).stat().st_mtime > RADIUS.stat().st_mtime)
     if stale:
@@ -203,8 +221,9 @@ def affected() -> int:
     if hit:
         print(f"  задетые сценарии ({len(hit)}): {', '.join(sorted(hit))}")
         print(f"    точечный прогон: VPM_SCENARIO='{','.join(sorted(hit))}' python3 tests/scenarios/test_scenarios.py")
-    if not hit and not blind:
-        print("  Правка не касается измеряемой зоны (core/, tools/, server.py) — прогонять нечего.")
+    if not hit and not blind and not вне_покрытия:
+        корни = sorted(к for д in (_evidence.деревья() or {}).values() for к in д.get("корни") or [])
+        print(f"  Правка не касается измеряемой зоны (мерятся {', '.join(корни)}) — прогонять нечего.")
     static_blind({(rel, name) for rel, lines in touched_lines.items()
                   for name, (first, last) in _functions(rel, classes=True).items()
                   if any(first <= n <= last for n in lines)})
@@ -318,10 +337,36 @@ def _statements(rel: str) -> set[int]:
     return set(parser.statements)
 
 
-def _measured_files() -> list[str]:
-    files = [str(p.relative_to(ROOT)) for p in (ROOT / "core").rglob("*.py")]
-    files += [str(p.relative_to(ROOT)) for p in (ROOT / "tools").rglob("*.py")]
-    return sorted(f for f in files + ["server.py"] if "__pycache__" not in f)
+def _measured_files(судится: str = "радиус") -> list[str]:
+    """Файлы деревьев, объявленных в `evidence.yaml` для этого вопроса.
+
+    Список деревьев — объявление, а не код: зашитый видел одно дерево из четырёх, и правка
+    сторожа или хука отвечала «ничего не изменилось». Скрытые каталоги пропускаются целиком —
+    под `tests/` лежат журналы прогонов (`.journal`, `.blast`), а это артефакты, не код.
+    """
+    объявление = _evidence.деревья()
+    files: list[str] = []
+    for дерево in объявление.values():
+        if судится not in (дерево.get("судится") or []):
+            continue
+        for корень in дерево.get("корни") or []:
+            путь = ROOT / корень
+            найдено = [путь] if путь.is_file() else list(путь.rglob("*.py"))
+            # Скрытое считается ВНУТРИ корня, а не по всему пути: сам корень бывает скрытым
+            # (`.claude/hooks`), и общий фильтр вырезал бы дерево целиком — молча.
+            files += [str(f.relative_to(ROOT)) for f in найдено
+                      if not any(ч.startswith(".")
+                                 for ч in (f.relative_to(путь).parts[:-1] if путь.is_dir() else ()))]
+    return sorted({f for f in files if "__pycache__" not in f})
+
+
+def дерево_файла(rel: str) -> tuple[str, list[str]] | None:
+    """Имя дерева и вопросы, которыми оно судится. `None` — файл вне объявленных деревьев."""
+    for имя, дерево in (_evidence.деревья() or {}).items():
+        корни = дерево.get("корни") or []
+        if any(rel == к or rel.startswith(к.rstrip("/") + "/") for к in корни):
+            return имя, list(дерево.get("судится") or [])
+    return None
 
 
 def blind() -> int:
@@ -338,7 +383,7 @@ def blind() -> int:
     covered = json.loads(COVERED.read_text(encoding="utf-8"))
     worst: list[tuple[int, str]] = []
     total = 0
-    for rel in _measured_files():
+    for rel in _measured_files("слепая-зона"):
         silent = set(_functions(rel)) - set(covered.get(rel) or [])
         total += len(silent)
         if silent:

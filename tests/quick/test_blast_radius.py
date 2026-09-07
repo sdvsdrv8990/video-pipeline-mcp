@@ -7,6 +7,7 @@ Standalone-прогон:  python tests/quick/test_blast_radius.py
 """
 import io
 import json
+import re
 import sys
 import tempfile
 from contextlib import redirect_stdout
@@ -75,6 +76,54 @@ def main() -> int:
 
     print("§5 пустой вход")
     ok(run({}, touched=()) == "", "нечего трогать — нечего и печатать")
+
+    print("§7 деревья замера берутся из ОБЪЯВЛЕНИЯ, а не зашиты")
+    радиус = br._measured_files("радиус")
+    слепая = br._measured_files("слепая-зона")
+    корни = lambda сп: {x.split("/")[0] for x in сп}
+    ok({"core", "tools", "server.py", "scripts", ".claude"} <= корни(радиус),
+       "§7 радиус видит все четыре дерева, включая .claude/hooks — корень СКРЫТЫЙ и вырезался целиком")
+    ok("tests" in корни(радиус) and "tests" not in корни(слепая),
+       "§7 тесты судятся радиусом, но НЕ слепой зоной: они исполнители, а не исполняемое")
+    ok(not [x for x in радиус if "/.journal/" in x or "/.blast/" in x or "__pycache__" in x],
+       "§7 журналы прогонов и кэш в замер не попадают")
+    ok(len(радиус) > len(слепая) > 100,
+       f"§7 замер вырос против зашитых 102: радиус {len(радиус)}, слепая {len(слепая)}")
+    import _evidence
+    ok(set(_evidence.деревья()) == {"сервер", "сторожа", "хуки", "тесты"},
+       "§7 объявление деревьев читается общей дверью `_evidence`, а не своим yaml.safe_load")
+
+    # Список деревьев мало объявить — им обязан ПОЛЬЗОВАТЬСЯ счётчик. Мутация «blind() спрашивает
+    # радиус вместо слепой зоны» выжила, пока проверялся только список: 393 функции тестов
+    # немедленно всплыли бы в худших файлах, а счёт молчания стал бы шумом.
+    вывод = io.StringIO()
+    with redirect_stdout(вывод):
+        br.blind()
+    строки = вывод.getvalue().splitlines()
+    ok(строки and "функций вне всех сценариев" in строки[0],
+       "§7 слепая зона печатает свой счёт (иначе карты нет — это другой случай)")
+    import json as _js
+    _карта = _js.loads(br.COVERED.read_text(encoding="utf-8")) if br.COVERED.exists() else {}
+    _ждём = {в: sum(len(set(br._functions(r)) - set(_карта.get(r) or []))
+                    for r in br._measured_files(в)) for в in ("слепая-зона", "радиус")}
+    _счёт = int(re.search(r"сценариев: (\d+)", строки[0])[1]) if строки else -1
+    ok(_счёт == _ждём["слепая-зона"] != _ждём["радиус"],
+       f"§7 blind() СПРАШИВАЕТ слепую зону: счёт {_счёт} = {_ждём['слепая-зона']}, "
+       f"а не радиус {_ждём['радиус']} — список мало объявить, им обязан пользоваться счётчик")
+
+    print("§8 файл знает СВОЁ дерево и каким вопросом судится")
+    for путь, ждём_дерево, ждём_слепую in (
+        ("core/paths.py", "сервер", True),
+        ("server.py", "сервер", True),
+        ("scripts/guards/patrol.py", "сторожа", False),
+        (".claude/hooks/vpm-fact-gate.py", "хуки", False),
+        ("tests/quick/test_hooks.py", "тесты", False),
+    ):
+        д = br.дерево_файла(путь)
+        ok(д is not None and д[0] == ждём_дерево and ("слепая-зона" in д[1]) is ждём_слепую,
+           f"§8 {путь} → дерево «{ждём_дерево}», слепая зона {ждём_слепую}")
+    ok(br.дерево_файла("README.md") is None and br.дерево_файла("studio/app/tokens.css") is None,
+       "§8 вне объявленных деревьев — честное None, а не молчаливое «сервер»")
 
     print("§6 разбор ответа графа")
     answer = ("Symbol: safe_resolve (function)\nDefined: core/paths.py:50-67  [python]\n\n"

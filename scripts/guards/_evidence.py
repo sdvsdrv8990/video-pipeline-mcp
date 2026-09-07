@@ -57,6 +57,11 @@ def задачи(path: Path | None = None) -> dict:
     return словарь(path).get("задачи") or {}
 
 
+def деревья(path: Path | None = None) -> dict:
+    """Деревья замера: какие корни меряет карта радиуса и какой из вопросов у каждого судится."""
+    return словарь(path).get("деревья") or {}
+
+
 def rods_of(files: list[str], path: Path | None = None) -> list[str]:
     """Роды улики по тронутым файлам. Спрашивать род у правщика значило бы верить ему на слово."""
     имена = [*files, *(Path(f).name for f in files)]
