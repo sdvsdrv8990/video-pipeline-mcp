@@ -48,6 +48,7 @@ STUB_BASELINE = Path(__file__).with_name("stub_baseline.txt")
 TYPEGATE_BASELINE = Path(__file__).with_name("typegate_baseline.txt")
 MEMORY_STATUS_BASELINE = Path(__file__).with_name("memory_status_baseline.txt")
 TAUTOLOGY_BASELINE = Path(__file__).with_name("tautology_baseline.txt")
+UNJUDGED_BASELINE = Path(__file__).with_name("cycle_unjudged_baseline.txt")
 MUTED_BASELINE = Path(__file__).with_name("muted_refusal_baseline.txt")
 FACT_EMITTER_BASELINE = Path(__file__).with_name("fact_emitters_baseline.txt")
 FACT_EXEMPT_BASELINE = Path(__file__).with_name("fact_exempt_baseline.txt")
@@ -1696,30 +1697,51 @@ def tails_off_home(root: Path = ROOT) -> list[str]:
 РОДЫ_В_ПОДПИСИ = re.compile(r"предсказаний (\d+) из (\d+)")
 
 
-def cycle_tautology(root: Path = ROOT) -> list[str]:
-    """Ожидания цикла, выводимые из текста собственной правки: прогон их не проверяет.
+def окно_циклов(root: Path = ROOT) -> list[tuple[float, str, str]]:
+    """Последние подписи цикла — ВСЕ, а не только те, чью форму мы умеем разобрать.
 
-    Считается по ОКНУ последних прогонов, а не по всей истории: сумма за всё время может только
-    расти, и храповик из неё превратился бы в вечный красный, который перестают читать. Судятся
-    подписи, несущие счёт родов; старые его не несут, и вменять им сегодняшнее правило нечем.
+    Окно режется ДО фильтра по форме. Резать после — значит подтягивать разбираемую подпись из
+    глубины истории вместо свежей неразбираемой: замер 2026-09-06 дал 2 разбираемых на 73 подписи,
+    и ось печатала «3 при потолке 3» по двум записям, не видя 97% журнала.
+
+    Окно, а не вся история: сумма за всё время может только расти, и храповик из неё превратился
+    бы в вечный красный, который перестают читать.
     """
     sys.path.insert(0, str(_at(root, ("scripts", "guards"))))
     import _stamp
-    циклы = []
+    циклы: list[tuple[float, str, str]] = []
     for path in sorted(root.joinpath(*_stamp.JOURNAL).glob("stamps-*.jsonl")):
         for row in path.read_text(encoding="utf-8", errors="replace").splitlines():
             try:
                 запись = json.loads(row)
             except json.JSONDecodeError:
                 continue
-            счёт = РОДЫ_В_ПОДПИСИ.search(запись.get("expected", "")) if запись.get("kind") == "цикл" else None
-            if счёт:
-                циклы.append((запись.get("ts", 0), запись.get("key"), int(счёт[1]), int(счёт[2])))
+            if запись.get("kind") == "цикл":
+                циклы.append((запись.get("ts", 0), str(запись.get("key")),
+                              str(запись.get("expected", ""))))
+    return sorted(циклы)[-ЦИКЛОВ_В_ОКНЕ:]
+
+
+def cycle_tautology(root: Path = ROOT) -> list[str]:
+    """Ожидания цикла, выводимые из текста собственной правки: прогон их не проверяет."""
     notes = []
-    for _, ключ, предсказаний, всего in sorted(циклы)[-ЦИКЛОВ_В_ОКНЕ:]:
-        notes += [f"⟦vpm {ключ}⟧ ожидание выводилось из самой правки, прогон его не проверял "
-                  f"(предсказаний {предсказаний} из {всего})"] * (всего - предсказаний)
+    for _, ключ, ждали in окно_циклов(root):
+        if (счёт := РОДЫ_В_ПОДПИСИ.search(ждали)):
+            предсказаний, всего = int(счёт[1]), int(счёт[2])
+            notes += [f"⟦vpm {ключ}⟧ ожидание выводилось из самой правки, прогон его не проверял "
+                      f"(предсказаний {предсказаний} из {всего})"] * (всего - предсказаний)
     return notes
+
+
+def cycle_unjudged(root: Path = ROOT) -> list[str]:
+    """Подписи цикла, по которым род ожидания назвать нечем: соседняя ось их НЕ ВИДИТ.
+
+    Отдельная ось, а не молчание внутри `cycle_tautology`: механизм, считающий только по
+    зарегистрированной форме улики, печатает ноль и там, где формы нет, — а ноль читается как
+    «чисто». Слепая зона обязана иметь собственный потолок, иначе она не убывает.
+    """
+    return [f"⟦vpm {ключ}⟧ подпись цикла без счёта родов («{ждали}») — ось тавтологии её не судит"
+            for _, ключ, ждали in окно_циклов(root) if not РОДЫ_В_ПОДПИСИ.search(ждали)]
 
 
 def memory_off_index(root: Path = ROOT, memory: Path | None = None) -> list[str]:
@@ -2582,6 +2604,10 @@ RATCHETS = (
      "Статус протухает молча и грузится в КАЖДУЮ сессию: его хозяин — git, реестр находок "
      "или журнал, а память держит только не выводимое с диска. Убери строку либо опусти "
      "потолок осознанно (--bless)"),
+    ("подпись цикла без счёта родов", cycle_unjudged, UNJUDGED_BASELINE,
+     "Ось тавтологии ищет в подписи `предсказаний N из M` и подпись без него не судит вовсе — "
+     "молча. Гони цикл через what_if.py (он печатает счёт всегда), а старые записи выйдут из "
+     "окна сами — либо опусти потолок осознанно (--bless)"),
     ("цикл судит тавтологию, а не предсказание", cycle_tautology, TAUTOLOGY_BASELINE,
      "Ожидание читается в тексте патча — прогон его не проверяет. Предсказывай смену цвета у "
      "СУЩЕСТВУЮЩЕЙ проверки; тавтология допустима с объявленным `ломается:`, но доля её обязана "

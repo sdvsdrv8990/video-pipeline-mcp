@@ -397,10 +397,12 @@ def stamp_fields(intent: dict, sums: dict, path: Path, секунд: float = 0.0
     return {"what": f"цикл по «{path.stem}» — сравнено {sums['common']} проверок, цвет сменили "
                     f"{sums['colour']}, скрытых рисков {len(sums['surprise'])}",
             "intent": path.stem,
+            # Счёт родов печатается ВСЕГДА, включая `0 из 0`: ось тавтологии ищет в подписи
+            # именно его, и подпись без него она не судит вовсе — молча, как чистую.
             "expected": (" + ".join(f"{n}×{out}" for out, n in sorted(ждали.items()))
                          or "цвет не меняется")
-                        + (f" · предсказаний {предсказаний(судимые)} из {len(судимые)}"
-                           if судимые else ""),
+                        + f" · предсказаний {предсказаний(судимые or [])} "
+                          f"из {len(судимые or [])}",
             "actual": f"сбылось {len(sums['fulfilled'])} · риска {len(sums['surprise'])} · "
                       f"не сбылось {len(sums['missed'])}",
             "cmd": f"python3 scripts/guards/what_if.py --intent {path}",
