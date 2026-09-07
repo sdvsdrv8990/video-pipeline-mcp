@@ -692,6 +692,32 @@ def main() -> int:
     ok("--приёмка" in контекст and "--задача" in контекст,
        "названы две двери: кого звать по задаче и что уже судится")
 
+    print("§17 роль РЕШЕНИЕ: развилка человека отличается от вердикта прогона")
+    import importlib.util as _iu2
+    _s2 = _iu2.spec_from_file_location("_st", ROOT / "scripts" / "guards" / "_stamp.py")
+    _st = _iu2.module_from_spec(_s2); _s2.loader.exec_module(_st)
+    _к = Path(tempfile.mkdtemp(prefix="vpm-решение-"))
+    (_к / "scripts" / "guards").mkdir(parents=True); (_к / "tests" / ".journal").mkdir(parents=True)
+
+    ok("РЕШЕНИЕ" in _st.ROLES and "РЕШЕНИЕ" not in _st.ПРИЗНАНИЯ,
+       "§17 РЕШЕНИЕ объявлено и НЕ признание: развилку решением закрывают, а не отодвигают")
+    try:
+        _st.sign("проба", "РЕШЕНИЕ", "решили так", root=_к)
+        ok(False, "§17 решение без прогноза обязано быть отбито")
+    except ValueError as _e:
+        ok("прогноз" in str(_e), "§17 решение без `--expected` отбито: проверить нечем — это мнение")
+    _st.sign("проба", "РЕШЕНИЕ", "потолок опустить", expected="красный станет читаемым",
+             кто="владелец", root=_к)
+    _зап = json.loads(sorted((_к / "tests" / ".journal").glob("stamps-*.jsonl"))[0]
+                      .read_text(encoding="utf-8").splitlines()[-1])
+    ok(_зап["detail"].get("кто") == "владелец",
+       "§17 решение несёт ЧЬЁ оно: без этого «учиться на решениях человека» не отличить от своих")
+    _о, _ = _st.sign("проба", "ОСТАТОК", "развилка ждёт слова", cmd="ls", root=_к)
+    ok(len(_st.tails(_к)) == 1, "§17 развилка открыта, пока слова нет")
+    _st.sign("проба", "РЕШЕНИЕ", "выбран путь б", expected="долг назван и виден", closes=_о, root=_к)
+    ok(len(_st.tails(_к)) == 0, "§17 решение ЗАКРЫЛО развилку, а не отодвинуло её")
+    shutil.rmtree(_к, ignore_errors=True)
+
     print("§16 вердикт у ХВОСТА конвейера: прогон в конвейере называется, чтение — нет")
     import importlib.util as _iu
     _s = _iu.spec_from_file_location("_fg", HOOKS / "vpm-fact-gate.py")

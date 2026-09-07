@@ -26,7 +26,9 @@ JOURNAL = ("tests", ".journal")
 # Дом остатков — под git, рядом со сторожем, который их читает. След дня объявлен рантаймом
 # и игнорируется, поэтому остаток, живший только там, не переживал `git clean` и клон.
 TAILS = ("scripts", "guards", "tails.jsonl")
-ROLES = ("УЛИКА", "ОТКАЗ", "ВЕРДИКТ", "ОСТАТОК", "ОТЛОЖЕН", "В РАБОТЕ")
+ROLES = ("УЛИКА", "ОТКАЗ", "ВЕРДИКТ", "ОСТАТОК", "ОТЛОЖЕН", "В РАБОТЕ", "РЕШЕНИЕ")
+# `РЕШЕНИЕ` — выбор на РАЗВИЛКЕ, а не итог прогона: тем и отличается от `ВЕРДИКТ`.
+# Не в `ПРИЗНАНИЯХ` намеренно: решением развилку ЗАКРЫВАЮТ, а не отодвигают.
 # Членство здесь отнимает право ЗАКРЫВАТЬ хвост, а не меняет показ: признание — не итог.
 ПРИЗНАНИЯ = ("ОТЛОЖЕН", "В РАБОТЕ")
 KINDS = ("цикл", "гейт", "проба")
@@ -67,12 +69,19 @@ def _head(root: Path) -> tuple[str, bool]:
 
 def sign(kind: str, role: str, what: str, *, intent: str = "", expected: str = "",
          actual: str = "", cmd: str = "", detail: dict | None = None, closes: str = "",
-         root: Path = ROOT) -> tuple[str, str]:
+         кто: str = "владелец", root: Path = ROOT) -> tuple[str, str]:
     """Записать наблюдение и вернуть (ключ, две строки подписи)."""
     if kind not in KINDS:
         raise ValueError(f"род `{kind}` не объявлен; известны {list(KINDS)}")
     if role not in ROLES:
         raise ValueError(f"роль `{role}` не объявлена; известны {list(ROLES)}")
+    # У решения обязателен ПРОГНОЗ: без него запись нечем проверить завтра, и журнал решений
+    # перестаёт быть тем, на чём можно учиться, — становится прозой с ключом.
+    if role == "РЕШЕНИЕ" and not expected.strip():
+        raise ValueError(
+            "решение без прогноза: назови `--expected` — к чему это приведёт и по какому "
+            "признаку это будет видно. Решение, которое нельзя проверить постфактум, "
+            "не отличается от мнения.")
     # Остаток судится тем же правилом: «чем продолжить» без команды — это пожелание, а не хвост.
     if role in ("УЛИКА", "ОСТАТОК") and not runnable(cmd):
         чем = "улика без команды повтора" if role == "УЛИКА" else "остаток без команды продолжения"
@@ -91,7 +100,7 @@ def sign(kind: str, role: str, what: str, *, intent: str = "", expected: str = "
     record = {"ts": stamped, "key": key, "kind": kind, "role": role, "what": what,
               "intent": intent, "expected": expected, "actual": actual, "cmd": cmd,
               "head": head, "dirty": dirty, "where": where, "closes": closes,
-              "detail": detail or {}}
+              "detail": {**(detail or {}), **({"кто": кто} if role == "РЕШЕНИЕ" else {})}}
     with path.open("a", encoding="utf-8") as out:
         out.write(json.dumps(record, ensure_ascii=False) + "\n")
     if role == "ОСТАТОК" or closes:
@@ -262,12 +271,14 @@ def main() -> int:
     ap.add_argument("--actual", default="", help="что вышло на самом деле")
     ap.add_argument("--cmd", default="", help="команда повтора (для остатка — чем продолжить)")
     ap.add_argument("--closes", default="", help="ключ остатка, который эта подпись закрывает")
+    ap.add_argument("--кто", default="владелец",
+                    help="чьё РЕШЕНИЕ: на чьих развилках учимся (по умолчанию владелец)")
     ap.add_argument("--tails", action="store_true", help="показать незакрытые остатки и выйти")
     ap.add_argument("--цена", action="store_true",
                     help="экономика цикла по журналу: за что заплачено и что поймано")
     a = ap.parse_args()
     print(sign(a.kind, a.role, a.what, intent=a.intent, expected=a.expected,
-               actual=a.actual, cmd=a.cmd, closes=a.closes)[1])
+               actual=a.actual, cmd=a.cmd, closes=a.closes, кто=getattr(a, "кто"))[1])
     return 0
 
 
