@@ -1640,6 +1640,47 @@ def memory_status(root: Path = ROOT, memory: Path | None = None) -> list[str]:
 
 
 
+def memory_zone_undeclared(root: Path = ROOT, memory: Path | None = None) -> list[str]:
+    """Раздел памяти без объявленной зоны: тему записи не с чем сверить.
+
+    Ловится ровно то, ради чего зона заводилась: заказ про доказательства, чья запись легла в
+    раздел про студию. Указатель `MEMORY.md` и архив не судятся — первый не раздел, а оглавление,
+    второй снят с работы осознанно.
+    """
+    home = memory or memory_dir(root)
+    if not home.is_dir():
+        return []
+    sys.path.insert(0, str(_at(root, ("scripts", "guards"))))
+    import _evidence
+    notes = []
+    for файл in sorted(home.glob("*.md")):
+        if файл.name == "MEMORY.md":
+            continue
+        if not _evidence.зона_раздела(файл.stem):
+            notes.append(f"раздел памяти `{файл.stem}` не назван ни в одной зоне "
+                         f"(scripts/guards/evidence.yaml, ключ `зоны`, поле `память`)")
+    return notes
+
+
+def record_zone_guessed(root: Path = ROOT) -> list[str]:
+    """Долг: тему записи пришлось ВЫВОДИТЬ из путей её команды, потому что зона не объявлена.
+
+    Вывод честен ровно настолько, насколько частна команда: у половины хвостов она общая
+    (`invariants.py --check`), и такой хвост уезжает в зону сторожей, чем бы он ни занимался.
+    Объявленная зона снимает догадку целиком, поэтому потолок идёт вниз по мере подписей.
+    """
+    sys.path.insert(0, str(_at(root, ("scripts", "guards"))))
+    import _stamp
+    notes = []
+    for хвост in _stamp.tails(root):
+        if хвост.get("зона названа"):
+            continue
+        выведена = хвост.get("зона") or "не выведена вовсе"
+        notes.append(f"остаток `{хвост.get('key')}` — зона {выведена} выведена из команды, "
+                     f"а не объявлена: {str(хвост.get('what'))[:70]}")
+    return notes
+
+
 def tails_off_home(root: Path = ROOT) -> list[str]:
     """Остаток записан мимо своего дома: он есть в следе дня, а в `tails.jsonl` его нет.
 

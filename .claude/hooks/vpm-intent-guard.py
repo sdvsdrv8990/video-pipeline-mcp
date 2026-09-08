@@ -234,10 +234,17 @@ def показать_остатки(root: Path = PROJ) -> str:
     хвосты = _stamp.tails(root)
     if not хвосты:
         return ""
+    # Показ идёт ПРИОРИТЕТОМ, а не возрастом, и ключ в шапке берётся оттуда же: старший хвост
+    # бывает из зоны, которой сегодня не занимаются, и предлагать его первым значит звать не туда.
+    хвосты = sorted(хвосты, key=lambda x: -float(x.get("приоритет") or 0))
     строки = []
     for x in хвосты:
         дней = (time.time() - float(x.get("ts") or 0)) / 86400
-        строки.append(f"- `{x['key']}` · {x['what']}\n"
+        зона = x.get("зона") or "не названа"
+        выведена = "" if x.get("зона названа") else " (выведена)"
+        строки.append(f"- `{x['key']}` · зона {зона}{выведена} · {x.get('тип') or '—'} · "
+                      f"приоритет {float(x.get('приоритет') or 0):.0f}\n"
+                      f"  {x['what']}\n"
                       f"  ждали: {x.get('expected') or '—'} · дней: {дней:.0f}\n"
                       f"  продолжить: `{x.get('cmd') or '—'}`\n")
     return START.format(n=len(хвосты), tails="\n".join(строки), ключ=хвосты[0]["key"])
@@ -342,7 +349,10 @@ def судить_правку(data: dict, root: Path = PROJ) -> str:
         if цель and not замыслов_сегодня(root):
             return ЗАМЫСЕЛ_ЗАПРЕТ.format(цель=цель)
         return ""
-    строки = [f"- `{x['key']}` · {x['what']}\n  ждали: {x.get('expected') or '—'}\n"
+    непризнанные.sort(key=lambda x: -float(x.get("приоритет") or 0))
+    строки = [f"- `{x['key']}` · зона {x.get('зона') or 'не названа'} · приоритет "
+              f"{float(x.get('приоритет') or 0):.0f}\n  {x['what']}\n"
+              f"  ждали: {x.get('expected') or '—'}\n"
               f"  продолжить: `{x.get('cmd') or '—'}`\n" for x in непризнанные]
     return ЗАПРЕТ.format(n=len(непризнанные), tails="\n".join(строки),
                          ключ=непризнанные[0]["key"])

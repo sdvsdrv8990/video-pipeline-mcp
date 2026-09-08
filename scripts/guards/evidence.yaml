@@ -272,6 +272,62 @@
     про: наборы и сценарии
     судится: [радиус]
 
+# ЗОНА — тема работы, одна для файлов и для ЗАПИСЕЙ (`деревья` выше судят только файлы).
+# У записи зона ОБЪЯВЛЯЕТСЯ (`--зона` у подписи); не объявлена — выводится из путей в команде
+# продолжения и помечается «выведена». Поля `слова` здесь нет намеренно: угадывание зоны по
+# тексту — правило по примерам, оно промахивается молча, как белый список суффиксов (7a7d).
+#
+# Порядок строк ЗНАЧИМ: берётся ПЕРВЫЙ совпавший путь, поэтому частное (`what_if.py`) стоит выше
+# общего (`scripts/guards`). Отсортируешь блоки по алфавиту — цикл молча уедет в сторожей.
+зоны:
+  цикл:
+    про: предсказание правки и его проверка прогоном
+    пути: [scripts/guards/what_if.py, scripts/guards/reproduce.py]
+  приёмка:
+    про: суд над КОНКРЕТНОЙ правкой ИИ, а не над кодом вообще
+    пути: [scripts/guards/acceptance_server.py, scripts/guards/acceptance_studio.py,
+           scripts/guards/_acceptance.py, scripts/guards/acceptance_subjects.yaml]
+  покрытие:
+    про: карта «код → сценарии», слепая зона и рубежи маршрутов
+    пути: [scripts/guards/blast_radius.py, scripts/guards/_routes.py,
+           scripts/guards/_symbol_graph.py]
+  сторожа:
+    про: сторожа, хуки, скилы и дисциплина их применения
+    пути: [scripts/guards, .claude/hooks, .claude/skills]
+    память:
+      - hard-won-lessons
+      - skills-system
+      - socraticode-evidence-source
+  студия:
+    про: этаж React/TS
+    пути: [studio]
+  сервер:
+    про: ядро продукта — инструменты, транспорт, реакции, объявления
+    пути: [core, tools, server.py, config]
+    память:
+      - video-pipeline-mcp-overview
+      - subsystems-map
+      - security-posture
+      - infra-and-connector
+      - montage-subsystem-design
+  тесты:
+    про: наборы и сценарии
+    пути: [tests]
+    память:
+      - testing-and-gate
+  доки:
+    про: планы, реестр находок, журнал сессий
+    пути: [docs]
+    память:
+      - owner-directives
+      - open-questions
+      - project-rules
+      - project-workflow-canonical
+      - memory-maintenance-directive
+      - resume-full-pass-s24
+      - code-review-task-pool
+      - enterprise-roadmap-program
+
 # Горячая точка: дорого править то, что часто трогают, а НЕ то, что запутанно. Пороги долями,
 # а не числами: абсолютное число правок протухает с каждым коммитом, доля пересчитывается сама.
 горячие:
@@ -289,6 +345,10 @@
       читатель: lesson_without_evidence
       потолок: lesson_evidence_baseline.txt
       совет: "Урок не ведёт в прогон, где родился: подпиши наблюдение (`_stamp.py`) и поставь ключ меткой ⟨улика: ⟦vpm КЛЮЧ⟧⟩ — или объясни в ревью, почему улики быть не может (--bless)"
+    - заголовок: "у записи зона не объявлена, а выведена"
+      читатель: record_zone_guessed
+      потолок: record_zone_baseline.txt
+      совет: "Зона выведена из путей команды — это догадка, а не объявление: у команды бывает общий путь (`invariants.py --check`), и тема уезжает в сторожей. Подписывай остаток с `--зона` из словаря `зоны`"
     - заголовок: "условие приёмки без механизма"
       читатель: acceptance_subject_gap
       потолок: acceptance_gap_baseline.txt
@@ -421,6 +481,8 @@
       читатель: door_not_installed
     - заголовок: "остаток записан мимо своего дома"
       читатель: tails_off_home
+    - заголовок: "раздел памяти без объявленной зоны"
+      читатель: memory_zone_undeclared
     - заголовок: "память разошлась со своим указателем"
       читатель: memory_off_index
     - заголовок: "память выросла выше потолка"
