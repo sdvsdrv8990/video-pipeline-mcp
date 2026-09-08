@@ -369,38 +369,82 @@ def дерево_файла(rel: str) -> tuple[str, list[str]] | None:
     return None
 
 
+def _молчащие() -> dict[str, list[str]]:
+    """Молчащие функции по файлам: имя переживает правку, номер строки — нет."""
+    covered = json.loads(COVERED.read_text(encoding="utf-8"))
+    молчат = {}
+    for rel in _measured_files("слепая-зона"):
+        silent = sorted(set(_functions(rel)) - set(covered.get(rel) or []))
+        if silent:
+            молчат[rel] = silent
+    return молчат
+
+
+def _потолок_именами() -> set[str] | None:
+    """Потолок читается ИМЕНАМИ. Прежний формат — одно число; оно не переживает пересборку
+    карты: счёт 92 сходится и когда молчат те же функции, и когда пять новых заменили пять
+    покрытых. `None` — потолка в этом формате нет, и отличить прирост от давнего долга нечем."""
+    if not BLIND_BASELINE.exists():
+        return None
+    текст = BLIND_BASELINE.read_text(encoding="utf-8").strip()
+    if not текст or текст.isdigit():
+        return None
+    return {s.strip() for s in текст.splitlines() if s.strip()}
+
+
 def blind() -> int:
     """Функции сервера, которых не исполняет НИ ОДИН сценарий, — размер молчания карты.
 
-    Считаем ИМЕНА, а не строки: номера сдвигаются от любой правки, и построчное число живёт ровно до
-    следующего касания файла — такой улике верить нельзя. Имя переживает правку, а новая непокрытая
-    функция всё так же растит счёт. Код 2 — улики нет (карта не собрана), это не то же самое, что
-    «молчание выросло»: ложное обвинение выключает сторожа быстрее, чем его отсутствие.
+    Отчёт называет ПРИРОСТ поимённо, а не восьмёрку худших: большое и растущее — разные вопросы,
+    и читатель, которому показали худший файл, идёт чинить давний долг вместо новой дыры.
+    Код 2 — улики нет (карта не собрана), это не то же самое, что «молчание выросло»: ложное
+    обвинение выключает сторожа быстрее, чем его отсутствие.
     """
     if not COVERED.exists():
         print(f"── улики нет: {COVERED} не собран. Пересобери карту — `--build`.")
         return 2
-    covered = json.loads(COVERED.read_text(encoding="utf-8"))
-    worst: list[tuple[int, str]] = []
-    total = 0
-    for rel in _measured_files("слепая-зона"):
-        silent = set(_functions(rel)) - set(covered.get(rel) or [])
-        total += len(silent)
-        if silent:
-            worst.append((len(silent), rel))
-    limit = int(BLIND_BASELINE.read_text(encoding="utf-8").strip()) if BLIND_BASELINE.exists() else total
-    print(f"── функций вне всех сценариев: {total} при потолке {limit}")
-    for missed, rel in sorted(worst, reverse=True)[:8]:
-        print(f"   {missed:4d}  {rel}")
+    молчат = _молчащие()
+    сейчас = {f"{rel}::{fn}" for rel, fns in молчат.items() for fn in fns}
+    потолок = _потолок_именами()
+    print(f"── функций вне всех сценариев: {len(сейчас)}")
+
     if "--bless" in sys.argv:
-        BLIND_BASELINE.write_text(f"{total}\n", encoding="utf-8")
-        print(f"   потолок опущен до {total}")
-        return 0
-    if total > limit:
-        print(f"   ✗ молчание выросло на {total - limit}: появились функции, которых не исполняет "
-              "ни один сценарий. Объяви сценарий, потом пересобери карту (`--build`) и опусти "
-              "потолок (`--blind --bless`) — до пересборки новая функция и должна числиться молчащей")
+        import _stamp
+        причина = _stamp.почему(sys.argv)
+        if not причина:
+            print("blast_radius: --bless без --почему запрещён. Потолок — это долг, и его сдвиг "
+                  "решение: назови причину одной строкой, она уедет в подпись журнала.",
+                  file=sys.stderr)
+            return 2
+        # Прежний потолок числом — это ТО ЖЕ измерение, а не ноль: иначе переезд формата
+        # выглядит ростом долга с нуля и заводит остаток о долге, которого не появлялось.
+        прежнее = BLIND_BASELINE.read_text(encoding="utf-8").strip() if BLIND_BASELINE.exists() else ""
+        было = len(потолок) if потолок is not None else (int(прежнее) if прежнее.isdigit() else 0)
+        BLIND_BASELINE.write_text("\n".join(sorted(сейчас)) + "\n", encoding="utf-8")
+        print(f"   потолок записан именами: {len(сейчас)}")
+        return _stamp.сдвиг_потолка(
+            [("слепая зона", было, len(сейчас), BLIND_BASELINE.name)] if было != len(сейчас) else [],
+            причина)
+
+    if потолок is None:
+        print("   ✗ потолок не в именах: старое число не отличает прирост от давнего долга. "
+              "Перепиши потолок именами — `--blind --bless --почему \"<причина>\"`")
         return 1
+    прирост = sorted(сейчас - потолок)
+    ушли = потолок - сейчас
+    if ушли:
+        print(f"── ушли из молчания: {len(ушли)} (потолок опустится следующим --bless)")
+    if прирост:
+        print(f"── ПРИРОСТ, которого нет в потолке: {len(прирост)}")
+        for имя in прирост:
+            print(f"   ✗ {имя}")
+        print("   Объяви сценарий, который их исполняет, пересобери карту (`--build`) и опусти "
+              "потолок (`--blind --bless --почему \"<причина>\"`) — до пересборки новая функция "
+              "и должна числиться молчащей")
+        return 1
+    print("── сводка, восьмёрка самых молчаливых файлов (это ДОЛГ, а не прирост):")
+    for rel, fns in sorted(молчат.items(), key=lambda кв: -len(кв[1]))[:8]:
+        print(f"   {len(fns):4d}  {rel}")
     return 0
 
 
@@ -413,6 +457,8 @@ def main() -> int:
     parser.add_argument("--affected", action="store_true")
     parser.add_argument("--blind", action="store_true")
     parser.add_argument("--bless", action="store_true")
+    parser.add_argument("--почему", metavar="ПРИЧИНА", default="",
+                        help="причина сдвига потолка — уедет в подпись журнала")
     args = parser.parse_args()
     if args.build:
         build()

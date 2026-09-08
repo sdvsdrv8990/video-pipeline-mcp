@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "guards"))
 sys.path.insert(0, str(ROOT))
 
 import _symbol_graph  # noqa: E402
+import _stamp  # noqa: E402  мера потолка и подпись сдвига — общие у всех сторожей
 import blast_radius as br  # noqa: E402
 
 _checks = 0
@@ -133,6 +134,38 @@ def main() -> int:
        "точки вызова взяты из живого формата ответа, вызываемые не перепутаны с вызывающими")
     ok(_symbol_graph._sites("No symbol graph found. Run codebase_graph_build first.") == [],
        "ответ без вызывающих не выдумывает точек")
+
+    ok(_stamp.мера_потолка("92\n") == "92", "потолок числом меряется числом")
+    ok(_stamp.мера_потолка("a::b\nc::d\n") == "2", "потолок именами меряется СЧЁТОМ имён")
+    ok(br._потолок_именами.__doc__ is not None, "формат потолка объявлен читателю")
+
+    настоящий = br.BLIND_BASELINE
+    # Потолок строится из ТЕКУЩЕГО молчания: выше набор подменил карту и `_functions` стендом,
+    # и список из боевого файла говорил бы о другом мире, чем тот, который здесь судится.
+    имена = sorted(f"{rel}::{fn}" for rel, fns in br._молчащие().items() for fn in fns)
+    времянка = Path(tempfile.mkdtemp(prefix="vpm-слепая-")) / "baseline.txt"
+    try:
+        # Прежний формат — одно число: он не отличает прирост от давнего долга и обязан быть красным
+        времянка.write_text("92\n", encoding="utf-8")
+        br.BLIND_BASELINE = времянка
+        буфер = io.StringIO()
+        with redirect_stdout(буфер):
+            код = br.blind()
+        ok(код == 1 and "не в именах" in буфер.getvalue(),
+           "потолок ЧИСЛОМ отвергается вслух: счёт не переживает пересборку карты")
+
+        времянка.write_text("\n".join(имена[:-2]) + "\n", encoding="utf-8")
+        буфер = io.StringIO()
+        with redirect_stdout(буфер):
+            код = br.blind()
+        вывод = буфер.getvalue()
+        ok(код == 1, "молчащая функция вне потолка — красный")
+        ok(all(имя in вывод for имя in имена[-2:]),
+           "прирост назван ПОИМЁННО, а не спрятан под срезом восьми худших")
+        ok("ДОЛГ, а не прирост" in вывод or "ПРИРОСТ" in вывод,
+           "отчёт различает долг и прирост словами, а не оставляет читателя гадать")
+    finally:
+        br.BLIND_BASELINE = настоящий
 
     print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")
     for fail in _fails:

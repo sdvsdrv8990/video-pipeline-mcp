@@ -2408,6 +2408,7 @@ def guards_off_catalog(root: Path = ROOT) -> list[str]:
                          "расширять предлагается несуществующее")
     return notes
 
+
 def ceiling_moved_unrecorded(root: Path = ROOT) -> list[str]:
     """Потолок сдвинут в дереве, а записи об этом в журнале нет: долг двинулся молча.
 
@@ -2415,6 +2416,7 @@ def ceiling_moved_unrecorded(root: Path = ROOT) -> list[str]:
     Разошлись — в журнале обязана быть подпись сдвига с этим файлом и этим новым числом.
     Журнала нет (клон, CI, свежее дерево) — улики нет, и это не «записи не было».
     """
+    import _stamp
     дом = _at(root, GUARDS)
     if not дом.is_dir():
         return []
@@ -2433,12 +2435,13 @@ def ceiling_moved_unrecorded(root: Path = ROOT) -> list[str]:
                 записано.add((str(подробность.get("файл")), str(подробность.get("стало"))))
     notes = []
     for baseline in sorted(дом.glob("*_baseline.txt")):
-        было = _git_show(root, f"scripts/guards/{baseline.name}")
-        стало = baseline.read_text(encoding="utf-8").strip()
-        if было is None or было.strip() == стало:
+        сырое = _git_show(root, f"scripts/guards/{baseline.name}")
+        if сырое is None or сырое.strip() == baseline.read_text(encoding="utf-8").strip():
             continue
+        было = _stamp.мера_потолка(сырое)
+        стало = _stamp.мера_потолка(baseline.read_text(encoding="utf-8"))
         if (baseline.name, стало) not in записано:
-            notes.append(f"{baseline.name}: потолок {было.strip()} → {стало} сдвинут без записи в "
+            notes.append(f"{baseline.name}: потолок {было} → {стало} сдвинут без записи в "
                          f"журнале — через месяц это неотличимо от опечатки. Двигай его через "
                          f"`--bless --почему \"<причина>\"`, тогда сдвиг подписан")
     return notes
@@ -2610,27 +2613,8 @@ def _named_value(argv: list[str], flag: str) -> str:
 
 def _bless_stamp(сдвинутые: list[tuple[str, int, int, str]], причина: str,
                  root: Path = ROOT) -> int:
-    """Сдвиг потолка уходит в журнал: вниз — вердиктом, ВВЕРХ — остатком.
-
-    Вверх это не запись, а обещание: долг вырос, и до его закрытия остаток будет показываться
-    на старте каждой сессии. Иначе «поднял потолок» стоит ровно одну строку в диффе и забывается.
-    """
-    if not сдвинутые:
-        print("потолки не сдвинулись — записывать нечего")
-        return 0
     import _stamp
-    for ось, было, стало, файл in сдвинутые:
-        вверх = стало > было
-        _, подпись = _stamp.sign(
-            "проба", "ОСТАТОК" if вверх else "ВЕРДИКТ",
-            f"потолок «{ось}»: {было} → {стало} ({'ДОЛГ ВЫРОС' if вверх else 'долг закрыт вниз'}) — {причина}",
-            intent="сдвиг потолка", expected=f"{было}", actual=f"{стало}",
-            cmd=(f".venv/bin/python scripts/guards/invariants.py --check 2>&1 | grep '{ось}'"
-                 if вверх else ""),
-            detail={"ось": ось, "было": было, "стало": стало, "файл": файл, "причина": причина},
-            root=root)
-        print(подпись)
-    return 0
+    return _stamp.сдвиг_потолка(сдвинутые, причина, root)
 
 
 def карта_приёмки(root: Path = ROOT) -> int:
