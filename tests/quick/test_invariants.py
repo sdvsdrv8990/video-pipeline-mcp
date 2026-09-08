@@ -1503,6 +1503,26 @@ ok(any(ось[0] == "ложное срабатывание хука без пр�
 shutil.rmtree(_точн.parent, ignore_errors=True)
 
 
+_зона = Path(tempfile.mkdtemp(prefix="vpm-типы-"))
+_манифест = (Path.cwd() / "pyproject.toml").read_text(encoding="utf-8")
+_целевая = [s for s in _манифест.splitlines() if s.startswith("files = [")][0]
+
+
+def _с_зоной(зона: str) -> Path:
+    (_зона / "pyproject.toml").write_text(_манифест.replace(_целевая, f"files = {зона}"),
+                                         encoding="utf-8")
+    return _зона
+
+
+ok(not _inv.typegate_uncovered(_с_зоной('["core", "tools", "server.py", "scripts", ".claude/hooks", "tests/harness"]')),
+   "покрытие зоны типов считается ПУТЁМ: `scripts` накрывает `scripts/guards`")
+ok(len(_inv.typegate_uncovered(_с_зоной('["core", "tools", "server.py", ".claude/hooks", "tests/harness"]'))) == 1,
+   "убрать дерево сторожей из зоны — по-прежнему отказ: ось не ослеплена ради расширения")
+ok(len(_inv.typegate_uncovered(_с_зоной('["core", "tools", "server.py", "scripts", "tests/harness"]'))) == 1,
+   "убрать хуки из зоны — отказ: покрытие проверяется у КАЖДОГО судящего дерева")
+shutil.rmtree(_зона, ignore_errors=True)
+
+
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:
     print("ПРОВАЛЫ:")

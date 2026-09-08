@@ -2535,8 +2535,14 @@ def typegate_uncovered(root: Path = ROOT) -> list[str]:
     if not манифест.exists():
         return []
     зона = tomllib.loads(манифест.read_text(encoding="utf-8")).get("tool", {}).get("mypy", {}).get("files", [])
+    # Покрытие считается ПУТЁМ, а не строкой: `scripts` накрывает `scripts/guards`, и точное
+    # сравнение объявляло бы расширенную зону сужением — ложный отказ на честной правке.
+    def покрыто(дерево: str) -> bool:
+        части = Path(дерево).parts
+        return any(части[:len(Path(з).parts)] == Path(з).parts for з in зона)
+
     return [f"{дерево} судит проект, а гейт типов его не видит: `[tool.mypy] files` = {зона}"
-            for дерево in JUDGING_TREES if дерево not in зона]
+            for дерево in JUDGING_TREES if not покрыто(дерево)]
 
 
 def axis_undeclared(root: Path = ROOT) -> list[str]:

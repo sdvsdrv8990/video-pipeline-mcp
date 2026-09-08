@@ -190,8 +190,7 @@ def col_from_prose(name: str, ann: str, default_flag: str) -> dict | None:
         vals = extract_enum(ann)
         if vals:
             ctype, note = "enum", ""
-            col = {"name": name, "type": ctype, "flag": flag, "enum": vals}
-            return col
+            return {"name": name, "type": ctype, "flag": flag, "enum": vals}
     col: dict = {"name": name, "type": ctype, "flag": flag}
     if note:
         col["_note"] = note[:120]

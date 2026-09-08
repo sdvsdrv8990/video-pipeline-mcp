@@ -52,7 +52,7 @@ def cmd_local(args) -> int:
         print("Каталог пуст после отсева — ослабь фильтры в config/providers.yaml → local.sources.")
         return 1
     cat = _catalog()
-    scored, last = cat.with_fit(rows), {}
+    scored, last = cat.with_fit(rows), {}  # type: ignore[var-annotated]
     for r in scored:
         size = f"{r['mb']} МБ" if r.get("mb") else f"↓{r.get('downloads', 0)}"
         params = f"{r['params_total'] / 1e9:.1f}B" if r.get("params_total") else "—"

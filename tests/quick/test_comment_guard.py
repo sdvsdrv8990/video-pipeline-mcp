@@ -93,8 +93,14 @@ _globs = G.TARGET_GLOBS
 # множеств краснеет на первом же кириллическом имени файла.
 tracked = {p for p in subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z", *_globs],
                                      capture_output=True, text=True, check=True).stdout.split("\0") if p}
-ok("замер покрывает ровно объявленные цели под git", set(G.collect()) == tracked,
-   sorted(tracked ^ set(G.collect()))[:5])
+# Расхождение почти всегда одно и то же: новый файл заведён, но не добавлен в git. Разница
+# множеств этого не говорит, и цена молчания — полный прогон набора (10 минут) ради догадки.
+_собрано = set(G.collect())
+_не_под_git = sorted(_собрано - tracked)
+_нет_на_диске = sorted(tracked - _собрано)
+ok("замер покрывает ровно объявленные цели под git", _собрано == tracked,
+   (f"не под git (git add): {_не_под_git[:5]}" if _не_под_git else "")
+   + (f" · под git, но не собрано: {_нет_на_диске[:5]}" if _нет_на_диске else ""))
 ok("цели включают декларации и CI, а не только Python",
    any(p.endswith((".yaml", ".yml")) for p in tracked) and "pyproject.toml" in tracked)
 
