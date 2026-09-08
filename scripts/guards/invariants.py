@@ -1640,6 +1640,20 @@ def memory_status(root: Path = ROOT, memory: Path | None = None) -> list[str]:
 
 
 
+def dead_line_reference(root: Path = ROOT) -> list[str]:
+    """Ссылка ведёт в пустоту: файл есть, а строки в нём нет.
+
+    Жёсткая: доказанная битость доли не имеет. Судится ТОЛЬКО этот исход — «цели нет» так же
+    выглядит у фикстуры набора и у ссылки одним именем файла, и обвинять их значит краснеть на
+    данных. Лечится не подновлением номера, а адресом по СИМВОЛУ: он переживает правку соседа.
+    """
+    if root.resolve() != ROOT.resolve():
+        return []
+    sys.path.insert(0, str(_at(root, ("scripts", "guards"))))
+    import _place
+    return _place.битые_ссылки(root)
+
+
 def live_value_stale(root: Path = ROOT) -> list[str]:
     """Живая величина разошлась с прогоном: в тексте написано одно, команда даёт другое.
 

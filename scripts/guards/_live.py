@@ -33,6 +33,8 @@ ROOT = Path(__file__).resolve().parents[2]
 # прогоном значит подделать историю. Единственная зона, где расхождение с диском законно.
 ЗАМОРОЖЕНО = ("docs/roadmap/sessions", "docs/roadmap/_sessions.md")
 РАСШИРЕНИЯ = (".md", ".py", ".yaml", ".yml", ".txt")
+# Чужое дерево внутри нашего: судить его нашими правилами не за что, а обход стоит секунд.
+ЧУЖОЕ = ("node_modules", ".venv", "__pycache__", ".git")
 
 
 def объявление(path: Path | None = None) -> dict:
@@ -75,6 +77,8 @@ def величины(root: Path = ROOT, декл: dict | None = None) -> dict[st
 
 def _живой(файл: Path, root: Path) -> bool:
     отн = str(файл.relative_to(root)).replace("\\", "/")
+    if any(часть in ЧУЖОЕ for часть in отн.split("/")):
+        return False
     if any(отн == з or отн.startswith(з.rstrip("/") + "/") for з in ЗАМОРОЖЕНО):
         return False
     return any(отн == з or отн.startswith(з.rstrip("/") + "/") for з in ЖИВЫЕ_ЗОНЫ)
