@@ -1440,6 +1440,43 @@ ok(any(ось[0] == "подпись цикла без счёта родов" for
    "у слепой зоны СВОЙ потолок: ноль соседней оси иначе неотличим от чистоты")
 
 
+import _evidence  # noqa: E402  общая дверь к объявлению: набор подменяет её путь, а не файл
+
+_ГВАРДЫ = ROOT / "scripts" / "guards"
+_реестр = Path(tempfile.mkdtemp(prefix="vpm-оси-")) / "scripts" / "guards"
+_реестр.mkdir(parents=True)
+shutil.copy(_ГВАРДЫ / "invariants.py", _реестр / "invariants.py")
+shutil.copy(_ГВАРДЫ / "evidence.yaml", _реестр / "evidence.yaml")
+_объявление = _реестр / "evidence.yaml"
+_ЦЕЛО = _объявление.read_text(encoding="utf-8")
+
+ok(_inv.RATCHETS and _inv.HARD, "оси собраны из объявления, а не из кортежа в коде")
+ok(not _inv.axis_undeclared(_реестр.parent.parent), "все написанные оси объявлены")
+
+_снять = '    - заголовок: "код отказа мимо реестра"\n      читатель: codes_outside_registry\n'
+_объявление.write_text(_ЦЕЛО.replace(_снять, ""), encoding="utf-8")
+ok(any("codes_outside_registry" in n for n in _inv.axis_undeclared(_реестр.parent.parent)),
+   "ось, написанная но НЕ объявленная, названа поимённо — иначе она не судит молча")
+_объявление.write_text(_ЦЕЛО, encoding="utf-8")
+
+try:
+    _inv._читатель({"заголовок": "проверка", "читатель": "нет_такой_функции"})
+    ok(False, "объявленный читатель, которого нет в модуле, обязан быть ОТКАЗОМ")
+except SystemExit as _e:
+    ok("нет_такой_функции" in str(_e), "промах имени читателя назван вслух, а не пропущен молча")
+
+_прежний = _evidence.DECL
+try:
+    _evidence.DECL = _объявление.with_name("пусто.yaml")
+    _inv._реестр_осей()
+    ok(False, "пустой реестр осей обязан быть ОТКАЗОМ: без осей сторож зелен по всему")
+except SystemExit as _e:
+    ok("оси" in str(_e), "пустой реестр осей отказывает и говорит, где его объявить")
+finally:
+    _evidence.DECL = _прежний
+shutil.rmtree(_реестр.parent.parent, ignore_errors=True)
+
+
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:
     print("ПРОВАЛЫ:")

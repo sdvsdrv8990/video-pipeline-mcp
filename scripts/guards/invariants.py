@@ -29,30 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _verdict                                   # noqa: E402  общий хвост суда
 from findings_count import scan as scan_registry  # noqa: E402  разбор реестра — один на проект
 
-BASELINE = Path(__file__).with_name("invariants_baseline.txt")
-LESSON_BASELINE = Path(__file__).with_name("lesson_debt_baseline.txt")
-ACCEPTANCE_BASELINE = Path(__file__).with_name("acceptance_advice_baseline.txt")
 SUBJECTS_DECL = ("scripts", "guards", "acceptance_subjects.yaml")
-SUBJECTS_BASELINE = Path(__file__).with_name("acceptance_gap_baseline.txt")
-EVIDENCE_BASELINE = Path(__file__).with_name("lesson_evidence_baseline.txt")
-DISPATCH_BASELINE = Path(__file__).with_name("dispatch_baseline.txt")
-UNSCRIPTED_BASELINE = Path(__file__).with_name("unscripted_baseline.txt")
-DEAD_RECOVERY_BASELINE = Path(__file__).with_name("dead_recovery_baseline.txt")
-ORPHAN_BASELINE = Path(__file__).with_name("orphan_codes_baseline.txt")
-MIRROR_BASELINE = Path(__file__).with_name("mirror_baseline.txt")
-PRIVATE_LOADER_BASELINE = Path(__file__).with_name("private_loader_baseline.txt")
-KNOB_BASELINE = Path(__file__).with_name("knob_reader_baseline.txt")
-RECORD_FIELD_BASELINE = Path(__file__).with_name("record_field_baseline.txt")
-ABSENT_KNOB_BASELINE = Path(__file__).with_name("absent_knob_baseline.txt")
-STUB_BASELINE = Path(__file__).with_name("stub_baseline.txt")
-TYPEGATE_BASELINE = Path(__file__).with_name("typegate_baseline.txt")
-MEMORY_STATUS_BASELINE = Path(__file__).with_name("memory_status_baseline.txt")
-TAUTOLOGY_BASELINE = Path(__file__).with_name("tautology_baseline.txt")
-UNJUDGED_BASELINE = Path(__file__).with_name("cycle_unjudged_baseline.txt")
-MUTED_BASELINE = Path(__file__).with_name("muted_refusal_baseline.txt")
-FACT_EMITTER_BASELINE = Path(__file__).with_name("fact_emitters_baseline.txt")
-FACT_EXEMPT_BASELINE = Path(__file__).with_name("fact_exempt_baseline.txt")
-SKILL_BOUNDARY_BASELINE = Path(__file__).with_name("skill_boundary_baseline.txt")
 MEMORY_SIZE_CEILING = Path(__file__).with_name("memory_size_ceiling.txt")
 # Две ветки — это выбор, три и больше по одному значению — уже таблица.
 DISPATCH_LIMIT = 3
@@ -2477,40 +2454,6 @@ def _git_show(root: Path, путь: str) -> str | None:
     return done.stdout if done.returncode == 0 else None
 
 
-HARD = (("одну зону объявили два хозяина", zone_declared_twice),
-        ("сторож без набора-дома", guard_without_home),
-        ("пропуск набора без покрытия в CI", skips_without_ci),
-        ("имя используется до объявления", used_before_declared),
-        ("код отказа мимо реестра", codes_outside_registry),
-        ("объявление ресурсов мимо инвентаря", resources_off_inventory),
-        ("статус находки мимо реестра", status_off_registry),
-        ("набор мимо каталога зон", suites_off_catalog),
-        ("сторож мимо каталога зон", guards_off_catalog),
-        ("модуль без единого читателя", module_without_reader),
-        ("число джоб гейта мимо ci.yml", ci_jobs_off_docs),
-        ("сценарий зовёт инструмент мимо описи", scenario_calls_unknown_tool),
-        ("факт мимо реестра типов", facts_outside_registry),
-        ("хук мимо объявления", hooks_off_declaration),
-        ("объявление глушит голос хука", hook_declared_muted),
-        ("дверь коммита объявлена, но не ставится", door_not_installed),
-        ("остаток записан мимо своего дома", tails_off_home),
-        ("память разошлась со своим указателем", memory_off_index),
-        ("память выросла выше потолка", memory_grew),
-        ("журнал разошёлся со своим указателем", journal_off_index),
-        ("скил без объявленной зоны", skill_without_zone),
-        ("судья мимо общего журнала", judge_off_journal),
-        ("роспись улик разошлась", evidence_roster_off_disk),
-        ("потолок сдвинут без записи", ceiling_moved_unrecorded),
-        ("ось качества без объявленного параметра", quality_axis_without_parameter),
-        ("урок зовёт несуществующего исполнителя", lesson_without_executor),
-        ("объявление наблюдения неполно", observation_incomplete),
-        ("факт эмитится, а решения о наблюдении нет", facts_without_observer),
-        ("сценарий приёмки зовёт несуществующее", acceptance_calls_missing),
-        ("состояние приёмки не доказано", acceptance_state_unproven),
-        ("живая команда ведёт в несуществующее", dead_command))
-
-# Храповик: вниз можно, вверх нет. Потолок — в файле рядом, совет — как долг закрывается.
-
 # Кто читает запись следа/журнала и кто её СОБИРАЕТ. Списки поимённые, а не «все файлы»: `.get`
 # по строке встречается всюду, и обвинять каждый значило бы выключить сторожа в первый же день.
 RECORD_READERS = ("scripts/guards/reproduce.py",)
@@ -2593,81 +2536,59 @@ def typegate_uncovered(root: Path = ROOT) -> list[str]:
             for дерево in JUDGING_TREES if дерево not in зона]
 
 
-RATCHETS = (
-    ("урок без ключа улики", lesson_without_evidence, EVIDENCE_BASELINE,
-     "Урок не ведёт в прогон, где родился: подпиши наблюдение (`_stamp.py`) и поставь ключ "
-     "меткой ⟨улика: ⟦vpm КЛЮЧ⟧⟩ — или объясни в ревью, почему улики быть не может (--bless)"),
-    ("условие приёмки без механизма", acceptance_subject_gap, SUBJECTS_BASELINE,
-     "Условие объявлено, а судить его нечем — это и есть вектор развития: заведи исполнителя "
-     "либо опусти потолок осознанно (--bless). Карта целиком: invariants.py --приёмка"),
-    ("в памяти статус, а не знание", memory_status, MEMORY_STATUS_BASELINE,
-     "Статус протухает молча и грузится в КАЖДУЮ сессию: его хозяин — git, реестр находок "
-     "или журнал, а память держит только не выводимое с диска. Убери строку либо опусти "
-     "потолок осознанно (--bless)"),
-    ("подпись цикла без счёта родов", cycle_unjudged, UNJUDGED_BASELINE,
-     "Ось тавтологии ищет в подписи `предсказаний N из M` и подпись без него не судит вовсе — "
-     "молча. Гони цикл через what_if.py (он печатает счёт всегда), а старые записи выйдут из "
-     "окна сами — либо опусти потолок осознанно (--bless)"),
-    ("цикл судит тавтологию, а не предсказание", cycle_tautology, TAUTOLOGY_BASELINE,
-     "Ожидание читается в тексте патча — прогон его не проверяет. Предсказывай смену цвета у "
-     "СУЩЕСТВУЮЩЕЙ проверки; тавтология допустима с объявленным `ломается:`, но доля её обязана "
-     "идти вниз — либо опусти потолок осознанно (--bless)"),
-    ("дерево, которым судим, вне гейта типов", typegate_uncovered, TYPEGATE_BASELINE,
-     "Код, которым мы судим проект, сам не судится по типам: внеси дерево в `[tool.mypy] files` "
-     "и погаси его ошибки ЭТАПОМ — либо опусти потолок осознанно (--bless)"),
-    ("сценарий приёмки без исполнителя", acceptance_advice_only, ACCEPTANCE_BASELINE,
-     "Сценарий советует, но не судится: заведи исполнителя (набор + метку проверки) "
-     "или объясни в ревью, почему судить его сегодня нечем — --bless"),
-    ("урок без механизма", lesson_without_mechanism, LESSON_BASELINE,
-     "Урок держится словами: заведи ось/проверку/сценарий, который ловит повтор — "
-     "или объясни в ревью, почему механизма быть не может (--bless)"),
-    ("enum без значений", enum_without_values, BASELINE,
-     "Долг вырос. Почини столбцы выше или объясни в ревью: --bless"),
-    ("ветвление по значению вместо таблицы", dispatch_by_value, DISPATCH_BASELINE,
-     "Новая цепочка ветвления: объяви таблицу (config/*.yaml → генерик в core/) "
-     "или опусти потолок осознанно — --bless"),
-    ("объявлено клиенту, но бросить некому", codes_without_emitter, ORPHAN_BASELINE,
-     "Реестр обещает клиенту отказ, которого не бывает: либо путь, который его бросает, "
-     "либо снять строку из server_reactions.yaml и KNOWN_ERROR_CODES"),
-    ("рецепт движка, который клиент не увидит", dead_recovery_in_engine, DEAD_RECOVERY_BASELINE,
-     "Совет из кода перекрывается реестром и до клиента не доезжает: либо снять аргумент "
-     "`suggested_tool`, либо поправить рецепт в config/server_reactions.yaml"),
-    ("копия объявления в коде", mirrored_declaration, MIRROR_BASELINE,
-     "Значение объявлено в config/*.yaml и продублировано в коде под тем же именем: читай "
-     "декларацию вместо копии — либо опусти потолок осознанно, --bless"),
-    ("ручка объявлена, а читателя нет", knob_without_reader, KNOB_BASELINE,
-     "Ключ в config/*.yaml не грузит НИКТО: правка строки не меняет поведения. Либо читатель, "
-     "либо снять строку — украшение хуже пустого места, оно обещает управление, которого нет"),
-    ("отказ погашен молча", muted_refusal, MUTED_BASELINE,
-     "Широкий `except` превратил сбой в пустой результат: назови причину узким перехватом, "
-     "либо отдай отказ кодом реестра, либо оставь след — молчание клиенту неотличимо от данных"),
-    ("граница скила невидима при выборе", skill_boundary_invisible, SKILL_BOUNDARY_BASELINE,
-     "Пара путаема по существу, а граница объявлена только в каталоге: назови соседа в ОБОИХ "
-     "`description` — каталог в момент выбора не читается — либо опусти потолок осознанно, --bless"),
-    ("объявлено незавершённым", unfinished_in_server, STUB_BASELINE,
-     "Незавершённого стало больше. Кричать о нём правильно, но прибавление — "
-     "решение: либо доделать, либо --bless с объяснением, почему стаб остаётся"),
-    ("конфигурация, которой нет: ключ читают с дефолтом", default_instead_of_declaration,
-     ABSENT_KNOB_BASELINE,
-     "Читают раздел декларации и спрашивают строку, которой в нём нет: либо объяви её в "
-     "config/*.yaml, либо не притворяйся конфигурацией — именованная константа честнее"),
-    ("объявлено сервером, но сценарием не покрыто", declared_but_unscripted, UNSCRIPTED_BASELINE,
-     "Новое объявление без сценария. Покрытие пишется ОБЪЯВЛЕНИЕМ в tests/scenarios/*.yaml "
-     "(`call` + `expect.code`), новый python-скрипт для этого не нужен — либо --bless с объяснением"),
-    ("объявлено ненаблюдаемым", facts_exempt_from_observation, FACT_EXEMPT_BASELINE,
-     "Спросить реальность про этот факт нечем — и таких стало больше. Либо наблюдатель, либо "
-     "инструмент, которого не хватает, чтобы наблюдатель стал возможен"),
-    ("поле записи мимо объявления", record_field_mismatch, RECORD_FIELD_BASELINE,
-     "У записи следа/журнала спрашивают или в неё кладут поле, которого нет в "
-     "core/contracts/trail_record.py. Промах немой: `dict.get` вернёт None, и отсутствие улики "
-     "сойдёт за отсутствие в реальности — объяви поле либо спрашивай объявленным именем"),
-    ("своя загрузка декларации мимо общей двери", declaration_loaded_privately, PRIVATE_LOADER_BASELINE,
-     "Модуль разбирает YAML сам, и у отказа заводится своя политика: шесть загрузчиков давали "
-     "шесть ответов на «нет файла» и «битый файл». Читай через core/declaration.py"),
-    ("объявлено фактом, а слать некому", facts_without_emitter, FACT_EMITTER_BASELINE,
-     "Тип обещан контрактом (или наблюдателем), а сервер его не шлёт: либо путь, который шлёт, "
-     "либо снять строку из KNOWN_FACT_TYPES / tests/harness/observations.yaml"),
-)
+def axis_undeclared(root: Path = ROOT) -> list[str]:
+    """Ось написана, но в реестр не внесена — судить её никто не будет, и молча.
+
+    Промах в другую сторону (объявлен читатель, которого нет) ловит сам сбор реестра отказом.
+    Форма оси — `(root: Path = ROOT) -> list[str]`; ею и опознаётся ненайденное объявление.
+    """
+    файл = _at(root, ("scripts", "guards", "invariants.py"))
+    декл = _at(root, ("scripts", "guards", "evidence.yaml"))
+    if not файл.exists() or not декл.exists():
+        return []
+    try:
+        объявление = (yaml.safe_load(декл.read_text(encoding="utf-8")) or {}).get("оси") or {}
+    except yaml.YAMLError:
+        return []
+    объявлены = {ось.get("читатель") for группа in объявление.values() for ось in группа or ()}
+    notes = []
+    for узел in ast.parse(файл.read_text(encoding="utf-8")).body:
+        if not isinstance(узел, ast.FunctionDef) or узел.name.startswith("_"):
+            continue
+        args = [a.arg for a in узел.args.args]
+        форма = (узел.returns is not None and ast.unparse(узел.returns) == "list[str]"
+                 and args[:1] == ["root"])
+        if форма and узел.name not in объявлены:
+            notes.append(f"invariants.py:{узел.lineno} ось `{узел.name}` не объявлена в "
+                         f"evidence.yaml (`оси`) — она не судит ничего")
+    return notes
+
+
+def _реестр_осей() -> dict:
+    """Реестр осей из объявления. Пусто — это отказ, а не пустой набор: сторож без осей
+    зелен по всему, и молчание было бы неотличимо от чистого дерева."""
+    import _evidence
+    декл = _evidence.оси()
+    if not декл:
+        raise SystemExit("invariants: реестр осей не объявлен — scripts/guards/evidence.yaml, "
+                         "ключ `оси`. Судить нечем, а пустой набор осей дал бы зелёное по всему")
+    return декл
+
+
+def _читатель(ось: dict):
+    """Условие оси остаётся Python; объявление зовёт его по имени, и промах имени — отказ."""
+    fn = globals().get(ось["читатель"])
+    if not callable(fn):
+        raise SystemExit(f"invariants: у оси «{ось['заголовок']}» объявлен читатель "
+                         f"`{ось['читатель']}`, которого в модуле нет")
+    return fn
+
+
+_ОСИ = _реестр_осей()
+HARD = tuple((ось["заголовок"], _читатель(ось)) for ось in _ОСИ.get("жёсткие") or ())
+RATCHETS = tuple((ось["заголовок"], _читатель(ось),
+                  Path(__file__).with_name(ось["потолок"]), ось["совет"])
+                 for ось in _ОСИ.get("храповики") or ())
 
 
 def _named_tree(argv: list[str]) -> Path | None:

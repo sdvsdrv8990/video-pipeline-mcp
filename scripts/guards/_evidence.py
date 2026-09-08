@@ -62,6 +62,11 @@ def деревья(path: Path | None = None) -> dict:
     return словарь(path).get("деревья") or {}
 
 
+def оси(path: Path | None = None) -> dict:
+    """Оси суда: `храповики` (потолок и совет) и `жёсткие` (любое попадание — отказ)."""
+    return словарь(path).get("оси") or {}
+
+
 def rods_of(files: list[str], path: Path | None = None) -> list[str]:
     """Роды улики по тронутым файлам. Спрашивать род у правщика значило бы верить ему на слово."""
     имена = [*files, *(Path(f).name for f in files)]
