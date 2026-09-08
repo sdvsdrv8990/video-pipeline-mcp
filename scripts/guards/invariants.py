@@ -2587,6 +2587,26 @@ def hook_false_unpinned(root: Path = ROOT) -> list[str]:
     return _precision.ложные_без_проверки(журнал)
 
 
+def intent_after_code(root: Path = ROOT) -> list[str]:
+    """Замысел, объявленный на УЖЕ правленной зоне: предсказывать было нечего, код написан.
+
+    Долг считается по замыслам, а не по всем подписям: отписка задним числом неотличима от
+    предсказания ровно до тех пор, пока её не считают.
+    """
+    notes = []
+    for файл in sorted(_at(root, ("tests", ".journal")).glob("stamps-*.jsonl")):
+        for строка in файл.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                запись = json.loads(строка)
+            except json.JSONDecodeError:
+                continue
+            if запись.get("role") == "ЗАМЫСЕЛ" \
+               and (запись.get("detail") or {}).get("зона-чиста") is False:
+                notes.append(f"{запись.get('where', '?')}: замысел «{запись.get('what', '')[:60]}» "
+                             f"объявлен на уже правленной зоне — пересказ, а не предсказание")
+    return notes
+
+
 def _реестр_осей() -> dict:
     """Реестр осей из объявления. Пусто — это отказ, а не пустой набор: сторож без осей
     зелен по всему, и молчание было бы неотличимо от чистого дерева."""

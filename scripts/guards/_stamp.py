@@ -26,7 +26,8 @@ JOURNAL = ("tests", ".journal")
 # Дом остатков — под git, рядом со сторожем, который их читает. След дня объявлен рантаймом
 # и игнорируется, поэтому остаток, живший только там, не переживал `git clean` и клон.
 TAILS = ("scripts", "guards", "tails.jsonl")
-ROLES = ("УЛИКА", "ОТКАЗ", "ВЕРДИКТ", "ОСТАТОК", "ОТЛОЖЕН", "В РАБОТЕ", "РЕШЕНИЕ")
+ROLES = ("УЛИКА", "ОТКАЗ", "ВЕРДИКТ", "ОСТАТОК", "ОТЛОЖЕН", "В РАБОТЕ", "РЕШЕНИЕ",
+         "ЗАМЫСЕЛ")
 # `РЕШЕНИЕ` — выбор на РАЗВИЛКЕ, а не итог прогона: тем и отличается от `ВЕРДИКТ`.
 # Не в `ПРИЗНАНИЯХ` намеренно: решением развилку ЗАКРЫВАЮТ, а не отодвигают.
 # Членство здесь отнимает право ЗАКРЫВАТЬ хвост, а не меняет показ: признание — не итог.
@@ -67,6 +68,22 @@ def _head(root: Path) -> tuple[str, bool]:
     return sha.stdout.strip(), bool(dirty.stdout.strip())
 
 
+def зона_чиста(root: Path = ROOT) -> bool:
+    """Правлено ли уже хоть одно СУДИМОЕ дерево. Правка доков и журнала чистоты не отменяет:
+    предсказывать мешает написанный КОД, а не запись о нём."""
+    import _evidence
+    деревья = _evidence.деревья()
+    корни = [к for д in деревья.values() if д.get("замысел") for к in д.get("корни") or []]
+    if not корни:
+        return True
+    try:
+        вывод = subprocess.run(["git", "diff", "--name-only", "HEAD", "--", *корни],
+                               cwd=str(root), capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return True                       # улики нет — не обвиняем
+    return not вывод.stdout.strip()
+
+
 def sign(kind: str, role: str, what: str, *, intent: str = "", expected: str = "",
          actual: str = "", cmd: str = "", detail: dict | None = None, closes: str = "",
          кто: str = "владелец", root: Path = ROOT) -> tuple[str, str]:
@@ -89,6 +106,15 @@ def sign(kind: str, role: str, what: str, *, intent: str = "", expected: str = "
             f"{чем}: `повторить` = {cmd!r}. То, что нельзя запустить, поднимать нечем — оно "
             f"стареет молча, как любая проза. Дай команду, начинающуюся с одного из "
             f"{list(RUNNERS[:6])}…")
+    # Замысел объявляется ДО работы, и это проверяется, а не заявляется: если судимая зона уже
+    # правлена, предсказывать нечего — код написан, и «ожидание» станет пересказом сделанного.
+    # Ровно так подавляющее большинство прежних ожиданий стало пересказом сделанного.
+    if role == "ЗАМЫСЕЛ":
+        if not expected.strip():
+            raise ValueError(
+                "замысел без предсказания: назови `--expected` — какая СУЩЕСТВУЮЩАЯ проверка "
+                "сменит цвет и почему. Замысел без этого не отличается от пересказа плана.")
+        detail = {**(detail or {}), "зона-чиста": зона_чиста(root)}
     stamped = time.time()
     key = hashlib.sha1(f"{stamped}|{kind}|{what}".encode()).hexdigest()[:4]
     head, dirty = _head(root)

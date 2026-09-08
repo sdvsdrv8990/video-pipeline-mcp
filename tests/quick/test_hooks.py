@@ -197,12 +197,12 @@ def main() -> int:
     факты: dict = {"__name__": "не-главный", "__file__": str(HOOKS / "vpm-fact-gate.py")}
     exec(compile((HOOKS / "vpm-fact-gate.py").read_text(encoding="utf-8"),
                  str(HOOKS / "vpm-fact-gate.py"), "exec"), факты)
-    чужое, херед = факты["SHELL_NON_ASCII"], факты["HEREDOC"]
+    чужое, херед = факты["чужое_имя"], факты["HEREDOC"]
     встроенный, кавычки = факты["INLINE_CODE"], факты["SINGLE_QUOTED"]
 
     def ловится(команда: str) -> bool:
         снято = кавычки.sub("", встроенный.sub("", херед.sub("", команда)))
-        return bool(чужое.search(снято))
+        return bool(чужое(снято))
 
     # Судится КЛАСС — чужая буква там, где bash ждёт имя, — поэтому проба перечисляет позиции и
     # алфавиты, а не команды: список примеров рушится на первом же отклонении от него.
@@ -433,8 +433,8 @@ def main() -> int:
     with жур.open("a", encoding="utf-8") as дописать:
         дописать.write(json.dumps({"role": "ОТЛОЖЕН", "ts": __import__("time").time(),
                                    "key": "cccc", "closes": "bbbb"}, ensure_ascii=False) + "\n")
-    ok(not намер["судить_правку"](пишет, хвост),
-       "хвост отложен подписью — запрет снят: признание есть, и оно на диске")
+    ok("не признан" not in намер["судить_правку"](пишет, хвост),
+       "хвост отложен подписью — запрет ПО ОСТАТКУ снят: признание есть, и оно на диске")
     sys.path.insert(0, str(ROOT / "scripts" / "guards"))
     import _stamp as _s
     ok(len(_s.tails(хвост)) == 1 and _s.tails(хвост)[0]["отложен"],
@@ -453,9 +453,9 @@ def main() -> int:
     with жур2.open("a", encoding="utf-8") as дописать:
         дописать.write(json.dumps({"role": "В РАБОТЕ", "ts": __import__("time").time(),
                                    "key": "ffff", "closes": "eeee"}, ensure_ascii=False) + "\n")
-    ok(not намер["судить_правку"](пишет, взят) and len(_s.tails(взят)) == 1
+    ok("не признан" not in намер["судить_правку"](пишет, взят) and len(_s.tails(взят)) == 1
        and _s.tails(взят)[0]["в работе"],
-       "«в работе» снимает запрет, а хвост остаётся в показе")
+       "«в работе» снимает запрет ПО ОСТАТКУ, а хвост остаётся в показе")
     ok(not _s.tails(взят)[0]["отложен"],
        "«в работе» не закрывает хвост — закрытие только вердиктом")
 
@@ -794,6 +794,48 @@ def main() -> int:
     ok(not с_разрешением, "после разрешения человека сторож пропускает правку")
     os.environ["HOME"] = прежний
 
+
+    ok("ЗАМЫСЛА" in намер["судить_правку"](пишет, хвост),
+       "§11б два запрета НЕЗАВИСИМЫ: остаток признан, но замысла нет — правка всё равно стоит")
+
+    print("§18 чужое имя: подстановка ищется везде, присваивание — вне двойных кавычек")
+    _фг: dict = {"__name__": "не-главный", "__file__": str(HOOKS / "vpm-fact-gate.py")}
+    try:
+        exec(compile((HOOKS / "vpm-fact-gate.py").read_text(encoding="utf-8"),
+                     str(HOOKS / "vpm-fact-gate.py"), "exec"), _фг)
+    except SystemExit:
+        pass
+    for _cmd, _ждём, _про in (
+        ('--what "решение (было=0 вместо прежнего)"', False, "литерал `(было=` в кавычках"),
+        ('grep -n "пишет = \\|пишет=" tests/x.py', False, "шаблон grep с `|` в кавычках"),
+        ('echo "просто русский текст"', False, "обычный русский текст"),
+        ('echo "$ДОМ"', True, "подстановка ВНУТРИ двойных кавычек"),
+        ('echo ${КЛЮЧ}', True, "фигурная подстановка"),
+        ('export ПУТЬ=/tmp', True, "export забирает чужое имя"),
+        ('for файл in *.py; do echo x; done', True, "for забирает чужое имя"),
+        ('ДОМ=/tmp', True, "присваивание в начале строки"),
+    ):
+        ok(bool(_фг["чужое_имя"](_cmd)) is _ждём,
+           f"§18 {_про}: {'запрет' if _ждём else 'молчание'}")
+
+    print("§11 замысел ДО кода: запрет только в судимой зоне, упоминание пути правкой не считается")
+    _зам: dict = {"__name__": "не-главный", "__file__": str(HOOKS / "vpm-intent-guard.py")}
+    exec(compile((HOOKS / "vpm-intent-guard.py").read_text(encoding="utf-8"),
+                 str(HOOKS / "vpm-intent-guard.py"), "exec"), _зам)
+    _цель = _зам["цель_в_зоне"]
+    for _имя, _данные, _ждём in (
+        ("Edit по дереву сервера", {"tool_name": "Edit", "tool_input": {"file_path": "core/paths.py"}}, True),
+        ("Write по сторожу", {"tool_name": "Write", "tool_input": {"file_path": "scripts/guards/x.py"}}, True),
+        ("запись в хук через `>`", {"tool_name": "Bash", "tool_input": {"command": "cat > .claude/hooks/y.py <<'E'\nx\nE"}}, True),
+        ("УПОМИНАНИЕ пути в тексте", {"tool_name": "Bash", "tool_input": {"command": "python - <<'E'\nprint('core/paths.py')\nE"}}, False),
+        ("доки вне судимой зоны", {"tool_name": "Edit", "tool_input": {"file_path": "docs/roadmap/02_findings.md"}}, False),
+        ("тесты вне судимой зоны", {"tool_name": "Edit", "tool_input": {"file_path": "tests/quick/test_x.py"}}, False),
+        ("чтение файла", {"tool_name": "Bash", "tool_input": {"command": "cat scripts/guards/patrol.py"}}, False),
+    ):
+        ok(bool(_цель(_данные)) is _ждём, f"§11 {_имя}: {'зона задета' if _ждём else 'зона не задета'}")
+    ok(_цель({"tool_name": "Bash", "tool_input": {"command": "cat > .claude/hooks/z.py"}}),
+       "§11 путь хука начинается с точки и всё равно узнан: срез пути не режет ведущую точку")
+    ok(_зам["замыслов_сегодня"]() >= 1, "§11 замыслы дня считаются по журналу подписей")
 
     print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")
     for fail in _fails:
