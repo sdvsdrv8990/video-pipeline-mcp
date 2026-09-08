@@ -169,6 +169,31 @@ def main() -> int:
     finally:
         br.BLIND_BASELINE = настоящий
 
+    print("§9 горячая точка: показ приоритета, а не отказ")
+    ряд = br.горячие()
+    ok(ряд and all(len(с) == 3 for с in ряд), "горячие точки называются файлом, правками и размером")
+    правки = [п for _, п, _ in ряд]
+    ok(правки == sorted(правки, reverse=True), "список идёт по убыванию правок: первым дорогое")
+    размеры = [р for _, _, р in ряд]
+    все = {rel: len([s for s in (br.ROOT / rel).read_text(encoding="utf-8").splitlines() if s.strip()])
+           for rel in br._measured_files("радиус") if (br.ROOT / rel).exists()}
+    медиана = sorted(все.values())[len(все) // 2]
+    ok(all(р > медиана for р in размеры), "мельче медианы в горячие не попадает: это порог, а не список")
+    print(f"    горячих {len(ряд)} · медиана {медиана} строк")
+
+    буфер = io.StringIO()
+    with redirect_stdout(буфер):
+        код = br.показ_горячих()
+    ok(код == 0, "показ НЕ отказывает: метка замера частично про «где смотрели», обвинять ею нельзя")
+    ok("не отказ" in буфер.getvalue(), "показ говорит вслух, что он не отказ")
+
+    настоящее = br._evidence.горячие
+    try:
+        br._evidence.горячие = lambda *а, **к: {}
+        ok(br.горячие() == [], "нет объявления — список пуст, а не выдуманные пороги")
+    finally:
+        br._evidence.горячие = настоящее
+
     print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")
     for fail in _fails:
         print(f"  ✗ {fail}")

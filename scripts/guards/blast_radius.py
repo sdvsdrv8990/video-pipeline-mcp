@@ -169,6 +169,61 @@ def changed() -> None:
         print("  В незакоммиченной правке нет строк Python — радиус считать не по чему.")
 
 
+def _churn() -> dict[str, int]:
+    """Сколько коммитов трогали файл. История — единственная улика о цене правки, которой нет в коде."""
+    вывод = subprocess.run(["git", "log", "--format=%H", "--name-only"],
+                           cwd=ROOT, capture_output=True, text=True).stdout
+    итог: dict[str, int] = {}
+    for строка in вывод.splitlines():
+        if строка.endswith(".py"):
+            итог[строка] = итог.get(строка, 0) + 1
+    return итог
+
+
+def горячие() -> list[tuple[str, int, int]]:
+    """(файл, правок, строк) для горячих точек: часто правится И крупнее медианы.
+
+    Пороги берутся ДОЛЯМИ из объявления и пересчитываются каждый раз: абсолютное число правок
+    протухает с каждым коммитом, доля — нет. Нет объявления — список пуст, а не выдуманные пороги.
+    """
+    декл = _evidence.горячие()
+    доля = декл.get("доля-правок")
+    if not доля:
+        return []
+    churn = _churn()
+    размер = {}
+    for rel in _measured_files("радиус"):
+        try:
+            размер[rel] = len([s for s in (ROOT / rel).read_text(encoding="utf-8").splitlines()
+                               if s.strip()])
+        except OSError:
+            continue
+    if not размер:
+        return []
+    медиана = sorted(размер.values())[len(размер) // 2]
+    правки = sorted((churn.get(rel, 0) for rel in размер), reverse=True)
+    порог = правки[max(int(len(правки) * доля) - 1, 0)]
+    итог = [(rel, churn.get(rel, 0), n) for rel, n in размер.items()
+            if churn.get(rel, 0) >= порог and n > медиана]
+    return sorted(итог, key=lambda с: -с[1])
+
+
+def показ_горячих() -> int:
+    """ПОКАЗ приоритета, не отказ. Метка замера частично говорит «где мы смотрели», поэтому
+    краснеть здесь было бы обвинением по улике, которой не хватает на обвинение."""
+    ряд = горячие()
+    if not ряд:
+        print("── горячие точки: объявления нет либо замер пуст")
+        return 0
+    print(f"── горячих точек: {len(ряд)} (часто правятся И крупнее медианы)")
+    for rel, правок, строк in ряд:
+        дерево = дерево_файла(rel)
+        print(f"   {правок:3} правок · {строк:5} строк · {(дерево or ('вне деревьев',))[0]:9}  {rel}")
+    print("   Это не отказ: правка здесь дороже средней, и сюда идут сценарий и разбор в первую очередь.")
+    return 0
+
+
+
 def affected() -> int:
     """Сценарии, задетые ТЕКУЩЕЙ правкой, и строки, за которыми не стоит ни один сценарий.
 
@@ -180,6 +235,7 @@ def affected() -> int:
     вне_покрытия: dict[str, set[str]] = {}
     blind: list[str] = []
     touched_lines: dict[str, set[int]] = {}
+    тронутые: set[str] = set()
     for row in diff.splitlines():
         if row.startswith("+++ b/"):
             current = row[len("+++ b/"):]
@@ -189,6 +245,7 @@ def affected() -> int:
         дерево = дерево_файла(current)
         if дерево is None:
             continue
+        тронутые.add(current)
         if "слепая-зона" not in дерево[1]:
             # Дерево объявлено, но покрытие его не видит: сценарий зовёт его подпроцессом.
             # Молча пропустить — значит ответить «правка ничего не задела», а это неправда.
@@ -224,6 +281,12 @@ def affected() -> int:
     if not hit and not blind and not вне_покрытия:
         корни = sorted(к for д in (_evidence.деревья() or {}).values() for к in д.get("корни") or [])
         print(f"  Правка не касается измеряемой зоны (мерятся {', '.join(корни)}) — прогонять нечего.")
+    задеты = {rel: (правок, строк) for rel, правок, строк in горячие() if rel in тронутые}
+    if задеты:
+        print(f"  ● горячая точка в правке ({len(задеты)}): правка здесь дороже средней")
+        for rel, (правок, строк) in sorted(задеты.items(), key=lambda кв: -кв[1][0]):
+            print(f"    {правок} правок · {строк} строк  {rel}")
+        print("    Это показ, а не отказ: сценарий и разбор сюда идут в первую очередь.")
     static_blind({(rel, name) for rel, lines in touched_lines.items()
                   for name, (first, last) in _functions(rel, classes=True).items()
                   if any(first <= n <= last for n in lines)})
@@ -456,6 +519,8 @@ def main() -> int:
     parser.add_argument("--check-routes", action="store_true")
     parser.add_argument("--affected", action="store_true")
     parser.add_argument("--blind", action="store_true")
+    parser.add_argument("--горячие", action="store_true",
+                        help="показ: где правка дороже средней (не отказ)")
     parser.add_argument("--bless", action="store_true")
     parser.add_argument("--почему", metavar="ПРИЧИНА", default="",
                         help="причина сдвига потолка — уедет в подпись журнала")
@@ -476,11 +541,14 @@ def main() -> int:
         return _verdict.close("рубежи потоков", check_routes(),
                               ".venv/bin/python scripts/guards/blast_radius.py --check-routes",
                               точный=False)
+    if args.горячие:
+        return показ_горячих()
     if args.blind:
         return _verdict.close("слепая зона", blind(),
                               ".venv/bin/python scripts/guards/blast_radius.py --blind",
                               точный=False)
-    if not any([args.build, args.query, args.changed, args.check_routes, args.affected, args.blind]):
+    if not any([args.build, args.query, args.changed, args.check_routes, args.affected,
+                args.blind, args.горячие]):
         parser.print_help()
     return 0
 
