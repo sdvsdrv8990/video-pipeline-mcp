@@ -68,6 +68,15 @@ if [ -n "$STOP" ]; then
     exit $?
 fi
 
+# Роль машины из config/install.yaml (её пишет install.sh). Флаги выше — переопределение.
+# server-конец туннеля (Xray/REALITY) ещё не построен — честный отказ, а не тихий запуск сервера.
+ROLE="$(python3 -c 'from core.deploy import role; print(role())' 2>/dev/null || echo local)"
+if [ "$ROLE" = "server" ]; then
+    echo "✗ роль server: серверный конец туннеля (Xray/REALITY) ещё не построен."
+    echo "  План 24, шаги 2–4: собери приёмник на VPS, тогда ./run.sh поднимет его. Здесь запускать нечего."
+    exit 2
+fi
+
 # Пара «без ключа + публичный URL» открывает сервер каждому, кто узнает адрес: периметр
 # (Origin/Host) и файрвол остаются, идентификации нет. Сам сервер про туннель не знает.
 if [ -n "$MCP_ALLOW_NO_AUTH" ] && [ -n "$TUNNEL" ]; then
