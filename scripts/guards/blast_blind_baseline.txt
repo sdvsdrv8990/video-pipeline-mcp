@@ -1,3 +1,4 @@
+core/deploy.py::role
 core/providers/img/diffusers_local.py::DiffusersLocalIMG.__init__
 core/providers/img/diffusers_local.py::DiffusersLocalIMG._call_kwargs
 core/providers/img/diffusers_local.py::DiffusersLocalIMG._gpu_rules
