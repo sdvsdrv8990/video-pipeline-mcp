@@ -99,6 +99,11 @@ else
     echo "  поставить: pip install -e '.[dev]' && pre-commit install"
 fi
 
+# Этап 2 — настройка (модели/провайдеры) меню, без команд. Только интерактивно (в CI пропускаем).
+if [ -t 0 ]; then
+    python3 scripts/configure.py || true
+fi
+
 echo ""
 echo "=== Установка завершена ==="
 echo "Для запуска сервера + туннеля одной командой: ./run.sh"
