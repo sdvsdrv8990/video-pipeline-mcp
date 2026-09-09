@@ -75,3 +75,6 @@ node_modules/
 # Стенд геометрии: отчёты и следы прогона — не исходник.
 test-results/
 playwright-report/
+
+# Роль машины пишется install.sh на месте — не коммитить (шаблон: config/install.example.yaml)
+config/install.yaml
