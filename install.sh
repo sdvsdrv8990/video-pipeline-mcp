@@ -3,107 +3,105 @@
 
 set -e
 
-echo "=== Установка MCP-сервера видеопайплайна ==="
+# Роль машины (до .venv). Неинтерактивно: VPM_INSTALL_CHOICE=local|server|tunnel-remote|tunnel-here
+python3 scripts/installer_tui.py || exit 1
+MCP="$(sed -n 's/^mcp: *//p' config/install.yaml)"
+TUNNEL_END="$(sed -n 's/^tunnel: *//p' config/install.yaml)"
 
-# Режим установки (до .venv). Неинтерактивно: VPM_INSTALL_ROLE=local|server|both ./install.sh
-source scripts/install_role.sh
+echo ""
+echo "=== Установка Video Pipeline MCP ==="
 
-if [ "$ROLE" = "server" ]; then
-    echo "Роль server: локальная установка сервера MCP не нужна — машине нужен только серверный конец туннеля."
-    echo "Серверный конец (Xray/REALITY, рядом с VPN) ставит отдельный скрипт на VPS — план 24, ещё не построен."
-    echo "Роль записана; здесь ставить больше нечего."
-    exit 0
+if [ "$MCP" = "true" ]; then
+    # 1. Создание виртуального окружения
+    echo "Создание .venv..."
+    python3 -m venv .venv
+
+    # 2. Активация окружения
+    echo "Активация .venv..."
+    source .venv/bin/activate
+
+    # 3. Обновление pip
+    echo "Обновление pip..."
+    pip install --upgrade pip
+
+    # 4. Установка зависимостей
+    echo "Установка зависимостей из pyproject.toml..."
+    pip install -e .
+
+    # 5. Проверка FFmpeg
+    echo "Проверка FFmpeg..."
+    if command -v ffmpeg &> /dev/null; then
+        echo "✓ FFmpeg: $(ffmpeg -version | head -n 1)"
+    else
+        echo "✗ FFmpeg не найден в PATH. Установите: sudo apt install ffmpeg"
+    fi
+
+    # 6. Проверка stable-ts
+    echo "Проверка stable-ts..."
+    python3 -c "import stable_whisper; print('✓ stable-ts')" 2>/dev/null \
+        || echo "  stable-ts будет доступен после установки PyTorch"
+
+    # 7. Локальный инференс картинок (удаление фона, апскейл) — граф ONNX.
+    # Веса сюда НЕ тянутся: какую модель ставить, решает владелец из живого каталога.
+    echo "Проверка onnxruntime..."
+    if python3 -c "import onnxruntime" 2>/dev/null; then
+        echo "✓ onnxruntime (модели ставятся в настройках)"
+    else
+        echo "✗ onnxruntime не поднялся — удаление фона и апскейл откажут честно"
+    fi
+
+    # 8. Дверь коммита. Без неё немой промах уезжает в историю, а её отсутствие выглядит чистым
+    # проходом: локально не проверяет никто, CI ловит уже после push.
+    echo "Установка двери коммита (pre-commit)..."
+    if python3 -c "import pre_commit" 2>/dev/null && pre-commit install; then
+        echo "✓ дверь коммита"
+    else
+        echo "  дверь коммита не поставлена: pip install -e '.[dev]' && pre-commit install"
+    fi
 fi
 
-# 1. Создание виртуального окружения
-echo "Создание .venv..."
-python3 -m venv .venv
-
-# 2. Активация окружения
-echo "Активация .venv..."
-source .venv/bin/activate
-
-# 3. Обновление pip
-echo "Обновление pip..."
-pip install --upgrade pip
-
-# 4. Установка зависимостей
-echo "Установка зависимостей из pyproject.toml..."
-pip install -e .
-
-# 5. Проверка FFmpeg
-echo "Проверка FFmpeg..."
-if command -v ffmpeg &> /dev/null; then
-    echo "FFmpeg найден: $(ffmpeg -version | head -n 1)"
-else
-    echo "ВНИМАНИЕ: FFmpeg не найден в PATH"
-    echo "Установите FFmpeg: sudo apt install ffmpeg"
-fi
-
-# 6. Проверка stable-ts
-echo "Проверка stable-ts..."
-python3 -c "import stable_whisper; print('stable-ts OK')" 2>/dev/null || echo "stable-ts будет доступен после установки PyTorch"
-
-# 7. Установка cloudflared (туннель к Claude AI Web)
-echo "Проверка cloudflared..."
-if command -v cloudflared &> /dev/null; then
-    echo "cloudflared найден: $(cloudflared --version 2>/dev/null | head -n 1)"
-elif [ -x "./bin/cloudflared" ]; then
-    echo "cloudflared найден локально: ./bin/cloudflared"
-else
-    echo "cloudflared не найден — скачиваю статический бинарь в ./bin/ ..."
-    mkdir -p bin
-    ARCH="$(uname -m)"
-    case "$ARCH" in
-        x86_64|amd64) CF_ARCH="amd64" ;;
-        aarch64|arm64) CF_ARCH="arm64" ;;
-        *) CF_ARCH="" ;;
-    esac
-    if [ -n "$CF_ARCH" ]; then
-        CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}"
-        if curl -fsSL "$CF_URL" -o bin/cloudflared 2>/dev/null || wget -q "$CF_URL" -O bin/cloudflared 2>/dev/null; then
-            chmod +x bin/cloudflared
-            echo "cloudflared установлен: ./bin/cloudflared ($(./bin/cloudflared --version 2>/dev/null | head -n 1))"
+# 9. Клиентский конец туннеля — cloudflared.
+case "$TUNNEL_END" in
+    client|both)
+        echo "Проверка cloudflared..."
+        if command -v cloudflared &> /dev/null; then
+            echo "✓ cloudflared: $(cloudflared --version 2>/dev/null | head -n 1)"
+        elif [ -x "./bin/cloudflared" ]; then
+            echo "✓ cloudflared: ./bin/cloudflared"
         else
-            echo "ВНИМАНИЕ: не удалось скачать cloudflared. Установите вручную:"
-            echo "  https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
+            echo "Загрузка cloudflared..."
+            mkdir -p bin
+            case "$(uname -m)" in
+                x86_64|amd64) CF_ARCH="amd64" ;;
+                aarch64|arm64) CF_ARCH="arm64" ;;
+                *) CF_ARCH="" ;;
+            esac
+            CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}"
+            if [ -n "$CF_ARCH" ] && { curl -fsSL "$CF_URL" -o bin/cloudflared 2>/dev/null \
+                                      || wget -q "$CF_URL" -O bin/cloudflared 2>/dev/null; }; then
+                chmod +x bin/cloudflared
+                echo "✓ cloudflared: ./bin/cloudflared"
+            else
+                echo "✗ не удалось загрузить cloudflared — установите его вручную"
+            fi
         fi
-    else
-        echo "ВНИМАНИЕ: неизвестная архитектура '$ARCH'. Установите cloudflared вручную."
-    fi
-fi
+        ;;
+esac
 
-# 8. Локальный инференс картинок (удаление фона, апскейл) — граф ONNX
-# Веса сюда НЕ тянутся: какую модель ставить, решает владелец из живого каталога, а не этот файл.
-echo "Проверка onnxruntime (удаление фона, апскейл)..."
-if python3 -c "import onnxruntime" 2>/dev/null; then
-    echo "onnxruntime OK — модели ставятся отдельно:"
-    echo "  python scripts/models.py local --kind bg_removal   # что доступно (с описанием)"
-    echo "  python scripts/models.py install <id> --kind bg_removal"
-    echo "  то же для --kind upscale; из Claude — media_models / media_model_install"
-else
-    echo "ВНИМАНИЕ: onnxruntime не поднялся — удаление фона и апскейл откажут честно (LOCAL_INFERENCE_FAILED)"
-fi
-
-# 9. Дверь коммита. Без неё немой промах уезжает в историю, а её отсутствие выглядит чистым
-# проходом: локально не проверяет никто, CI ловит уже после push.
-echo "Установка двери коммита (pre-commit)..."
-if python3 -c "import pre_commit" 2>/dev/null; then
-    if pre-commit install; then
-        echo "дверь коммита установлена"
-    else
-        echo "ВНИМАНИЕ: pre-commit install не прошёл — дверь коммита НЕ стоит"
-    fi
-else
-    echo "ВНИМАНИЕ: pre-commit живёт в группе dev — дверь коммита НЕ поставлена."
-    echo "  поставить: pip install -e '.[dev]' && pre-commit install"
-fi
-
-# Этап 2 — настройка (модели/провайдеры) меню, без команд. Только интерактивно (в CI пропускаем).
-if [ -t 0 ]; then
-    python3 scripts/configure.py || true
-fi
+# 10. Серверный конец туннеля ставится отдельным шагом: ему нужен адрес машины и её пароль,
+# который через этот код не проходит (его спрашивает сам ssh).
+case "$TUNNEL_END" in
+    server|both)
+        echo ""
+        echo "Серверный конец туннеля настраивается отдельно:"
+        echo "  ./scripts/deploy_tunnel_server.sh --host <адрес сервера>"
+        echo "  (без --go печатает план и ничего не выполняет)"
+        ;;
+esac
 
 echo ""
 echo "=== Установка завершена ==="
-echo "Для запуска сервера + туннеля одной командой: ./run.sh"
+if [ "$MCP" = "true" ]; then
+    echo "Запуск сервера и туннеля одной командой: ./run.sh"
+    echo "Настройки (модели, провайдеры):        python3 scripts/configure.py"
+fi

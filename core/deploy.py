@@ -1,14 +1,17 @@
 """
-core/deploy.py — роль машины из config/install.yaml: что поднимает ./run.sh.
+core/deploy.py — что установлено на этой машине: читатель config/install.yaml.
 
 ## Назначение
-Одно место читает объявленный режим установки (local/server/both). install.sh пишет файл
-голым bash (venv ещё нет), run.sh читает роль отсюда.
+Одно место читает объявление установщика. Объявляются ДВА независимых факта — стоит ли здесь
+сервер MCP и какой конец туннеля здесь работает. Одной ролью они не выражаются: «сервер MCP +
+серверный конец» в прежнем словаре `local|server|both` эквивалента не имел вовсе.
 
 ## Границы
 - секретов тут не бывает: данные сервера/домен/ключи — config/deploy.local.yaml, вне git;
-- неизвестная роль — код реестра (SCHEMA_INVALID), а не тихий дефолт; нет файла — роль
-  `local` (текущее поведение по умолчанию): отсутствие выбора это не поломка.
+- старый ключ `role:` переводится в эту пару, а не живёт рядом с ней: два списка на одну правду
+  расходятся молча;
+- неизвестное значение — код реестра (SCHEMA_INVALID), а не тихий дефолт; нет файла — рабочая
+  машина (сервер MCP + клиентский конец): отсутствие выбора это не поломка.
 """
 
 from pathlib import Path
@@ -16,24 +19,56 @@ from pathlib import Path
 from core.contracts.errors import ContractError
 from core.declaration import Declaration
 
-ROLES = ("local", "server", "both")
+ENDS = ("client", "server", "both", "none")
+
+# Прежний словарь ролей: только вход перевода, читателей у него больше нет.
+_LEGACY = {"local": (True, "client"), "server": (False, "server"), "both": (True, "both")}
+
 _CONFIG = Path(__file__).resolve().parents[1] / "config" / "install.yaml"
+_DEFAULT = (True, "client")
 
 
 class DeployError(ContractError):
-    """Отказ объявления режима установки (маппится обёрткой в ErrorDetail)."""
+    """Отказ объявления установки (маппится обёрткой в ErrorDetail)."""
 
 
-def role(path: str | Path = _CONFIG) -> str:
-    """Объявленная роль машины. Нет файла — `local`; роль вне ROLES — громкий отказ."""
+def _fail(что: str, причина: str) -> DeployError:
+    return DeployError("SCHEMA_INVALID", что, reason=причина)
+
+
+def install(path: str | Path = _CONFIG) -> tuple[bool, str]:
+    """Пара «стоит ли MCP, какой конец туннеля». Нет файла — рабочая машина."""
     if not Path(path).exists():
-        return "local"
-    decl = Declaration(
-        path, DeployError, "режима установки",
-        "Запусти ./install.sh — он объявит роль машины в config/install.yaml.")
-    value = decl.need("role")
-    if value not in ROLES:
-        raise DeployError(
-            "SCHEMA_INVALID", f"В install.yaml роль `{value}` неизвестна.",
-            reason=f"Допустимые роли: {', '.join(ROLES)}.")
-    return str(value)
+        return _DEFAULT
+    data = Declaration(
+        path, DeployError, "установки",
+        "Запусти ./install.sh — он объявит, что стоит на этой машине.").data
+
+    if "role" in data and "mcp" not in data:
+        роль = data["role"]
+        if роль not in _LEGACY:
+            raise _fail(f"В install.yaml роль `{роль}` неизвестна.",
+                        f"Допустимые роли: {', '.join(_LEGACY)}.")
+        return _LEGACY[роль]
+
+    if "mcp" not in data or "tunnel" not in data:
+        raise _fail("В install.yaml нет объявления установки.",
+                    f"Нужны ключи `mcp` (да/нет) и `tunnel` ({'|'.join(ENDS)}). "
+                    "Перезапусти ./install.sh.")
+    mcp_, конец = data["mcp"], data["tunnel"]
+    if not isinstance(mcp_, bool):
+        raise _fail(f"В install.yaml `mcp: {mcp_}` — не да/нет.", "Допустимо true или false.")
+    if конец not in ENDS:
+        raise _fail(f"В install.yaml конец туннеля `{конец}` неизвестен.",
+                    f"Допустимые концы: {', '.join(ENDS)}.")
+    return bool(mcp_), str(конец)
+
+
+def mcp(path: str | Path = _CONFIG) -> bool:
+    """Объявлен ли на этой машине сервер MCP."""
+    return install(path)[0]
+
+
+def tunnel_end(path: str | Path = _CONFIG) -> str:
+    """Какой конец туннеля работает на этой машине."""
+    return install(path)[1]

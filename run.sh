@@ -68,12 +68,13 @@ if [ -n "$STOP" ]; then
     exit $?
 fi
 
-# Роль машины из config/install.yaml (её пишет install.sh). Флаги выше — переопределение.
-# server-конец туннеля (Xray/REALITY) ещё не построен — честный отказ, а не тихий запуск сервера.
-ROLE="$(python3 -c 'from core.deploy import role; print(role())' 2>/dev/null || echo local)"
-if [ "$ROLE" = "server" ]; then
-    echo "✗ роль server: серверный конец туннеля (Xray/REALITY) ещё не построен."
-    echo "  План 24, шаги 2–4: собери приёмник на VPS, тогда ./run.sh поднимет его. Здесь запускать нечего."
+# Что объявлено установщиком в config/install.yaml. Флаги выше — переопределение.
+УСТАНОВКА="$(python3 -c 'from core.deploy import install; m,t=install(); print(m,t)' 2>/dev/null || echo "True client")"
+MCP_STOIT="${УСТАНОВКА% *}"
+TUNNEL_END="${УСТАНОВКА#* }"
+if [ "$MCP_STOIT" != "True" ]; then
+    echo "✗ на этой машине объявлен только туннель ($TUNNEL_END), сервера MCP здесь нет."
+    echo "  Серверный конец: ./scripts/deploy_tunnel_server.sh --host <адрес сервера>"
     exit 2
 fi
 
