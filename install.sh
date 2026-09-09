@@ -101,7 +101,17 @@ esac
 
 echo ""
 echo "=== Установка завершена ==="
+
+# Меню, а не автозапуск настроек: настройки доступны, но обязательным шагом установки не являются.
+# Без терминала (CI) меню не поднимается — там же печатается отчёт быстрой проверки.
+# Роль без MCP окружения не ставит, и меню тогда нечем поднять: печатаем команды, а не падаем.
 if [ "$MCP" = "true" ]; then
-    echo "Запуск сервера и туннеля одной командой: ./run.sh"
-    echo "Настройки (модели, провайдеры):        python3 scripts/configure.py"
+    PY=".venv/bin/python"
+else
+    PY="python3"
+fi
+if "$PY" -c "import yaml, httpx" 2>/dev/null; then
+    "$PY" scripts/control_center.py
+else
+    echo "Проверка туннеля:  $PY scripts/control_center.py  (нужны пакеты yaml и httpx)"
 fi
