@@ -5,6 +5,16 @@ set -e
 
 echo "=== Установка MCP-сервера видеопайплайна ==="
 
+# Режим установки (до .venv). Неинтерактивно: VPM_INSTALL_ROLE=local|server|both ./install.sh
+source scripts/install_role.sh
+
+if [ "$ROLE" = "server" ]; then
+    echo "Роль server: локальная установка сервера MCP не нужна — машине нужен только серверный конец туннеля."
+    echo "Серверный конец (Xray/REALITY, рядом с VPN) ставит отдельный скрипт на VPS — план 24, ещё не построен."
+    echo "Роль записана; здесь ставить больше нечего."
+    exit 0
+fi
+
 # 1. Создание виртуального окружения
 echo "Создание .venv..."
 python3 -m venv .venv
