@@ -93,6 +93,13 @@ def main() -> int:
     build = {bare(s) for s in (manifest.get("build-system") or {}).get("requires", [])}
 
     mapping = {mod: {normal(d) for d in dists} for mod, dists in packages_distributions().items()}
+    # Объявленные модули идут ПОВЕРХ среды: необязательная группа (модели, ускоритель) не стоит
+    # ни здесь, ни в CI, и связать её импорт с дистрибутивом иначе нечем. Объявление НЕ отменяет
+    # установленное — оно добавляет то, чего среда не знает.
+    borrowed = (manifest.get("tool") or {}).get("vpm") or {}
+    for dist, modules in (borrowed.get("provides_modules") or {}).items():
+        for module in modules:
+            mapping.setdefault(module, set()).add(normal(dist))
     own, runners = own_names(), runner_text()
     third = {m: f for m, f in imported().items() if m not in own and m not in sys.stdlib_module_names}
 
@@ -125,10 +132,12 @@ def main() -> int:
 
     print("§3 заимствования у проекта объявлены и не устарели")
     runtime = {bare(s) for s in project.get("dependencies", [])}
-    borrowed = (manifest.get("tool") or {}).get("vpm") or {}
-    for zone, declared_names in (("tests", borrowed.get("borrowed_by_tests") or []),
-                                 ("scripts", borrowed.get("borrowed_by_scripts") or [])):
-        prefix = f"{zone}/"
+    for zone, prefix, declared_names in (
+            ("tests", "tests/", borrowed.get("borrowed_by_tests") or []),
+            ("scripts", "scripts/", borrowed.get("borrowed_by_scripts") or []),
+            # Путь зоны объявлен рядом с именем: у хуков он не выводится из имени, и правило
+            # «имя + слэш» молча дало бы пустую зону, то есть зелёное на любом заимствовании.
+            ("hooks", ".claude/hooks/", borrowed.get("borrowed_by_hooks") or [])):
         actual = {d for m, files in third.items() for d in mapping.get(m, set())
                   if d in runtime and any(f.startswith(prefix) for f in files)}
         said = {normal(n) for n in declared_names}

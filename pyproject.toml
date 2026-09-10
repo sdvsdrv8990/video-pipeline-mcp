@@ -101,16 +101,22 @@ local = [
     # Требование МОДЕЛИ, а не diffusers: model_index.json объявляет
     # text_encoder = [transformers, CLIPTextModel]. Без него генерация картинки не поднимется.
     "transformers>=4.44",
-    "accelerate>=1.0",
-    # torch — здесь, а не в базе: оба обращения к нему ленивые и под `except`
-    # (core/providers/pool.py — освобождение памяти карты, core/providers/img/diffusers_local.py),
-    # и второе само отсылает «поставь группу local». В базе он делал обязательными ~12 ГБ ради
-    # необязательной возможности; сервер без него поднимается и честно отвечает
-    # LOCAL_INFERENCE_FAILED. safetensors не объявляем: он транзитивно у diffusers/transformers.
-    "torch>=2.13.0",
     # Распознавание речи исполняет тот же transformers, что и картинки: отдельной библиотеки
     # для этого не нужно. Звук декодирует ffmpeg — СИСТЕМНЫЙ бинарь, не пакет pip (как
     # cloudflared): его отсутствие адаптер называет отдельным отказом.
+    # safetensors не объявляем: он транзитивно у diffusers/transformers.
+    # torch и accelerate ЗДЕСЬ НЕ ОБЪЯВЛЕНЫ, хотя нужны диффузии и распознаванию речи, — замер
+    # 2026-09-10: с ними `pip install -e ".[local]"` тянул 20+ колёс nvidia-*/cuda-* (~12 ГБ)
+    # CUDA-сборки на машину с картой AMD. Требует их только accelerate: diffusers, transformers
+    # и piper-tts к torch не обращаются при установке вовсе. Ускоритель выбирает МАШИНА — группой
+    # ниже, с точным пином локальной версии; голое `torch` с PyPI на Linux означает CUDA.
+]
+# Ускоритель без карты: колесо CPU лежит на своём индексе и отличается от CUDA-сборки ТОЛЬКО
+# локальной версией (`+cpu`), номер у них общий — поэтому пин, а не пол.
+#   .venv/bin/pip install -e ".[local,cpu]" --extra-index-url https://download.pytorch.org/whl/cpu
+cpu = [
+    "torch==2.13.0+cpu",
+    "accelerate>=1.0",
 ]
 # Расчёт на видеокарте AMD. Пин ЛОКАЛЬНОЙ версии (`+rocm7.1`) — не придирчивость: колесо с PyPI
 # собрано под CUDA и на amdgpu карту не увидит, а номер версии у них одинаковый. Только пин
@@ -120,9 +126,19 @@ local = [
 # Системный ROCm НЕ нужен — библиотеки лежат внутри колеса,
 # нужен лишь драйвер ядра amdgpu и доступ к /dev/kfd.
 #   .venv/bin/pip install -e ".[local,gpu-amd]" --extra-index-url https://download.pytorch.org/whl/rocm7.1
-# Карта другого вендора — своя группа с тем же смыслом (nvidia: `+cu…` с индекса cuXXX).
+#   .venv/bin/pip install -e ".[local,gpu-nvidia]"        # индекс не нужен: PyPI и есть CUDA
+gpu-nvidia = [
+    # Пина локальной версии здесь нет намеренно: колесо с PyPI под Linux УЖЕ собрано под CUDA,
+    # отдельного индекса и суффикса ему не нужно — именно этой сборкой `.[local]` и тянул 12 ГБ
+    # на машину с картой AMD, пока torch стоял в группе моделей.
+    "torch>=2.13.0",
+    "accelerate>=1.0",
+]
 gpu-amd = [
     "torch==2.13.0+rocm7.1",
+    # accelerate живёт рядом с torch, а не в `local`: он ЕДИНСТВЕННЫЙ из группы моделей, кто
+    # требует torch метаданными, и в `local` он тянул за собой чужую сборку.
+    "accelerate>=1.0",
     # Ядро triton. Объявлено ЯВНО, потому что метаданные врут: `triton-rocm` (его тянет torch)
     # содержит только `triton/backends/amd/**` — плагин бэкенда — и не объявляет зависимости от
     # ядра, хотя `torch._dynamo` обращается к `triton.language`. Два дистрибутива делят одно имя
@@ -145,7 +161,16 @@ Repository = "https://github.com/sdvsdrv8990/video-pipeline-mcp"
 # ломаешь не только сервер, и узнать об этом надо ДО, а не по красному гейту. Обе стороны держит
 # `tests/quick/test_dependencies.py`: незаявленное заимствование и заявленное, которого уже нет.
 borrowed_by_tests = ["aiohttp", "httpx", "huggingface-hub", "jsonschema", "openpyxl", "pillow", "pyyaml"]
+# Модуль, который даёт дистрибутив, — ОБЪЯВЛЕНИЕМ. Связать `import piper` с `piper-tts` можно
+# только через установленный пакет, а необязательная группа (модели, ускоритель) не стоит ни
+# здесь, ни в CI: там ставится ровно `.[dev]`. Без этой строки «не проверено» превращалось в
+# «читателя нет» — обвинение, выведенное из отсутствия улики.
+provides_modules = {"piper-tts" = ["piper"], "diffusers" = ["diffusers"], "transformers" = ["transformers"], "torch" = ["torch"], "accelerate" = ["accelerate"], "triton" = ["triton"]}
 borrowed_by_scripts = ["pyyaml"]
+# Хуки — третья зона-заёмщик наравне с тестами и скриптами: они блокируют запись, и снятие
+# пакета из `dependencies` ломает не только сервер. Молчали об этом только потому, что зоны в
+# списке было две.
+borrowed_by_hooks = ["pyyaml"]
 
 [tool.setuptools]
 py-modules = ["server"]

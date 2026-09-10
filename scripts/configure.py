@@ -22,9 +22,67 @@ MODELS = ROOT / "scripts" / "models.py"
 PROVIDERS = ROOT / "config" / "providers.yaml"
 
 
-def _kinds() -> list[str]:
+def _local() -> dict:
     data = yaml.safe_load(PROVIDERS.read_text(encoding="utf-8")) or {}
-    return list(((data.get("local") or {}).get("sources") or {}).keys())
+    return data.get("local") or {}
+
+
+def _kinds() -> list[str]:
+    return list((_local().get("sources") or {}).keys())
+
+
+def _среда_расчёта() -> None:
+    """Поставить torch под ТУ карту, что найдена на машине, а не под чужую.
+
+    Карта определяется без прав root (`core.providers.hardware`), а чем её ставить — объявлено
+    рядом с самой картой (`config/providers.yaml → local.gpu.drivers[<драйвер>].extras/index`).
+    Без этого шага веса лягут, а расчёт откажет уже при вызове: колесо torch с PyPI под Linux
+    собрано под CUDA и карту AMD не увидит, различает сборки только локальная версия.
+    """
+    sys.path.insert(0, str(ROOT))
+    from core.providers.hardware import probe
+
+    правила = _local().get("gpu") or {}
+    драйверы = правила.get("drivers") or {}
+    железо = probe(ROOT, правила)
+    найдено = None
+    for карта in железо["gpu"]:
+        правило = драйверы.get(карта["driver"]) or {}
+        if правило.get("extras"):
+            найдено = (f"{карта['name']} [{карта['driver']}]", правило)
+            break
+    if найдено is None:
+        найдено = ("видеокарта не найдена — расчёт на процессоре", правила.get("no_gpu") or {})
+    что, правило = найдено
+    print(f"\nНа этой машине: {что}")
+    имена = sorted({str(п.get("extras")) for п in list(драйверы.values()) + [правила.get("no_gpu") or {}]
+                    if п.get("extras")})
+    idx = _pick("Ставить среду расчёта:", [f"по найденному — {правило.get('extras')}",
+                                           "выбрать вручную", ])
+    if idx is None:
+        return
+    if idx == 1:
+        ручной = _pick("Какая среда:", имена)
+        if ручной is None:
+            return
+        имя = имена[ручной]
+        правило = next((п for п in list(драйверы.values()) + [правила.get("no_gpu") or {}]
+                        if п.get("extras") == имя), {})
+    _поставить(str(правило.get("extras") or ""), str(правило.get("index") or ""))
+
+
+def _поставить(extras: str, index: str) -> None:
+    """Одна команда установки, напечатанная ДО запуска: её же можно повторить руками."""
+    if not extras:
+        print("Чем ставить эту карту — не объявлено (config/providers.yaml → local.gpu).")
+        return
+    команда = [sys.executable, "-m", "pip", "install", "-e", f".[local,{extras}]"]
+    if index:
+        команда += ["--extra-index-url", index]
+    print("  " + " ".join(команда))
+    готово = subprocess.run(команда, cwd=ROOT, check=False)
+    print("✓ среда расчёта поставлена" if готово.returncode == 0
+          else f"✗ установка вернула {готово.returncode} — команда выше повторяема руками")
 
 
 def _pick(prompt: str, options: list[str]) -> int | None:
@@ -76,6 +134,7 @@ def _online() -> None:
 
 def main() -> int:
     actions = [
+        ("Среда расчёта — torch под карту этой машины", _среда_расчёта),
         ("Локальная модель — поставить", _models),
         ("Онлайн-провайдер — как подключить ключ", _online),
     ]

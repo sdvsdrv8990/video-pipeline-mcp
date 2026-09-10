@@ -36,11 +36,6 @@ if [ "$MCP" = "true" ]; then
         echo "✗ FFmpeg не найден в PATH. Установите: sudo apt install ffmpeg"
     fi
 
-    # 6. Проверка stable-ts
-    echo "Проверка stable-ts..."
-    python3 -c "import stable_whisper; print('✓ stable-ts')" 2>/dev/null \
-        || echo "  stable-ts будет доступен после установки PyTorch"
-
     # 7. Локальный инференс картинок (удаление фона, апскейл) — граф ONNX.
     # Веса сюда НЕ тянутся: какую модель ставить, решает владелец из живого каталога.
     echo "Проверка onnxruntime..."

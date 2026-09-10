@@ -91,7 +91,7 @@ LOCAL_INFERENCE_FAILED:
   class: server_recoverable
   message_template: "Сбой локального инференса."
   recovery:
-    reason: "Деградация модели (large→medium→base) или проверка ресурсов; при исчерпании — человек."
+    reason: "Деградация модели (large→medium→base) или проверка ресурсов; при исчерпании — человек. Среда расчёта ставится под КАРТУ машины: python3 scripts/configure.py → «Среда расчёта»; голое `pip install -e \".[local]\"` даёт библиотеки моделей БЕЗ torch."
 
 # ═══ Аутентификация ═══
 

@@ -468,11 +468,21 @@ local:
     # карты в вердикт НЕ идёт, и рядом сказано, какой сборкой это чинится.
     # `torch_device` — как устройство зовётся в самом torch. У ROCm-сборки оно то же `cuda`:
     # отдельного имени в torch нет, различает только сборка. Пусто = считать на этом нечем.
+    # `extras` и `index` — чем ставится СРЕДА РАСЧЁТА под эту карту. Объявлением, а не ветками в
+    # установщике: колесо с PyPI на Linux означает CUDA, поэтому у AMD и у процессора свой индекс
+    # и точный пин локальной версии, а различить их по номеру версии нельзя — он общий.
     drivers:
-      amdgpu: {runtime: ROCm, torch_tag: rocm, torch_device: cuda}
-      nvidia: {runtime: CUDA, torch_tag: cu, torch_device: cuda}
-      i915:   {runtime: "", torch_tag: "", torch_device: ""}   # встроенная Intel: делит ОЗУ
-      xe:     {runtime: "", torch_tag: "", torch_device: ""}
+      amdgpu: {runtime: ROCm, torch_tag: rocm, torch_device: cuda,
+               extras: gpu-amd, index: "https://download.pytorch.org/whl/rocm7.1"}
+      nvidia: {runtime: CUDA, torch_tag: cu, torch_device: cuda,
+               extras: gpu-nvidia, index: ""}
+      i915:   {runtime: "", torch_tag: "", torch_device: "",     # встроенная Intel: делит ОЗУ
+               extras: cpu, index: "https://download.pytorch.org/whl/cpu"}
+      xe:     {runtime: "", torch_tag: "", torch_device: "",
+               extras: cpu, index: "https://download.pytorch.org/whl/cpu"}
+    # Карты нет вовсе либо драйвер незнаком — считаем на процессоре. Отсутствие ответа не повод
+    # молча ничего не поставить: тогда веса лягут, а расчёт откажет уже при вызове.
+    no_gpu: {extras: cpu, index: "https://download.pytorch.org/whl/cpu"}
     # Разрядность по месту расчёта: на карте fp16 вдвое дешевле по памяти и быстрее, на
     # процессоре половинная точность местами не поддержана вовсе — там fp32.
     dtype: {gpu: float16, cpu: float32}

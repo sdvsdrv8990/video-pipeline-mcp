@@ -198,6 +198,7 @@ except ProviderError as e:
 print("== 9. Инструмент: кто исполняет и какой моделью (шаг 2) ==")
 import asyncio as _aio
 import json as _json
+import importlib.util as _ilu
 from core.engine import Engine as _Eng
 from core.ids import IDGenerator as _IDG
 from core.state import StateManager as _SM
@@ -399,7 +400,12 @@ for _mod in ("core/providers/tts/piper_local.py", "core/providers/img/diffusers_
        f"{Path(_mod).name}: подкаталог весов не зашит в код")
 
 _tts_model = _reg.models_dir / "tts" / "ru_RU-dmitri-medium.onnx"
-_have_tts = _tts_model.is_file()
+# Модель — это ДВЕ разные вещи: веса на диске и библиотека, которая их исполняет. Веса тянет
+# `models.py`, библиотеку — необязательная группа манифеста, и она не стоит ни в CI, ни на
+# машине без выбранной среды расчёта. Проверять только веса значит требовать живого прогона
+# там, где исполнять его нечем, — и красить набор за отсутствие необязательного.
+_have_lib = _ilu.find_spec("piper") is not None
+_have_tts = _tts_model.is_file() and _have_lib
 _row_local = {"resource_type": "tts_characters", "provider": "Local_piper", "fallback_provider": "",
               "daily_limit": -1, "current_usage": 0, "warning_threshold": -1,
               "model": "ru_RU-dmitri-medium", "response_format": "wav", "speed": 1.0,
@@ -423,7 +429,8 @@ if _have_tts:
     ok(_g.facts[0].type == "MediaGenerated" and _g.facts[0].data["provider"] == "Local_piper",
        "исполнение приходит фактом контракта: кто исполнил и чем")
 else:
-    print("  ⚠ веса локальной озвучки не вытянуты (scripts/models.py pull) — живой прогон пропущен")
+    _чего = "весов" if not _tts_model.is_file() else "библиотеки piper (среда расчёта не ставилась)"
+    print(f"  ⚠ живой прогон локальной озвучки пропущен: нет {_чего}")
 
 # Имя модели — данные, которые правит ИИ: путь наружу не читается.
 (_ws / "v" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
@@ -481,7 +488,11 @@ from core.providers.hardware import probe as _probe
 _gpu_decl = (yaml.safe_load(CFG.read_text(encoding="utf-8"))["local"] or {}).get("gpu") or {}
 _img_entry = next((e for e in _MCat(CFG, _reg.models_dir).installed()
                    if e["kind"] == "image" and e["present"]), None)
-if _img_entry:
+# То же правило, что у озвучки: веса без среды расчёта живым прогоном не проверяются. `torch`
+# приезжает группой ускорителя под КАРТУ машины, и на дереве без него набор обязан пропускать
+# прогон с причиной, а не краснеть за отсутствие необязательного.
+_img_lib = _ilu.find_spec("torch") is not None and _ilu.find_spec("diffusers") is not None
+if _img_entry and _img_lib:
     (_ws / "i").mkdir()
     (_ws / "i" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
         "I1": {"resource_type": "image_generations", "provider": "Local_diffusers",
@@ -525,7 +536,8 @@ if _img_entry:
     ok(_json.loads((_ws / "i" / "read.json").read_text())["RESOURCE_LIMITS"]["rows"]["I1"]["current_usage"] == 1,
        "расход картинки меряется файлами, а не символами — единица из строки канала")
 else:
-    print("  ⚠ веса локальной генерации картинок не вытянуты — живой прогон пропущен")
+    _нет = "весов" if not _img_entry else "среды расчёта (torch/diffusers под карту машины)"
+    print(f"  ⚠ живой прогон локальной генерации картинок пропущен: нет {_нет}")
 
 print("== 12b. Асинхронный провайдер: цикл прозвонки живёт ВНУТРИ вызова ==")
 import types as _types
