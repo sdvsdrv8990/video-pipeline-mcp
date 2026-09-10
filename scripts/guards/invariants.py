@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _verdict                                   # noqa: E402  общий хвост суда
 from findings_count import scan as scan_registry  # noqa: E402  разбор реестра — один на проект
+from what_if import ПОЙМАНА, мутации  # noqa: E402  разбор реестра мутаций — тоже один
 
 SUBJECTS_DECL = ("scripts", "guards", "acceptance_subjects.yaml")
 MEMORY_SIZE_CEILING = Path(__file__).with_name("memory_size_ceiling.txt")
@@ -2698,6 +2699,19 @@ def hook_false_unpinned(root: Path = ROOT) -> list[str]:
 
 
 ЗАМЫСЛОВ_В_ОКНЕ = 10
+
+
+def mutation_without_catch(root: Path = ROOT) -> list[str]:
+    """Мутация объявлена в реестре, а улики поимки у неё нет: её не добивает ни один набор.
+
+    Урок «мутация выжила = тест не добирается до механизма» держался словами и был переплачен
+    ещё раз 2026-09-10: фикстура нового набора не воспроизводила условие, и мутация выжила
+    молча. Объявленная непойманной мутация — честная слепая зона, но она обязана СЧИТАТЬСЯ:
+    иначе её забывают ровно так же, как забывают урок без механизма.
+    """
+    return [f"tests/CATALOG.md: мутация {номер} объявлена, а улики поимки нет — "
+            f"её не добивает ни один набор: {тело.strip()[:70]}"
+            for номер, тело in sorted(мутации(root).items()) if ПОЙМАНА not in тело]
 
 
 def intent_after_code(root: Path = ROOT) -> list[str]:
