@@ -90,7 +90,11 @@ def зона_чиста(root: Path = ROOT) -> bool:
                                cwd=str(root), capture_output=True, text=True, timeout=20)
     except (OSError, subprocess.SubprocessError):
         return True                       # улики нет — не обвиняем
-    return not вывод.stdout.strip()
+    # Дом остатков лежит В судимом дереве, но он журнал, а не код: без этой строки сама
+    # дисциплина отравляла следующий замысел — записал остаток, и зона грязная, хотя не
+    # написано ни строчки кода.
+    дом = "/".join(TAILS)
+    return not [п for п in вывод.stdout.split() if п != дом]
 
 
 def sign(kind: str, role: str, what: str, *, intent: str = "", expected: str = "",

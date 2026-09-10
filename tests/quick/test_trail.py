@@ -399,6 +399,32 @@ for _файл in (_дерево / "tests" / ".journal").glob("stamps-*.jsonl"):
 ok([x["key"] for x in _stamp.tails(_дерево)] == [] and _дом.exists(),
    "след дня снесён целиком — дом на месте: ровно это и значит «переживёт чистку»")
 
+import shutil  # noqa: E402  чистка временного дерева нужна только здесь
+import subprocess  # noqa: E402  зона_чиста спрашивает git — дереву нужен настоящий git
+
+print("\n== запись остатка НЕ делает зону грязной: дом остатков — журнал, а не код ==")
+_гит = Path(tempfile.mkdtemp(prefix="vpm-чистота-"))
+(_гит / "scripts" / "guards").mkdir(parents=True)
+(_гит / "scripts" / "guards" / "invariants.py").write_text("x = 1\n", encoding="utf-8")
+for _команда in (["init", "-q"], ["add", "-A"], ["-c", "user.email=t@t", "-c", "user.name=t",
+                                                 "commit", "-qm", "первый"]):
+    subprocess.run(["git", *_команда], cwd=_гит, check=True, capture_output=True)
+# Первый остаток попадает в КОММИТ: дом остатков в боевом дереве под git, и незакоммиченный
+# файл ускользает от `git diff HEAD` — фикстура без этого шага зеленела бы и без починки.
+_stamp.sign("проба", "ОСТАТОК", "первый остаток", expected="закроется", cmd="ls", root=_гит)
+subprocess.run(["git", "add", "-A"], cwd=_гит, check=True, capture_output=True)
+subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "дом"],
+               cwd=_гит, check=True, capture_output=True)
+_stamp.sign("проба", "ОСТАТОК", "остаток в судимом дереве", expected="закроется",
+            cmd="ls", root=_гит)
+ok(_stamp.зона_чиста(_гит),
+   "подпись остатка правит дом в scripts/guards — и зона обязана остаться чистой: "
+   "предсказывать мешает написанный КОД, а не запись о нём")
+(_гит / "scripts" / "guards" / "invariants.py").write_text("x = 2\n", encoding="utf-8")
+ok(not _stamp.зона_чиста(_гит),
+   "правка кода в том же дереве зону пачкает — послабление адресное, а не выключатель оси")
+shutil.rmtree(_гит, ignore_errors=True)
+
 print("\n== у остатка есть зона, тип и приоритет ==")
 # Что проверяем: зона объявляется словарём и выводится из путей команды; тип и приоритет считаются
 # по самой записи. Зачем: показ группируется зона × тип, и «что закрыть первым» обязано быть
