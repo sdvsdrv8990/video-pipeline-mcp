@@ -20,7 +20,7 @@ import re
 import subprocess
 import sys
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Set as AbstractSet
 from pathlib import Path
 
 import yaml
@@ -241,7 +241,8 @@ def used_before_declared(root: Path = ROOT) -> list[str]:
     return notes
 
 
-def codes_outside_registry(root: Path = ROOT, known: set[str] | None = None) -> list[str]:
+def codes_outside_registry(root: Path = ROOT,
+                           known: AbstractSet[str] | None = None) -> list[str]:
     """Брошенный код отказа обязан быть и в реестре реакций, и в `KNOWN_ERROR_CODES`.
 
     Реестра нет — сверять не с чем, и это «улики нет», а не находка. Соседи по семейству молчат

@@ -71,6 +71,16 @@ class ModelInstaller:
                 reason="Две загрузки одних весов пишут в один каталог и мешают друг другу. "
                        "Прозвони идущую: media_install_status.",
                 suggested_tool="media_install_status")
+        # Место спрашивается ДО фонового потока: кончившийся диск обрывает загрузку общим
+        # исключением, и клиент узнаёт об этом гигабайтами позже, без числа и без причины.
+        место = self.catalog.место_под(model_id, kind)
+        if not место["хватает"]:
+            raise ProviderError(
+                "NO_DISK_SPACE",
+                f"Весам '{model_id}' нужно {место['нужно_мб']:.0f} МБ, "
+                f"свободно {место['свободно_мб']:.0f} МБ.",
+                reason="Освободи место либо возьми модель меньше: media_models(scope='local', "
+                       "fits=true) отдаёт только те, что влезают на эту машину.")
         state = {"install_id": uuid.uuid4().hex[:12], "model_id": model_id, "kind": kind,
                  "phase": "running", "started": time.time(), "heartbeat": time.time(),
                  # Отсчёт от того, что уже лежало: иначе «прогресс» показывал бы размер всего

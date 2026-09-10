@@ -407,6 +407,21 @@ class ModelCatalog:
                        "размер осмыслен на этой машине, или возьми модель полегче.")
 
 
+    def место_под(self, model_id: str, kind: str) -> dict:
+        """Хватит ли ДИСКА под веса этой модели. Один читатель на сервер и на CLI.
+
+        Размер берётся из живого каталога, свободное место — тем же `probe`, что и остальное
+        железо. Ряда в каталоге нет (сеть молчит, имя своё) — «не проверено»: отказывать по
+        незнанию нельзя, но и молчать о незнании тоже.
+        """
+        from core.providers.hardware import probe
+
+        ряд = next((r for r in self.available(kind, limit=0) if r["id"] == model_id), None)
+        нужно = float((ряд or {}).get("mb") or 0)
+        свободно = float(probe(self.models_dir)["disk_free_mb"])
+        return {"нужно_мб": нужно, "свободно_мб": свободно,
+                "хватает": bool(not нужно or свободно >= нужно), "проверено": bool(нужно)}
+
     def with_fit(self, rows: list[dict], hardware: dict | None = None) -> list[dict]:
         """Дописать к строкам вердикт «влезет ли на эту машину»."""
         from .hardware import FitEstimator, probe

@@ -361,8 +361,12 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         return report
 
     async def media_models(kind: str = "", scope: str = "installed", limit: int = 20,
-                           provider: str = "", table: str = "", model: str = "") -> "ToolResult":
+                           provider: str = "", table: str = "", model: str = "",
+                           fits: bool = False) -> "ToolResult":
         """Какие модели стоят на машине, какие можно поставить и какие доступны онлайн.
+
+        `fits=true` — отдать только те, что влезают на ЭТУ машину: отбор считает сервер, а не
+        клиент. Отсеянные не исчезают молча — их число стоит в ответе (`filtered_out`).
 
         `scope=installed` — что уже лежит; `local` — что можно поставить сюда;
         `online` — что умеет вызвать шлюз. С `provider` и `table` онлайн-список спрашивается у
@@ -433,8 +437,19 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             # Число параметров без объёма памяти не значит ничего: вердикт идёт вместе со списком.
             rows = catalog.with_fit(rows, hardware)
             source = "catalog"
+        # Отбор по машине: вердикт `fit` уже посчитан выше тем же оценщиком, что и в списке.
+        # Онлайн-строки машиной не судятся — у них нет весов на этом диске, и отбор для них
+        # означал бы вычеркнуть всё; поэтому там он объявляется неприменимым, а не молчит.
+        filtered_out = 0
+        if fits and scope != "online":
+            подходят = [r for r in rows if (r.get("fit") or {}).get("verdict") != "no"]
+            filtered_out = len(rows) - len(подходят)
+            rows = подходят
         data = {
             "scope": scope, "kind": kind, "source": source, "models": rows,
+            "fits": fits, "filtered_out": filtered_out,
+            "fits_note": ("онлайн-модели машиной не судятся: они считаются у провайдера"
+                          if fits and scope == "online" else ""),
             # Железо читается БЕЗ root (/proc/meminfo, cgroup, ядра, свободное место); чего
             # прочесть нельзя — перечислено в hardware.unknown, а не выдано за отсутствие.
             "hardware": hardware if scope != "online" else None,

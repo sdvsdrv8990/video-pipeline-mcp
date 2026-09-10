@@ -26,10 +26,12 @@ class Recovery(BaseModel):
 
 # ═══ ОСНОВНЫЕ (используют Recovery выше) ═══
 
-# Реестр кодов ошибок (единый источник).
-# Генерируется из server_reactions.yaml при старте; здесь — статический список
-# для валидации. При добавлении нового кода — добавить сюда И в yaml.
-KNOWN_ERROR_CODES = {
+# Список кодов держится ПРИВАТНЫМ именем, а публичным остаётся производное значение: иначе
+# каждый новый код реестра читается гейтом публичной поверхности как её слом, хотя это
+# прибавление. Дубль с server_reactions.yaml никуда не делся и стережётся осью
+# `код отказа мимо реестра` — сводить два списка в один здесь нельзя: загрузка декларации
+# требует класса ошибки, который объявляется прямо тут.
+_КОДЫ = {
     "TOOL_NOT_FOUND", "VALIDATION_ERROR", "INTERNAL_ERROR",
     "PATH_ESCAPE", "FILE_NOT_FOUND",
     "TABLE_NOT_FOUND",
@@ -39,6 +41,7 @@ KNOWN_ERROR_CODES = {
     "PROVIDER_NOT_CONFIGURED", "PROVIDER_EXHAUSTED",
     "PROVIDER_TIMEOUT", "DOWNLOAD_INCOMPLETE", "DOWNLOAD_FORBIDDEN",
     "PROVIDER_ADAPTER_MISSING", "LOCAL_MODEL_MISSING", "USAGE_UNIT_UNKNOWN",
+    "NO_DISK_SPACE",
     "RESOURCE_BUSY",
     # Объявлены в server_reactions.yaml и реально бросаются, но выпали отсюда —
     # ErrorDetail предупреждал «код не в реестре» на штатных отказах поиска и пересчёта
@@ -80,6 +83,8 @@ KNOWN_ERROR_CODES = {
     "RENDER_INPUT_UNPREPARED", "RENDER_FAILED", "RENDER_TIMEOUT", "RENDER_UNVERIFIED",
     "SCENE_EMPTY", "VARIANT_INCOMPATIBLE",
 }
+
+KNOWN_ERROR_CODES = frozenset(_КОДЫ)
 
 
 
