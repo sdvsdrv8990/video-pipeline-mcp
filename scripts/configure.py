@@ -76,6 +76,9 @@ def _поставить(extras: str, index: str) -> None:
     if not extras:
         print("Чем ставить эту карту — не объявлено (config/providers.yaml → local.gpu).")
         return
+    if not _требования([(".[local]", ""), (f".[{extras}]", index)]):
+        print("Установка среды расчёта отменена: не хватает места.")
+        return
     команда = [sys.executable, "-m", "pip", "install", "-e", f".[local,{extras}]"]
     if index:
         команда += ["--extra-index-url", index]
@@ -119,6 +122,23 @@ def _models() -> None:
         return
     if mid:
         subprocess.run([sys.executable, str(MODELS), "install", mid, "--kind", kind], check=False)
+
+
+def _требования(цели: list[tuple[str, str]]) -> bool:
+    """Печатает цену установки и свободное место; False — места точно не хватит.
+
+    Считается прогоном, а не таблицей: состав берётся у pip, размеры — у индекса. Поэтому
+    ответ не стареет при смене версий и не требует правки, когда меняется манифест.
+    """
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import install_cost
+
+    цены = [install_cost.цена(цель, индекс) for цель, индекс in цели]
+    строки, хватает = install_cost.отчёт(цены, install_cost.машина())
+    print("Требуется:")
+    for строка in строки:
+        print(строка)
+    return хватает
 
 
 def _online() -> None:

@@ -128,8 +128,36 @@ def cmd_pull(args) -> int:
     return 0
 
 
+def _хватит_места(cat, model_id: str, kind: str) -> bool:
+    """Влезет ли модель на диск и в память. Вердикт считает тот же оценщик, что и список.
+
+    Проверка стоит ЗДЕСЬ, а не только в списке: список смотрят глазами и мимо него ставят по
+    имени. Место кончается уже при скачивании, и тогда на диске остаётся половина весов.
+    Ряда в каталоге нет (сеть молчит, имя своё) — «не проверено», и это не повод отказывать.
+    """
+    from core.providers.hardware import probe
+
+    ряд = next((r for r in cat.available(kind, limit=0) if r["id"] == model_id), None)
+    нужно = float((ряд or {}).get("mb") or 0)
+    if not нужно:
+        print("  размер модели не известен — проверить, влезет ли, нечем")
+        return True
+    свободно = probe(cat.models_dir)["disk_free_mb"]
+    if свободно < нужно:
+        print(f"  НЕ ХВАТАЕТ МЕСТА: нужно {нужно:.0f} МБ, свободно {свободно} МБ")
+        return False
+    вердикт = (cat.with_fit([ряд])[0].get("fit") or {})
+    if вердикт.get("verdict") == "no":
+        print(f"  веса влезут ({нужно:.0f} МБ при {свободно} МБ), но расчёт — нет: "
+              f"нужно {вердикт.get('need_mb', 0)} МБ на {вердикт.get('device', '?')}, "
+              f"доступно {вердикт.get('available_mb', 0)} МБ")
+    return True
+
+
 def cmd_install(args) -> int:
     cat = _catalog()
+    if not _хватит_места(cat, args.id, args.kind):
+        return 1
     entry = cat.install(args.id, args.kind, progress=lambda m: print(f"  {m}"))
     print(f"✓ {entry['id']} — {round(entry['mb'])} МБ, {entry['path']}")
     for skip in entry.get("refused") or []:
