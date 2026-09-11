@@ -72,6 +72,21 @@ def инструменты(root: Path = PROJ) -> list[str]:
     return sorted(имена)
 
 
+def дома(root: Path = PROJ) -> list[str]:
+    """Следы домов улики: файл не гоняют командой, но обращаться к нему обязаны.
+
+    Дом, к которому не обратились ни разу, хранит не улику, а текст: содержимое пережило сессию,
+    а знание о нём — нет.
+    """
+    try:
+        import yaml
+        объявлено = yaml.safe_load(
+            (root / "scripts" / "guards" / "evidence.yaml").read_text(encoding="utf-8"))["дома"]
+    except Exception:                          # noqa: BLE001 — нет объявления, нет и обвинения
+        return []
+    return sorted({след for дом in объявлено.values() for след in (дом.get("следы") or ())})
+
+
 def пылящиеся(root: Path = PROJ, дней: float = ПЫЛЬ_ДНЕЙ, след: Path | None = None) -> list[str]:
     """Строки о сторожах, молчащих дольше срока. Следа нет вовсе — пусто, а не обвинение."""
     try:
@@ -81,7 +96,7 @@ def пылящиеся(root: Path = PROJ, дней: float = ПЫЛЬ_ДНЕЙ, �
     путь = _trace.дом(след)
     if not путь.is_dir():
         return []
-    роспись = объявленные(root) + инструменты(root)
+    роспись = объявленные(root) + инструменты(root) + дома(root)
     return [f"  {имя} — срабатывал {'ни разу' if math.isinf(прошло) else f'{прошло:.0f} дней назад'}"
             for имя, прошло in _trace.dusty(роспись, дней, путь)]
 

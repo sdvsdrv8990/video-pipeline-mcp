@@ -28,7 +28,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _stamp  # noqa: E402 — дорога к соседям кладётся строкой выше
 
 СРОК = 30 * 60
-СТОРОЖА = {"VPM_INTENT_GUARD": "сторож остатков"}
+СТОРОЖА = {"VPM_INTENT_GUARD": "сторож остатков",
+           "VPM_CEILING_UP": "подъём потолка у оси за дверью владельца"}
 ЗАПРОС = re.compile(r"permit\.py\b[^\n|;]*--запрос\s+(VPM_[A-Z_]+)")
 # Присваивание среды в любой форме: `VPM_X=off cmd`, `export VPM_X=off`, `env VPM_X=0 …`.
 САМОВОЛКА = re.compile(r"\b(VPM_[A-Z_]+)\s*=\s*['\"]?(?:off|0|false)\b", re.I)

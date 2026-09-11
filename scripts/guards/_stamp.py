@@ -35,6 +35,18 @@ JOURNAL = ("tests", ".journal")
 # Дом остатков — под git, рядом со сторожем, который их читает. След дня объявлен рантаймом
 # и игнорируется, поэтому остаток, живший только там, не переживал `git clean` и клон.
 TAILS = ("scripts", "guards", "tails.jsonl")
+ДОМ_ЧТЕНИЕ, ДОМ_ЗАПИСЬ = "tails.jsonl:чтение", "tails.jsonl:запись"
+
+
+def _след(что: str) -> None:
+    """Отметка обращения к дому остатков. Дом без следа неотличим от заброшенного: молчание значит
+    и «никто не писал», и «никто не смотрел», а это разные беды."""
+    try:
+        sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
+        import _trace
+        _trace.mark(что)
+    except Exception:                          # noqa: BLE001 — след не важнее самой записи
+        pass
 ROLES = ("УЛИКА", "ОТКАЗ", "ВЕРДИКТ", "ОСТАТОК", "ОТЛОЖЕН", "В РАБОТЕ", "РЕШЕНИЕ",
          "ЗАМЫСЕЛ")
 # `РЕШЕНИЕ` — выбор на РАЗВИЛКЕ, а не итог прогона: тем и отличается от `ВЕРДИКТ`.
@@ -155,6 +167,7 @@ def sign(kind: str, role: str, what: str, *, intent: str = "", expected: str = "
         дом.parent.mkdir(parents=True, exist_ok=True)
         with дом.open("a", encoding="utf-8") as в_дом:
             в_дом.write(json.dumps(record, ensure_ascii=False) + "\n")
+        _след(ДОМ_ЗАПИСЬ)
     keys = [f"род={kind}"]
     if зона:
         keys.append(f"зона={зона}")
@@ -318,6 +331,7 @@ def tails(root: Path = ROOT) -> list[dict]:
     записи, закрыты, отложены, в_работе = [], set(), set(), set()
     дом = root.joinpath(*TAILS)
     if дом.exists():
+        _след(ДОМ_ЧТЕНИЕ)
         for row in дом.read_text(encoding="utf-8", errors="replace").splitlines():
             if not row.strip():
                 continue
@@ -360,6 +374,7 @@ def погашены_реестром(root: Path = ROOT) -> list[dict]:
     дом = root.joinpath(*TAILS)
     if not дом.exists() or not зачёркнуты:
         return []
+    _след(ДОМ_ЧТЕНИЕ)
     закрыты = set()
     хвосты = []
     for row in дом.read_text(encoding="utf-8", errors="replace").splitlines():

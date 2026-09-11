@@ -29,6 +29,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _permit                                    # noqa: E402 — дверь потолка спрашивает человека
 import _verdict                                   # noqa: E402  общий хвост суда
 from findings_count import scan as scan_registry  # noqa: E402  разбор реестра — один на проект
 from what_if import ПОЙМАНА, мутации  # noqa: E402  разбор реестра мутаций — тоже один
@@ -2873,6 +2874,22 @@ def _читатель(ось: dict):
     return fn
 
 
+ПОДЪЁМ_ПОТОЛКА = "VPM_CEILING_UP"
+
+
+def дверь_заперта(дверь: str, было: int, стало: int, разрешено: bool) -> str:
+    """Причина отказа поднять потолок, либо пусто.
+
+    Дверь стоит на РОСТЕ долга: вниз и на месте она не мешает, иначе закрытие долга просило бы
+    разрешения наравне с его набором.
+    """
+    if not дверь or стало <= было or разрешено:
+        return ""
+    return (f"потолок вверх {было} → {стало} у оси за дверью «{дверь}»: подъём — решение владельца "
+            f"под важную осознанную причину (экстренный коммит, передача куска кода человеку). "
+            f"Разрешение: {_permit.команда(ПОДЪЁМ_ПОТОЛКА, 'зачем именно поднимаем потолок')}")
+
+
 def _поле(ось: dict, имя: str) -> str:
     """Недостающее поле оси названо вслух: голый KeyError не говорит, КАКАЯ строка объявления
     неполна, а строк в реестре полсотни."""
@@ -2885,8 +2902,11 @@ def _поле(ось: dict, имя: str) -> str:
 
 _ОСИ = _реестр_осей()
 HARD = tuple((_поле(ось, "заголовок"), _читатель(ось)) for ось in _ОСИ.get("жёсткие") or ())
+# Пятое поле необязательно: дверь объявляют единицам осей, и требовать её у всех значило бы
+# писать «двери нет» полсотни раз.
 RATCHETS = tuple((_поле(ось, "заголовок"), _читатель(ось),
-                  Path(__file__).with_name(_поле(ось, "потолок")), _поле(ось, "совет"))
+                  Path(__file__).with_name(_поле(ось, "потолок")), _поле(ось, "совет"),
+                  str(ось.get("дверь") or ""))
                  for ось in _ОСИ.get("храповики") or ())
 
 
@@ -2988,7 +3008,10 @@ def main() -> int:
               "назови причину одной строкой, она уедет в подпись журнала.", file=sys.stderr)
         return 2
     сдвинутые: list[tuple[str, int, int, str]] = []
-    for title, check, baseline, advice in RATCHETS:
+    # Запись потолков отложена до конца круга: партия пишется целиком либо не пишется вовсе,
+    # иначе запертая дверь у последней оси оставляла бы уже переписанными все предыдущие.
+    к_записи: list[tuple[str, Path, int, int, str]] = []
+    for title, check, baseline, advice, дверь in RATCHETS:
         notes = check(root)
         if named is not None:
             # Потолок долга принадлежит своему дереву. Судить им чужое значит мерить чужой меркой;
@@ -3000,10 +3023,7 @@ def main() -> int:
             print(строка_оси(title, notes, потолок=limit))
         поимённо[title] = {"нашёл": len(notes), "потолок": limit}
         if bless:
-            baseline.write_text(f"{len(notes)}\n", encoding="utf-8")
-            print(f"   потолок записан: {len(notes)}")
-            if len(notes) != limit:
-                сдвинутые.append((title, limit, len(notes), baseline.name))
+            к_записи.append((title, baseline, limit, len(notes), дверь))
         elif len(notes) > limit:
             for note in notes:
                 print(f"   ✗ {note}")
@@ -3011,6 +3031,19 @@ def main() -> int:
             failed = True
             нарушений += len(notes) - limit
     if bless:
+        запреты = [з for title, baseline, было, стало, дверь in к_записи
+                   if (з := дверь_заперта(дверь, было, стало,
+                                          _permit.снят(ПОДЪЁМ_ПОТОЛКА, root)))]
+        if запреты:
+            for з in запреты:
+                print(f"invariants: {з}", file=sys.stderr)
+            print(_permit.текст(ПОДЪЁМ_ПОТОЛКА), file=sys.stderr)
+            return 2
+        for title, baseline, было, стало, _ in к_записи:
+            baseline.write_text(f"{стало}\n", encoding="utf-8")
+            print(f"── {title}\n   потолок записан: {стало}")
+            if стало != было:
+                сдвинутые.append((title, было, стало, baseline.name))
         return _bless_stamp(сдвинутые, причина or "", root)
     if named is not None or quiet:
         # Чужое дерево судится не нашей меркой, а режим хука бьёт на каждую правку и залил бы журнал.
