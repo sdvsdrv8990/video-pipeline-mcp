@@ -54,6 +54,12 @@ def _named_tree(argv: list[str]) -> Path | None:
 
 
 def main() -> int:
+    try:                                       # след: без отметки механизм выглядит пылящимся
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".claude" / "hooks"))
+        import _trace
+        _trace.mark("findings_count.py")
+    except Exception:                          # noqa: BLE001 — след не важнее самой работы
+        pass
     global REGISTRY, FLOOR
     if (named := _named_tree(sys.argv)) is not None:
         REGISTRY = named / "docs" / "roadmap" / "02_findings.md"

@@ -2913,6 +2913,12 @@ def карта_приёмки(root: Path = ROOT) -> int:
 
 
 def main() -> int:
+    try:                                       # след: без отметки механизм выглядит пылящимся
+        sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
+        import _trace
+        _trace.mark("invariants.py")
+    except Exception:                          # noqa: BLE001 — след не важнее самой работы
+        pass
     # Режим хука: молчим, когда чисто. Сторож, печатающий «всё хорошо» после каждой правки,
     # превращается в шум, и его перестают читать.
     if "--приёмка" in sys.argv:

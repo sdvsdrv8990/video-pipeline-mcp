@@ -174,6 +174,12 @@ CHECKS: tuple[tuple[str, Проверка], ...] = (("П5 файл объявл�
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:                                       # след: без отметки механизм выглядит пылящимся
+        sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
+        import _trace
+        _trace.mark("acceptance_server.py")
+    except Exception:                          # noqa: BLE001 — след не важнее самой работы
+        pass
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--суд", action="store_true", help="приёмка правки в дереве сервера")

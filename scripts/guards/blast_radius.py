@@ -512,6 +512,12 @@ def blind() -> int:
 
 
 def main() -> int:
+    try:                                       # след: без отметки механизм выглядит пылящимся
+        sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
+        import _trace
+        _trace.mark("blast_radius.py")
+    except Exception:                          # noqa: BLE001 — след не важнее самой работы
+        pass
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", action="store_true")
     parser.add_argument("--query", metavar="ФАЙЛ[:СТРОКА]")

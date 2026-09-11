@@ -405,6 +405,12 @@ def cmd_hook() -> int:
 
 
 def main() -> int:
+    try:                                       # след: без отметки механизм выглядит пылящимся
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".claude" / "hooks"))
+        import _trace
+        _trace.mark("comment_guard.py")
+    except Exception:                          # noqa: BLE001 — след не важнее самой работы
+        pass
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--scan", action="store_true", help="отчёт по целям (или переданным путям)")

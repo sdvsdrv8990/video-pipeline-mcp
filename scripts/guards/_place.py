@@ -194,6 +194,12 @@ def разделы_памяти(root: Path = ROOT) -> list[dict]:
 
 
 def main() -> int:
+    try:                                       # след: без отметки механизм выглядит пылящимся
+        sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
+        import _trace
+        _trace.mark("_place.py")
+    except Exception:                          # noqa: BLE001 — след не важнее самой работы
+        pass
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--файл", help="модуль: символы, зона, куда класть новое")

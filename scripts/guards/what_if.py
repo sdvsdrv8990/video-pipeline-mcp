@@ -464,6 +464,12 @@ def replay(key: str, intent: dict, root: Path = ROOT) -> int:
 
 
 def main() -> int:
+    try:                                       # след: без отметки механизм выглядит пылящимся
+        sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
+        import _trace
+        _trace.mark("what_if.py")
+    except Exception:                          # noqa: BLE001 — след не важнее самой работы
+        pass
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--intent", required=True, type=Path)
     parser.add_argument("--patch", type=Path, help="файл диффа; по умолчанию — незакоммиченная правка")

@@ -464,6 +464,12 @@ def resolve_stamp(key: str, root: Path = ROOT) -> int:
 
 
 def main() -> int:
+    try:                                       # след: без отметки механизм выглядит пылящимся
+        sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
+        import _trace
+        _trace.mark("reproduce.py")
+    except Exception:                          # noqa: BLE001 — след не важнее самой работы
+        pass
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--record", help="файл записи; по умолчанию самый свежий из следа и журнала")
     ap.add_argument("--tool", help="воспроизводить отказ этого инструмента")
