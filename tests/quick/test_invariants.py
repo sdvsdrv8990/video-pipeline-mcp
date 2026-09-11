@@ -988,6 +988,20 @@ print("\n== память выросла выше потолка ==")
 
 # Потолок читается из файла РЯДОМ со сторожем, поэтому в пробе подменяется он, а не дерево памяти.
 import invariants as _inv  # noqa: E402  ось судит каталог памяти, а не репозиторий
+
+# Окно цикла — прогоны, а не всё подряд под родом `цикл`: остаток о цикле счёта родов не несёт.
+_дерево_окна = Path(tempfile.mkdtemp(prefix="vpm-окно-"))
+(_дерево_окна / "tests" / ".journal").mkdir(parents=True)
+(_дерево_окна / "tests" / ".journal" / "stamps-1.jsonl").write_text("\n".join(
+    json.dumps(з, ensure_ascii=False) for з in [
+        {"ts": 1, "key": "a1", "kind": "цикл", "role": "ВЕРДИКТ", "expected": "предсказаний 2 из 2"},
+        {"ts": 2, "key": "b2", "kind": "цикл", "role": "ОСТАТОК", "expected": "ждали механизм"},
+        {"ts": 3, "key": "c3", "kind": "проба", "role": "ВЕРДИКТ", "expected": "предсказаний 1 из 1"},
+    ]) + "\n", encoding="utf-8")
+ok([з["key"] for з in _inv.окно_циклов(_дерево_окна)] == ["a1"],
+   "окно цикла берёт вердикты прогонов, а остаток под родом «цикл» им не считается")
+ok(not _inv.cycle_unjudged(_дерево_окна),
+   "остаток о цикле не обвиняется в отсутствии счёта родов: его там и не бывает")
 _пам = Path(tempfile.mkdtemp(prefix="vpm-память-"))
 (_пам / "a.md").write_text("x" * 100, encoding="utf-8")
 _старый_потолок = _inv.MEMORY_SIZE_CEILING
@@ -1003,7 +1017,20 @@ try:
     ok(any("не число" in n for n in _inv.memory_grew(memory=_пам)),
        "битый потолок назван прямо, а не пропущен молча")
     _потолок.unlink()
-    ok(not _inv.memory_grew(memory=_пам), "потолка нет — улики нет, а не обвинение")
+    _отказ = ""
+    try:
+        _inv.memory_grew(memory=_пам)
+    except _inv.НетУлики as нет:
+        _отказ = str(нет)
+    ok("потолок не объявлен" in _отказ,
+       "потолка нет — ось отказывается судить, а не отвечает «чисто»")
+    ok(_inv.строка_оси("ось", [], _отказ).startswith("── ось: не судится — ")
+       and "чисто" not in _inv.строка_оси("ось", [], _отказ),
+       "отказ судить печатается словами, а не чистотой")
+    ok(_inv.строка_оси("ось", []) == "── ось: чисто"
+       and _inv.строка_оси("ось", ["x"]) == "── ось: 1 шт."
+       and _inv.строка_оси("ось", ["x"], потолок=3) == "── ось: 1 при потолке 3",
+       "прежние два состояния печатаются как печатались — третье их не сдвинуло")
 finally:
     _inv.MEMORY_SIZE_CEILING = _старый_потолок
 
@@ -1401,8 +1428,8 @@ _след = _цикл / "tests" / ".journal"
 _след.mkdir(parents=True)
 
 
-def _подпись(key, expected, kind="цикл", ts=1.0):
-    return json.dumps({"ts": ts, "key": key, "kind": kind, "expected": expected},
+def _подпись(key, expected, kind="цикл", ts=1.0, role="ВЕРДИКТ"):
+    return json.dumps({"ts": ts, "key": key, "kind": kind, "role": role, "expected": expected},
                       ensure_ascii=False)
 
 
@@ -1440,8 +1467,8 @@ _след4.mkdir(parents=True)
 
 
 def _прогон(key, ждали, намерение, ts):
-    return json.dumps({"ts": ts, "key": key, "kind": "цикл", "intent": намерение,
-                       "expected": ждали}, ensure_ascii=False)
+    return json.dumps({"ts": ts, "key": key, "kind": "цикл", "role": "ВЕРДИКТ",
+                       "intent": намерение, "expected": ждали}, ensure_ascii=False)
 
 
 (_след4 / "stamps-1.jsonl").write_text("\n".join([

@@ -33,6 +33,23 @@ import _verdict                                   # noqa: E402  общий хв�
 from findings_count import scan as scan_registry  # noqa: E402  разбор реестра — один на проект
 from what_if import ПОЙМАНА, мутации  # noqa: E402  разбор реестра мутаций — тоже один
 
+class НетУлики(Exception):
+    """Оси нечего судить: источника улики нет. Третье состояние против пары «чисто / нарушения».
+
+    Пустой список значит и «проверено, чисто», и «не проверялось», а читатель отчёта их не
+    различает — и снятый потолок читается как чистота.
+    """
+
+
+def строка_оси(title: str, notes: list[str], не_судит: str = "", потолок: int | None = None) -> str:
+    """Одна строка отчёта. Дом у формы один: два места печатали бы третье состояние по-разному."""
+    if не_судит:
+        return f"── {title}: не судится — {не_судит}"
+    if потолок is None:
+        return f"── {title}: {'чисто' if not notes else str(len(notes)) + ' шт.'}"
+    return f"── {title}: {len(notes)} при потолке {потолок}"
+
+
 SUBJECTS_DECL = ("scripts", "guards", "acceptance_subjects.yaml")
 MEMORY_SIZE_CEILING = Path(__file__).with_name("memory_size_ceiling.txt")
 # Две ветки — это выбор, три и больше по одному значению — уже таблица.
@@ -1686,11 +1703,14 @@ def memory_grew(root: Path = ROOT, memory: Path | None = None) -> list[str]:
 
     Судится объём в символах, а не число файлов: нарезка на разделы меняет второе, не трогая
     первого, и счёт по файлам объявлял бы победой перекладывание. Архив не считается — он в
-    сессию не грузится. Потолка нет — «улики нет», а не «ноль».
+    сессию не грузится. Нет потолка или каталога — `НетУлики`, а не пустой список: снятие потолка
+    обязано звучать отказом судить, иначе оно неотличимо от чистоты.
     """
     home = memory or memory_dir(root)
-    if not home.is_dir() or not MEMORY_SIZE_CEILING.exists():
-        return []
+    if not home.is_dir():
+        raise НетУлики("каталога памяти нет")
+    if not MEMORY_SIZE_CEILING.exists():
+        raise НетУлики(f"{MEMORY_SIZE_CEILING.name} снят — потолок не объявлен")
     try:
         потолок = int(MEMORY_SIZE_CEILING.read_text(encoding="utf-8").strip())
     except ValueError:
@@ -1870,8 +1890,13 @@ def окно_журнала(root: Path, отбор: Callable[[dict], bool], ра
 
 
 def окно_циклов(root: Path = ROOT) -> list[dict]:
-    """Последние подписи цикла — ВСЕ, а не только те, чью форму мы умеем разобрать."""
-    return окно_журнала(root, lambda з: з.get("kind") == "цикл", ЦИКЛОВ_В_ОКНЕ)
+    """Последние ПРОГОНЫ цикла — все, а не только те, чью форму мы умеем разобрать.
+
+    Прогон — это вердикт. Остаток и решение род `цикл` носят по теме, а не потому что их гоняли:
+    счёта предсказаний у них нет и быть не может, и обе соседние оси судили бы запись ни о чём.
+    """
+    return окно_журнала(root, lambda з: з.get("kind") == "цикл" and з.get("role") == "ВЕРДИКТ",
+                        ЦИКЛОВ_В_ОКНЕ)
 
 
 def сменённые(окно: list[dict]) -> set[str]:
@@ -2930,14 +2955,24 @@ def main() -> int:
         print("invariants: --bless по чужому дереву запрещён — потолок принадлежит СВОЕМУ дереву, "
               "и запись чужого числа сюда была бы тихой ложью", file=sys.stderr)
         return 2
-    failed, нарушений, поимённо = False, 0, {}
+    failed, нарушений = False, 0
+    # Значения разнородны намеренно: у судимой оси это числа, у отказавшейся — причина словами.
+    поимённо: dict[str, dict[str, object]] = {}
     for title, check in HARD:
-        notes = check(root)
+        try:
+            notes = check(root)
+        except НетУлики as нет:
+            # Ось без источника улики не молчит: её отказ — часть отчёта, иначе замер опирается
+            # на строку, за которой ничего не проверялось.
+            поимённо[title] = {"не судится": str(нет)}
+            if not quiet:
+                print(строка_оси(title, [], str(нет)))
+            continue
         нарушений += len(notes)
         if notes:
             поимённо[title] = {"нашёл": len(notes)}
         if not quiet:
-            print(f"── {title}: {'чисто' if not notes else str(len(notes)) + ' шт.'}")
+            print(строка_оси(title, notes))
         elif notes:
             print(f"── {title}: {len(notes)} шт.")
         for note in notes:
@@ -2962,7 +2997,7 @@ def main() -> int:
             continue
         limit = int(baseline.read_text(encoding="utf-8").strip()) if baseline.exists() else len(notes)
         if not quiet or len(notes) > limit:
-            print(f"── {title}: {len(notes)} при потолке {limit}")
+            print(строка_оси(title, notes, потолок=limit))
         поимённо[title] = {"нашёл": len(notes), "потолок": limit}
         if bless:
             baseline.write_text(f"{len(notes)}\n", encoding="utf-8")
