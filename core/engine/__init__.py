@@ -1,15 +1,4 @@
-"""
-core/engine/__init__ — Точка входа для engine
-
-## Назначение
-Из любого места сервера:
-    from core.engine import Engine
-
-## Архитектурные связи
-- Использует: core.contracts (ToolResult, ErrorDetail, Fact)
-- Использует: core.reactions (маппинг ошибок)
-- Используется: server.py (обработка запросов)
-"""
+"""core/engine — движок: реестр инструментов, шаблоны структуры и материализация книг."""
 
 from .engine import Engine
 from .template_engine import TemplateEngine, TemplateError

@@ -1,12 +1,8 @@
 """core/engine/table_materializer.py — материализация книг .xlsx по декларации.
 
-## Назначение
-Достраивает отложенную фазу: `structure_create` для `kind: table` только заводит `file_id`
-и запись в `tables_pending`, а саму книгу по `config/templates/tables/<book>.schema.yaml`
-(формат — `docs/roadmap/spec/TABLE_SCHEMA_FORMAT.md`) строит этот модуль через `core/excel`.
-
-## Границы
-Имён книг, листов и столбцов здесь нет: добавить книгу = добавить YAML, не код.
+`structure_create` для `kind: table` заводит только `file_id` и запись в `tables_pending`, саму
+книгу строит этот модуль. Имён книг, листов и столбцов здесь нет: добавить книгу значит добавить
+YAML, а не код.
 """
 
 from pathlib import Path

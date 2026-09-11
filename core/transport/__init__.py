@@ -1,13 +1,4 @@
-"""
-core/transport/__init__ — Точка входа для transport
-
-## Назначение
-Из любого места сервера:
-    from core.transport import Transport
-
-## Архитектурные связи
-- Используется: server.py (подключение к Claude)
-"""
+"""core/transport — дверь наружу: туннель до Claude AI Web и его приёмка."""
 
 from .transport import Transport
 

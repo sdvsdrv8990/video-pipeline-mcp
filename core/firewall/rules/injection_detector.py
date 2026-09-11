@@ -1,8 +1,8 @@
-"""
-core/firewall/rules/injection_detector.py — Детектор prompt injection
+"""core/firewall/rules/injection_detector.py — попытка перехватить инструкции модели.
 
-## Назначение
-Обнаружение попыток prompt injection в входящих запросах.
+Образцы берутся из декларации, список в коде — только запасной. Сравниваются ПОЛНЫЕ фразы по
+границам слов: подстрока ловила бы обычный текст. Внедрения команд тут не ищут вовсе — ни shell,
+ни SQL, ни Windows-поверхности у сервера нет.
 """
 
 from typing import Any

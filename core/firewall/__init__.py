@@ -1,14 +1,4 @@
-"""
-core/firewall/__init__ — точка входа для файрвола
-
-## Назначение
-Из любого места сервера:
-    from core.firewall import Firewall, FirewallRequest, FirewallResult
-
-## Архитектурные связи
-- Использует: config/firewall.yaml (правила)
-- Используется: server.py (перед ядром)
-"""
+"""core/firewall — фильтр входящего: решение о запросе принимается ДО ядра."""
 
 from .firewall import Firewall
 from .contracts import FirewallRequest, FirewallResult, FirewallDecision

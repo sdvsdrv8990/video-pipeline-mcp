@@ -1,10 +1,4 @@
-"""
-core/firewall/rules/__init__ — экспорт правил файрвола
-
-## Назначение
-Удобный импорт правил:
-    from core.firewall.rules import RateLimiter, InjectionDetector, IPBlocklist, AnomalyDetector
-"""
+"""core/firewall/rules — правила фильтра: частота, инъекция, закрытый адрес, аномалия."""
 
 from .rate_limiter import RateLimiter
 from .injection_detector import InjectionDetector
