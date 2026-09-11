@@ -25,7 +25,7 @@ from invariants import (  # noqa: E402
     door_not_installed, guard_without_home, hook_declared_muted,
     acceptance_advice_only, acceptance_calls_missing,
     lesson_without_evidence, lesson_without_executor, lesson_without_mechanism,
-    silencer_without_reason,
+    silencer_without_reason, mutation_without_count,
     journal_off_index,
     skill_boundary_invisible,
     ceiling_moved_unrecorded,
@@ -1755,6 +1755,22 @@ ok(not any("core/a.py:1" in г or "core/a.py:6" in г for г in _глуш),
    "глушитель с кодом и причиной молчит, и обычный комментарий тоже")
 ok(not any("core/a.py:7" in г for г in _глуш),
    "глушитель ВНУТРИ строки-фикстуры не обвиняется: судим токены комментария, а не строки файла")
+
+print("\n== Мутация поймана, а счёт не назван ==")
+РЕЕСТР = make({"tests/CATALOG.md": (
+    "| M900 | что сломали | `a.py` | `t` | 🔴 ловит 2 ассерта (S26) — почему важно |\n"
+    "| M901 | что сломали | `a.py` | `t` | 🔴 ловит ✅ |\n"
+    "| M902 | что сломали | `a.py` | `t` | ⚪ не ловит никто — слепая зона объявлена |\n"
+    "| F900 | это находка, а не мутация | `a.py` | `t` | 🔴 ловит |\n")})
+_счёт = mutation_without_count(root=РЕЕСТР)
+ok(len(_счёт) == 1, "названа ровно одна мутация без счёта: со счётом и непойманная молчат")
+ok("M901" in _счёт[0], "названа та, что объявила поимку значком и не сказала скольким")
+ok(not any("M902" in с for с in _счёт),
+   "непойманная не обвиняется дважды: её долг судит своя ось")
+ok(not any("F900" in с for с in _счёт),
+   "строка находки не принимается за мутацию: номер судится формой, а не похожестью")
+ok(not mutation_without_count(root=make({"нет": "реестра"})),
+   "реестра нет — улики нет, а не «мутаций ноль»")
 
 if _fails:
     print("ПРОВАЛЫ:")
