@@ -1,9 +1,7 @@
-"""
-core/contracts/task_status.py — TaskStatus
+"""core/contracts/task_status.py — статус асинхронной задачи для опроса.
 
-## Назначение
-Статус async задачи для поллинга (Фаза 2).
-Claude опрашивает через poll_* и видит: pending → processing → completed/failed.
+Клиент опрашивает задачу сам: сервер не держит соединение и не шлёт события, поэтому состояние
+обязано читаться в любой момент отдельным вызовом.
 """
 
 from pydantic import BaseModel, model_validator

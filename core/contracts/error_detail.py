@@ -1,9 +1,5 @@
-"""
-core/contracts/error_detail.py — ErrorDetail + Recovery
-
-## Назначение
-Обёртка ошибки для Claude. Содержит код (из server_reactions.yaml),
-ПОЛНЫЙ текст ошибки (от провайдера/сервера) и подсказку recovery.
+"""core/contracts/error_detail.py — обёртка отказа для клиента: код реестра, полный текст беды и
+рецепт восстановления.
 """
 
 from pydantic import BaseModel, field_validator

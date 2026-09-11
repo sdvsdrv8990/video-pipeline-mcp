@@ -1,9 +1,7 @@
-"""
-core/contracts/__init__ — точка входа для импорта контрактов
+"""core/contracts/__init__ — точка входа для импорта контрактов.
 
-## Назначение
-Из любого места сервера:
-    from core.contracts import ToolResult, ErrorDetail, Fact, TaskStatus
+Импорт идёт отсюда, а не из модулей поштучно: переезд контракта внутри пакета тогда не трогает
+ни одного вызывающего.
 """
 
 from .fact import Fact
