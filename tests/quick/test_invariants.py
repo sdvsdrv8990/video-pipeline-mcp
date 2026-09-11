@@ -25,6 +25,7 @@ from invariants import (  # noqa: E402
     door_not_installed, guard_without_home, hook_declared_muted,
     acceptance_advice_only, acceptance_calls_missing,
     lesson_without_evidence, lesson_without_executor, lesson_without_mechanism,
+    silencer_without_reason,
     journal_off_index,
     skill_boundary_invisible,
     ceiling_moved_unrecorded,
@@ -1731,6 +1732,29 @@ ok(not any("нет.py" in б for б in _беды),
    "«цели нет» не обвиняется: так же выглядит фикстура набора и ссылка одним именем файла")
 ok(not any("900" in б for б in _беды),
    "ссылка, уточнённая коммитом, судится тем коммитом, а не длиной сегодняшнего файла")
+
+print("\n== Глушитель чужого сторожа без причины ==")
+ГЛУШИТЕЛИ = make({"core/a.py": (
+    "x = 1  # noqa: E402 — путь к харнессу добавляется выше\n"     # код и причина — чисто
+    "y = 2  # noqa: E402\n"                                        # причины нет
+    "z = 3  # noqa\n"                                              # нет ни кода, ни причины
+    "w = 4  # type: ignore[arg-type]\n"                            # причины нет
+    "v = 5  # pragma: no cover — среда без cryptography\n"         # кодов у формы не бывает
+    "u = 6  # обычный комментарий про поведение\n"
+    # Фикстура ВНУТРИ строки: так глушитель выглядит в наборах самих сторожей, и построчный
+    # разбор судил бы данные вместо кода.
+    "ФИКСТУРА = \'x = 1  # noqa\'\n")})
+_глуш = silencer_without_reason(root=ГЛУШИТЕЛИ)
+ok(len(_глуш) == 3, "названы ровно три глушителя без причины: оправданный и обычный "
+   "комментарий под обвинение не идут")
+ok(any("core/a.py:3" in г and "кода правила" in г for г in _глуш),
+   "голый `# noqa` назван и кодом правила, и причиной — он гасит ВСЁ, а не одно правило")
+ok(not any("core/a.py:5" in г for г in _глуш),
+   "`pragma: no cover` не обвиняется в отсутствии кода: кодов у этой формы не бывает вовсе")
+ok(not any("core/a.py:1" in г or "core/a.py:6" in г for г in _глуш),
+   "глушитель с кодом и причиной молчит, и обычный комментарий тоже")
+ok(not any("core/a.py:7" in г for г in _глуш),
+   "глушитель ВНУТРИ строки-фикстуры не обвиняется: судим токены комментария, а не строки файла")
 
 if _fails:
     print("ПРОВАЛЫ:")

@@ -16,7 +16,9 @@ import ast
 import importlib.util
 import json
 import builtins
+import io
 import re
+import tokenize
 import subprocess
 import sys
 import tomllib
@@ -1228,6 +1230,67 @@ def knob_without_reader(root: Path = ROOT) -> list[str]:
 # отказ погашен, и наверх уходит пустота, неотличимая от честного «данных нет».
 SPEAKS = ("err", "log", "print", "warn", "trail", "refus")
 BROAD = {"Exception", "BaseException"}
+
+
+# Глушитель — комментарий, ОТКЛЮЧАЮЩИЙ чужого сторожа. Форм четыре, у каждой своя, и список
+# поимённый: по одному слову «ignore» под обвинение попадала бы любая проза о пропуске.
+ГЛУШИТЕЛЬ = re.compile(
+    r"#\s*(?:(?P<noqa>noqa)(?::\s*(?P<n>[A-Z]+\d+(?:\s*,\s*[A-Z]+\d+)*))?"
+    r"|(?P<ti>type:\s*ignore)(?:\[(?P<t>[\w-]+)\])?"
+    r"|(?P<ns>nosec)(?:\s+(?P<s>[A-Z]\d+))?"
+    r"|(?P<pr>pragma:\s*no\s*cover))(?P<хвост>.*)$")
+# Причина отбивается тире или второй решёткой: без разделителя хвост неотличим от кода правила.
+ПРИЧИНА_ГЛУШИТЕЛЯ = re.compile(r"[—–-]\s*\S|\s#\s*\S")
+
+
+def _дерево_целиком(root: Path) -> list[Path]:
+    """Файлы ВСЕХ объявленных деревьев. `_python_sources` берёт только сервер, а глушитель
+    живёт и у сторожей, и в наборах — там его как раз больше всего."""
+    import _evidence
+    корни = [корень for дерево in _evidence.деревья().values() for корень in дерево.get("корни", [])]
+    файлы: list[Path] = []
+    for имя in корни:
+        цель = root / имя
+        файлы += [цель] if цель.is_file() else list(цель.rglob("*.py"))
+    return [p for p in sorted(set(файлы)) if "__pycache__" not in str(p) and p.exists()]
+
+
+def silencer_without_reason(root: Path = ROOT) -> list[str]:
+    """Глушитель чужого сторожа без причины: строка отключает суд и не говорит, почему.
+
+    Отключение — такое же решение, как любое другое, и цена у него та же: сторож, обязанный
+    покраснеть, молчит. Без причины снять его нельзя — неизвестно, что сломается, а прогон
+    покажет зелёное и там, где суда просто нет.
+
+    Кода правила требуем от `noqa`, `type: ignore` и `nosec`; у `pragma: no cover` кодов не
+    бывает вовсе, и спрашивать их значило бы обвинять форму за то, чего в ней нет.
+    """
+    notes = []
+    for source in _дерево_целиком(root):
+        try:
+            текст = source.read_text(encoding="utf-8")
+            # Только НАСТОЯЩИЕ комментарии: в наборах сторожей глушитель лежит внутри
+            # строки-фикстуры, и построчный разбор судил бы данные вместо кода.
+            комментарии = [(tok.start[0], tok.string) for tok in
+                           tokenize.generate_tokens(io.StringIO(текст).readline)
+                           if tok.type == tokenize.COMMENT]
+        except (OSError, SyntaxError, tokenize.TokenError, IndentationError):
+            continue
+        for n, line in комментарии:
+            m = ГЛУШИТЕЛЬ.search(line)
+            if not m:
+                continue
+            код = m.group("n") or m.group("t") or m.group("s")
+            хвост = (m.group("хвост") or "").strip()
+            нет = []
+            if not код and not m.group("pr"):
+                нет.append("кода правила")
+            if not (len(хвост) > 3 and ПРИЧИНА_ГЛУШИТЕЛЯ.search(" " + хвост)):
+                нет.append("причины")
+            if нет:
+                notes.append(f"{source.relative_to(root)}:{n} — глушитель без {' и без '.join(нет)}: "
+                             f"суд отключён молча")
+    return notes
 
 
 def muted_refusal(root: Path = ROOT) -> list[str]:
