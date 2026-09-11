@@ -1,8 +1,6 @@
-"""
-tools/memory — память проекта (project_memory.md): чтение и дописывание записей.
+"""tools/memory — память проекта: чтение и дописывание записей.
 
-Тонкие обёртки: containment путей — ctx.resolve (core/paths), ошибки — ctx.err (реестр реакций).
-Контракт зафиксирован эталоном tests/quick/tools_inventory.golden.json.
+Обёртка тонкая: containment путей и перевод ошибок делают соседние слои.
 """
 
 import re

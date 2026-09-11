@@ -1,9 +1,7 @@
-"""
-tools/search — умный поиск по таблицам (QueryPlanner поверх read.json).
+"""tools/search — умный поиск по таблицам.
 
-Тонкие обёртки: планирование и исполнение запроса — core/search/query_planner,
-чтение снапшотов — TableEngine.load_snapshot. Здесь только разбор запроса и упаковка.
-Контракт зафиксирован эталоном tests/quick/tools_inventory.golden.json.
+Обёртка тонкая: планирование и исполнение запроса вместе с чтением снапшотов живут в ядре,
+здесь разбор запроса и упаковка ответа.
 """
 
 from core.contracts import Fact, ToolResult
