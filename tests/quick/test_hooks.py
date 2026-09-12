@@ -864,6 +864,33 @@ def main() -> int:
            f"pgrep -f без исключения себя ловится до запуска — {_про}: "
            f"{'запрет' if _ждём else 'молчание'}")
 
+    print("§19 дом исключений: в объявленной зоне хук НЕ требует обоснования, вне неё требует")
+    _дерево = Path(tempfile.mkdtemp(prefix="vpm-искл-хук-"))
+    (_дерево / "scripts" / "guards").mkdir(parents=True)
+    (_дерево / "core").mkdir()
+    (_дерево / "core" / "жив.py").write_text("x = 1\n", encoding="utf-8")
+    (_дерево / "tests" / ".journal").mkdir(parents=True)
+    (_дерево / "tests" / ".journal" / "stamps-20260101.jsonl").write_text(
+        json.dumps({"key": "ab12", "kind": "гейт", "role": "РЕШЕНИЕ", "what": "зона объявлена"}) + "\n",
+        encoding="utf-8")
+    (_дерево / "scripts" / "guards" / "comment_exceptions.yaml").write_text(
+        "- зона: core/жив.py\n  класс: плавающий-дефект\n  почему: плавает на чужой карте\n"
+        "  подпись: ab12\n  до: 2099-12-31\n", encoding="utf-8")
+    _правка = {"tool_name": "Edit", "tool_input": {
+        "file_path": str(_дерево / "core" / "жив.py"),
+        "new_string": "# зачем-то поясняю очевидное\nx = 1\n"}}
+    _код, _ответ, _текст = fire("vpm-comment-intent.py", _правка, CLAUDE_PROJECT_DIR=str(_дерево))
+    _выход = (_ответ.get("hookSpecificOutput") or {})
+    ok(_выход.get("permissionDecision") != "deny" and "зона исключения объявлена" in str(_выход),
+       "§19 в объявленной зоне хук называет её и НЕ запрещает правку")
+    ok("2099-12-31" in str(_выход) and "ab12" in str(_выход),
+       "§19 названы срок и подпись владельца: исключение не бывает безымянным")
+    (_дерево / "scripts" / "guards" / "comment_exceptions.yaml").write_text("[]\n", encoding="utf-8")
+    _код2, _ответ2, _текст2 = fire("vpm-comment-intent.py", _правка, CLAUDE_PROJECT_DIR=str(_дерево))
+    _выход2 = (_ответ2.get("hookSpecificOutput") or {})
+    ok(_выход2.get("permissionDecision") == "deny",
+       "§19 без объявленной зоны обоснование требуется — читатель дома живой, а не декоративный")
+
     print("§11 замысел ДО кода: запрет только в судимой зоне, упоминание пути правкой не считается")
     _зам: dict = {"__name__": "не-главный", "__file__": str(HOOKS / "vpm-intent-guard.py")}
     exec(compile((HOOKS / "vpm-intent-guard.py").read_text(encoding="utf-8"),

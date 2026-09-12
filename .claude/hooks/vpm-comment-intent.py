@@ -30,7 +30,9 @@ except Exception:                              # noqa: BLE001 — след не 
 
 # Корень — от места самого хука (`.claude/hooks/` в репозитории), а не зашит путём одной
 # машины: зашитый путь делает хук неперемещаемым, и у всех, кроме автора, он молчит.
-PROJ = Path(__file__).resolve().parents[2]
+# Дерево берётся из объявления среды, как у соседних хуков: иначе хук умеет судить только
+# СВОЁ дерево, и обе его стороны недостижимы набором.
+PROJ = Path(os.environ.get("CLAUDE_PROJECT_DIR") or Path(__file__).resolve().parents[2])
 STATE_DIR = Path.home() / ".claude" / "state" / "vpm-comment-intent"
 STATE_TTL = 12 * 3600
 SESSION_CAP = 6                       # больше отказов за сессию — уже помеха, а не напоминание
@@ -105,6 +107,22 @@ def added_by_command() -> list[str]:
     return found
 
 
+def зона_владельца(rel: str):
+    """Действующая зона исключения для этого пути, либо `None`. Разбор один — источник улики.
+
+    Хук молчать в зоне ОБЯЗАН: требовать обоснование там, где владелец уже объяснил и подписал,
+    значит спорить с его решением на каждой правке.
+    """
+    try:
+        # КОД источника берём из репозитория, где живёт хук; ДАННЫЕ (дом объявлений) — из
+        # судимого дерева. Смешать их значит потерять способность судить чужое дерево набором.
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "guards"))
+        import _comments
+        return _comments.покрыт(rel, root=PROJ)
+    except Exception:  # noqa: BLE001 — дома может не быть (клон без сторожей): тогда зон нет
+        return None
+
+
 def ask(rel: str, state: dict, path: Path, post: bool) -> None:
     state["asked"].append(rel)
     state["count"] = state.get("count", 0) + 1
@@ -154,6 +172,13 @@ def main() -> None:
         sys.exit(0)                                   # текста в код не добавляется
 
     if rel in state["asked"] or state.get("count", 0) >= SESSION_CAP:
+        sys.exit(0)
+    зона = зона_владельца(rel)
+    if зона:
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext":
+              f"Гейт текста: {rel} — зона исключения объявлена владельцем до {зона['до']} "
+              f"({зона['класс']}), подпись {зона['подпись']}. Обоснование комментария здесь не "
+              f"требуется; истечёт срок — вернётся обычный суд."}}))
         sys.exit(0)
     ask(rel, state, path, post=False)
 

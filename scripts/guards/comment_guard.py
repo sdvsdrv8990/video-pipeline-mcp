@@ -24,6 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import _comments  # noqa: E402 — импорт после правки sys.path: источник улики лежит рядом
 import _verdict                                                            # noqa: E402
 
 from pygments.lexers import get_lexer_for_filename
@@ -351,6 +352,15 @@ def cmd_bless() -> int:
 
 def cmd_check() -> int:
     found = collect()
+    объявленные = _comments.зоны()
+    # Зона, объявленная владельцем, снимает замечание с ДОЛГА, но не с отчёта: молчание о ней
+    # превратило бы исключение в невидимое, а невидимое исключение не отличить от дыры.
+    накрыты = {путь: зона for путь, зона in ((п, _comments.покрыт(п, объявленные)) for п in found) if зона}
+    for путь, зона in sorted(накрыты.items()):
+        print(f"○ {путь}: зона объявлена владельцем до {зона['до']} ({зона['класс']}) — "
+              f"{len(found[путь])} замечаний вне долга; подпись {зона['подпись']}")
+    found = {путь: н for путь, н in found.items() if путь not in накрыты}
+    жалобы = _comments.претензии(объявленные)
     ceiling = _load_baseline()
     total, cap = sum(len(n) for n in found.values()), sum(ceiling.values())
     grown = [(p, ceiling.get(p, 0), n) for p, n in sorted(found.items()) if len(n) > ceiling.get(p, 0)]
@@ -360,6 +370,12 @@ def cmd_check() -> int:
             print(f"    {note}")
     dropped = sorted(p for p, n in found.items() if len(n) < ceiling.get(p, 0))
     stale = sorted(set(ceiling) - set(found))
+    for жалоба in жалобы:
+        print(f"✗ {жалоба}")
+    if жалобы:
+        print(f"\nДом исключений: {len(жалобы)} строк не действуют. Незаконная строка не игнорируется "
+              f"молча — иначе дом станет лазейкой: объяви поля целиком либо убери строку.")
+        return 1
     if grown:
         print(f"\nХраповик: {total} замечаний при потолке {cap}. Мусор ИИ в коде растёт — "
               f"почисти файлы выше или объясни в ревью, почему потолок поднимается "
