@@ -2164,6 +2164,24 @@ def judge_off_journal(root: Path = ROOT) -> list[str]:
 EVIDENCE_DECL = ("scripts", "guards", "evidence.yaml")
 
 
+def _флаги_сторожа(путь: Path) -> set[str] | None:
+    """Флаги, объявленные сторожем в своём разборе аргументов; `None` — разбора нет, улики нет.
+
+    Читается `ast`, а не запуском: судить объявление исполнением чужой команды значит исполнять
+    произвольную строку во время суда. Ту же границу держит `_stamp.runnable` — он судит форму.
+    """
+    try:
+        дерево = ast.parse(путь.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, SyntaxError):
+        return None
+    флаги = {арг.value for узел in ast.walk(дерево)
+             if isinstance(узел, ast.Call) and getattr(узел.func, "attr", "") == "add_argument"
+             for арг in узел.args
+             if isinstance(арг, ast.Constant) and isinstance(арг.value, str)
+             and арг.value.startswith("--")}
+    return флаги or None
+
+
 def evidence_roster_off_disk(root: Path = ROOT) -> list[str]:
     """Роспись улик разошлась с диском: словарь есть, а поднимает он не то и не тех.
 
@@ -2233,9 +2251,19 @@ def evidence_roster_off_disk(root: Path = ROOT) -> list[str]:
             if улика not in главные and улика not in роды:
                 notes.append(f"тип работы `{имя}` объявлен на улику «{улика}», которой нет "
                              f"ни среди главных, ни среди родов")
-        for сторож in (дело or {}).get("сверх") or {}:
+        for сторож, флаги in ((дело or {}).get("сверх") or {}).items():
             if сторож not in на_диске:
                 notes.append(f"тип работы `{имя}` зовёт сторожа `{сторож}`, которого нет на диске")
+                continue
+            # Сторож есть, а флаг выдуман — наряд напечатает команду, которая упадёт разбором
+            # аргументов. Пойман замером: фальшивый флаг проходил молча, пока это не судилось.
+            объявлены = _флаги_сторожа(дом / сторож)
+            if объявлены is None:
+                continue                       # разбора аргументов у сторожа нет — улики нет
+            for флаг in [ф for ф in (флаги or []) if str(ф).startswith("--")]:
+                if флаг not in объявлены:
+                    notes.append(f"тип работы `{имя}` зовёт `{сторож} {флаг}`, а такого флага у "
+                                 f"сторожа нет: команда наряда упадёт разбором аргументов")
         скил = (дело or {}).get("скил")
         if скил and скилы.is_dir() and not (скилы / скил / "SKILL.md").exists():
             notes.append(f"тип работы `{имя}` ведёт в скил `{скил}`, которого нет")
