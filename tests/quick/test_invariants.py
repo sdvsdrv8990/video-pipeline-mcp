@@ -44,6 +44,7 @@ from invariants import (  # noqa: E402
     declaration_loaded_privately,
     module_without_reader,
     muted_refusal,
+    key_without_record,
     status_off_registry,
     suites_off_catalog,
     record_field_mismatch,
@@ -187,6 +188,20 @@ ok(not resources_off_inventory(make({"config/x.yaml": "y: 1"})),
 RES_NOLIMIT = "default: inline\nclasses:\n  inline: {offload: false}\n  gpu: {offload: true}\ntools:\n  media_generate: gpu\n"
 ok(len(resources_off_inventory(make({"config/resources.yaml": RES_NOLIMIT, INV_PATH: INV}))) == 1,
    "класс снимается с цикла без предела — сто вызовов поднимут сто потоков")
+
+print("\n== ключ улики в реестре не поднимается ==")
+ЖУРНАЛ = {"tests/.journal/stamps-20260101.jsonl": '{"key": "ab12", "kind": "гейт", "role": "РЕШЕНИЕ", "what": "живая запись"}' + "\n"}
+ok(not key_without_record(make({**ЖУРНАЛ, "tests/CATALOG.md": "| M1 | мутация | f.py | набор | 🔴 ловит 1 (⟦vpm ab12⟧) |"})),
+   "ключ, поднимающий запись, претензий не вызывает")
+плохо = key_without_record(make({**ЖУРНАЛ, "tests/CATALOG.md": "| M1 | мутация | f.py | набор | 🔴 ловит 1 (⟦vpm dead⟧) |"}))
+ok(len(плохо) == 1 and "не поднимается" in плохо[0],
+   "МЁРТВЫЙ ключ в реестре мутаций — отказ: значок рядом с ним обещание, а не улика")
+ok(len(key_without_record(make({**ЖУРНАЛ, "docs/roadmap/02_findings.md": "| F1 | 🟠 | беда | пруф ⟦vpm dead⟧ | зона |"}))) == 1,
+   "реестр находок судится тем же правилом: ключ в колонке пруфа обязан подниматься")
+ok(not key_without_record(make({"tests/CATALOG.md": "| M1 | мутация | f.py | набор | 🔴 ловит 1 (⟦vpm dead⟧) |"})),
+   "журнала подписей НЕТ — улики нет, а не обвинение каждому ключу (чужая машина, чистый клон)")
+ok(not key_without_record(make({**ЖУРНАЛ, "docs/roadmap/_sessions.md": "ошибка: вписал ⟦vpm dead⟧ вместо живого"})),
+   "ЖУРНАЛ не судится: он хранит ошибку дословно, и цитата мёртвого ключа законна")
 
 print("\n== статус находки мимо реестра ==")
 REG = "| ~~F1~~ | ✅ | закрыта |\n| F2 | 🟠 | открыта |\n"

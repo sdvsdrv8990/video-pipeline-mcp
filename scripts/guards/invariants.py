@@ -1924,6 +1924,37 @@ def сменённые(окно: list[dict]) -> set[str]:
     return смена
 
 
+РЕЕСТРЫ_КЛЮЧЕЙ = (("tests", "CATALOG.md"), ("docs", "roadmap", "02_findings.md"))
+КЛЮЧ_УЛИКИ = re.compile(r"⟦vpm ([0-9a-f]{4})⟧")
+
+
+def key_without_record(root: Path = ROOT) -> list[str]:
+    """Ключ улики, названный РЕЕСТРОМ, обязан поднимать запись: иначе значок рядом с ним — обещание.
+
+    Судятся только реестры — каталог мутаций и реестр находок: там ключ ЕСТЬ утверждение «улика
+    существует». Журнал сессий не судится НАМЕРЕННО: он хранит сказанное дословно, включая мёртвый
+    ключ, названный примером мёртвого ключа, и ось, запретившая такую цитату, заставила бы стирать
+    память об ошибке.
+
+    Журнала подписей нет (он вне git: чужая машина, чистый клон) — улики нет, а не все ключи разом.
+    """
+    if not list(root.joinpath("tests", ".journal").glob("stamps-*.jsonl")):
+        return []
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import _stamp
+    notes = []
+    for части in РЕЕСТРЫ_КЛЮЧЕЙ:
+        файл = _at(root, части)
+        if not файл.exists():
+            continue
+        текст = файл.read_text(encoding="utf-8", errors="replace")
+        for ключ in sorted(set(КЛЮЧ_УЛИКИ.findall(текст))):
+            if not _stamp.find(ключ, root):
+                notes.append(f"{'/'.join(части)}: ключ `⟦vpm {ключ}⟧` не поднимается — "
+                             f"значок рядом с ним обещание, а не улика")
+    return notes
+
+
 def cycle_tautology(root: Path = ROOT) -> list[str]:
     """Ожидания цикла, выводимые из текста собственной правки: прогон их не проверяет."""
     окно = окно_циклов(root)
