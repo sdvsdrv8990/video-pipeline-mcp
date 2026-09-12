@@ -103,7 +103,8 @@ def main() -> int:
     if named is not None:
         return 0
     return _verdict.close("реестр находок", 0,
-                          ".venv/bin/python scripts/guards/findings_count.py --check")
+                          ".venv/bin/python scripts/guards/findings_count.py --check",
+                          улика="есть")
 
 
 if __name__ == "__main__":

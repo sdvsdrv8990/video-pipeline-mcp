@@ -433,9 +433,11 @@ def main() -> int:
     ap.add_argument("paths", nargs="*", help="цели для --scan")
     a = ap.parse_args()
     if a.check:
+        # Потолок обязателен: без него `cmd_check` выходит отказом, поэтому сюда попадает
+        # только прогон, у которого источник читался.
         return _verdict.close("текст в коде", cmd_check(),
                               ".venv/bin/python scripts/guards/comment_guard.py --check",
-                              точный=False)
+                              точный=False, улика="есть")
     if a.bless:
         return cmd_bless()
     if a.scan:

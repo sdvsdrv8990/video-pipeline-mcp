@@ -74,6 +74,10 @@ def main() -> int:
     текстовые, кодовые, новые = разбор(a.ревизия)
     if not (текстовые or кодовые or новые):
         print(f"тронутых файлов .py против {a.ревизия} нет — сверять нечего")
+        if getattr(a, "только_текст"):
+            return _verdict.close("правка текстовая", 0,
+                                  ".venv/bin/python scripts/guards/text_only.py --только-текст",
+                                  улика="нет", почему_молчит=f"против {a.ревизия} не тронут ни один .py")
         return 0
     print(f"правка текстовая ({len(текстовые)}): {', '.join(текстовые) or '—'}")
     for строка in кодовые:
@@ -84,10 +88,12 @@ def main() -> int:
         print(f"\nУтверждение «правка только текстовая» НЕВЕРНО: файлов с задетым кодом "
               f"{len(кодовые)}. Набор этого не покажет — он остаётся зелёным.")
         return _verdict.close("правка текстовая", 1,
-                              ".venv/bin/python scripts/guards/text_only.py --только-текст")
+                              ".venv/bin/python scripts/guards/text_only.py --только-текст",
+                              улика="есть")
     if getattr(a, "только_текст"):
         return _verdict.close("правка текстовая", 0,
-                              ".venv/bin/python scripts/guards/text_only.py --только-текст")
+                              ".venv/bin/python scripts/guards/text_only.py --только-текст",
+                              улика="есть")
     return 0
 
 

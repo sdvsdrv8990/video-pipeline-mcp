@@ -2929,6 +2929,33 @@ def _немые(root: Path = ROOT) -> dict[str, str]:
     return немые
 
 
+def judge_without_evidence_state(root: Path = ROOT) -> list[str]:
+    """Судья подписывает вердикт, не объявив СОСТОЯНИЯ своей улики.
+
+    Ноль находок значит и «смотрел — чисто», и «смотреть было не на что», а подпись хранит только
+    число: снять улику по состоянию судьи нечем, и дыра отличается от чистоты вкусом. Объявляется
+    состояние ключом `улика=` у общей двери вердикта — там оно и попадает в роспись прогона.
+    """
+    дом = _at(root, GUARDS)
+    if not дом.is_dir():
+        raise НетУлики("каталога сторожей в этом дереве нет — чьи вердикты разбирать, неизвестно")
+    notes = []
+    for файл in sorted(дом.glob("*.py")):
+        try:
+            дерево = ast.parse(файл.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for узел in ast.walk(дерево):
+            if not isinstance(узел, ast.Call) or getattr(узел.func, "attr", "") not in ("close", "stamp"):
+                continue
+            if getattr(getattr(узел.func, "value", None), "id", "") != "_verdict":
+                continue
+            if not any(к.arg == "улика" for к in узел.keywords):
+                notes.append(f"{файл.name}:{узел.lineno} вердикт подписывается без `улика=`: "
+                             f"ноль находок в этой записи неотличим от «источника не было»")
+    return notes
+
+
 def scenarios_without_destructive(root: Path = ROOT) -> list[str]:
     """Зона объявленных сценариев, в которой разрушение не пробовал никто.
 
@@ -3255,7 +3282,7 @@ def main() -> int:
                    зона="сторожа", root=root)
     return _verdict.close("инварианты", нарушений,
                           ".venv/bin/python scripts/guards/invariants.py --check", root=root,
-                          детали={"оси": поимённо})
+                          детали={"оси": поимённо}, улика="есть")
 
 
 if __name__ == "__main__":

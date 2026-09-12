@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 from invariants import (  # noqa: E402
     НетУлики, axis_silent_without_reason, axis_undeclared, _немые, _шаг_оси,
-    scenarios_without_destructive,
+    scenarios_without_destructive, judge_without_evidence_state,
     codes_outside_registry, codes_without_emitter, dead_recovery_in_engine,
     declared_but_unscripted, default_instead_of_declaration, enum_without_values,
     facts_exempt_from_observation, facts_outside_registry, facts_without_emitter,
@@ -2023,6 +2023,20 @@ _кривое = scenarios_without_destructive(make({"tests/scenarios/спор.ya
     "- scenario: s\n  why: спор\n  род: положительный\n  when:\n    - call: t\n      expect: {ok: false}\n"}))
 ok(_кривое and "не разбирается" in _кривое[0],
    "объявление, спорящее с ожиданием, названо строкой отчёта, а не падением всего сторожа")
+
+print("\n== судья не объявил состояния улики ==")
+БЕЗ_СОСТОЯНИЯ = "import _verdict\n_verdict.close('судья', 0, 'cmd')\n"
+С_СОСТОЯНИЕМ = "import _verdict\n_verdict.close('судья', 0, 'cmd', улика='есть')\n"
+ЧУЖОЙ_CLOSE = "import io\nio.close('x')\nfile.close()\n"
+_без = judge_without_evidence_state(make({"scripts/guards/немой.py": БЕЗ_СОСТОЯНИЯ}))
+ok(len(_без) == 1 and "немой.py" in _без[0],
+   "вердикт без `улика=` назван поимённо: по такой подписи состояние судьи не снять")
+ok(not judge_without_evidence_state(make({"scripts/guards/честный.py": С_СОСТОЯНИЕМ})),
+   "объявивший состояние молчит — долг закрывается ОБЪЯВЛЕНИЕМ, а не обещанием")
+ok(not judge_without_evidence_state(make({"scripts/guards/чужой.py": ЧУЖОЙ_CLOSE})),
+   "чужой `close` вердиктом не считается: судится вызов ОБЩЕЙ двери, а не похожее имя")
+ok("каталога сторожей" in отказ(judge_without_evidence_state, make({"README.md": "x"})),
+   "каталога сторожей нет — отказ судить назван, а не «все судьи объявили состояние»")
 
 if _fails:
     print("ПРОВАЛЫ:")
