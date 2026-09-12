@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
-"""
-scripts/spec_to_schema.py — мост `spec/schemas/*.schema.md` → `config/templates/tables/*.schema.yaml`.
+"""scripts/spec_to_schema.py — мост: спека книги прозой становится объявлением схемы.
 
-Спеки книг владелец вёл прозой с размеченными markdown-таблицами; целевой формат — YAML
-(`docs/roadmap/spec/TABLE_SCHEMA_FORMAT.md`). Разбор механический, но НЕ безошибочный:
-результат — черновик под вычитку, а не истина. Приёмка конвертера — регенерация уже
-собранной руками `network_config` и сравнение с ней (`--verify`).
+Спеки книг владелец вёл прозой с размеченными таблицами, а целевой формат — объявление. Разбор
+механический, но НЕ безошибочный: результат есть черновик под вычитку, а не истина. Приёмка самого
+конвертера — регенерация уже собранной руками книги и сравнение с ней.
 
-Использование:
     python3 scripts/spec_to_schema.py --verify                 # приёмка на эталоне
     python3 scripts/spec_to_schema.py --book channel_data      # черновик одной книги в stdout
     python3 scripts/spec_to_schema.py --all --write            # записать все недостающие
