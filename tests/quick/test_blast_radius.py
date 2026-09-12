@@ -38,7 +38,7 @@ def run(sites, touched=(("core/x.py", "target"),)) -> str:
     """Прогон оси на подставленном ответе графа: живой сервер сюда не зовётся."""
     out = io.StringIO()
     with redirect_stdout(out):
-        br.static_blind(set(touched), ask=lambda names: sites)
+        br.static_blind(set(touched), ask=lambda names, где=None: sites)
     return out.getvalue()
 
 
@@ -76,6 +76,65 @@ def main() -> int:
 
     print("§5 пустой вход")
     ok(run({}, touched=()) == "", "нечего трогать — нечего и печатать")
+
+    print("§10 имя, которого граф НЕ ЗНАЕТ, не выдаётся за «вызывающих нет»")
+    # Источник отвечает `No symbol named "X" found.` — строки нет в ABSENT, поэтому она
+    # превращалась в пустой список, а читатель печатал успокоение на нулевой улике.
+    text = run({})
+    ok("улики нет" in text, "§10 молчание графа названо молчанием")
+    ok("молчащих вызывающих у тронутых функций нет" not in text,
+       "§10 успокоительный вердикт на нулевой улике не печатается")
+    text = run({"target": []})
+    ok("молчащих вызывающих" in text and "улики нет" not in text,
+       "§10 граф ЗНАЕТ символ и вызывающих не нашёл — это улика, а не молчание")
+
+    print("§12 чужая формулировка отказа тоже значит «улики нет» — перечислять беды нельзя")
+    чужая = 'Error: unknown symbol "target" in project'
+    ответ = _symbol_graph.callers(["target"], ask=lambda имя: чужая)
+    ok(ответ is not None and "target" not in ответ,
+       "§12 ответ, не объявивший символа, уликой не считается при ЛЮБОЙ формулировке")
+
+    print("§13 однофамилец из другого файла — улика ЛОЖНАЯ, и она не берётся")
+    чужой_дом = ("Symbol: Engine.register (method)\nDefined: core/engine/engine.py:114–133  [python]\n\n"
+                 "Callers (2):\n  ← server.py:166\n  ← server.py:167\n")
+    ответ = _symbol_graph.callers(["register"], ask=lambda имя: чужой_дом,
+                                  где={"register": "core/firewall/firewall.py"})
+    ok(ответ is not None and "register" not in ответ,
+       "§13 объявлен символ из ДРУГОГО файла — улики по тронутому нет")
+    ответ = _symbol_graph.callers(["register"], ask=lambda имя: чужой_дом,
+                                  где={"register": "core/engine/engine.py"})
+    ok(ответ is not None and ответ.get("register") == ["server.py:166", "server.py:167"],
+       "§13 объявлен ТОТ ЖЕ файл — улика берётся")
+    ok(_symbol_graph.объявление(чужой_дом) == ("Engine.register", "core/engine/engine.py"),
+       "§13 объявление ответа разбирается: символ и его файл")
+    ok(_symbol_graph.объявление(чужая) is None, "§13 ответ без объявления даёт None, а не пустую пару")
+
+    print("§14 пустой вход и повтор: «не спрашивали» отличимо от «спросили и не знаем»")
+    спрошено: list[str] = []
+    def считающий(имя: str) -> str:
+        спрошено.append(имя)
+        return чужой_дом
+    прежний = _symbol_graph._Server
+    def запрет(*_а, **_к):
+        raise OSError("источник поднят на ПУСТОМ входе")
+    _symbol_graph._Server = запрет
+    try:
+        ok(_symbol_graph.callers([]) == {},
+           "§14 пустой вход не поднимает источник и отвечает пустым словарём, а не None")
+    finally:
+        _symbol_graph._Server = прежний
+    _symbol_graph.callers(["register", "register"], ask=считающий, где={"register": "core/engine/engine.py"})
+    ok(спрошено == ["register"], "§14 повтор имени спрашивается ОДИН раз: подъём источника стоит секунды")
+
+    print("§11 контракт ответа: неизвестное имя отсутствует, известное — присутствует")
+    известный = ("Symbol: safe_resolve (function)\nDefined: core/paths.py:50–67  [python]\n\n"
+                 "Callers (1):\n  ← core/secrets.py:77\n")
+    образцы = {"safe_resolve": известный, "нет_такого": 'No symbol named "нет_такого" found.'}
+    ответ = _symbol_graph.callers(["safe_resolve", "нет_такого"], ask=lambda имя: образцы[имя])
+    ok(ответ is not None and ответ.get("safe_resolve") == ["core/secrets.py:77"],
+       "§11 известный символ несёт свои точки вызова")
+    ok(ответ is not None and "нет_такого" not in ответ,
+       "§11 неизвестное имя ОТСУТСТВУЕТ в ответе: улики нет — не пустой список")
 
     print("§7 деревья замера берутся из ОБЪЯВЛЕНИЯ, а не зашиты")
     радиус = br._measured_files("радиус")
