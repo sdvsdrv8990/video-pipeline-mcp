@@ -1,14 +1,4 @@
-"""
-core/reactions/__init__ — Точка входа для reactions
-
-## Назначение
-Из любого места сервера:
-    from core.reactions import Reactions
-
-## Архитектурные связи
-- Использует: config/server_reactions.yaml (конфигурация)
-- Использует: core.contracts (ErrorDetail, Recovery)
-"""
+"""core/reactions — отказ сервера по объявлению: класс, текст и рецепт восстановления."""
 
 from .reactions import Reactions
 

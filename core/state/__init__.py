@@ -1,14 +1,4 @@
-"""
-core/state/__init__ — Точка входа для state
-
-## Назначение
-Из любого места сервера:
-    from core.state import StateManager
-
-## Архитектурные связи
-- Использует: workspace/ (данные)
-- Используется: tools/tables, tools/filesystem
-"""
+"""core/state — состояние рабочей области: снимок для чтения и очередь записи."""
 
 from .state_manager import StateManager
 
