@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 from invariants import (  # noqa: E402
     НетУлики, axis_silent_without_reason, axis_undeclared, _немые, _шаг_оси,
+    scenarios_without_destructive,
     codes_outside_registry, codes_without_emitter, dead_recovery_in_engine,
     declared_but_unscripted, default_instead_of_declaration, enum_without_values,
     facts_exempt_from_observation, facts_outside_registry, facts_without_emitter,
@@ -2000,6 +2001,28 @@ ok("нет" == [у["факт"] for у in _отказ["условия"] if у["и
 _вслепую = _шаг_оси("ось", _ось("чистая"), [], "", None)
 ok("не объявлено" in str(_вслепую["условия"]),
    "разбор не поднялся — ни одна молчащая ось не записывается чистой: улики на чистоту нет")
+
+print("\n== зона сценариев без разрушительного ==")
+ПОЛОЖИТЕЛЬНЫЙ = "- scenario: s1\n  why: работает\n  when:\n    - call: t\n      expect: {ok: true}\n"
+ОТРИЦАТЕЛЬНЫЙ = "- scenario: s2\n  why: отказ\n  when:\n    - call: t\n      expect: {ok: false}\n"
+РАЗРУШИТЕЛЬНЫЙ = ("- scenario: s3\n  why: сносим\n  род: разрушительный\n  when:\n"
+                  "    - call: t\n      expect: {ok: false}\n")
+_зоны = make({"tests/scenarios/удача.yaml": ПОЛОЖИТЕЛЬНЫЙ + ОТРИЦАТЕЛЬНЫЙ,
+              "tests/scenarios/снос.yaml": ПОЛОЖИТЕЛЬНЫЙ + РАЗРУШИТЕЛЬНЫЙ})
+_дыры = scenarios_without_destructive(_зоны)
+ok(len(_дыры) == 1 and "удача.yaml" in _дыры[0],
+   "названа зона, где разрушение не пробовал никто: положительный и отрицательный её не закрывают")
+ok(not any("снос.yaml" in д for д in _дыры),
+   "зона с объявленным разрушительным молчит — долг закрывается ОБЪЯВЛЕНИЕМ рода, а не именем файла")
+ok("каталога объявленных сценариев" in отказ(scenarios_without_destructive, make({"README.md": "x"})),
+   "каталога сценариев нет — отказ судить назван, а не «зон без разрушительного ноль»")
+ok("нет ни одного файла" in отказ(scenarios_without_destructive,
+                                  make({"tests/scenarios/.keep": ""})),
+   "каталог есть, а файлов нет — тоже отказ: пустой счёт прочитался бы как покрытие")
+_кривое = scenarios_without_destructive(make({"tests/scenarios/спор.yaml":
+    "- scenario: s\n  why: спор\n  род: положительный\n  when:\n    - call: t\n      expect: {ok: false}\n"}))
+ok(_кривое and "не разбирается" in _кривое[0],
+   "объявление, спорящее с ожиданием, названо строкой отчёта, а не падением всего сторожа")
 
 if _fails:
     print("ПРОВАЛЫ:")

@@ -2929,6 +2929,30 @@ def _немые(root: Path = ROOT) -> dict[str, str]:
     return немые
 
 
+def scenarios_without_destructive(root: Path = ROOT) -> list[str]:
+    """Зона объявленных сценариев, в которой разрушение не пробовал никто.
+
+    Род сценария разбирает дом объявлений (`tests/harness/scenario.py`), здесь — только счёт по
+    зонам: где все сценарии положительные и отрицательные, проверены исправная работа и
+    объявленный отказ, а снос состояния в такой зоне первым пробует владелец на своих данных.
+    """
+    дом = _at(root, ("tests", "scenarios"))
+    if not дом.is_dir():
+        raise НетУлики("каталога объявленных сценариев в этом дереве нет")
+    sys.path.insert(0, str(ROOT))
+    from tests.harness.scenario import ScenarioError, роды
+    try:
+        свод = роды(дом)
+    except ScenarioError as сбой:
+        return [f"tests/scenarios: объявление не разбирается — {сбой}"]
+    if not свод:
+        raise НетУлики("в каталоге сценариев нет ни одного файла объявлений")
+    return [f"tests/scenarios/{файл}: ни одного РАЗРУШИТЕЛЬНОГО сценария — проверены исправная "
+            f"работа и отказ, а снос состояния в этой зоне не пробовал никто"
+            for файл, сценарии in sorted(свод.items())
+            if сценарии and "разрушительный" not in сценарии.values()]
+
+
 def axis_silent_without_reason(root: Path = ROOT) -> list[str]:
     """Ось уходит в молчание, не назвав причины: «чисто» и «смотреть не на что» — одно и то же.
 

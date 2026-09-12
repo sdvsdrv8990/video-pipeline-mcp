@@ -16,6 +16,7 @@ import yaml
 
 from tests.harness import live_server
 from tests.harness.scenario import (Journal, Runner, ScenarioError, Step, Vocabulary, _steps,
+                                    род_сценария,
                                     load, scenario_files)
 from tests.harness.scenario_map import MapRunner, analyse, load_map, plan
 from tests.scenarios.steps import STEPS
@@ -57,6 +58,30 @@ def _language() -> list[str]:
             "отказ команды без кода возврата — «просто упало» не ожидание")
     accepts({"run": "scripts/guards/invariants.py", "with": {"args": ["--check"]},
              "expect": {"ok": True, "exit": 0}}, "полное объявление команды")
+
+    def род_отвергнут(item: dict, because: str) -> None:
+        try:
+            род_сценария(item, "проба")
+        except ScenarioError:
+            return
+        bad.append(f"род принят, а не должен: {because}")
+
+    отказный = {"when": [{"call": "t", "expect": {"ok": False}}]}
+    удачный = {"when": [{"call": "t", "expect": {"ok": True}}]}
+    род_отвергнут({**отказный, "род": "положительный"},
+                  "род положительный при шаге, ждущем отказа")
+    род_отвергнут({**удачный, "род": "отрицательный"},
+                  "род отрицательный, а отказа не ждёт ни один шаг")
+    род_отвергнут({**удачный, "род": "деструктивный"}, "род не из словаря")
+    for item, ждём, why in ((удачный, "положительный", "выведен из ожиданий: все шаги удачны"),
+                            (отказный, "отрицательный", "выведен из ожиданий: шаг ждёт отказа"),
+                            ({**отказный, "род": "разрушительный"}, "разрушительный",
+                             "объявленное разрушение не подменяется выводом"),
+                            ({**удачный, "род": "разрушительный"}, "разрушительный",
+                             "разрушение не обязано ждать отказа: снос бывает и успешным")):
+        вышло = род_сценария(item, "проба")
+        if вышло != ждём:
+            bad.append(f"род определён как `{вышло}`, ждали `{ждём}` ({why})")
 
     runner = Runner(None, None, {})
     for target, why in (("../секрет.txt", "цель вне репозитория"),

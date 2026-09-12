@@ -252,6 +252,31 @@ def main() -> int:
     finally:
         br._evidence.горячие = настоящее
 
+    print("§покрытие РОДАМИ: чего в зоне не пробовал никто")
+    зоны = Path(tempfile.mkdtemp(prefix="vpm_роды_")) / "tests" / "scenarios"
+    зоны.mkdir(parents=True)
+    (зоны / "удача.yaml").write_text(
+        "- scenario: s1\n  why: работает\n  when:\n    - call: t\n      expect: {ok: true}\n",
+        encoding="utf-8")
+    (зоны / "снос.yaml").write_text(
+        "- scenario: s2\n  why: сносим\n  род: разрушительный\n  when:\n"
+        "    - call: t\n      expect: {ok: false}\n", encoding="utf-8")
+    буфер = io.StringIO()
+    with redirect_stdout(буфер):
+        код = br.показ_родов(зоны.parents[1])
+    показ = буфер.getvalue()
+    ok(код == 0 and "удача.yaml" in показ.splitlines()[-1],
+       "зона без разрушительного названа ПОИМЁННО в итоге, а не только числом")
+    ok("разрушительных 1" in показ,
+       "счёт по родам печатается: покрытие зоны стало числом, а не впечатлением")
+    пусто = Path(tempfile.mkdtemp(prefix="vpm_роды_пусто_"))
+    (пусто / "tests" / "scenarios").mkdir(parents=True)
+    буфер = io.StringIO()
+    with redirect_stdout(буфер):
+        код = br.показ_родов(пусто)
+    ok(код == 1 and "не по чему" in буфер.getvalue(),
+       "объявлений нет — читатель говорит это отказом, а не печатает нулевое покрытие")
+
     print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")
     for fail in _fails:
         print(f"  ✗ {fail}")

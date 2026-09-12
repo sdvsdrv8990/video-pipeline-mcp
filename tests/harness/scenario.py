@@ -22,7 +22,10 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 
-SCENARIO_KEYS = {"scenario", "why", "given", "when", "then"}
+SCENARIO_KEYS = {"scenario", "why", "род", "given", "when", "then"}
+# Роды объявлены СПИСКОМ: свободное слово здесь означало бы, что покрытие зоны родами нельзя
+# посчитать — а именно счёт и отличает механизм от понятия.
+РОДЫ = ("положительный", "отрицательный", "разрушительный")
 GIVEN_KEYS = {"files"}
 STEP_KEYS = {"call", "python", "rpc", "run", "headers", "token", "repeat", "with", "as", "expect"}
 EXPECT_KEYS = {"ok", "code", "class", "recovery", "facts", "data", "data_contains",
@@ -118,6 +121,7 @@ class Scenario:
     when: list[Step]
     then: list[Step]
     source: Path
+    род: str = "положительный"
 
 
 def _reject_unknown(got: dict, allowed: set[str], where: str) -> None:
@@ -212,6 +216,51 @@ def scenario_files(directory: Path) -> list[Path]:
     return [p for p in sorted(directory.glob("*.yaml")) if not p.name.endswith(".map.yaml")]
 
 
+def _ждёт_отказа(item: dict) -> bool:
+    """Хоть один шаг объявления ждёт отказа. Разбор по ОБЪЯВЛЕНИЮ, а не по прогону: род сценария
+    обязан читаться до сервера, иначе покрытие зоны узнаётся только после полного прогона."""
+    return any(isinstance((шаг or {}).get("expect"), dict) and (шаг or {})["expect"].get("ok") is False
+               for ключ in ("when", "then") for шаг in (item.get(ключ) or []))
+
+
+def род_сценария(item: dict, where: str) -> str:
+    """Род сценария: ОБЪЯВЛЕННЫЙ, либо выведенный из ожиданий его шагов.
+
+    Разрушительный не выводится ничем: разрушение — это то, что сценарий ДЕЛАЕТ с состоянием
+    (сносит зарегистрированный файл, режет колонку под формулой, вырезает источник улики), а не
+    то, чего он ждёт в ответ. Поэтому он объявляется, а объявление, спорящее с ожиданиями, —
+    отказ загрузки: род, которым можно назвать любой сценарий, не отличает ни одного.
+    """
+    отказы = _ждёт_отказа(item)
+    объявлен = str(item.get("род") or "").strip()
+    if объявлен and объявлен not in РОДЫ:
+        raise ScenarioError(f"{where}: род `{объявлен}` не объявлен; известны {list(РОДЫ)}")
+    if объявлен == "положительный" and отказы:
+        raise ScenarioError(f"{where}: род объявлен положительным, а шаг ждёт отказа — "
+                            "объявление спорит с ожиданием, и счёт покрытия родами станет ложью")
+    if объявлен == "отрицательный" and not отказы:
+        raise ScenarioError(f"{where}: род объявлен отрицательным, а отказа не ждёт ни один шаг — "
+                            "назови шаг с `ok: false` либо не объявляй род")
+    return объявлен or ("отрицательный" if отказы else "положительный")
+
+
+def роды(directory: Path) -> dict[str, dict[str, str]]:
+    """{файл: {сценарий: род}} по каталогу объявлений — читатель покрытия зоны родами.
+
+    Сервер не поднимается и словарь реакций не нужен: род живёт в объявлении, и спрашивать его
+    прогоном значило бы платить за вопрос «что у нас вообще есть» полным кругом сценариев.
+    """
+    свод: dict[str, dict[str, str]] = {}
+    for path in scenario_files(directory):
+        raw = read_yaml(path)
+        if not isinstance(raw, list):
+            continue
+        свод[path.name] = {str((item or {}).get("scenario") or "?"):
+                           род_сценария(item or {}, f"{path.name}:{(item or {}).get('scenario')}")
+                           for item in raw}
+    return свод
+
+
 def load(path: Path, vocab: Vocabulary) -> list[Scenario]:
     """Сценарии файла. Кривое объявление падает ЗДЕСЬ — до сервера, до первого вызова."""
     raw = read_yaml(path)
@@ -229,7 +278,7 @@ def load(path: Path, vocab: Vocabulary) -> list[Scenario]:
         given = dict(item.get("given") or {})
         _reject_unknown(given, GIVEN_KEYS, f"{where}.given")
         out.append(Scenario(
-            id=sid, why=str(item["why"]).strip(),
+            id=sid, why=str(item["why"]).strip(), род=род_сценария(item, where),
             files={str(k): str(v) for k, v in (given.get("files") or {}).items()},
             when=_steps(item.get("when") or [], vocab, f"{where}.when"),
             then=_steps(item.get("then") or [], vocab, f"{where}.then"),

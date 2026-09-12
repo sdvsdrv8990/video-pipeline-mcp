@@ -534,6 +534,35 @@ def blind() -> int:
     return 0
 
 
+def показ_родов(root: Path = ROOT) -> int:
+    """Покрытие зоны РОДАМИ сценариев: положительный · отрицательный · разрушительный.
+
+    Радиус покрытия — это не только «сколько сценариев стоит на строке», но и «какого они рода».
+    Зона, где все сценарии положительные, проверяет удачу: разрушение состояния в ней не пробовал
+    никто, и первым его пробует владелец на своих данных.
+    """
+    sys.path.insert(0, str(root))
+    from tests.harness.scenario import РОДЫ, роды
+    свод = роды(root / "tests" / "scenarios")
+    if not свод:
+        print("объявленных сценариев нет — покрытие родами считать не по чему")
+        return 1
+    знак = {"положительный": "+", "отрицательный": "−", "разрушительный": "✗"}
+    пусто = []
+    for файл, сценарии in свод.items():
+        счёт = {род: sum(1 for р in сценарии.values() if р == род) for род in РОДЫ}
+        строка = "  ".join(f"{знак[род]} {счёт[род]:2}" for род in РОДЫ)
+        print(f"{файл:28} {строка}")
+        if сценарии and not счёт["разрушительный"]:
+            пусто.append(файл)
+    всего = {род: sum(1 for с in свод.values() for р in с.values() if р == род) for род in РОДЫ}
+    print(f"\nвсего: положительных {всего['положительный']} · отрицательных "
+          f"{всего['отрицательный']} · разрушительных {всего['разрушительный']}")
+    print(f"зон без единого разрушительного: {len(пусто)} из {len(свод)}"
+          + (f" — {', '.join(пусто)}" if пусто else ""))
+    return 0
+
+
 def main() -> int:
     try:                                       # след: без отметки механизм выглядит пылящимся
         sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
@@ -548,6 +577,8 @@ def main() -> int:
     parser.add_argument("--check-routes", action="store_true")
     parser.add_argument("--affected", action="store_true")
     parser.add_argument("--blind", action="store_true")
+    parser.add_argument("--роды", action="store_true",
+                        help="покрытие зоны родами сценариев (не отказ)")
     parser.add_argument("--горячие", action="store_true",
                         help="показ: где правка дороже средней (не отказ)")
     parser.add_argument("--bless", action="store_true")
@@ -570,6 +601,8 @@ def main() -> int:
         return _verdict.close("рубежи потоков", check_routes(),
                               ".venv/bin/python scripts/guards/blast_radius.py --check-routes",
                               точный=False)
+    if getattr(args, "роды"):
+        return показ_родов()
     if args.горячие:
         return показ_горячих()
     if args.blind:
@@ -577,7 +610,7 @@ def main() -> int:
                               ".venv/bin/python scripts/guards/blast_radius.py --blind",
                               точный=False)
     if not any([args.build, args.query, args.changed, args.check_routes, args.affected,
-                args.blind, args.горячие]):
+                args.blind, args.горячие, getattr(args, "роды")]):
         parser.print_help()
     return 0
 

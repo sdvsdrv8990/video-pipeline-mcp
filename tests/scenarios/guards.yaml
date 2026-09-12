@@ -98,3 +98,25 @@
     - run: scripts/guards/findings_count.py
       with: {args: ["--check", "--root", "${floorless.path}"]}
       expect: {ok: false, exit: 2, console: "пола нет"}
+
+# Разрушительный род: состояние не «неверно заполнено», а ВЫРЕЗАНО. Сторож, чей источник улики
+# снесли, обязан сказать это вслух: молчание здесь читается как чистота, и снятый источник
+# становится закрытым долгом.
+- scenario: guard_axes_say_refusal_when_evidence_is_cut
+  why: у сторожа вырезаны источники улики — он обязан назвать отказ судить, а не промолчать чистотой
+  род: разрушительный
+  given:
+    files:
+      вырезанное/scripts/guards/сторож.py: "x = 1\n"
+  when:
+    - python: workspace_path
+      with: {path: вырезанное}
+      as: cut
+      expect: {ok: true}
+    - run: scripts/guards/invariants.py
+      with: {args: ["--check", "--root", "${cut.path}"]}
+      expect:
+        ok: false
+        exit: 1
+        console: "сторож без набора-дома: не судится — нет каталога сторожей"
+        console_absent: "сторож без набора-дома: чисто"

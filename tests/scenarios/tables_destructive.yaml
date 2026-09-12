@@ -37,6 +37,7 @@
 
 - scenario: ed4_last_sheet
   why: книга без единого листа — битый файл; удаление последнего обязано упереться в guard
+  род: разрушительный
   when:
     - call: excel_create_workbook
       with: {path: books/single.xlsx, sheet: DATA}
@@ -47,6 +48,7 @@
 
 - scenario: ed5_delete_column_under_formula
   why: удаление столбца под формулой корраптит книгу молча — отказ обязан назвать зависимые ячейки
+  род: разрушительный
   when:
     - call: excel_create_workbook
       with: {path: books/plan.xlsx, sheet: DATA}
@@ -75,6 +77,7 @@
 
 - scenario: ed6_move_column_under_formula
   why: перенос столбца сдвигает данные под формулой и даёт валидную-но-неверную ссылку, а не "#REF!"
+  род: разрушительный
   when:
     - call: excel_create_workbook
       with: {path: books/move.xlsx, sheet: DATA}
@@ -101,6 +104,7 @@
 
 - scenario: ed7_delete_row_through_queue
   why: удаление строки идёт очередью, и до применения снапшот обязан остаться прежним
+  род: разрушительный
   given:
     files:
       videos/v3/read.json: |
@@ -122,6 +126,7 @@
 
 - scenario: ed8_registered_file_delete
   why: снос книги, стоящей в реестре, требует подтверждения, а осознанный — снимает и запись
+  род: разрушительный
   when:
     - call: structure_create
       with: {type: niche, name: ed8, children: {network: [net], channel: [ch]}}
@@ -138,6 +143,7 @@
 
 - scenario: ed8b_file_vanished_outside_tools
   why: книга, исчезнувшая мимо инструментов, обязана всплыть как расхождение реестра с диском
+  род: разрушительный
   when:
     - call: structure_create
       with: {type: niche, name: ed8b, children: {network: [net], channel: [ch]}}
