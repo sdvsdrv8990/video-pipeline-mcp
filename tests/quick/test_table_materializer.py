@@ -1,7 +1,6 @@
 """
 tests/quick/test_table_materializer.py — A1′: материализация книг по .schema.yaml (фаза ТАБЛИЦЫ).
 
-Standalone-прогон:  python tests/quick/test_table_materializer.py
 Проверяет: e2e proof-схема network_config → .xlsx (листы/столбцы/enum-валидация/формулы),
 контракт ошибок (нет схемы, битая схема, книга уже есть), фаза по tables_pending
 (отказ одной книги не роняет соседние).

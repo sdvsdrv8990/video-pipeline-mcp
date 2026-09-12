@@ -1,7 +1,6 @@
 """
 tests/studio_emulation/test_studio_emulation.py — приёмка правки ИИ по React на эмуляции студии.
 
-Standalone-прогон:  python tests/studio_emulation/test_studio_emulation.py
 Проверяет ОБЕ стороны каждого условия приёмки (`scripts/guards/acceptance_studio.py`): проверка ловит
 своё нарушение на подставленной правке и молчит на чистом дереве. Предмет — эмуляция
 `app/`: студии на диске ещё нет, а правило без исполнителя не работает вовсе.

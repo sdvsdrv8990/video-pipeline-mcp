@@ -1,7 +1,6 @@
 """
 tests/structure_emulation/test_structure_emulation.py — E-матрица: эмуляция реальной работы ИИ.
 
-Standalone-прогон:  python tests/structure_emulation/test_structure_emulation.py
 Сервер поднимает себе сам (харнесс T2): свой порт, своя временная область, настоящий ключ.
 
 Отличие от `tests/quick/test_structure.py`: тот проверяет единицы (движок, реестр, инструмент),

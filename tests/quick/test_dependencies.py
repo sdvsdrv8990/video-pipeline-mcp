@@ -1,7 +1,6 @@
 """
 tests/quick/test_dependencies.py — объявленные зависимости и настоящие импорты обязаны сходиться.
 
-Standalone-прогон:  python tests/quick/test_dependencies.py
 Проверяет обе стороны: импорт мимо `pyproject.toml` (свежая установка не соберётся) и объявление,
 которое не читает никто. Читателем считается не только `import`: `ruff`/`bandit` зовут КОМАНДОЙ из
 `ci.yml`, а `setuptools` — строкой `[build-system]`.

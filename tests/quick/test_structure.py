@@ -1,7 +1,6 @@
 """
 tests/quick/test_structure.py — TemplateEngine (шаблоны структуры + контроль глубины).
 
-Standalone-прогон:  python tests/quick/test_structure.py
 Проверяет: niche-only, channel-минус-видео, названное видео → поддерево, отложенные
 таблицы (kind:table), пофрагментный контроль детей, PATH_ESCAPE, TEMPLATE_NOT_FOUND, ID узлов.
 """
