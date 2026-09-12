@@ -1738,7 +1738,7 @@ def memory_grew(root: Path = ROOT, memory: Path | None = None) -> list[str]:
         return [f"{MEMORY_SIZE_CEILING.name}: потолок не число — храповик не судит ничего"]
     объём = sum(len(f.read_text(encoding="utf-8", errors="replace")) for f in home.glob("*.md"))
     if объём <= потолок:
-        return []
+        return чисто()
     return [f"память выросла: {объём} символов при потолке {потолок} (+{объём - потолок}) — "
             f"выжимка вместо накопления, либо опусти потолок осознанно правкой "
             f"{MEMORY_SIZE_CEILING.name}"]
@@ -1961,7 +1961,7 @@ def key_without_record(root: Path = ROOT) -> list[str]:
     Журнала подписей нет (он вне git: чужая машина, чистый клон) — улики нет, а не все ключи разом.
     """
     if not list(root.joinpath("tests", ".journal").glob("stamps-*.jsonl")):
-        return []
+        raise НетУлики("журнала подписей в этом дереве нет — поднять ключи нечем")
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import _stamp
     notes = []
@@ -2213,7 +2213,7 @@ def evidence_roster_off_disk(root: Path = ROOT) -> list[str]:
     объявление = _at(root, EVIDENCE_DECL)
     дом = _at(root, GUARDS)
     if not объявление.exists() or not дом.is_dir():
-        return []
+        raise НетУлики("нет росписи улик или каталога сторожей — сверять словарь не с чем")
     try:
         свод = yaml.safe_load(объявление.read_text(encoding="utf-8")) or {}
     except yaml.YAMLError as beda:
@@ -2678,7 +2678,7 @@ def guard_without_home(root: Path = ROOT) -> list[str]:
     """
     directory, catalog = _at(root, GUARDS), _at(root, CATALOG)
     if not directory.is_dir() or not catalog.exists():
-        return []
+        raise НетУлики("нет каталога сторожей или tests/CATALOG.md — дома сверять не с чем")
     on_disk = {p.name for p in directory.glob("*.py") if not p.name.startswith("_")}
     housed: set[str] = set()
     for line in catalog.read_text(encoding="utf-8").splitlines():
@@ -2701,11 +2701,11 @@ def guards_off_catalog(root: Path = ROOT) -> list[str]:
     """
     directory = _at(root, GUARDS)
     if not directory.is_dir():
-        return []
+        raise НетУлики("каталога сторожей в этом дереве нет — зоны сверять не у кого")
     scripts = sorted(p for p in directory.glob("*.py") if not p.name.startswith("_"))
     zones = _zones_of(_at(root, GUARDS_CATALOG))
     if not scripts and not zones:
-        return []                      # ни сторожей, ни зон — обвинять некого и не в чем
+        return чисто()                 # ни сторожей, ни зон — обвинять некого и не в чем
     if not zones:
         return [f"{'/'.join(GUARDS_CATALOG)} — каталога зон нет, а сторожа есть: "
                 "правило «не плодить» держится дисциплиной, то есть не держится"]
@@ -2866,11 +2866,11 @@ def axis_undeclared(root: Path = ROOT) -> list[str]:
     файл = _at(root, ("scripts", "guards", "invariants.py"))
     декл = _at(root, ("scripts", "guards", "evidence.yaml"))
     if not файл.exists() or not декл.exists():
-        return []
+        raise НетУлики("нет invariants.py или evidence.yaml — сверять объявление не с чем")
     try:
         объявление = (yaml.safe_load(декл.read_text(encoding="utf-8")) or {}).get("оси") or {}
-    except yaml.YAMLError:
-        return []
+    except yaml.YAMLError as сбой:
+        raise НетУлики(f"evidence.yaml не разбирается ({сбой.__class__.__name__})") from сбой
     объявлены = {ось.get("читатель") for группа in объявление.values() for ось in группа or ()}
     notes = []
     for узел in ast.parse(файл.read_text(encoding="utf-8")).body:
@@ -2883,6 +2883,62 @@ def axis_undeclared(root: Path = ROOT) -> list[str]:
             notes.append(f"invariants.py:{узел.lineno} ось `{узел.name}` не объявлена в "
                          f"evidence.yaml (`оси`) — она не судит ничего")
     return notes
+
+
+def чисто() -> list[str]:
+    """«Смотрел — нарушений нет», сказанное ВСЛУХ: ранний выход оси, который значит чистоту.
+
+    Нужен потому, что `return []` значит и это, и «источника нет», и различить их по коду нельзя.
+    """
+    return []
+
+
+def _немые(root: Path = ROOT) -> dict[str, str]:
+    """{ось: место раннего пустого списка} — оси, чьё молчание сказано МОЛЧА.
+
+    Ранний `return []` значит «источника нет», но читателю отчёта показывает «чисто» — ровно тот
+    класс немого промаха, который мы ловим у чужого кода. Сказать вслух можно двумя способами:
+    `raise НетУлики(...)` — источника нет; `return чисто()` — смотрел, нарушений нет.
+
+    Судится КАЖДЫЙ выход, а не функция целиком: ось, сказавшая `НетУлики` в одной ветке, ничего не
+    обещает про молчание в другой, и разбор «в теле есть raise — верим всей» пропускал мутанта.
+    Последний `return` функции не в счёт: там пустой список законно значит то же «чисто», и слово
+    у ХВОСТА пришлось бы вписывать полусотне осей ни за чем.
+    """
+    файл = _at(root, ("scripts", "guards", "invariants.py"))
+    if not файл.exists():
+        raise НетУлики("invariants.py в этом дереве нет — разбирать нечего")
+    декл = _at(root, ("scripts", "guards", "evidence.yaml"))
+    if not декл.exists():
+        raise НетУлики("evidence.yaml в этом дереве нет: какие функции здесь оси — неизвестно")
+    try:
+        объявление = (yaml.safe_load(декл.read_text(encoding="utf-8")) or {}).get("оси") or {}
+    except yaml.YAMLError as сбой:
+        raise НетУлики(f"evidence.yaml не разбирается ({сбой.__class__.__name__})") from сбой
+    оси = {ось.get("читатель") for группа in объявление.values() for ось in группа or ()}
+    немые = {}
+    for узел in ast.parse(файл.read_text(encoding="utf-8")).body:
+        if not isinstance(узел, ast.FunctionDef) or узел.name not in оси:
+            continue
+        хвост = узел.body[-1]
+        ранние = [у for у in ast.walk(узел)
+                  if isinstance(у, ast.Return) and у is not хвост
+                  and isinstance(у.value, ast.List) and not у.value.elts]
+        if ранние:
+            немые[узел.name] = f"invariants.py:{ранние[0].lineno}"
+    return немые
+
+
+def axis_silent_without_reason(root: Path = ROOT) -> list[str]:
+    """Ось уходит в молчание, не назвав причины: «чисто» и «смотреть не на что» — одно и то же.
+
+    Долг считаемый: у оси либо есть `raise НетУлики(...)`, либо её пустой список объясняет только
+    автор, а отчёт печатает чистоту. Потолок опускается по мере перевода осей, и цена перевода
+    видна росписью прогона: молчащая ось с объявленной причиной называет её в следствии.
+    """
+    return [f"{место} ось `{имя}` молчит ранним пустым списком: скажи `raise НетУлики(«чего нет»)` "
+            f"или `return чисто()` — иначе отчёт выдаёт отсутствие источника за чистоту"
+            for имя, место in sorted(_немые(root).items())]
 
 
 def hook_false_unpinned(root: Path = ROOT) -> list[str]:
@@ -3036,6 +3092,32 @@ def карта_приёмки(root: Path = ROOT) -> int:
     return 0
 
 
+def _шаг_оси(title: str, читатель: Callable[..., object], notes: list[str],
+             нет_улики: str, немые: dict[str, str] | None) -> dict:
+    """Один проход оси, расписанный НАБОРОМ условий: исход, причина, следствие.
+
+    Раньше прогон оставлял после себя только число нарушений, и молчание оси было неотличимо от
+    её отсутствия: «смотрел, чисто», «смотреть не на что» и «ось сломана» печатались одинаково.
+    Здесь молчание называет разошедшееся условие поимённо, а `немые` — приговор разбора: ось,
+    которая молчать умеет, но причины не объявляет, не вправе отвечать «источник есть».
+    """
+    import _stamp
+    if нет_улики:
+        источник, следствие = "нет", нет_улики
+    elif notes:
+        источник, следствие = "есть", f"названо нарушений: {len(notes)}"
+    elif немые is None or читатель.__name__ in немые:
+        источник = "не объявлено"
+        следствие = ("молчит, а причина молчания не объявлена: чистота и отсутствие источника "
+                     "с этой записи неразличимы")
+    else:
+        источник, следствие = "есть", "смотрел — нарушений нет"
+    условия = [_stamp.условие("источник улики доступен", "есть", источник),
+               _stamp.условие("нарушение в дереве", "есть", "есть" if notes else "нет")]
+    return _stamp.строка_шага(title, "ось", условия,
+                              исход="сработал" if notes else "молчал", следствие=следствие)
+
+
 def main() -> int:
     try:                                       # след: без отметки механизм выглядит пылящимся
         sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
@@ -3057,6 +3139,11 @@ def main() -> int:
     failed, нарушений = False, 0
     # Значения разнородны намеренно: у судимой оси это числа, у отказавшейся — причина словами.
     поимённо: dict[str, dict[str, object]] = {}
+    ряды: list[dict] = []
+    try:                      # приговор разбора: какие оси молчать умеют, а причины не объявляют
+        немые: dict[str, str] | None = _немые(root)
+    except НетУлики:
+        немые = None
     for title, check in HARD:
         try:
             notes = check(root)
@@ -3064,9 +3151,11 @@ def main() -> int:
             # Ось без источника улики не молчит: её отказ — часть отчёта, иначе замер опирается
             # на строку, за которой ничего не проверялось.
             поимённо[title] = {"не судится": str(нет)}
+            ряды.append(_шаг_оси(title, check, [], str(нет), немые))
             if not quiet:
                 print(строка_оси(title, [], str(нет)))
             continue
+        ряды.append(_шаг_оси(title, check, notes, "", немые))
         нарушений += len(notes)
         if notes:
             поимённо[title] = {"нашёл": len(notes)}
@@ -3091,7 +3180,16 @@ def main() -> int:
     # иначе запертая дверь у последней оси оставляла бы уже переписанными все предыдущие.
     к_записи: list[tuple[str, Path, int, int, str]] = []
     for title, check, baseline, advice, дверь in RATCHETS:
-        notes = check(root)
+        try:
+            notes = check(root)
+        except НетУлики as нет:
+            # Храповик без источника нашёл бы НОЛЬ и прочитался как закрытый долг — а это самая
+            # дорогая ложь из возможных здесь: потолок опустился бы по исчезнувшей улике.
+            поимённо[title] = {"не судится": str(нет)}
+            ряды.append(_шаг_оси(title, check, [], str(нет), немые))
+            print(строка_оси(title, [], str(нет)))
+            continue
+        ряды.append(_шаг_оси(title, check, notes, "", немые))
         if named is not None:
             # Потолок долга принадлежит своему дереву. Судить им чужое значит мерить чужой меркой;
             # число печатаем, вердикт по нему не выносим.
@@ -3127,6 +3225,10 @@ def main() -> int:
     if named is not None or quiet:
         # Чужое дерево судится не нашей меркой, а режим хука бьёт на каждую правку и залил бы журнал.
         return 1 if failed else 0
+    import _stamp
+    _stamp.роспись(ряды, механизм="оси invariants",
+                   cmd=".venv/bin/python scripts/guards/invariants.py --check",
+                   зона="сторожа", root=root)
     return _verdict.close("инварианты", нарушений,
                           ".venv/bin/python scripts/guards/invariants.py --check", root=root,
                           детали={"оси": поимённо})
