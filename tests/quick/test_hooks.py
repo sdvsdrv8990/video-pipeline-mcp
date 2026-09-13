@@ -183,16 +183,38 @@ def main() -> int:
     ok(not out, "VPM_COMMENT_INTENT=off — рубильник жив")
 
     print("§7 шимы: правило живёт в репозитории, копии снаружи нет")
-    for shim, guard in (("vpm-comment-guard.py", "comment_guard.py"),
+    for shim, guard in (("vpm-comment-intent.py", "comment_guard.py"),
                         ("vpm-invariants.py", "invariants.py")):
         text = (HOOKS / shim).read_text(encoding="utf-8")
         ok("/home/" not in text,
            f"{shim}: корень не зашит путём одной машины — иначе хук молчит у всех, кроме автора")
         ok(guard in text, f"{shim} ведёт в scripts/guards/{guard}, а не держит копию правила")
-    done = subprocess.run([sys.executable, str(HOOKS / "vpm-comment-guard.py"), "--check"],
-                          capture_output=True, text=True, timeout=120, cwd=tempfile.mkdtemp())
+    ok(not (HOOKS / "vpm-comment-guard.py").exists(),
+       "хуков текста ОДИН: шим влит, и второго объявления на тот же предмет в дереве нет")
+    done = subprocess.run([sys.executable, str(HOOKS / "vpm-comment-intent.py"), "--check"],
+                          capture_output=True, text=True, timeout=120, cwd=tempfile.mkdtemp(),
+                          env={**os.environ, "CLAUDE_PROJECT_DIR": str(ROOT)})
     ok("Храповик" in done.stdout,
-       "запущенный из ЧУЖОГО каталога шим судит репозиторий: корень взят от файла, не от cwd")
+       "запущенный из ЧУЖОГО каталога хук судит репозиторий: корень взят от объявления, не от cwd")
+    чужое = Path(tempfile.mkdtemp(prefix="vpm_чужое_"))
+    (чужое / "scripts" / "guards").mkdir(parents=True)
+    (чужое / "scripts" / "guards" / "comment_guard.py").write_text(
+        "print('СУДЬЯ-ПОДНЯТ')\n", encoding="utf-8")
+    событие = subprocess.run(
+        [sys.executable, str(HOOKS / "vpm-comment-intent.py")],
+        input=json.dumps({"hook_event_name": "PostToolUse", "tool_name": "Write",
+                          "tool_input": {"file_path": str(чужое / "core" / "x.py")}}),
+        capture_output=True, text=True, timeout=120,
+        env={**os.environ, "CLAUDE_PROJECT_DIR": str(чужое)})
+    ok("СУДЬЯ-ПОДНЯТ" in событие.stdout,
+       "ПОСЛЕ записи хук ведёт к судье содержимого: шим влит веткой события, а не потерян")
+
+    глухой = subprocess.run([sys.executable, str(HOOKS / "vpm-comment-intent.py"), "--check"],
+                            capture_output=True, text=True, timeout=120, cwd=tempfile.mkdtemp(),
+                            env={**os.environ, "CLAUDE_PROJECT_DIR": str(ROOT),
+                                 "VPM_COMMENT_INTENT": "off"})
+    ok("Храповик" in глухой.stdout,
+       "рубильник вопроса о цене НЕ гасит храповик содержимого: один рубильник — один судья")
 
     print("§7б не-ASCII в позиции ИМЕНИ оболочки ловится до запуска")
     факты: dict = {"__name__": "не-главный", "__file__": str(HOOKS / "vpm-fact-gate.py")}

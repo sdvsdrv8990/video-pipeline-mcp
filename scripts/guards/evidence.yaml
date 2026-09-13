@@ -160,12 +160,8 @@
     про: требует факты до правки несущего файла и ловит запись мимо Edit/Write постфактум
   vpm-comment-intent.py:
     улики: [редактирование, создание]
-    событие: PreToolUse (Edit/Write/MultiEdit) + PostToolUse (Bash)
-    про: текст в коде обосновывается ценой ДО записи
-  vpm-comment-guard.py:
-    улики: [редактирование, создание]
-    событие: PostToolUse (Write/Edit/MultiEdit)
-    про: шим храповика текста в коде
+    событие: PreToolUse (Edit/Write/MultiEdit) + PostToolUse (Edit/Write/MultiEdit/Bash)
+    про: текст в коде обосновывается ценой ДО записи; после записи ведёт к судье содержимого (храповик)
   vpm-invariants.py:
     улики: [редактирование, создание]
     событие: PostToolUse (Write/Edit/MultiEdit/Bash)

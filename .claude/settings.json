@@ -92,9 +92,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/vpm-comment-guard.py",
-            "timeout": 15,
-            "statusMessage": "Проверяю текст в коде"
+            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/vpm-comment-intent.py"
           },
           {
             "type": "command",

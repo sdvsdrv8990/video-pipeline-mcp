@@ -7,9 +7,12 @@
 мимо `Edit`, поэтому после Bash смотрится дифф. Один отказ на файл за сессию: спрашивающий на
 каждой правке превращается в шум.
 
-Зона: МОМЕНТ записи и вопрос о цене. Содержимое не судится здесь никогда — им занят
-`scripts/guards/comment_guard.py` (дерево, классы, храповик, CI). Разводка объявлена в шапках
-обоих, чтобы её не выясняли замером. Выключить: VPM_COMMENT_INTENT=off.
+Зона: МОМЕНТ записи и вопрос о цене. Содержимое здесь не судится: правило живёт в репозитории
+(`scripts/guards/comment_guard.py`), и хук ведёт ТУДА, копии снаружи нет. После записи и при
+прямом запуске с ключами управление уходит судье ДО рубильника: `VPM_COMMENT_INTENT=off` снимает
+вопрос о цене, но не храповик — иначе один рубильник гасил бы двух судей.
+
+Выключить вопрос о цене: VPM_COMMENT_INTENT=off.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ except Exception:                              # noqa: BLE001 — след не 
 # Дерево берётся из объявления среды, как у соседних хуков: иначе хук умеет судить только
 # СВОЁ дерево, и обе его стороны недостижимы набором.
 PROJ = Path(os.environ.get("CLAUDE_PROJECT_DIR") or Path(__file__).resolve().parents[2])
+СУДЬЯ = PROJ / "scripts" / "guards" / "comment_guard.py"
 STATE_DIR = Path.home() / ".claude" / "state" / "vpm-comment-intent"
 STATE_TTL = 12 * 3600
 SESSION_CAP = 6                       # больше отказов за сессию — уже помеха, а не напоминание
@@ -140,11 +144,22 @@ def ask(rel: str, state: dict, path: Path, post: bool) -> None:
     sys.exit(0)
 
 
-def main() -> None:
-    if os.environ.get("VPM_COMMENT_INTENT", "").lower() in ("off", "0", "false"):
+def судье(argv: list[str]) -> None:
+    """Передать управление судье содержимого. Нет репозитория — событие не наше, молчим."""
+    if not СУДЬЯ.exists():
         sys.exit(0)
+    os.execv(sys.executable, [sys.executable, str(СУДЬЯ), *(argv or ["--hook"])])
+
+
+def main() -> None:
+    if sys.argv[1:]:
+        судье(sys.argv[1:])
     data = json.loads(sys.stdin.read())
     tool, inp = data.get("tool_name", ""), (data.get("tool_input") or {})
+    if data.get("hook_event_name") == "PostToolUse" and tool in ("Edit", "Write", "MultiEdit"):
+        судье([])
+    if os.environ.get("VPM_COMMENT_INTENT", "").lower() in ("off", "0", "false"):
+        sys.exit(0)
     path = state_path(data.get("session_id") or "нет-сессии")
     try:
         state = json.loads(path.read_text())
