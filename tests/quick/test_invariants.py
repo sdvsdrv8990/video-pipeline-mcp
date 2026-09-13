@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 from invariants import (  # noqa: E402
     НетУлики, axis_silent_without_reason, axis_undeclared, _немые, _шаг_оси,
     scenarios_without_destructive, judge_without_evidence_state,
+    requirement_without_judge,
     codes_outside_registry, codes_without_emitter, dead_recovery_in_engine,
     declared_but_unscripted, default_instead_of_declaration, enum_without_values,
     facts_exempt_from_observation, facts_outside_registry, facts_without_emitter,
@@ -950,7 +951,8 @@ ok(not evidence_roster_off_disk(роспись(СЛОВАРЬ, хуки=())),
    "раздела хуков нет вовсе (старое дерево) — улики нет, а не обвинение")
 
 ЗАДАЧИ = """задачи:
-  правка: {улики: [правка], сверх: {судья.py: ["--check"]}, про: п}
+  правка: {улики: [правка], сверх: {судья.py: ["--check"]}, про: п,
+           требования: [], оси: []}
 """
 ok(not evidence_roster_off_disk(роспись(СЛОВАРЬ + ЗАДАЧИ)),
    "тип работы зовёт существующего сторожа на известную улику — молчим")
@@ -964,13 +966,23 @@ ok(any("ни среди главных, ни среди родов" in n and "т
        evidence_roster_off_disk(роспись(СЛОВАРЬ + ЗАДАЧИ.replace("улики: [правка],", "улики: [чужая],")))),
    "тип работы на несуществующую улику — объявление мертво")
 
+ok(any("не объявлен радиус" in n for n in evidence_roster_off_disk(
+       роспись(СЛОВАРЬ + ЗАДАЧИ.replace(",\n           требования: [], оси: []", "")))),
+   "тип работы без объявленного радиуса назван: в намерение попадёт то, что вспомнится")
+ok(any("зовёт требование" in n for n in evidence_roster_off_disk(
+       роспись(СЛОВАРЬ + ЗАДАЧИ.replace("требования: []", "требования: [выдуманное]")))),
+   "радиус зовёт требование, которого нет в реестре — объявление ведёт в пустоту")
+ok(any("зовёт ось" in n for n in evidence_roster_off_disk(
+       роспись(СЛОВАРЬ + ЗАДАЧИ.replace("оси: []", "оси: [выдуманная ось]")))),
+   "радиус зовёт ось, которой нет: набор осей задачи судится так же, как набор сторожей")
+
 print("\n== флаг в объявлении типа работы обязан существовать ==")
 СУДЬЯ_С_ФЛАГОМ = 'import argparse\nap = argparse.ArgumentParser()\nap.add_argument("--настоящий")\n'
 
 
 def роспись_с_типом(флаг: str, тело: str = СУДЬЯ_С_ФЛАГОМ) -> Path:
     """Дерево с типом работы, зовущим сторожа с указанным флагом."""
-    словарь = СЛОВАРЬ + ("задачи:\n  тип: {улики: [редактирование], "
+    словарь = СЛОВАРЬ + ("задачи:\n  тип: {улики: [редактирование], требования: [], оси: [], "
                          "сверх: {судья.py: [\"" + флаг + "\"]}, про: п}\n")
     return make({"scripts/guards/evidence.yaml": словарь, "scripts/guards/судья.py": тело})
 
@@ -2037,6 +2049,43 @@ ok(not judge_without_evidence_state(make({"scripts/guards/чужой.py": ЧУЖ
    "чужой `close` вердиктом не считается: судится вызов ОБЩЕЙ двери, а не похожее имя")
 ok("каталога сторожей" in отказ(judge_without_evidence_state, make({"README.md": "x"})),
    "каталога сторожей нет — отказ судить назван, а не «все судьи объявили состояние»")
+
+print("\n== радиус задачи: требования проекта и их судьи ==")
+РЕЕСТР = """требования:
+  с-судьёй:
+    про: правило, по которому кто-то ругается
+    судья: "ось про правило"
+  без-судьи:
+    про: правило, по которому не ругается никто
+    судья: ""
+оси:
+  жёсткие:
+    - заголовок: "ось про правило"
+      читатель: axis_undeclared
+задачи:
+  своя:
+    требования: ["с-судьёй"]
+    оси: ["ось про правило"]
+    улики: [редактирование]
+"""
+_реестр = make({"scripts/guards/evidence.yaml": РЕЕСТР, "scripts/guards/сторож.py": "x = 1\n"})
+_без = requirement_without_judge(_реестр)
+ok(len(_без) == 1 and "без-судьи" in _без[0],
+   "требование без судьи названо поимённо: правило исполняется настроением, и это счётно")
+ok(not any("с-судьёй" in н for н in _без),
+   "требование с судьёй молчит — долг считает ОТСУТСТВИЕ судьи, а не наличие правила")
+_чужой = evidence_roster_off_disk(make({
+    "scripts/guards/evidence.yaml": РЕЕСТР.replace('судья: "ось про правило"', 'судья: "выдуманный.py"'),
+    "scripts/guards/сторож.py": "x = 1\n"}))
+ok(any("зовёт судью" in н and "выдуманный.py" in н for н in _чужой),
+   "требование зовёт судью, которого нет: правило выглядит живым, а ругаться по нему некому")
+ok(not any("зовёт судью" in н for н in evidence_roster_off_disk(make({
+       "scripts/guards/evidence.yaml": РЕЕСТР.replace('судья: "ось про правило"', 'судья: "сторож.py"'),
+       "scripts/guards/сторож.py": "x = 1\n"}))),
+   "судья-сторож с диска принимается: судьями бывают оси, сторожа и хуки, а не только оси")
+ok("требований" in отказ(requirement_without_judge, make({"scripts/guards/evidence.yaml": "оси: {}\n"}))
+   or "ключа" in отказ(requirement_without_judge, make({"scripts/guards/evidence.yaml": "оси: {}\n"})),
+   "реестра требований нет — отказ судить назван, а не «все требования при судьях»")
 
 if _fails:
     print("ПРОВАЛЫ:")
