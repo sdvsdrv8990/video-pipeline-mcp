@@ -9,12 +9,16 @@
 Остаток записывается подписью, а не статусом: статус стареет молча, подпись несёт намерение, чего
 ждали, чем продолжить и ключ, по которому её поднимут (правило владельца 2026-09-02).
 
+Второй голос того же `Stop` — ПЫЛЬ механизмов (сторож дисциплины влит сюда). Рубильники раздельны:
+`VPM_INTENT_GUARD` не гасит пыль, `VPM_DISCIPLINE_GUARD` не гасит остатки.
+
 Запрет снимает ЧЕЛОВЕК, а не сторож и не ИИ: `scripts/guards/_permit.py`.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -358,6 +362,104 @@ def судить_правку(data: dict, root: Path = PROJ) -> str:
                          ключ=непризнанные[0]["key"])
 
 
+# Столько суток молчания превращают сторожа в мебель: рабочая неделя проекта, за которую любой из
+# объявленных хуков обязан был встретить своё событие хотя бы раз.
+ПЫЛЬ_ДНЕЙ = 7.0
+HOOK = re.compile(r"\.claude/hooks/([\w.-]+)")
+
+ПЫЛЬ_СООБЩЕНИЕ = """Сторож дисциплины: объявленные сторожа пылятся.
+
+{список}
+
+Сторож, не сработавший ни разу, неотличим от работающего: его тишина читается как «чисто». Либо у
+него нет события — тогда он мебель и его снимают, — либо событие есть, а он молчит, и это дефект,
+прячущий все его настоящие проверки.
+
+Посмотреть след:
+    python3 .claude/hooks/_trace.py
+
+Выключить: VPM_DISCIPLINE_GUARD=off."""
+
+
+def объявленные(root: Path = PROJ) -> list[str]:
+    """Имена хуков из `settings.json`. Не разбирается — пусто: чужая поломка не наша находка."""
+    try:
+        текст = (root / ".claude" / "settings.json").read_text(encoding="utf-8")
+        json.loads(текст)
+    except (OSError, json.JSONDecodeError):
+        return []
+    # Помощники (`_trace.py`) событием не зовутся и в объявлении не значатся — их и не судим.
+    return sorted({n for n in HOOK.findall(текст) if not n.startswith("_")})
+
+
+def инструменты(root: Path = PROJ) -> list[str]:
+    """Инструменты улики, которые наряд предлагает поднять РУКОЙ.
+
+    Хук зовёт себя сам, инструмент выбирает ИИ — и пропуск выбора не замечал никто, потому что
+    следа у инструментов не было вовсе. Роспись берётся из объявления нарядов, а не списком здесь:
+    список разошёлся бы с нарядом ровно тогда, когда наряд поправят.
+    """
+    try:
+        import yaml
+        задачи = yaml.safe_load(
+            (root / "scripts" / "guards" / "evidence.yaml").read_text(encoding="utf-8"))["задачи"]
+    except Exception:                          # noqa: BLE001 — нет объявления, нет и обвинения
+        return []
+    # Судим ровно тех, кого ИИ выбирает САМ: `сверх` (поднять руками сверх автоматики) и
+    # `спросить`. Сторожа гейта сюда не идут — их и так гоняет CI, забыть их нельзя.
+    имена = {имя for тип in задачи.values()
+             for ключ in ("сверх", "спросить")
+             for имя in (тип.get(ключ) or {})
+             if str(имя).endswith(".py")}
+    return sorted(имена)
+
+
+def дома(root: Path = PROJ) -> list[str]:
+    """Следы домов улики: файл не гоняют командой, но обращаться к нему обязаны.
+
+    Дом, к которому не обратились ни разу, хранит не улику, а текст: содержимое пережило сессию,
+    а знание о нём — нет.
+    """
+    try:
+        import yaml
+        объявлено = yaml.safe_load(
+            (root / "scripts" / "guards" / "evidence.yaml").read_text(encoding="utf-8"))["дома"]
+    except Exception:                          # noqa: BLE001 — нет объявления, нет и обвинения
+        return []
+    return sorted({след for дом in объявлено.values() for след in (дом.get("следы") or ())})
+
+
+def пылящиеся(root: Path = PROJ, дней: float = ПЫЛЬ_ДНЕЙ, след: Path | None = None) -> list[str]:
+    """Строки о сторожах, молчащих дольше срока. Следа нет вовсе — пусто, а не обвинение."""
+    try:
+        import _trace
+    except ImportError:
+        return []
+    путь = _trace.дом(след)
+    if not путь.is_dir():
+        return []
+    роспись = объявленные(root) + инструменты(root) + дома(root)
+    return [f"  {имя} — срабатывал {'ни разу' if math.isinf(прошло) else f'{прошло:.0f} дней назад'}"
+            for имя, прошло in _trace.dusty(роспись, дней, путь)]
+
+
+def судить_пыль(data: dict, root: Path = PROJ, след: Path | None = None) -> str:
+    """Второй голос `Stop`: механизмы, молчащие дольше срока. Свой рубильник, чужой не слушает."""
+    if os.environ.get("VPM_DISCIPLINE_GUARD", "").lower() in ("off", "0", "false"):
+        return ""
+    if data.get("stop_hook_active"):
+        return ""
+    строки = пылящиеся(root, ПЫЛЬ_ДНЕЙ, след)
+    return ПЫЛЬ_СООБЩЕНИЕ.format(список="\n".join(строки)) if строки else ""
+
+
+def вердикт_стоп(data: dict, root: Path = PROJ, след: Path | None = None,
+                 запрет_снят: bool = False) -> str:
+    """Оба голоса рубежа одной строкой. Снятый людьми запрет остатков НЕ гасит пыль механизмов."""
+    голоса = ([] if запрет_снят else [судить_конец(data, root)]) + [судить_пыль(data, root, след)]
+    return "\n\n".join(г for г in голоса if г)
+
+
 def снят() -> bool:
     """Запрет снят человеком? Ошибка = НЕ снят: выключатель, ломающийся в «выкл», не выключатель."""
     try:
@@ -368,14 +470,17 @@ def снят() -> bool:
 
 
 def main() -> None:
-    if снят():
-        sys.exit(0)
+    # Снятый запрет уводит с ВСЕХ рубежей, кроме Stop: там у хука второй судья с собственным
+    # рубильником, и уход отсюда выключал бы два механизма вместо одного.
+    снято = снят()
     try:
         import _trace
         _trace.mark("vpm-intent-guard.py")
     except Exception:                          # noqa: BLE001 — след не важнее самой проверки
         pass
     data = json.loads(sys.stdin.read() or "{}")
+    if снято and data.get("hook_event_name") != "Stop":
+        sys.exit(0)
     if data.get("hook_event_name") == "PreToolUse":
         # Хвосты судятся ПЕРВЫМИ: непризнанный остаток запрещает и правку, и коммит, а цикл
         # спрашивается только у того, кому уже позволено писать.
@@ -389,7 +494,7 @@ def main() -> None:
             print(json.dumps({"hookSpecificOutput": {
                 "hookEventName": "SessionStart", "additionalContext": текст}}, ensure_ascii=False))
         sys.exit(0)
-    if (причина := судить_конец(data)):
+    if (причина := вердикт_стоп(data, PROJ, None, снято)):
         print(json.dumps({"decision": "block", "reason": причина}, ensure_ascii=False))
     sys.exit(0)
 

@@ -6,6 +6,7 @@ tests/quick/test_hooks.py — хуки `.claude/hooks/` судят СОБЫТИ�
 падает, а на неисправной форме тронутого файла — говорит, и на здоровом молчит.
 Состояние пишется в подставной HOME — настоящее не трогается.
 """
+import io
 import json
 import os
 import shutil
@@ -14,6 +15,7 @@ import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import redirect_stdout
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -482,10 +484,12 @@ def main() -> int:
     ok(not _s.tails(взят)[0]["отложен"],
        "«в работе» не закрывает хвост — закрытие только вердиктом")
 
-    print("§12 сторож дисциплины: механизм, который пылится, назван")
-    дисц: dict = {"__name__": "не-главный", "__file__": str(HOOKS / "vpm-discipline-guard.py")}
-    exec(compile((HOOKS / "vpm-discipline-guard.py").read_text(encoding="utf-8"),
-                 str(HOOKS / "vpm-discipline-guard.py"), "exec"), дисц)
+    print("§12 сторож дисциплины влит в сторожа намерений: пыль — второй голос того же Stop")
+    дисц: dict = {"__name__": "не-главный", "__file__": str(HOOKS / "vpm-intent-guard.py")}
+    exec(compile((HOOKS / "vpm-intent-guard.py").read_text(encoding="utf-8"),
+                 str(HOOKS / "vpm-intent-guard.py"), "exec"), дисц)
+    ok(not (HOOKS / "vpm-discipline-guard.py").exists(),
+       "сторожей на Stop стало меньше: дисциплина влита, отдельного файла на тот же рубеж нет")
     старый = Path(tempfile.mkdtemp(prefix="vpm-след-")) / "vpm-trace"
     старый.mkdir()
     давно = time.time() - 30 * 86400
@@ -514,6 +518,66 @@ def main() -> int:
     ok(all(имя in дисц["объявленные"](ROOT) + дисц["инструменты"](ROOT) + имена_домов
            for имя in имена_домов),
        "след дома судится: объявить его и не внести в роспись значит завести улику без читателя")
+
+    пыльный = Path(tempfile.mkdtemp(prefix="vpm-след-пыль-")) / "vpm-trace"
+    пыльный.mkdir()
+    (пыльный / "_рождение.json").write_text(json.dumps({"ts": давно}), encoding="utf-8")
+    (пыльный / "vpm-fact-gate.py.json").write_text(
+        json.dumps({"last": давно, "count": 1}), encoding="utf-8")
+    ok("пылятся" in дисц["судить_пыль"]({}, ROOT, пыльный),
+       "пыль звучит на Stop из сторожа намерений: слияние не потеряло голос")
+    os.environ["VPM_DISCIPLINE_GUARD"] = "off"
+    try:
+        ok(дисц["судить_пыль"]({}, ROOT, пыльный) == "",
+           "свой рубильник гасит ТОЛЬКО пыль: VPM_DISCIPLINE_GUARD остался у своего судьи")
+    finally:
+        os.environ.pop("VPM_DISCIPLINE_GUARD", None)
+    ok(дисц["судить_пыль"]({"stop_hook_active": True}, ROOT, пыльный) == "",
+       "повторный Stop не судит заново: иначе сессию не кончить вовсе")
+
+    прежний_конец = дисц["судить_конец"]
+    дисц["судить_конец"] = lambda data, root=ROOT: "ОСТАТОК-ГОЛОС"
+    try:
+        оба = дисц["вердикт_стоп"]({}, ROOT, пыльный, False)
+        ok("ОСТАТОК-ГОЛОС" in оба and "пылятся" in оба,
+           "на Stop звучат ОБА голоса: находка, спрятавшая вторую, — тот же немой промах")
+        снятый = дисц["вердикт_стоп"]({}, ROOT, пыльный, True)
+        ok("пылятся" in снятый and "ОСТАТОК-ГОЛОС" not in снятый,
+           "снятый людьми запрет остатков не гасит пыль: один рубильник — один судья")
+    finally:
+        дисц["судить_конец"] = прежний_конец
+
+    дом = Path(tempfile.mkdtemp(prefix="vpm-дом-стоп-"))
+    (дом / ".claude" / "state" / "vpm-trace").mkdir(parents=True)
+    for имя, тело in (("_рождение", {"ts": давно}), ("vpm-fact-gate.py", {"last": давно, "count": 1})):
+        (дом / ".claude" / "state" / "vpm-trace" / f"{имя}.json").write_text(
+            json.dumps(тело), encoding="utf-8")
+    рубеж = subprocess.run([sys.executable, str(HOOKS / "vpm-intent-guard.py")],
+                           input=json.dumps({"hook_event_name": "Stop"}),
+                           capture_output=True, text=True, timeout=120,
+                           env={**os.environ, "HOME": str(дом), "CLAUDE_PROJECT_DIR": str(ROOT)})
+    ok("пылятся" in рубеж.stdout,
+       "главный вход РЕАЛЬНО зовёт рубеж: пыль доезжает до вывода хука, а не только до функции")
+
+    прежний_снят, прежний_ввод, прежний_дом = дисц["снят"], sys.stdin, os.environ.get("HOME")
+    дисц["снят"] = lambda: True
+    sys.stdin = io.StringIO(json.dumps({"hook_event_name": "Stop"}))
+    os.environ["HOME"] = str(дом)
+    поток = io.StringIO()
+    try:
+        with redirect_stdout(поток):
+            try:
+                дисц["main"]()
+            except SystemExit:
+                pass
+    finally:
+        дисц["снят"], sys.stdin = прежний_снят, прежний_ввод
+        if прежний_дом is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = прежний_дом
+    ok("пылятся" in поток.getvalue(),
+       "при СНЯТОМ запрете вход всё равно доходит до рубежа Stop: снят один судья, не оба")
 
     print("§12б дом остатков отмечает и чтение, и запись")
     import types
