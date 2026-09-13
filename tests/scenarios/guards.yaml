@@ -153,3 +153,42 @@
         exit: 1
         console: "разбирать нечего"
         console_absent: "источников в карте"
+
+- scenario: guard_skill_chain_shows_where_instruction_leads
+  why: радиус скила обязан считаться по ВСЕЙ цепочке, а не по нему самому — иначе не видно, куда идёт инструкция
+  when:
+    - run: scripts/guards/blast_radius.py
+      with: {args: ["--скил", "code-quality"]}
+      expect:
+        ok: true
+        exit: 0
+        console: "радиус цепочки"
+
+- scenario: guard_route_refuses_command_without_declared_outcome
+  why: команда, чей код возврата не объявлен, не ветвится и не запускается — угаданный смысл дал бы зелёный маршрут на красной улике
+  when:
+    - run: scripts/guards/blast_radius.py
+      with: {args: ["--набор", "скил:code-quality"]}
+      expect:
+        ok: true
+        exit: 0
+        console: "не ветвится и не запускается"
+
+- scenario: guard_chain_table_refuses_without_skills
+  why: скилы вырезаны — таблица связей обязана отказаться, а не напечатать пустоту как отсутствие связей
+  род: разрушительный
+  given:
+    files:
+      без-скилов/scripts/guards/сторож.py: "def судит():\n    return []\n"
+  when:
+    - python: workspace_path
+      with: {path: без-скилов}
+      as: cut
+      expect: {ok: true}
+    - run: scripts/guards/blast_radius.py
+      with: {args: ["--связи", "--root", "${cut.path}"]}
+      expect:
+        ok: false
+        exit: 1
+        console: "не из чего"
+        console_absent: "рёбер"
