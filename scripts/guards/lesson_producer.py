@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import re
 import sys
 from pathlib import Path
 
@@ -151,13 +153,86 @@ def произвести(ключ: str, root: Path = ROOT) -> tuple[list[dict], 
     return шаги, заготовка
 
 
+ДОМ_УРОКОВ = "hard-won-lessons.md"
+КЛЮЧ_УРОКА = re.compile(r"⟨улика:\s*⟦vpm\s+([0-9a-f]{4})[^⟧]*⟧⟩")
+
+
+def _ключи_уроков(root: Path = ROOT) -> set[str] | None:
+    """Ключи улик, УЖЕ записанных уроками. Дома нет — None: без него «в долгу» оказался бы ВЕСЬ
+    журнал, и отсутствие источника читалось бы как огромная находка."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import invariants  # noqa: PLC0415 — дом памяти знает он, второй дороги туда быть не должно
+    дом = invariants.memory_dir(root) / ДОМ_УРОКОВ
+    if not дом.exists():
+        return None
+    return set(КЛЮЧ_УРОКА.findall(дом.read_text(encoding="utf-8", errors="replace")))
+
+
+def долг(root: Path = ROOT) -> list[tuple[str, str, str]]:
+    """(ключ, признак материала, что записано) по прогонам, из которых урок ещё НЕ произведён.
+
+    Это и есть событие производителя: его материал рождается не правкой дерева, а расхождением в
+    записи, поэтому уликой правки его не разбудить — а без события ИИ не знает, когда его звать.
+    """
+    записаны = _ключи_уроков(root)
+    if записаны is None:
+        return []
+    свод = []
+    for файл in sorted(root.joinpath(*_stamp.JOURNAL).glob("stamps-*.jsonl")):
+        for строка in файл.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                запись = json.loads(строка)
+            except json.JSONDecodeError:
+                continue
+            ключ = str(запись.get("key") or "")
+            if not ключ or ключ in записаны:
+                continue
+            for имя, признак in ПРИЗНАКИ:
+                if признак(запись):
+                    свод.append((ключ, имя, str(запись.get("what") or "")[:90]))
+                    break
+    return свод
+
+
+def показ_долга(root: Path = ROOT) -> int:
+    """Сколько поводов для урока осталось без урока — и чем поднять каждый."""
+    if _ключи_уроков(root) is None:
+        print("дома уроков нет — долг не считается: без него в долг попал бы весь журнал")
+        return 1
+    свод = долг(root)
+    if not свод:
+        print("долга уроков нет: у каждого прогона с материалом есть урок с его ключом")
+        return 0
+    по_признаку: dict[str, int] = {}
+    for _, признак, _ in свод:
+        по_признаку[признак] = по_признаку.get(признак, 0) + 1
+    for ключ, признак, что in свод[-12:]:
+        print(f"   {ключ} · {признак}\n       {что}")
+    print(f"\nповодов без урока: {len(свод)} · " +
+          " · ".join(f"{и} {n}" for и, n in sorted(по_признаку.items())))
+    print(f"   произвести: .venv/bin/python scripts/guards/lesson_producer.py --stamp {свод[-1][0]}")
+    print("   урок кладут в память (hard-won-lessons.md) с ключом ⟨улика: ⟦vpm <ключ>⟧⟩ — "
+          "без ключа он не поднимается прогоном и ось его не примет")
+    return 0
+
+
 def main() -> int:
+    try:                                       # след: без отметки механизм выглядит пылящимся
+        sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
+        import _trace  # noqa: PLC0415 — след живёт у хуков, и дорога к нему кладётся строкой выше
+        _trace.mark("lesson_producer.py")
+    except Exception:                          # noqa: BLE001 — след не важнее самой работы
+        pass
     ap = argparse.ArgumentParser(description="из подписи прогона — заготовка урока с росписью шагов")
     ap.add_argument("--stamp", help="ключ подписи прогона, из которого рождается урок")
     ap.add_argument("--шаги", help="напечатать роспись шагов этого прогона")
+    ap.add_argument("--долг", action="store_true",
+                    help="поводы для урока, по которым урока ещё нет: событие производителя")
     ap.add_argument("--свод", action="store_true",
                     help="цена шагов: какой шаг сколько раз сработал и сколько молчал")
     args = ap.parse_args()
+    if getattr(args, "долг"):
+        return показ_долга()
     if args.свод:
         свод = _stamp.молчавшие(ROOT)
         if not свод:

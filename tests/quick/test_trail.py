@@ -690,6 +690,44 @@ ok(_свод["поднять запись"][0] >= 2 and _свод["найти р
    "свод считает цену шага: сколько раз сработал и сколько промолчал")
 
 
+print("\n== долг уроков: повод был, урока нет ==")
+import io as _ио  # noqa: E402 — блок дописан к готовому набору, импорты живут рядом с ним
+import contextlib as _кс  # noqa: E402 — там же
+from types import ModuleType as _Модуль  # noqa: E402 — там же
+
+_дер_ур = Path(tempfile.mkdtemp(prefix="vpm-урок-"))
+(_дер_ур / "tests" / ".journal").mkdir(parents=True)
+(_дер_ур / "память").mkdir()
+_stamp.sign("проба", "ОТКАЗ", "прогон с материалом урока",
+            cmd=".venv/bin/python scripts/guards/lesson_producer.py --долг", root=_дер_ур)
+_производитель = _Модуль("lesson_producer")
+_сторожа = Path(__file__).resolve().parents[2] / "scripts" / "guards"
+_производитель.__file__ = str(_сторожа / "lesson_producer.py")
+exec(compile((_сторожа / "lesson_producer.py").read_text(encoding="utf-8"),
+             str(_сторожа / "lesson_producer.py"), "exec"), _производитель.__dict__)
+_память = _дер_ур / "память"
+_производитель.invariants = _Модуль("invariants")
+_производитель.invariants.memory_dir = lambda root=None: _память  # type: ignore[attr-defined] — дом памяти подставлен: боевой трогать нельзя
+sys.modules["invariants"] = _производитель.invariants
+
+(_память / "hard-won-lessons.md").write_text("# Уроки\n\nпока пусто\n", encoding="utf-8")
+_свод = _производитель.долг(_дер_ур)
+ok(len(_свод) == 1 and _свод[0][1].startswith("роль записи"),
+   "прогон с отказом попадает в долг уроков: повод есть, урока нет")
+
+_ключ = _свод[0][0]
+(_память / "hard-won-lessons.md").write_text(
+    f"# Уроки\n\n## Урок\n\n⟨улика: ⟦vpm {_ключ}⟧⟩\n", encoding="utf-8")
+ok(_производитель.долг(_дер_ур) == [],
+   "урок с КЛЮЧОМ снимает повод из долга: связь урок↔прогон именно по ключу")
+
+(_память / "hard-won-lessons.md").unlink()
+_буф = _ио.StringIO()
+with _кс.redirect_stdout(_буф):
+    _код = _производитель.показ_долга(_дер_ур)
+ok(_код == 1 and "дома уроков нет" in _буф.getvalue(),
+   "дома уроков нет — отказ считать долг: иначе в долг попал бы ВЕСЬ журнал")
+
 if _fails:
     print("ПРОВАЛЫ:")
     for f in _fails:

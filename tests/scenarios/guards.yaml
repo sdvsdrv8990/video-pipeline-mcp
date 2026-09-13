@@ -266,3 +266,23 @@
         exit: 1
         console: "карту вокруг него строить не из чего"
         console_absent: "скилы, знающие"
+
+- scenario: guard_lesson_debt_is_the_producers_event
+  why: "у производителя уроков не было события — его материал рождается записью, а не правкой; долг печатается командой"
+  when:
+    - run: scripts/guards/lesson_producer.py
+      with: {args: ["--долг"]}
+      expect:
+        ok: true
+        exit: 0
+        console: "поводов без урока"
+
+- scenario: guard_patrol_raises_producer_on_red_verdict
+  why: "улика «красный-суд» обязана поднимать производителя: без места в наряде ИИ не знает, когда его звать"
+  when:
+    - run: scripts/guards/patrol.py
+      with: {args: ["--улика", "красный-суд", "--кто"]}
+      expect:
+        ok: true
+        exit: 0
+        console: "lesson_producer"
