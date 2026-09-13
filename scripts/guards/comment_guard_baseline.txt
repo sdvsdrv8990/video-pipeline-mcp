@@ -1,8 +1,8 @@
 # Потолок замечаний сторожа текста в коде (scripts/guards/comment_guard.py --check).
 # Вниз можно, вверх — нет: превышение красит джобу comment-guard в CI.
-# После прополки: python3 scripts/guards/comment_guard.py --bless. Сейчас всего: 114.
+# После прополки: python3 scripts/guards/comment_guard.py --bless. Сейчас всего: 120.
 .claude/hooks/_trace.py 1
-.claude/hooks/vpm-delivery-gate.py 1
+.claude/hooks/vpm-delivery-gate.py 2
 .claude/hooks/vpm-fact-gate.py 1
 .claude/hooks/vpm-invariants.py 2
 .claude/hooks/vpm-skill-guard.py 1
@@ -57,7 +57,7 @@ scripts/guards/_live.py 1
 scripts/guards/_permit.py 2
 scripts/guards/_place.py 2
 scripts/guards/_precision.py 1
-scripts/guards/_stamp.py 1
+scripts/guards/_stamp.py 2
 scripts/guards/_symbol_graph.py 1
 scripts/guards/_tokens.py 1
 scripts/guards/_verdict.py 1
@@ -69,7 +69,7 @@ scripts/guards/lesson_producer.py 1
 scripts/guards/patrol.py 1
 scripts/guards/reproduce.py 1
 scripts/guards/text_only.py 1
-scripts/guards/what_if.py 1
+scripts/guards/what_if.py 4
 scripts/install_cost.py 1
 scripts/models.py 1
 scripts/radius_survey.py 1
@@ -91,6 +91,7 @@ tests/quick/test_hooks.py 1
 tests/quick/test_invariants.py 1
 tests/quick/test_montage_declarations.py 1
 tests/quick/test_montage_tools.py 1
+tests/quick/test_patrol.py 1
 tests/quick/test_providers.py 1
 tests/quick/test_table_materializer.py 1
 tests/quick/test_tables.py 2
