@@ -224,3 +224,24 @@
         exit: 1
         console: "цель не найдена"
         console_absent: "чисто"
+
+- scenario: guard_states_are_bound_to_the_file
+  why: "состояние сторожа привязано к файлу, а не к прогону: зелёный обход дерева не судит файл, правленный после него"
+  when:
+    - run: scripts/guards/patrol.py
+      with: {args: ["--состояния", "scripts/guards/patrol.py"]}
+      expect:
+        ok: true
+        exit: 0
+        console: "дыра:"
+
+- scenario: guard_states_refuse_on_missing_file
+  why: "отрицательный набор — файла нет: состояние спрашивать не у чего, и это отказ, а не пустая таблица"
+  when:
+    - run: scripts/guards/patrol.py
+      with: {args: ["--состояния", "core/этого-нет.py"]}
+      expect:
+        ok: false
+        exit: 1
+        console: "файла нет"
+        console_absent: "дыра:"

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 import time
@@ -125,6 +126,58 @@ def факт(улики: list[str], минут: float) -> int:
         print(f"   промолчали за {минут:.0f} мин: {', '.join(молчали)}. Либо событие до них не "
               f"дошло (правка мимо инструмента, чужой matcher), либо сторож сломан молча.")
     return len(молчали)
+
+
+def _последний_вердикт(root: Path = ROOT) -> dict[str, float]:
+    """{сторож: когда он в последний раз вынес вердикт}. Читается журнал подписей, а не след:
+    след говорит «меня звали», вердикт — «я судил и сказал что».
+    """
+    import json  # noqa: PLC0415 — разбор журнала нужен одному режиму, а наряд зовут и без него
+    свод: dict[str, float] = {}
+    for файл in sorted((root / "tests" / ".journal").glob("stamps-*.jsonl")):
+        for строка in файл.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                запись = json.loads(строка)
+            except json.JSONDecodeError:
+                continue
+            if запись.get("role") not in ("ВЕРДИКТ", "ОТКАЗ"):
+                continue
+            команда = str(запись.get("cmd") or "")
+            for имя in re.findall(r"(?:scripts/guards|\.claude/hooks)/([\w.-]+\.py)", команда):
+                свод[имя] = max(свод.get(имя, 0.0), float(запись.get("ts") or 0))
+    return свод
+
+
+def состояния(цель: str, root: Path = ROOT) -> int:
+    """Состояние КАЖДОГО объявленного сторожа по одному файлу: не-судился · устарел · свеж.
+
+    Привязка к файлу, а не к прогону: зелёный прогон по дереву не делает судимым файл, который
+    правили после него, — и это единственный способ не обмануться одним зелёным ходом.
+    """
+    путь = root / цель
+    if not путь.is_file():
+        print(f"{цель}: файла нет — состояние спрашивать не у чего")
+        return 1
+    объявлены = (_evidence.словарь() or {}).get("состояния") or {}
+    if not объявлены:
+        print("состояния не объявлены в evidence.yaml — судить нечем, и это отказ, а не пустой список")
+        return 1
+    правлен = путь.stat().st_mtime
+    вердикты = _последний_вердикт(root)
+    судьи = list((_evidence.словарь() or {}).get("сторожа") or {})
+    судьи += list((_evidence.словарь() or {}).get("хуки") or {})
+    счёт = {имя: 0 for имя in объявлены}
+    print(f"{цель} · правлен {time.strftime('%d.%m %H:%M', time.localtime(правлен))}")
+    for имя in sorted(судьи):
+        когда = вердикты.get(имя)
+        состояние = "не-судился" if not когда else ("свеж" if когда >= правлен else "устарел")
+        счёт[состояние] = счёт.get(состояние, 0) + 1
+        отметка = "—" if not когда else time.strftime("%d.%m %H:%M", time.localtime(когда))
+        print(f"   {состояние:11} {имя:26} вердикт {отметка}")
+    print(f"\nсудей {len(судьи)} · " + " · ".join(f"{с} {n}" for с, n in счёт.items() if n))
+    незакрытые = счёт.get("не-судился", 0) + счёт.get("устарел", 0)
+    print(f"   дыра: {незакрытые} судей не высказывались о ЭТОМ содержимом файла")
+    return 0
 
 
 def улики_наряда(args: argparse.Namespace) -> list[str]:
@@ -296,6 +349,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="несделанное записать остатками — их читают оба сторожа")
     parser.add_argument("--задача", metavar="ТИП",
                         help="разбор типа работы: улика, кто проснётся сам, кого поднять рукой")
+    parser.add_argument("--состояния", metavar="ФАЙЛ",
+                        help="состояние каждого сторожа по ЭТОМУ файлу: не-судился · устарел · свеж")
     parser.add_argument("--ярус", action="store_true",
                         help="какой ярус прогонов нужен этой правке — по радиусу, не «на глаз»")
     parser.add_argument("--факт", action="store_true",
@@ -330,6 +385,8 @@ def main(argv: list[str] | None = None) -> int:
     главные = _evidence.expand(улики)
     print(f"── наряд по улике: {', '.join(улики)} → главные: {', '.join(главные) or '—'}")
 
+    if getattr(args, "состояния"):
+        return состояния(getattr(args, "состояния"))
     if args.факт:
         молчали = факт(главные or улики, args.за)
         return _verdict.close(f"факт срабатывания по улике {', '.join(главные) or '—'}", молчали,

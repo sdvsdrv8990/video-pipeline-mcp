@@ -8,7 +8,9 @@ tests/quick/test_patrol.py — единый словарь улик и наря�
 """
 import contextlib
 import io
+import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -262,6 +264,65 @@ def main() -> int:
     ok(f"значениями: {len({и.split('-')[0] for и in смыслы})} " in буфер.getvalue().replace(
            "ходовых слов с несколькими машинными значениями: ", "значениями: "),
        f"заголовок СЧИТАЕТ слова, а не пересказывает: {буфер.getvalue().splitlines()[0]}")
+
+    print("§состояния: суд привязан к ФАЙЛУ, а не к прогону")
+    дом_сост = Path(tempfile.mkdtemp(prefix="vpm_сост_"))
+    (дом_сост / "scripts" / "guards").mkdir(parents=True)
+    (дом_сост / "tests" / ".journal").mkdir(parents=True)
+    (дом_сост / "core").mkdir(parents=True)
+    (дом_сост / "scripts" / "guards" / "evidence.yaml").write_text(ОБЪЯВЛЕНИЕ + """
+состояния:
+  не-судился: {про: вердикта нет вовсе, чем: поднять руками}
+  устарел: {про: файл правлен позже вердикта, чем: перепрогнать}
+  свеж: {про: вердикт новее правки, чем: ничего}
+""", encoding="utf-8")
+    цель = дом_сост / "core" / "цель.py"
+    цель.write_text('"""core/цель.py — проба состояний."""\n', encoding="utf-8")
+    правка = цель.stat().st_mtime
+    (дом_сост / "tests" / ".journal" / "stamps-20260913.jsonl").write_text(
+        json.dumps({"ts": правка + 60, "role": "ВЕРДИКТ",
+                    "cmd": ".venv/bin/python scripts/guards/первый.py --check"},
+                   ensure_ascii=False) + "\n"
+        + json.dumps({"ts": правка - 60, "role": "ВЕРДИКТ",
+                      "cmd": ".venv/bin/python scripts/guards/второй.py --суд"},
+                     ensure_ascii=False) + "\n", encoding="utf-8")
+    прежний_словарь = наряд._evidence.DECL
+    наряд._evidence.DECL = дом_сост / "scripts" / "guards" / "evidence.yaml"
+    буфер = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(буфер):
+            код = наряд.состояния("core/цель.py", дом_сост)
+    finally:
+        наряд._evidence.DECL = прежний_словарь
+    свод = буфер.getvalue()
+    ok(код == 0 and "свеж" in свод and "первый.py" in свод,
+       "вердикт НОВЕЕ правки — состояние свежее")
+    ok("устарел" in свод and "второй.py" in свод,
+       "вердикт СТАРШЕ правки — состояние устарело: суд относился к другому содержимому")
+    ok("не-судился" in свод and "третий.py" in свод,
+       "сторож без вердикта назван прямо, а не пропущен молча")
+    ok("дыра:" in свод, "дыра посчитана: сколько судей не высказывались об ЭТОМ содержимом")
+    ok(bool(re.search(r"не-судился [1-9]", свод)),
+       "не-судившиеся идут В СЧЁТ, а не только в строки: иначе «ни разу» читается как «чисто»")
+
+    без_состояний = дом_сост / "без.yaml"
+    без_состояний.write_text(ОБЪЯВЛЕНИЕ, encoding="utf-8")
+    прежний = наряд._evidence.DECL
+    наряд._evidence.DECL = без_состояний
+    буфер = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(буфер):
+            пусто = наряд.состояния("core/цель.py", дом_сост)
+    finally:
+        наряд._evidence.DECL = прежний
+    ok(пусто == 1 and "не объявлены" in буфер.getvalue(),
+       "состояний нет в объявлении — отказ судить: имена состояний не живут в коде")
+
+    буфер = io.StringIO()
+    with contextlib.redirect_stdout(буфер):
+        нет = наряд.состояния("core/нет-такого.py", дом_сост)
+    ok(нет == 1 and "файла нет" in буфер.getvalue(),
+       "файла нет — отказ, а не пустая таблица состояний")
 
     print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")
     for fail in _fails:
