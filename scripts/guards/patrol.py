@@ -365,6 +365,10 @@ def main(argv: list[str] | None = None) -> int:
         return задача(args.задача)
     if args.ярус:
         return ярус()
+    # Состояние спрашивают ПРО ФАЙЛ, а не про правку: на чистом дереве улик нет, и стой этот
+    # режим ниже — он работал бы только посреди правки, то есть был бы мёртвой половиной.
+    if getattr(args, "состояния"):
+        return состояния(getattr(args, "состояния"))
     if args.новый:
         долг = новый(list(args.файл), args.таски)
         return _verdict.close("новый файл под набором судей", долг,
@@ -385,8 +389,6 @@ def main(argv: list[str] | None = None) -> int:
     главные = _evidence.expand(улики)
     print(f"── наряд по улике: {', '.join(улики)} → главные: {', '.join(главные) or '—'}")
 
-    if getattr(args, "состояния"):
-        return состояния(getattr(args, "состояния"))
     if args.факт:
         молчали = факт(главные or улики, args.за)
         return _verdict.close(f"факт срабатывания по улике {', '.join(главные) or '—'}", молчали,

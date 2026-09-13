@@ -1023,6 +1023,47 @@ def показ_маршрута(адреса: list[str], root: Path = ROOT, пр
     return 0
 
 
+def показ_файла(rel: str, root: Path = ROOT) -> int:
+    """Смыкание цепочек на ОДНОМ файле: кто про него знает, кто его судит, чем он поднимается.
+
+    Четыре рода связи в одном ответе — скилы, судьи с их состоянием, узлы сценариев и событие,
+    которое этот файл рождает. Порознь они были и раньше; вопрос «что вокруг ЭТОГО файла» не
+    отвечался ничем, и набор цепочек висел над деревом целиком.
+    """
+    import _chains  # noqa: PLC0415 — по запросу: сторож радиуса гоняется и там, где скилов нет
+    if not (root / rel).is_file():
+        print(f"{rel}: файла нет — карту вокруг него строить не из чего")
+        return 1
+    print(f"── карта файла: {rel}")
+
+    скилы = _chains.скилы_о_файле(rel, root)
+    print(f"\nскилы, знающие о нём: {len(скилы)}")
+    for имя, разделы in sorted(скилы.items()):
+        print(f"   {имя}: {', '.join(разделы)[:90]}")
+    if not скилы:
+        print("   никто: правку здесь ни один скил не сопровождает — инструкции о нём нет")
+
+    sys.path.insert(0, str(root / "scripts" / "guards"))
+    import patrol  # noqa: PLC0415 — наряд владеет состояниями; вторая копия расходилась бы с ним
+    print("\nсудьи и их состояние по этому файлу:")
+    код_состояний = patrol.состояния(rel, root)
+
+    print("\nузлы сценариев:")
+    try:
+        узлы = цепочка(rel, root)
+        покрыты = [у for у in узлы if у["сценарии"]]
+        print(f"   узлов {len(узлы)} · покрыто {len(покрыты)} · "
+              f"набор: --набор файл:{rel}")
+    except SystemExit as отказ:
+        print(f"   {отказ}")
+
+    улики = _evidence.rods_of([rel])
+    print(f"\nсобытие, которое он рождает: {', '.join(улики) or 'не выводится из объявления'}")
+    if улики:
+        print(f"   наряд на него: .venv/bin/python scripts/guards/patrol.py --улика {улики[0]}")
+    return код_состояний
+
+
 def main() -> int:
     try:                                       # след: без отметки механизм выглядит пылящимся
         sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
@@ -1047,6 +1088,8 @@ def main() -> int:
                         help="три набора одного узла и команда на каждый")
     parser.add_argument("--скил", metavar="ИМЯ",
                         help="цепочка инструкций скила: раздел · кого зовёт · чем кончается")
+    parser.add_argument("--файл", metavar="ПУТЬ",
+                        help="карта вокруг файла: скилы · судьи и их состояние · узлы · событие")
     parser.add_argument("--связи", action="store_true",
                         help="таблица связей цепочек: кто кого зовёт, сироты и тупики")
     parser.add_argument("--набор", nargs="+", metavar="АДРЕС",
@@ -1077,6 +1120,8 @@ def main() -> int:
         return _verdict.close("рубежи потоков", check_routes(),
                               ".venv/bin/python scripts/guards/blast_radius.py --check-routes",
                               точный=False)
+    if getattr(args, "файл"):
+        return показ_файла(getattr(args, "файл"), args.root)
     if getattr(args, "набор"):
         return показ_маршрута(getattr(args, "набор"), args.root, getattr(args, "прогнать"))
     if getattr(args, "скил"):
@@ -1100,7 +1145,8 @@ def main() -> int:
     if not any([args.build, args.query, args.changed, args.check_routes, args.affected,
                 args.blind, args.горячие, getattr(args, "роды"),
                 getattr(args, "класс") is not None, getattr(args, "цепочка"),
-                getattr(args, "скил"), getattr(args, "связи"), getattr(args, "набор")]):
+                getattr(args, "скил"), getattr(args, "связи"), getattr(args, "набор"),
+                getattr(args, "файл")]):
         parser.print_help()
     return 0
 

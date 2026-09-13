@@ -245,3 +245,24 @@
         exit: 1
         console: "файла нет"
         console_absent: "дыра:"
+
+- scenario: guard_file_map_closes_the_chain
+  why: "карта вокруг файла смыкает цепочки: кто про него знает, кто его судил и каким событием он рождается"
+  when:
+    - run: scripts/guards/blast_radius.py
+      with: {args: ["--файл", "scripts/guards/comment_guard.py"]}
+      expect:
+        ok: true
+        exit: 0
+        console: "событие, которое он рождает"
+
+- scenario: guard_file_map_refuses_on_missing_file
+  why: "разрушительный — файла нет: карту строить не из чего, и это отказ, а не пустая таблица связей"
+  when:
+    - run: scripts/guards/blast_radius.py
+      with: {args: ["--файл", "core/этого-нет.py"]}
+      expect:
+        ok: false
+        exit: 1
+        console: "карту вокруг него строить не из чего"
+        console_absent: "скилы, знающие"
