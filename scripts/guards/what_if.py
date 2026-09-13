@@ -477,7 +477,14 @@ def main() -> int:
     args = parser.parse_args()
 
     начало = time.monotonic()
+    шаги: list[dict] = []
     intent = load_intent(args.intent)
+    шаги.append(_stamp.строка_шага(
+        "поднять намерение", "load_intent",
+        [_stamp.условие("ожидания объявлены", True, bool(intent.get("expect")))],
+        исход="сработал" if intent.get("expect") else "молчал",
+        следствие="есть что предсказывать" if intent.get("expect")
+        else "пустой expect — утверждение «цвет не меняется»"))
     if (немые := unspoken(intent)):
         print("⚠️ метки, которых нет ни в одном наборе (опечатка обойдётся в прогон):")
         for метка in немые:
@@ -487,6 +494,12 @@ def main() -> int:
     patch = args.patch.read_text(encoding="utf-8") if args.patch else subprocess.run(
         ["git", "diff", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout
     судимые = роды(intent, patch)
+    предсказаний = sum(1 for _, _, род in судимые if род == "предсказание")
+    шаги.append(_stamp.строка_шага(
+        "отделить предсказание от тавтологии", "роды",
+        [_stamp.условие("есть хоть одно предсказание", True, bool(предсказаний))],
+        исход="сработал" if предсказаний else "молчал",
+        следствие=f"предсказаний {предсказаний} из {len(судимые)}"))
     if (слепые := без_условия(intent, судимые)):
         # Отказ ДО прогонов: цикл стоит минуты, а тавтологичное ожидание не станет предсказанием
         # ни от одной из них. Замер 2026-09-06: 538 из 547 ожиданий были именно такими.
@@ -513,10 +526,27 @@ def main() -> int:
         after = verdicts(tree)
     finally:
         drop_tree(tree)
+    шаги.append(_stamp.строка_шага(
+        "снять две карты", "verdicts",
+        [_stamp.условие("на HEAD есть проверки", True, bool(before)),
+         _stamp.условие("на кандидате есть проверки", True, bool(after))],
+        исход="сработал" if before and after else "молчал",
+        следствие=f"сравнивать есть что: {len(before)} и {len(after)}" if before and after
+        else "одна из карт пуста — сравнение не состоялось"))
 
     code = report(intent, before, after, судимые)
     поля = stamp_fields(intent, compare(intent, before, after), args.intent,
                         time.monotonic() - начало, судимые)
+    сравнение = compare(intent, before, after)
+    цвет_сменился = bool(сравнение.get("colour"))
+    шаги.append(_stamp.строка_шага(
+        "сравнить исходы", "compare",
+        [_stamp.условие("цвет сменился хоть у одной проверки", True, цвет_сменился)],
+        исход="сработал" if цвет_сменился else "молчал",
+        следствие=f"сбылось {len(сравнение.get('fulfilled') or [])}, "
+                  f"незаявленного {len(сравнение.get('surprise') or [])}, "
+                  f"не сбылось {len(сравнение.get('missed') or [])}"))
+    поля["detail"]["шаги"] = шаги
     ключ, подпись = _stamp.sign("цикл", "ВЕРДИКТ", поля["what"], intent=поля["intent"],
                                 expected=поля["expected"], actual=поля["actual"],
                                 cmd=поля["cmd"], detail=поля["detail"])
