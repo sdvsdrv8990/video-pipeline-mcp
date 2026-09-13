@@ -9,6 +9,10 @@
 о ЦЕНЕ, содержимого не читая: одно и то же место они видят по-разному, и это разделение
 намеренное. Цели — отслеживаемое ВМЕСТЕ с неотслеживаемым, иначе новый файл не судится вовсе.
 
+Зовёт `_comments` (дом исключений), `_chains` (кого зовёт файл и кто зовёт его), `_verdict`
+(подпись вердикта) и `pygments` (комментарии не-питона). Зовут его хук `vpm-comment-intent` после
+записи и джоба CI `comment-guard`.
+
 Режимы: `--hook` · `--scan` · `--check` (exit 1) · `--bless`.
 """
 
@@ -34,7 +38,9 @@ from pygments.util import ClassNotFound
 PROJECT = Path(__file__).resolve().parents[2]
 BASELINE = Path(__file__).with_name("comment_guard_baseline.txt")
 
-MODULE_DOC_MAX = 15          # шапка модуля: роль + неочевидное, а не пересказ подсистемы
+# Длина шапки СНЯТА как судья (владелец 2026-09-13: «критерий длины — такое себе, не держит
+# критики»). Судится СОСТАВ: зона и назначение, кого файл зовёт, кто зовёт его. Мусор ловят классы
+# ниже — нарратив, координаты, пересказ декларации; длинная и полезная шапка больше не замечание.
 FUNC_DOC_MAX = 12            # докстринг функции: что делает + почему так, без эссе
 COMMENT_RUN_MAX = 5          # подряд идущих строк `#`
 SECTIONS_MAX = 2             # терсовый `## Назначение` — конвенция; три раздела — уже документ
@@ -184,7 +190,40 @@ def _review_text(path: Path | str, text: str) -> list[str]:
     return notes
 
 
-def review(path: Path | str, text: str) -> list[str]:
+def _состав_шапки(path: Path | str, text: str, шапка: str, зовут: dict[str, set[str]] | None,
+                  ) -> list[str]:
+    """Чего в шапке НЕ хватает, чтобы по ней судили о файле: зона · кого зовёт · кто зовёт.
+
+    Замер 2026-09-13 по 194 файлам: адресата называли 19 шапок из 120, вызывающего — 6 из 65.
+    Форму сторож держал на нуле замечаний, то есть ноль значил «другой предмет», а не чистоту.
+    """
+    rel = str(path)
+    # Судится состав ФАЙЛА ДЕРЕВА: у куска кода, переданного набором, нет ни вызывающих, ни места,
+    # и «шапки нет» там значило бы «улики нет» — ровно та подмена, которую мы ловим у осей.
+    if not rel.endswith(".py") or not (PROJECT / rel).is_file():
+        return []
+    if not шапка.strip():
+        return [f"{rel}:1 — шапки нет: по файлу нельзя сказать ни зоны, ни назначения, "
+                f"а ИИ и человек начинают с неё"]
+    низ = шапка.lower()
+    notes = []
+    if not re.search(r"\s[—–-]\s", шапка.splitlines()[0]):
+        notes.append(f"{rel}:1 — первая строка не называет НАЗНАЧЕНИЕ через тире "
+                     f"(`путь — за что отвечает`): зона файла читается только из кода")
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import _chains                                                # noqa: PLC0415 — разбор цепочек
+    адресаты = _chains.зовёт_код(rel, PROJECT)
+    if адресаты and not any(а.lower() in низ for а in адресаты):
+        notes.append(f"{rel}:1 — шапка не называет НИ ОДНОГО адресата, хотя файл зовёт "
+                     f"{len(адресаты)}: «кого зовёт» — половина радиуса, и она не выводится текстом")
+    зовущие = (зовут or {}).get(Path(rel).stem, set()) - {Path(rel).stem}
+    if зовущие and not any(з.lower() in низ for з in зовущие):
+        notes.append(f"{rel}:1 — шапка не называет НИ ОДНОГО вызывающего, хотя его зовут "
+                     f"{len(зовущие)}: правка здесь отзовётся у них, и узнать это неоткуда")
+    return notes
+
+
+def review(path: Path | str, text: str, зовут: dict[str, set[str]] | None = None) -> list[str]:
     """Замечания по одному файлу. Пусто = чисто."""
     if not str(path).endswith(".py"):
         return _review_text(path, text)
@@ -198,14 +237,13 @@ def review(path: Path | str, text: str) -> list[str]:
         return [f"{path}:1 — файл не разбирается ({type(e).__name__}): сторож на нём слеп"]
 
     prose: dict[int, str] = {}
+    notes += _состав_шапки(path, text, ast.get_docstring(ast.parse(text)) or "", зовут)
     for start, length, is_module in docs:
         body = lines[start - 1:start - 1 + length]
         prose.update({start + k: ln for k, ln in enumerate(body)})
-        limit = MODULE_DOC_MAX if is_module else FUNC_DOC_MAX
-        if length > limit:
-            kind = "шапка модуля" if is_module else "докстринг"
-            notes.append(f"{path}:{start} — {kind} на {length} строк (предел {limit}): "
-                         f"оставь роль и неочевидное, остальное — в журнал и commit")
+        if not is_module and length > FUNC_DOC_MAX:
+            notes.append(f"{path}:{start} — докстринг на {length} строк (предел {FUNC_DOC_MAX}): "
+                         f"что делает и почему так, остальное — в журнал и commit")
         sections = sum(1 for ln in body if re.match(r"\s*#{2,}\s\S", ln))
         if sections > SECTIONS_MAX:
             notes.append(f"{path}:{start} — {sections} разделов в одном докстринге: это документ, "
@@ -305,7 +343,14 @@ def collect(targets: list[str] | None = None) -> dict[str, list[str]]:
         # дерева посреди правки. Читать его — умереть трейсом вместо вердикта, и вся карта сторожа
         # пропадает; текста в несуществующем файле нет, судить нечего.
         files = [f for f in _tracked() if f.exists()]
-    out = {_rel(f): review(_rel(f), f.read_text(encoding="utf-8", errors="replace"))
+    # Карта «кто кого зовёт» строится ОДИН раз на весь замер: поштучно она стоила бы разбора
+    # всего дерева на каждый файл, и сторожа перестали бы гонять — а несчитанная половина
+    # радиуса выглядит как её отсутствие.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import _chains                                                # noqa: PLC0415 — разбор цепочек
+    отн = sorted({_rel(f) for f in files})
+    зовут = _chains.карта_вызовов([р for р in отн if р.endswith(".py")], PROJECT)
+    out = {_rel(f): review(_rel(f), f.read_text(encoding="utf-8", errors="replace"), зовут)
            for f in sorted(set(files))}
     if not out:
         raise SystemExit(f"comment_guard: не найдено ни одного .py в {targets or 'git ls-files'} — "
@@ -337,7 +382,12 @@ def cmd_scan(targets: list[str]) -> int:
     return 1 if total else 0
 
 
-def cmd_bless() -> int:
+def cmd_bless(причина: str = "") -> int:
+    # Мера потолка берётся у ХОЗЯИНА подписи, а не считается здесь: ось сверяет подпись своим
+    # мерилом, и вторая мера рядом давала бы «сдвиг без записи» на подписанном сдвиге.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import _stamp                                                  # noqa: PLC0415 — подпись сдвига
+    было = _stamp.мера_потолка(BASELINE.read_text(encoding="utf-8") if BASELINE.exists() else "")
     found = collect()
     total = sum(len(n) for n in found.values())
     body = "".join(f"{p} {len(n)}\n" for p, n in sorted(found.items()) if n)
@@ -347,6 +397,13 @@ def cmd_bless() -> int:
         f"# После прополки: python3 scripts/guards/comment_guard.py --bless. Сейчас всего: {total}.\n"
         + body, encoding="utf-8")
     print(f"Потолок переписан: {total} замечаний в {sum(1 for n in found.values() if n)} файлах → {BASELINE}")
+    стало = _stamp.мера_потолка(BASELINE.read_text(encoding="utf-8"))
+    if стало != было:
+        if not причина.strip():
+            raise SystemExit("сдвиг потолка без причины: назови --почему «<за что>» — иначе через "
+                             "месяц он неотличим от опечатки")
+        _stamp.сдвиг_потолка([("текст в коде", int(было), int(стало), BASELINE.name)],
+                             причина)
     return 0
 
 
@@ -430,6 +487,8 @@ def main() -> int:
     mode.add_argument("--check", action="store_true", help="храповик против потолка; превышение = exit 1")
     mode.add_argument("--bless", action="store_true", help="переписать потолок текущим замером")
     mode.add_argument("--hook", action="store_true", help="событие PostToolUse со stdin")
+    ap.add_argument("--почему", dest="причина", default="",
+                    help="причина сдвига потолка — уедет в подпись журнала")
     ap.add_argument("paths", nargs="*", help="цели для --scan")
     a = ap.parse_args()
     if a.check:
@@ -439,7 +498,7 @@ def main() -> int:
                               ".venv/bin/python scripts/guards/comment_guard.py --check",
                               точный=False, улика="есть")
     if a.bless:
-        return cmd_bless()
+        return cmd_bless(getattr(a, "причина", ""))
     if a.scan:
         return cmd_scan(a.paths)
     return cmd_hook()

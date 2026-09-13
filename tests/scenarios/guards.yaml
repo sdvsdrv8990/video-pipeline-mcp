@@ -6,7 +6,7 @@
   why: сторож, отвечающий нулём и когда нашёл, и когда нет, — печать, а не наблюдение
   given:
     files:
-      сторож/чисто.py: "x = 1\n"
+      сторож/чисто.py: "\"\"\"чисто.py — проба сторожа текста: ничего не зовёт и никем не зовётся.\"\"\"\nx = 1\n"
       сторож/координата.py: "# F160 закрыт в этой сессии\nx = 1\n"
   when:
     - python: workspace_path
@@ -192,3 +192,35 @@
         exit: 1
         console: "не из чего"
         console_absent: "рёбер"
+
+- scenario: guard_header_judged_by_composition_not_length
+  why: "длина шапки снята как критерий (владелец 2026-09-13) — судится состав: назначение, кого зовёт, кто зовёт"
+  when:
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "scripts/guards/_chains.py"]}
+      expect:
+        ok: true
+        exit: 0
+        console: "Всего замечаний: 0"
+        console_absent: "строк \\(предел"
+
+- scenario: guard_header_without_addressee_is_a_finding
+  why: "отрицательный набор — шапка без адресата при живых импортах обязана стать замечанием"
+  when:
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "core/advice.py"]}
+      expect:
+        ok: false
+        exit: 1
+        console: "не называет НИ ОДНОГО"
+
+- scenario: guard_header_scan_refuses_on_missing_target
+  why: "разрушительный — цель замера вырезана: сторож обязан отказать, а не напечатать пустую чистоту"
+  when:
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "core/этого-файла-нет.py"]}
+      expect:
+        ok: false
+        exit: 1
+        console: "цель не найдена"
+        console_absent: "чисто"
