@@ -552,6 +552,25 @@ def _константы(дерево: ast.Module) -> dict[str, str]:
     return свод
 
 
+def _цепь_деления(узел: ast.BinOp) -> list[str]:
+    """Куски пути из `X / "docs" / "roadmap"`. Нестроковый кусок ОБРЫВАЕТ цепь, а не пропускается.
+
+    Вычисленное имя (`дом / файл`) путём не является: продолжив за ним, мы склеили бы куски,
+    которые в дереве рядом не стоят, и получили бы источник, которого никто не читает.
+    """
+    части: list[ast.AST] = []
+    н: ast.AST = узел
+    while isinstance(н, ast.BinOp) and isinstance(н.op, ast.Div):
+        части.insert(0, н.right)
+        н = н.left
+    куски = []
+    for часть in части:
+        if not (isinstance(часть, ast.Constant) and isinstance(часть.value, str)):
+            break
+        куски.append(часть.value)
+    return куски
+
+
 def _источники(узел: ast.AST, конст: dict[str, str]) -> set[str]:
     """Пути, которые читает этот кусок кода: кортежи сегментов, имена констант и прямые строки.
 
@@ -560,8 +579,23 @@ def _источники(узел: ast.AST, конст: dict[str, str]) -> set[st
     написано.
     """
     найдено = set()
+    # Цепь деления разбирается ОДИН раз — от самого внешнего узла: `ast.walk` встречает и левые
+    # операнды, и каждый префикс пути стал бы отдельным источником («.claude» рядом с
+    # «.claude/state/vpm-permit»), раздув людность места, которого нет.
+    вложенные = {id(п.left) for п in ast.walk(узел)
+                 if isinstance(п, ast.BinOp) and isinstance(п.op, ast.Div)}
     for под in ast.walk(узел):
-        if isinstance(под, ast.Tuple):
+        if isinstance(под, ast.BinOp) and isinstance(под.op, ast.Div) and id(под) not in вложенные:
+            куски = _цепь_деления(под)
+            if куски and куски[0] in ВЕРХНИЕ:
+                найдено.add("/".join(куски))
+        elif isinstance(под, ast.Call) and isinstance(под.func, ast.Attribute) \
+                and под.func.attr == "joinpath":
+            куски = [а.value for а in под.args
+                     if isinstance(а, ast.Constant) and isinstance(а.value, str)]
+            if len(куски) == len(под.args) and куски and куски[0] in ВЕРХНИЕ:
+                найдено.add("/".join(куски))
+        elif isinstance(под, ast.Tuple):
             куски = [э.value for э in под.elts
                      if isinstance(э, ast.Constant) and isinstance(э.value, str)]
             if len(куски) == len(под.elts) and куски and куски[0] in ВЕРХНИЕ:
