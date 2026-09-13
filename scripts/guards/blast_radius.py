@@ -611,6 +611,122 @@ def карта_классов(root: Path = ROOT) -> tuple[dict[str, set[str]], l
     return карта, sorted(вне)
 
 
+def _роды_сценариев(root: Path = ROOT) -> dict[str, str]:
+    """{сценарий: род} по всем объявлениям. Пусто — объявлений нет, и род спрашивать не у кого."""
+    sys.path.insert(0, str(root))
+    from tests.harness.scenario import роды as роды_зон  # noqa: PLC0415 — род живёт в объявлении,
+    # и разбор нужен только тем режимам, которые о нём спрашивают
+    return {имя: род for зона in роды_зон(root / "tests" / "scenarios").values()
+            for имя, род in зона.items()}
+
+
+def _тела(rel: str, root: Path = ROOT) -> dict[str, tuple[int, int]]:
+    """Имя функции → диапазон ТЕЛА. Строка `def` исполняется при импорте, поэтому по ней покрытой
+    выглядит любая функция — «покрыт» тогда значит «модуль загрузили», а не «сюда заходили»."""
+    дерево = ast.parse((root / rel).read_text(encoding="utf-8"))
+    свод: dict[str, tuple[int, int]] = {}
+
+    def обойти(узел, префикс: str):
+        for ребёнок in ast.iter_child_nodes(узел):
+            if isinstance(ребёнок, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                имя = f"{префикс}{ребёнок.name}"
+                тело = ребёнок.body
+                if (len(тело) > 1 and isinstance(тело[0], ast.Expr)
+                        and isinstance(getattr(тело[0], "value", None), ast.Constant)):
+                    тело = тело[1:]              # докстринг тоже исполняется при определении
+                свод[имя] = (тело[0].lineno, getattr(ребёнок, "end_lineno", ребёнок.lineno))
+                обойти(ребёнок, f"{имя}.")
+            elif isinstance(ребёнок, ast.ClassDef):
+                обойти(ребёнок, f"{префикс}{ребёнок.name}.")
+
+    обойти(дерево, "")
+    return свод
+
+
+def цепочка(rel: str, root: Path = ROOT) -> list[dict]:
+    """Узлы цепочки одного файла: функция → сценарии, их РОДЫ и команда прогона именно их.
+
+    Карта покрытия знает, какие строки исполнил каждый сценарий; имена функций переживают правку,
+    номера строк — нет, поэтому узлом берётся функция. Род сценария приходит из объявления: узел,
+    покрытый одними положительными, проверен на удаче, и это видно числом, а не на глаз.
+    """
+    карта_пути = root / "tests" / ".blast" / "radius.json"
+    if not карта_пути.exists():
+        raise SystemExit(f"карты радиуса нет ({карта_пути}) — собрать: --build. Пустая таблица "
+                         f"здесь читалась бы как «сценариев не нужно»")
+    radius = json.loads(карта_пути.read_text(encoding="utf-8"))
+    исполнено = radius.get(str(Path(rel)))
+    if исполнено is None:
+        raise SystemExit(f"{rel}: файла нет в карте радиуса — он вне деревьев замера либо карта "
+                         f"собрана до его появления. Пересобрать: --build")
+    роды = _роды_сценариев(root)
+    узлы = []
+    for имя, (начало, конец) in sorted(_тела(rel, root).items(), key=lambda п: п[1][0]):
+        свои = sorted(с for с, строки in исполнено.items()
+                      if any(начало <= n <= конец for n in строки))
+        счёт = {род: sum(1 for с in свои if роды.get(с) == род)
+                for род in ("положительный", "отрицательный", "разрушительный")}
+        команда = (f"VPM_SCENARIO={','.join(свои)} .venv/bin/python tests/scenarios/test_scenarios.py"
+                   if свои else "")
+        узлы.append({"узел": имя, "строки": (начало, конец), "сценарии": свои,
+                     "роды": счёт, "команда": команда})
+    return узлы
+
+
+def показ_цепочки(rel: str, root: Path = ROOT) -> int:
+    """Таблица радиуса по файлу: узел · роды покрытия · команда. Дыры названы и посчитаны."""
+    узлы = цепочка(rel, root)
+    if not узлы:
+        print(f"{rel}: ни одной функции — цепочки здесь нет")
+        return 1
+    без_покрытия, без_разрушения = [], []
+    for узел in узлы:
+        счёт = узел["роды"]
+        метка = f"+ {счёт['положительный']:3} − {счёт['отрицательный']:3} ✗ {счёт['разрушительный']:3}"
+        дыра = "" if счёт["разрушительный"] else "   ← разрушение здесь не пробовал никто"
+        print(f"{узел['узел']:38} {метка}{дыра}")
+        if not узел["сценарии"]:
+            без_покрытия.append(узел["узел"])
+            print("     дыра: не исполняет ни один сценарий — правка здесь сценариям невидима")
+            continue
+        if not счёт["разрушительный"]:
+            без_разрушения.append(узел["узел"])
+    print(f"\nузлов {len(узлы)} · без покрытия {len(без_покрытия)} · "
+          f"без разрушительного {len(без_разрушения)}")
+    if без_покрытия:
+        print(f"   вне сценариев: {', '.join(без_покрытия[:8])}")
+    print(f"   команды набора по узлу: --цепочка {rel} --узел <имя>")
+    return 0
+
+
+def показ_узла(rel: str, имя: str, root: Path = ROOT) -> int:
+    """Три набора одного узла и КОМАНДА на каждый: положительный · отрицательный · разрушительный.
+
+    Команда лежит рядом со счётом намеренно: набор, который не поднять одной строкой, проверяют
+    «когда-нибудь», а разрушительный — не проверяют вовсе.
+    """
+    узлы = {у["узел"]: у for у in цепочка(rel, root)}
+    if имя not in узлы:
+        print(f"{rel}: узла `{имя}` нет; есть {', '.join(sorted(узлы))[:120]}")
+        return 1
+    узел = узлы[имя]
+    роды = _роды_сценариев(root)
+    пусто = True
+    for род in ("положительный", "отрицательный", "разрушительный"):
+        свои = [с for с in узел["сценарии"] if роды.get(с) == род]
+        if not свои:
+            print(f"{род}: НАБОРА НЕТ — эта сторона узла не проверялась ни разу")
+            continue
+        пусто = False
+        print(f"{род}: {len(свои)}")
+        print(f"   VPM_SCENARIO={','.join(свои)} "
+              f".venv/bin/python tests/scenarios/test_scenarios.py")
+    if пусто:
+        print("узел вне сценариев целиком — команду поднять нечем")
+        return 1
+    return 0
+
+
 def показ_класса(источник: str = "", root: Path = ROOT) -> int:
     """Кто уже стоит на этом источнике. Без имени — вся карта классов.
 
@@ -688,6 +804,10 @@ def main() -> int:
                         help="покрытие зоны родами сценариев (не отказ)")
     parser.add_argument("--класс", nargs="?", const="", metavar="ИСТОЧНИК",
                         help="кто уже стоит на этом источнике; без имени — вся карта классов")
+    parser.add_argument("--цепочка", metavar="ФАЙЛ",
+                        help="таблица радиуса по файлу: узел · роды покрытия · дыры")
+    parser.add_argument("--узел", metavar="ИМЯ",
+                        help="три набора одного узла и команда на каждый")
     parser.add_argument("--root", type=Path, default=ROOT, metavar="ПУТЬ",
                         help="судить НАЗВАННОЕ дерево (карта классов и покрытие родами)")
     parser.add_argument("--горячие", action="store_true",
@@ -712,6 +832,10 @@ def main() -> int:
         return _verdict.close("рубежи потоков", check_routes(),
                               ".venv/bin/python scripts/guards/blast_radius.py --check-routes",
                               точный=False)
+    if getattr(args, "цепочка") and getattr(args, "узел"):
+        return показ_узла(getattr(args, "цепочка"), getattr(args, "узел"), args.root)
+    if getattr(args, "цепочка"):
+        return показ_цепочки(getattr(args, "цепочка"), args.root)
     if getattr(args, "класс") is not None:
         return показ_класса(getattr(args, "класс") or "", args.root)
     if getattr(args, "роды"):
@@ -724,7 +848,7 @@ def main() -> int:
                               точный=False)
     if not any([args.build, args.query, args.changed, args.check_routes, args.affected,
                 args.blind, args.горячие, getattr(args, "роды"),
-                getattr(args, "класс") is not None]):
+                getattr(args, "класс") is not None, getattr(args, "цепочка")]):
         parser.print_help()
     return 0
 
