@@ -120,3 +120,36 @@
         exit: 1
         console: "сторож без набора-дома: не судится — нет каталога сторожей"
         console_absent: "сторож без набора-дома: чисто"
+
+- scenario: guard_class_map_answers_who_already_stands
+  why: до заведения нового судьи вопрос «кандидат уже есть?» обязан отвечаться командой, а не памятью
+  when:
+    - run: scripts/guards/blast_radius.py
+      with: {args: ["--класс", "scripts/guards/CATALOG.md"]}
+      expect: {ok: true, exit: 0, console: "кандидат уже есть"}
+
+- scenario: guard_class_map_says_empty_source_aloud
+  why: источник, на котором не стоит никто, обязан говорить это словом — молчание читается как «кандидат есть»
+  when:
+    - run: scripts/guards/blast_radius.py
+      with: {args: ["--класс", "config/невиданное-никем.yaml"]}
+      expect: {ok: true, exit: 0, console: "не стоит НИКТО"}
+
+- scenario: guard_class_map_refuses_on_cut_sources
+  why: источники вырезаны — карта обязана отказаться, а не выдать пустоту за полное покрытие
+  род: разрушительный
+  given:
+    files:
+      вырезанное/scripts/guards/сторож.py: "def сломан(:\n"
+  when:
+    - python: workspace_path
+      with: {path: вырезанное}
+      as: cut
+      expect: {ok: true}
+    - run: scripts/guards/blast_radius.py
+      with: {args: ["--класс", "--root", "${cut.path}"]}
+      expect:
+        ok: false
+        exit: 1
+        console: "разбирать нечего"
+        console_absent: "источников в карте"

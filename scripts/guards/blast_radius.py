@@ -534,6 +534,113 @@ def blind() -> int:
     return 0
 
 
+ВЕРХНИЕ = ("core", "tools", "scripts", "tests", "docs", "config", ".claude", "studio", "spec")
+
+
+def _константы(дерево: ast.Module) -> dict[str, str]:
+    """{ИМЯ: путь} по присваиваниям вида `GUARDS = ("scripts", "guards")` — источник зовут именем."""
+    свод = {}
+    for узел in дерево.body:
+        if not isinstance(узел, ast.Assign) or not isinstance(узел.value, ast.Tuple):
+            continue
+        куски = [э.value for э in узел.value.elts
+                 if isinstance(э, ast.Constant) and isinstance(э.value, str)]
+        if len(куски) == len(узел.value.elts) and куски and куски[0] in ВЕРХНИЕ:
+            for цель in узел.targets:
+                if isinstance(цель, ast.Name):
+                    свод[цель.id] = "/".join(куски)
+    return свод
+
+
+def _источники(узел: ast.AST, конст: dict[str, str]) -> set[str]:
+    """Пути, которые читает этот кусок кода: кортежи сегментов, имена констант и прямые строки.
+
+    Разбор, а не объявление: реестр «механизм → источник» рассохся бы на первой же правке, а карта
+    класса нужна ровно в тот момент, когда заводят нового судью, — то есть когда объявление ещё не
+    написано.
+    """
+    найдено = set()
+    for под in ast.walk(узел):
+        if isinstance(под, ast.Tuple):
+            куски = [э.value for э in под.elts
+                     if isinstance(э, ast.Constant) and isinstance(э.value, str)]
+            if len(куски) == len(под.elts) and куски and куски[0] in ВЕРХНИЕ:
+                найдено.add("/".join(куски))
+        elif isinstance(под, ast.Name) and под.id in конст:
+            найдено.add(конст[под.id])
+        elif isinstance(под, ast.Constant) and isinstance(под.value, str):
+            з = под.value
+            if "/" in з and з.split("/")[0] in ВЕРХНИЕ and " " not in з:
+                найдено.add(з)
+    return найдено
+
+
+def карта_классов(root: Path = ROOT) -> tuple[dict[str, set[str]], list[str]]:
+    """(источник → механизмы, механизмы вне карты). Оси называются поимённо, остальные — файлом."""
+    карта: dict[str, set[str]] = {}
+    вне = []
+    sys.path.insert(0, str(root / "scripts" / "guards"))
+    import invariants  # noqa: PLC0415 — импорт внутри: карта строится по запросу, а сторож
+    # радиуса гоняется и там, где осей нет вовсе
+    заголовки = {**{ч.__name__: и for и, ч in invariants.HARD},
+                 **{с[1].__name__: с[0] for с in invariants.RATCHETS}}
+    файлы = sorted((root / "scripts" / "guards").glob("*.py")) + \
+        sorted((root / ".claude" / "hooks").glob("*.py"))
+    for файл in файлы:
+        try:
+            дерево = ast.parse(файл.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        конст = _константы(дерево)
+        общие = _источники(дерево, конст)
+        оси_файла = set()
+        for узел in дерево.body:
+            if isinstance(узел, ast.FunctionDef) and узел.name in заголовки:
+                имя = f"ось «{заголовки[узел.name]}»"
+                оси_файла |= {имя}
+                свои = _источники(узел, конст)
+                for и in свои:
+                    карта.setdefault(и, set()).add(имя)
+                if not свои:
+                    вне.append(имя)
+        свои_файла = общие - {и for ось in оси_файла for и in карта.get(ось, set())}
+        for и in свои_файла:
+            карта.setdefault(и, set()).add(файл.name)
+        if not общие:
+            вне.append(файл.name)
+    return карта, sorted(вне)
+
+
+def показ_класса(источник: str = "", root: Path = ROOT) -> int:
+    """Кто уже стоит на этом источнике. Без имени — вся карта классов.
+
+    Вопрос задаётся ДО заведения нового судьи: кандидат почти всегда уже есть, и расширить его
+    дешевле, чем завести соседа, который будет судить тот же класс вполсилы.
+    """
+    карта, вне = карта_классов(root)
+    if not карта:
+        print("карта классов пуста — разбирать нечего")
+        return 1
+    if источник:
+        совпало = {и: кто for и, кто in карта.items() if источник in и}
+        if not совпало:
+            print(f"на источник «{источник}» не стоит НИКТО — это первый судья здесь, "
+                  f"и его радиус придётся объявить самому")
+            return 0
+        for и, кто in sorted(совпало.items()):
+            print(f"{и}: уже стоят {len(кто)}")
+            for механизм in sorted(кто):
+                print(f"   · {механизм}")
+        print("\nкандидат уже есть: расширяй существующего, а не заводи соседа на тот же класс")
+        return 0
+    for и, кто in sorted(карта.items(), key=lambda пара: (-len(пара[1]), пара[0]))[:20]:
+        print(f"{len(кто):3}  {и}")
+    print(f"\nисточников в карте: {len(карта)}; механизмов вне карты: {len(вне)}")
+    for имя in вне:
+        print(f"   ⚠ {имя} — не читает ни одного объявленного источника, его радиус неизвестен")
+    return 0
+
+
 def показ_родов(root: Path = ROOT) -> int:
     """Покрытие зоны РОДАМИ сценариев: положительный · отрицательный · разрушительный.
 
@@ -579,6 +686,10 @@ def main() -> int:
     parser.add_argument("--blind", action="store_true")
     parser.add_argument("--роды", action="store_true",
                         help="покрытие зоны родами сценариев (не отказ)")
+    parser.add_argument("--класс", nargs="?", const="", metavar="ИСТОЧНИК",
+                        help="кто уже стоит на этом источнике; без имени — вся карта классов")
+    parser.add_argument("--root", type=Path, default=ROOT, metavar="ПУТЬ",
+                        help="судить НАЗВАННОЕ дерево (карта классов и покрытие родами)")
     parser.add_argument("--горячие", action="store_true",
                         help="показ: где правка дороже средней (не отказ)")
     parser.add_argument("--bless", action="store_true")
@@ -601,8 +712,10 @@ def main() -> int:
         return _verdict.close("рубежи потоков", check_routes(),
                               ".venv/bin/python scripts/guards/blast_radius.py --check-routes",
                               точный=False)
+    if getattr(args, "класс") is not None:
+        return показ_класса(getattr(args, "класс") or "", args.root)
     if getattr(args, "роды"):
-        return показ_родов()
+        return показ_родов(args.root)
     if args.горячие:
         return показ_горячих()
     if args.blind:
@@ -610,7 +723,8 @@ def main() -> int:
                               ".venv/bin/python scripts/guards/blast_radius.py --blind",
                               точный=False)
     if not any([args.build, args.query, args.changed, args.check_routes, args.affected,
-                args.blind, args.горячие, getattr(args, "роды")]):
+                args.blind, args.горячие, getattr(args, "роды"),
+                getattr(args, "класс") is not None]):
         parser.print_help()
     return 0
 
