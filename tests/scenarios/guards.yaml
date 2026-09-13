@@ -286,3 +286,13 @@
         ok: true
         exit: 0
         console: "lesson_producer"
+
+- scenario: guard_passport_counts_missing_cells
+  why: "инструмент без карты радиуса, росписи и трёх родов сценариев нельзя привязать к цепочке — паспорт печатает это счётом"
+  when:
+    - run: scripts/guards/patrol.py
+      with: {args: ["--паспорт"]}
+      expect:
+        ok: true
+        exit: 0
+        console: "незакрытых клеток"
