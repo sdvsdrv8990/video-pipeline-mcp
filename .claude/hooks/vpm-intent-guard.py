@@ -4,7 +4,7 @@
 Паспорт: будит редактирование, создание, событие SessionStart, событие PreToolUse, событие Stop ·
   читает stdin, scripts/guards/tails.jsonl, tests/.journal · шагов не расписывает · не подписывает.
 Зовёт: _evidence, _permit, _stamp.
-Зовут: событие SessionStart, событие PreToolUse и событие Stop.
+Зовут: событие SessionStart, событие PreToolUse, событие Stop и test_hooks.
 
 `SessionStart` показывает незакрытые остатки: хвост, записанный вчера, сам о себе не напомнит.
 `Stop` не даёт кончить сессию обещанием: «вернёмся», «остаётся», «завтра» в последних словах при

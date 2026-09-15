@@ -199,8 +199,97 @@ def личность(rel: str) -> str:
     return путь.parent.name if путь.stem == "__init__" else путь.stem
 
 
+ИНТЕРПРЕТАТОР = re.compile(r"(?:^|/)python[\d.]*$")
+
+
+def _путь_выражения(узел, среда: dict[str, str]) -> str | None:
+    """Значение выражения пути без исполнения: литерал, имя, `/`, `str()`, `.resolve()`, `.parent`,
+    `.parents[N]`. У `среда or запасной` берётся запасной: переменной среды разбору не видно."""
+    import ast  # noqa: PLC0415 — разбор нужен только этому вопросу, а модуль зовут и без него
+    if isinstance(узел, ast.Constant) and isinstance(узел.value, str):
+        return узел.value
+    if isinstance(узел, ast.Name):
+        return среда.get(узел.id)
+    if isinstance(узел, ast.BoolOp):
+        return next(filter(None, (_путь_выражения(в, среда) for в in reversed(узел.values))), None)
+    if isinstance(узел, ast.BinOp) and isinstance(узел.op, ast.Div):
+        лево, право = _путь_выражения(узел.left, среда), _путь_выражения(узел.right, среда)
+        return str(Path(лево) / право) if лево and право else None
+    if isinstance(узел, ast.Call) and isinstance(узел.func, ast.Name) and узел.func.id in ("str", "Path") \
+            and len(узел.args) == 1:
+        return _путь_выражения(узел.args[0], среда)
+    if isinstance(узел, ast.Call) and isinstance(узел.func, ast.Attribute) and узел.func.attr == "resolve":
+        return _путь_выражения(узел.func.value, среда)
+    if isinstance(узел, ast.Attribute) and узел.attr == "parent":
+        база = _путь_выражения(узел.value, среда)
+        return str(Path(база).parent) if база else None
+    if isinstance(узел, ast.Subscript) and isinstance(узел.value, ast.Attribute) \
+            and узел.value.attr == "parents" and isinstance(узел.slice, ast.Constant) \
+            and isinstance(номер := узел.slice.value, int):
+        база = _путь_выражения(узел.value.value, среда)
+        return str(Path(база).parents[номер]) if база else None
+    return None
+
+
+def _исполняемые_пути(дерево, файл: Path) -> set[Path]:
+    """Файлы, которые код исполняет без импорта: сосед через `sys.path`, исходник, загруженный по
+    пути, argv интерпретатора — в том числе через свой помощник, строящий их из параметра.
+
+    Упоминание пути строкой вызовом не считается: совет «запусти scripts/…» ничего не исполняет.
+    """
+    import ast  # noqa: PLC0415 — разбор нужен только этому вопросу, а модуль зовут и без него
+    среда = {"__file__": str(файл)}
+    for _ in range(2):                               # второй проход — имя через имя, объявленное ниже
+        for у in ast.walk(дерево):
+            if isinstance(у, ast.Assign) and len(у.targets) == 1 and isinstance(у.targets[0], ast.Name) \
+                    and (з := _путь_выражения(у.value, среда)):
+                среда[у.targets[0].id] = з
+            elif isinstance(у, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                умолчания = zip(у.args.args[len(у.args.args) - len(у.args.defaults):], у.args.defaults)
+                среда |= {а.arg: з for а, д in умолчания if (з := _путь_выражения(д, среда))}
+
+    def интерпретатор(у) -> bool:
+        if isinstance(у, ast.IfExp):
+            return интерпретатор(у.body) or интерпретатор(у.orelse)
+        if isinstance(у, ast.Attribute) and у.attr == "executable":
+            return True
+        return bool(ИНТЕРПРЕТАТОР.search(_путь_выражения(у, среда) or ""))
+
+    def цели(у) -> list:
+        if isinstance(у, (ast.List, ast.Tuple)) and len(у.elts) > 1 and интерпретатор(у.elts[0]):
+            return [у.elts[1]]
+        if not isinstance(у, ast.Call) or not у.args:
+            return []
+        имя = у.func.attr if isinstance(у.func, ast.Attribute) else getattr(у.func, "id", "")
+        if имя == "compile" and isinstance(у.args[0], ast.Call) and isinstance(у.args[0].func, ast.Attribute):
+            return [у.args[0].func.value]                                  # compile(путь.read_text(), …)
+        return [у.args[-1]] if имя in ("spec_from_file_location", "run_path") else []
+
+    помощники = {ф.name: [(i, п.arg, ц) for у in ast.walk(ф) for ц in цели(у)
+                          for i, п in enumerate(ф.args.args)
+                          if any(isinstance(н, ast.Name) and н.id == п.arg for н in ast.walk(ц))]
+                 for ф in ast.walk(дерево) if isinstance(ф, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    каталоги = [Path(к) for у in ast.walk(дерево)
+                if isinstance(у, ast.Call) and isinstance(у.func, ast.Attribute) and у.args
+                and у.func.attr in ("insert", "append") and getattr(у.func.value, "attr", "") == "path"
+                and (к := _путь_выражения(у.args[-1], среда))]
+    найдено: set[Path] = set()
+    for у in ast.walk(дерево):
+        выражения = [(ц, среда) for ц in цели(у)]
+        if isinstance(у, ast.Call) and isinstance(у.func, ast.Name):
+            выражения += [(ц, {**среда, п: з}) for i, п, ц in помощники.get(у.func.id, [])
+                          if i < len(у.args) and (з := _путь_выражения(у.args[i], среда))]
+        найдено |= {Path(з) for ц, ср in выражения if (з := _путь_выражения(ц, ср))}
+        имена = [а.name for а in у.names] if isinstance(у, ast.Import) else \
+            [у.module] if isinstance(у, ast.ImportFrom) and у.module and not у.level else []
+        найдено |= {к / имя.replace(".", "/") / хвост for к in каталоги for имя in имена
+                    for хвост in ("__init__.py",)} | \
+            {(к / имя.replace(".", "/")).with_suffix(".py") for к in каталоги for имя in имена}
+    return найдено
+
+
 def модули_кода(rel: str, root: Path = ROOT) -> set[str]:
-    """Свои модули, которые файл импортирует, — полными именами, разрешёнными по дереву.
+    """Свои модули, которые файл импортирует или исполняет по пути, — полными именами по дереву.
 
     Разрешается и относительный импорт, и `from пакет.модуль import Символ`. Имя без файла
     остаётся как написано, только если это сосед через `sys.path` (`import _stamp` из хука).
@@ -236,6 +325,11 @@ def модули_кода(rel: str, root: Path = ROOT) -> set[str]:
             if not узел.level and узел.module and узел.module.startswith("_") \
                     and not any(найти(б, узел.module) for б in базы):
                 модули.add(узел.module)
+    for путь in _исполняемые_пути(дерево, root / rel):
+        полный = (путь if путь.is_absolute() else root / путь).resolve()
+        if полный.suffix == ".py" and полный.is_file() and полный.is_relative_to(root.resolve()) \
+                and полный != (root / rel).resolve():
+            модули.add(модуль_файла(str(полный.relative_to(root.resolve()))))
     return модули
 
 

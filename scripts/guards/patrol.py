@@ -199,11 +199,25 @@ def роспись_кода(исходник: str) -> dict:
     шаги: list[str] = []
     данными = False
     подпись: set[str] = set()
+    # Форма импорта не меняет того, что код расписывает: `import _stamp as с` и `from _stamp import
+    # шаг` — тот же вызов, и опровержение «не расписывает» при них было бы ложью.
+    хозяева = {"_stamp": "_stamp", "_verdict": "_verdict"}
+    голые: dict[str, tuple[str, str]] = {}
     for узел in ast.walk(дерево):
-        if not (isinstance(узел, ast.Call) and isinstance(узел.func, ast.Attribute)
-                and isinstance(узел.func.value, ast.Name)):
+        if isinstance(узел, ast.Import):
+            хозяева |= {а.asname: а.name for а in узел.names if а.asname and а.name in хозяева.values()}
+        elif isinstance(узел, ast.ImportFrom) and узел.module in ("_stamp", "_verdict"):
+            голые |= {а.asname or а.name: (узел.module, а.name) for а in узел.names}
+    for узел in ast.walk(дерево):
+        if not isinstance(узел, ast.Call):
             continue
-        хозяин, вызов = узел.func.value.id, узел.func.attr
+        if isinstance(узел.func, ast.Attribute) and isinstance(узел.func.value, ast.Name) \
+                and узел.func.value.id in хозяева:
+            хозяин, вызов = хозяева[узел.func.value.id], узел.func.attr
+        elif isinstance(узел.func, ast.Name) and узел.func.id in голые:
+            хозяин, вызов = голые[узел.func.id]
+        else:
+            continue
         if хозяин == "_stamp" and вызов in ("шаг", "строка_шага"):
             первый = узел.args[0] if узел.args else None
             if isinstance(первый, ast.Constant) and isinstance(первый.value, str):

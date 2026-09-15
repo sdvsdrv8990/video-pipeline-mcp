@@ -1100,3 +1100,219 @@
     - run: scripts/guards/comment_guard.py
       with: {args: ["--scan", "--как", "tools/excel/__init__.py", "${draft.path}"]}
       expect: {ok: false, exit: 1, console: "лжёт", console_absent: "вызывающего|адресата|шапки нет|паспорта нет|молчит|неточен|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_caller_syspath_neighbour_true_is_clean
+  why: "test_text_only импортирует text_only соседом через sys.path, без подчёркивания в имени: названный вызывающий — правда"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/text_only.py, куда: шапки/header_caller_syspath_neighbour_true_is_clean/text_only.py, правка: как-есть}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/text_only.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_caller_load_helper_true_is_clean
+  why: "test_studio_emulation исполняет судью своим помощником _load(GUARDS / …): загрузка исходника по пути — вызов"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/acceptance_studio.py, куда: шапки/header_caller_load_helper_true_is_clean/acceptance_studio.py, правка: как-есть}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/acceptance_studio.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_caller_argv_param_default_true_is_clean
+  why: "vpm-delivery-gate строит argv интерпретатора из параметра root с умолчанием: названный vpm-delivery-gate виден разбором"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/reproduce.py, куда: шапки/header_caller_argv_param_default_true_is_clean/reproduce.py, правка: как-есть}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/reproduce.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_caller_argv_env_fallback_true_is_clean
+  why: "vpm-comment-intent исполняет судью путём «CLAUDE_PROJECT_DIR or запасной»: переменной разбор не видит и берёт запасной"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/comment_guard.py, куда: шапки/header_caller_argv_env_fallback_true_is_clean/comment_guard.py, правка: как-есть}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/comment_guard.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_caller_fire_helper_true_is_clean
+  why: "test_hooks запускает хук помощником fire(имя), путь собирается из параметра: «Зовут: … test_hooks» — правда"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: .claude/hooks/vpm-permit.py, куда: шапки/header_caller_fire_helper_true_is_clean/vpm-permit.py, правка: как-есть}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", ".claude/hooks/vpm-permit.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_caller_path_mention_is_not_a_call
+  why: "путь set_provider_key назван строкой в советах четырёх файлов, но никем не исполняется: отказ только за адресатов, вызывающего упоминание не создаёт"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/set_provider_key.py, куда: шапки/header_caller_path_mention_is_not_a_call/set_provider_key.py, правка: как-есть}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/set_provider_key.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "адресата", console_absent: "вызывающего|лжёт"}
+
+- scenario: header_caller_syspath_silence_is_seen
+  why: "text_only зовут только импортом через sys.path; вырезанное «Зовут» — молчание о радиусе, а не «вызывающих нет»"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/text_only.py, куда: шапки/header_caller_syspath_silence_is_seen/text_only.py, правка: вызывающие-вырезаны}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/text_only.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вызывающего", console_absent: "лжёт|адресата|шапки нет|паспорта нет|молчит|неточен|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_caller_fire_silence_is_seen
+  why: "хук зовут только из теста через помощник fire; без «Зовут» шапка молчит о нём"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: .claude/hooks/vpm-permit.py, куда: шапки/header_caller_fire_silence_is_seen/vpm-permit.py, правка: вызывающие-вырезаны}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", ".claude/hooks/vpm-permit.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вызывающего", console_absent: "лжёт|адресата|шапки нет|паспорта нет|молчит|неточен|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_caller_syspath_nobody_is_a_lie
+  why: "«из кода никто» при импорте соседом через sys.path — ложь: форма вызова не отменяет вызывающего"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/text_only.py, куда: шапки/header_caller_syspath_nobody_is_a_lie/text_only.py, правка: из-кода-никто}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/text_only.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "а зовут test_text_only", console_absent: "вызывающего|адресата|шапки нет|паспорта нет|молчит|неточен|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_caller_load_helper_nobody_is_a_lie
+  why: "«из кода никто» у судьи, которого тест исполняет помощником загрузки по пути, — ложь"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/acceptance_studio.py, куда: шапки/header_caller_load_helper_nobody_is_a_lie/acceptance_studio.py, правка: из-кода-никто}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/acceptance_studio.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "а зовут test_studio_emulation", console_absent: "вызывающего|адресата|шапки нет|паспорта нет|молчит|неточен|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_caller_spec_loader_nobody_is_a_lie
+  why: "test_table_materializer грузит скрипт spec_from_file_location: «из кода никто» — ложь"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/spec_to_schema.py, куда: шапки/header_caller_spec_loader_nobody_is_a_lie/spec_to_schema.py, правка: из-кода-никто}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/spec_to_schema.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "а зовут test_table_materializer", console_absent: "вызывающего|адресата|шапки нет|паспорта нет|молчит|неточен|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_caller_argv_nobody_is_a_lie
+  why: "control_center запускает configure argv интерпретатора: «из кода никто» — ложь"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/configure.py, куда: шапки/header_caller_argv_nobody_is_a_lie/configure.py, правка: из-кода-никто}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/configure.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "а зовут control_center", console_absent: "вызывающего|шапки нет|паспорта нет|молчит|неточен|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_caller_fire_nobody_is_a_lie
+  why: "«из кода никто» у хука, которого тест запускает помощником fire, — ложь"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: .claude/hooks/vpm-permit.py, куда: шапки/header_caller_fire_nobody_is_a_lie/vpm-permit.py, правка: из-кода-никто}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", ".claude/hooks/vpm-permit.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "а зовут test_hooks", console_absent: "вызывающего|адресата|шапки нет|паспорта нет|молчит|неточен|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_passport_steps_from_import_true_is_clean
+  why: "шаги через from _stamp import строка_шага — те же шаги: правдивая роспись сходится с кодом"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_passport_steps_from_import_true_is_clean/findings_count.py, правка: шаги-через-from}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_passport_steps_alias_true_is_clean
+  why: "шаги через псевдоним import _stamp as _с — те же шаги: правдивая роспись сходится с кодом"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_passport_steps_alias_true_is_clean/findings_count.py, правка: шаги-через-псевдоним}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_passport_signing_from_import_true_is_clean
+  why: "подпись через from _verdict import close — та же подпись: «подписывает через _verdict» правда"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_passport_signing_from_import_true_is_clean/findings_count.py, правка: подпись-через-from}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_passport_steps_from_import_denied_is_a_lie
+  why: "«шагов не расписывает» при шагах через from-импорт — ложь, а не слепая чистота"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_passport_steps_from_import_denied_is_a_lie/findings_count.py, правка: шаги-через-from-отрицаются}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "говорит «не расписывает», а код расписывает", console_absent: "вызывающего|адресата|шапки нет|паспорта нет|неточен|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_passport_signing_from_import_denied_is_silence
+  why: "«не подписывает» при подписи через from-импорт — шапка молчит о видимой подписи"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_passport_signing_from_import_denied_is_silence/findings_count.py, правка: подпись-через-from-отрицается}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "код подписывает через _verdict", console_absent: "лжёт|вызывающего|адресата|шапки нет|паспорта нет|неточен|род действия|момент не отслежен|пересказ декларации"}

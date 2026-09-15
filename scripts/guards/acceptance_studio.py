@@ -5,7 +5,7 @@
   tests/studio_emulation/app, scripts/guards/acceptance_scenarios.yaml · шагов не расписывает ·
   подписывает через _verdict.
 Зовёт: _acceptance, _evidence, _studio_surface, _verdict.
-Зовут: наряд и рука, из кода никто.
+Зовут: наряд, рука и test_studio_emulation.
 
 Условия приёмки, каждое на ПАРНОЙ улике, а не на счёте литералов:
   П1 компонент не сломан — тег ↔ импорт, импорт ↔ экспорт цели;
