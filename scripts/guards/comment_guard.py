@@ -383,6 +383,11 @@ def _паспорт_судьи(rel: str, text: str, шапка: str, адрес�
     return notes
 
 
+def _назван(имя: str, низ: str) -> bool:
+    """Имя целым словом: подстрокой `excel` нашёлся бы внутри `ExcelEngine` из строки «Зовёт»."""
+    return re.search(rf"(?<!\w){re.escape(имя.lower())}(?!\w)", низ) is not None
+
+
 def состав_шапки(path: Path | str, text: str, шапка: str, зовут: dict[str, set[str]] | None,
                  ) -> list[str]:
     """Чего в шапке НЕ хватает или что в ней ложно: зона · кого зовёт · кто зовёт · паспорт судьи.
@@ -398,7 +403,8 @@ def состав_шапки(path: Path | str, text: str, шапка: str, зов
     if not шапка.strip():
         return [f"{rel}:1 — шапки нет: по файлу нельзя сказать ни зоны, ни назначения, "
                 f"а ИИ и человек начинают с неё"]
-    низ = шапка.lower()
+    # Свой путь в первой строке сам называет пакет-вызывающего: без вычета зелень была бы ложной.
+    низ = (шапка[len(rel):] if шапка.startswith(rel) else шапка).lower()
     notes = []
     if not re.search(r"\s[—–-]\s", шапка.splitlines()[0]):
         notes.append(f"{rel}:1 — первая строка не называет НАЗНАЧЕНИЕ через тире "
@@ -406,12 +412,17 @@ def состав_шапки(path: Path | str, text: str, шапка: str, зов
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import _chains                                                # noqa: PLC0415 — разбор цепочек
     адресаты = set(_chains.зовёт_код(rel, PROJECT))
-    if адресаты and not any(а.lower() in низ for а in адресаты):
+    if адресаты and not any(_назван(а, низ) for а in адресаты):
         notes.append(f"{rel}:1 — шапка не называет НИ ОДНОГО адресата, хотя файл зовёт "
                      f"{len(адресаты)}: «кого зовёт» — половина радиуса, и она не выводится текстом")
-    зовущие = (зовут or {}).get(Path(rel).stem, set()) - {Path(rel).stem}
-    if зовущие and not any(з.lower() in низ for з in зовущие):
-        notes.append(f"{rel}:1 — шапка не называет НИ ОДНОГО вызывающего, хотя его зовут "
+    зовущие = ((зовут or {}).get(_chains.модуль_файла(rel), set())
+               | (зовут or {}).get(Path(rel).stem, set())) - {_chains.личность(rel)}
+    if зовущие and not any(_назван(з, низ) for з in зовущие):
+        if (строка := ЗОВУТ_ШАПКИ.search(шапка)) and "из кода никто" in строка.group(1):
+            notes.append(f"{rel}:1 — шапка лжёт: «из кода никто», а зовут "
+                         f"{', '.join(sorted(зовущие))}")
+        else:
+            notes.append(f"{rel}:1 — шапка не называет НИ ОДНОГО вызывающего, хотя его зовут "
                      f"{len(зовущие)}: правка здесь отзовётся у них, и узнать это неоткуда")
     notes += _зовущие_шапки(rel, text, шапка, адресаты, зовущие)
     notes += _паспорт_судьи(rel, text, шапка, адресаты)
@@ -544,19 +555,23 @@ def collect(targets: list[str] | None = None) -> dict[str, list[str]]:
         # дерева посреди правки. Читать его — умереть трейсом вместо вердикта, и вся карта сторожа
         # пропадает; текста в несуществующем файле нет, судить нечего.
         files = [f for f in _tracked() if f.exists()]
-    # Карта «кто кого зовёт» строится ОДИН раз на весь замер: поштучно она стоила бы разбора
-    # всего дерева на каждый файл, и сторожа перестали бы гонять — а несчитанная половина
-    # радиуса выглядит как её отсутствие.
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import _chains                                                # noqa: PLC0415 — разбор цепочек
-    отн = sorted({_rel(f) for f in files})
-    зовут = _chains.карта_вызовов([р for р in отн if р.endswith(".py")], PROJECT)
+    зовут = _карта_дерева()
     out = {_rel(f): review(_rel(f), f.read_text(encoding="utf-8", errors="replace"), зовут)
            for f in sorted(set(files))}
     if not out:
         raise SystemExit(f"comment_guard: не найдено ни одного .py в {targets or 'git ls-files'} — "
                          f"проверка не состоялась")
     return out
+
+
+def _карта_дерева() -> dict[str, set[str]]:
+    """Кто кого зовёт — по ВСЕМУ дереву в любом режиме. Частичная карта молчит о вызывающих вне
+    замера и правдивое «Зовут: server» читает ложью: `--scan tools`, событие хука, черновик `--как`.
+    Строится один раз на замер: поштучно она стоила бы разбора дерева на каждый файл."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import _chains                                                # noqa: PLC0415 — разбор цепочек
+    return _chains.карта_вызовов([_rel(f) for f in _tracked() if f.suffix == ".py" and f.exists()],
+                                 PROJECT)
 
 
 def _load_baseline() -> dict[str, int]:
@@ -706,7 +721,7 @@ def cmd_hook() -> int:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return 0
-    notes = review(_rel(path), text)
+    notes = review(_rel(path), text, _карта_дерева())
     if not notes:
         return 0
     head = "\n".join(f"  • {n}" for n in notes[:6])
@@ -736,9 +751,7 @@ def cmd_scan_as(как: str, targets: list[str]) -> int:
     if not цель.is_file():
         print(f"comment_guard: цель не найдена — {цель}", file=sys.stderr)
         return 2
-    import _chains                                                # noqa: PLC0415 — разбор цепочек
-    зовут = _chains.карта_вызовов([_rel(f) for f in _tracked() if f.suffix == ".py"], PROJECT)
-    notes = review(как, цель.read_text(encoding="utf-8", errors="replace"), зовут)
+    notes = review(как, цель.read_text(encoding="utf-8", errors="replace"), _карта_дерева())
     for note in notes:
         print(note)
     print(f"\nВсего замечаний: {len(notes)} в 1 файлах")

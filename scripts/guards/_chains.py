@@ -186,13 +186,66 @@ def зовёт_код(rel: str, root: Path = ROOT) -> set[str]:
     return имена - set(СВОИ_ДЕРЕВЬЯ)
 
 
+def модуль_файла(rel: str) -> str:
+    """Полное имя модуля по пути: у пакета — путь каталога. Короткое имя не различает тёзок
+    разных деревьев (`tools/excel` и `core/excel`)."""
+    путь = Path(rel).with_suffix("")
+    return ".".join(путь.parent.parts if путь.name == "__init__" else путь.parts)
+
+
+def личность(rel: str) -> str:
+    """Имя, которым файл называют в шапке: пакет — именем каталога, а не `__init__`."""
+    путь = Path(rel)
+    return путь.parent.name if путь.stem == "__init__" else путь.stem
+
+
+def модули_кода(rel: str, root: Path = ROOT) -> set[str]:
+    """Свои модули, которые файл импортирует, — полными именами, разрешёнными по дереву.
+
+    Разрешается и относительный импорт, и `from пакет.модуль import Символ`. Имя без файла
+    остаётся как написано, только если это сосед через `sys.path` (`import _stamp` из хука).
+    """
+    import ast  # noqa: PLC0415 — разбор нужен только этому вопросу, а модуль зовут и без него
+    def найти(база: Path, точками: str) -> str | None:
+        путь = база.joinpath(*точками.split("."))
+        for кандидат in (путь.with_suffix(".py"), путь / "__init__.py"):
+            if кандидат.is_file():
+                return модуль_файла(str(кандидат.relative_to(root)))
+        return None
+    try:
+        дерево = ast.parse((root / rel).read_text(encoding="utf-8", errors="replace"))
+    except (OSError, SyntaxError):
+        return set()
+    свой = (root / rel).parent
+    модули: set[str] = set()
+    for узел in ast.walk(дерево):
+        if isinstance(узел, ast.Import):
+            for а in узел.names:
+                if найдено := найти(root, а.name) or найти(свой, а.name):
+                    модули.add(найдено)
+                elif а.name.startswith("_"):
+                    модули.add(а.name)
+        elif isinstance(узел, ast.ImportFrom) and узел.module != "__future__":
+            базы = [свой.parents[узел.level - 2] if узел.level > 1 else свой] if узел.level \
+                else [root, свой]
+            for база in базы:
+                for а in узел.names:
+                    полное = f"{узел.module}.{а.name}" if узел.module else а.name
+                    if найдено := найти(база, полное) or (узел.module and найти(база, узел.module)):
+                        модули.add(найдено)
+            if not узел.level and узел.module and узел.module.startswith("_") \
+                    and not any(найти(б, узел.module) for б in базы):
+                модули.add(узел.module)
+    return модули
+
+
 def карта_вызовов(файлы: list[str], root: Path = ROOT) -> dict[str, set[str]]:
-    """{модуль: кто его зовёт}. Считается по всему списку разом: поштучный обход стоил бы
-    повторного разбора дерева на каждый файл, и сторож перестали бы гонять."""
+    """{полное имя модуля: личности тех, кто его импортирует}. Считается по всему списку разом:
+    поштучный обход стоил бы повторного разбора дерева на каждый файл, и сторож перестали бы гонять."""
     карта: dict[str, set[str]] = {}
     for rel in файлы:
-        свой = Path(rel).stem
-        for цель in зовёт_код(rel, root):
+        свой = личность(rel)
+        for цель in модули_кода(rel, root):
             карта.setdefault(цель, set()).add(свой)
     return карта
 

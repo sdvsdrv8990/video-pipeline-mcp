@@ -636,3 +636,131 @@
     - run: scripts/guards/comment_guard.py
       with: {args: ["--scan", "--как", "scripts/guards/_evidence.py", "${draft.path}"]}
       expect: {ok: false, exit: 1, console: "лжёт", console_absent: "шапки нет|паспорта нет|молчит|неточен|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_caller_package_true_is_clean
+  why: "пакет называют именем каталога: правдивое «Зовут: server» у tools/excel не лжёт и не молчит"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: tools/excel/__init__.py, куда: шапки/header_caller_package_true_is_clean/__init__.py, правка: как-есть}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "tools/excel/__init__.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_caller_from_import_true_is_clean
+  why: "модуль из from tools._context import Символ зовут по модулю, а не по символу: правдивый перечень групп не лжёт"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: tools/_context.py, куда: шапки/header_caller_from_import_true_is_clean/_context.py, правка: как-есть}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "tools/_context.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_caller_relative_import_true_is_clean
+  why: "engine зовёт probe относительным импортом: такой вызывающий виден, и «Зовут: engine» правда"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: core/providers/ffmpeg/probe.py, куда: шапки/header_caller_relative_import_true_is_clean/probe.py, правка: зовут-engine}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "core/providers/ffmpeg/probe.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_caller_partial_scan_sees_whole_tree
+  why: "скан одного пути берёт вызывающих со всего дерева: server вне замера, но правдивое «Зовут: server» не ложь"
+  род: положительный
+  when:
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "tools/excel/__init__.py"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_caller_package_cut_is_silence
+  why: "у пакета вызывающий есть, строка «Зовут» вырезана — это молчание о радиусе, а не чистота"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: tools/excel/__init__.py, куда: шапки/header_caller_package_cut_is_silence/__init__.py, правка: вызывающие-вырезаны}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "tools/excel/__init__.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вызывающего", console_absent: "лжёт|адресата|шапки нет|паспорта нет|молчит|неточен|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_caller_inside_other_name_is_silence
+  why: "без «Зовут» имя вызывающего excel остаётся только внутри ExcelEngine из «Зовёт» — часть чужого слова вызывающего не называет"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: tools/_context.py, куда: шапки/header_caller_inside_other_name_is_silence/_context.py, правка: вызывающие-вырезаны}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "tools/_context.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вызывающего", console_absent: "лжёт|адресата|шапки нет|паспорта нет|молчит|неточен|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_caller_own_path_is_not_a_caller
+  why: "единственный вызывающий id_generator — пакет ids, и слово ids стоит в пути первой строки; путь вызывающего не называет"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: core/ids/id_generator.py, куда: шапки/header_caller_own_path_is_not_a_caller/id_generator.py, правка: только-роль}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "core/ids/id_generator.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вызывающего", console_absent: "лжёт|адресата|шапки нет|паспорта нет|молчит|неточен|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_caller_relative_import_silence_is_seen
+  why: "probe зовут только относительным импортом; шапка без вызывающих — молчание, а не «вызывающих нет»"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: core/providers/ffmpeg/probe.py, куда: шапки/header_caller_relative_import_silence_is_seen/probe.py, правка: только-роль}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "core/providers/ffmpeg/probe.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вызывающего", console_absent: "лжёт|адресата|шапки нет|паспорта нет|молчит|неточен|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_caller_package_invented_is_a_lie
+  why: "выдуманное имя рядом с правдивым server у пакета — ложь; верное имя его не прикрывает"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: tools/excel/__init__.py, куда: шапки/header_caller_package_invented_is_a_lie/__init__.py, правка: вызывающий-выдуман}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "tools/excel/__init__.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "лжёт", console_absent: "вызывающего|адресата|шапки нет|паспорта нет|молчит|неточен|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_caller_nobody_claimed_is_a_lie
+  why: "«из кода никто» при живом вызывающем server — ложь, а не молчание: утверждение сверяется так же, как имя"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: tools/excel/__init__.py, куда: шапки/header_caller_nobody_claimed_is_a_lie/__init__.py, правка: из-кода-никто}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "tools/excel/__init__.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "лжёт", console_absent: "вызывающего|адресата|шапки нет|паспорта нет|молчит|неточен|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_caller_namesake_from_other_tree_is_a_lie
+  why: "_context зовёт core/excel, тёзку tools/excel: по короткому имени он вызывающий, по модулю — нет, и это ложь"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: tools/excel/__init__.py, куда: шапки/header_caller_namesake_from_other_tree_is_a_lie/__init__.py, правка: вызывающий-тёзка}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "tools/excel/__init__.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "лжёт", console_absent: "вызывающего|адресата|шапки нет|паспорта нет|молчит|неточен|род действия|момент не отслежен|пересказ декларации"}

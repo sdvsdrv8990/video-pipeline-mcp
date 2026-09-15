@@ -1,5 +1,8 @@
 """tools/_context.py — общие зависимости тонких обёрток инструментов.
 
+Зовёт: Engine, TableEngine, ExcelEngine, StateManager, WritePolicy, safe_resolve, ErrorDetail.
+Зовут: server, excel, filesystem, media, memory, montage, search, structure, tables, uniqueness.
+
 Логики продукта здесь нет: контекст раздаёт зависимости и переводит исключения ядра в контракт
 ответа ЕДИНЫМ путём через реестр реакций. Разойдись этот путь по группам — клиент получал бы
 разные коды на одну и ту же беду.
