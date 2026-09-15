@@ -1,6 +1,6 @@
 ---
 name: intent-guard
-description: Use when a task in the video_pipeline_mcp project ends without being finished, when the owner's instruction risks being forgotten mid-session, or at the START of any session that continues yesterday's work — the discipline of TAILS. Covers how an unfinished tail is recorded (a signature with role ОСТАТОК, never a status line), how it is closed (another signature naming its key), how the session-start guard shows what was left open days ago, and what the owner must decide versus what the AI may close itself. Owns the question «что осталось и кто про это узнает завтра»; the signature format itself is _stamp, proving a change landed is verified-edits, and the delivery refusal is the delivery gate.
+description: Use when a task in the video_pipeline_mcp project ends without being finished, when the owner's instruction risks being forgotten mid-session, or at the START of any session that continues yesterday's work — the discipline of TAILS. Covers how an unfinished tail is recorded (a signature with role ОСТАТОК, never a status line), how it is closed (another signature naming its key), how the session-start guard shows what was left open days ago, and what the owner must decide versus what the AI may close itself. Owns the question «что осталось и кто про это узнает завтра»; the signature format itself is _stamp, proving a change landed is verified-edits, and the delivery refusal is the delivery gate. Neighbours: guard-refusals.
 ---
 
 # Сторож намерений — чтобы остаток не пылился
