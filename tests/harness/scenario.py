@@ -32,6 +32,10 @@ EXPECT_KEYS = {"ok", "code", "class", "recovery", "facts", "data", "data_contain
                "data_absent", "console", "console_absent", "open", "http", "exit"}
 
 _REF = re.compile(r"\$\{([A-Za-z_][\w]*)\.([\w.]+)\}")
+# Ссылка, не подошедшая под форму имени, раньше уезжала в команду ТЕКСТОМ: сторож получал путь
+# `${имя.path}`, отвечал «источника нет», и опечатка выглядела как отказ механизма. Остаток
+# подстановки — ошибка объявления, и её называют вслух.
+_REF_TAIL = re.compile(r"\$\{[^}]*\}")
 # Предел команде: сторож дерева считается секундами, а зависший шаг молчит так же, как пройденный.
 COMMAND_TIMEOUT = 300
 
@@ -374,7 +378,13 @@ def _resolve(value: Any, results: dict[str, Any]) -> Any:
     match = _REF.fullmatch(value.strip())
     if match:
         return _lookup(match.group(1), match.group(2), results)
-    return _REF.sub(lambda m: str(_lookup(m.group(1), m.group(2), results)), value)
+    подставлено = _REF.sub(lambda m: str(_lookup(m.group(1), m.group(2), results)), value)
+    if (хвост := _REF_TAIL.search(подставлено)):
+        raise ScenarioError(
+            f"ссылка {хвост.group(0)} не разобрана: имя шага пишется латиницей и начинается с "
+            f"буквы или подчёркивания (`${{live.path}}`). Неразобранная ссылка уезжает в команду "
+            f"текстом, и отказ выглядит как поломка сторожа")
+    return подставлено
 
 
 def _lookup(alias: str, path: str, results: dict[str, Any]) -> Any:

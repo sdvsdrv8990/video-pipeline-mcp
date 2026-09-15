@@ -68,29 +68,21 @@
       expect: {ok: false, exit: 2, console: "потолок принадлежит СВОЕМУ дереву"}
 
 - scenario: guard_findings_count_judges_a_named_tree
-  why: реестр только растёт, и ужавшийся разбор обязан краснеть — на любом дереве, а не только на своём
-  given:
-    files:
-      реестр/docs/roadmap/02_findings.md: "| F1 | 🔴 | одна |\n| F2 | ✅ | две |\n"
-      реестр/scripts/guards/findings_count_baseline.txt: "2\n"
-      ужатый/docs/roadmap/02_findings.md: "| F1 | 🔴 | одна |\n"
-      ужатый/scripts/guards/findings_count_baseline.txt: "5\n"
-      безполый/docs/roadmap/02_findings.md: "| F1 | 🔴 | одна |\n"
+  why: "храповик без пола обязан ОТКАЗАТЬ, а не зеленеть. Заходит СВОИМ радиусом: пол здесь БЫЛ и
+    исчез (`remove_path` — так его сносит человек), а не «не заводился» — причина другая, и путь к
+    беде другой, поэтому сценарий не дубль соседнего"
+  род: отрицательный
   when:
-    - python: workspace_path
-      with: {path: реестр}
-      as: full
+    - python: снимок_источника
+      with: {источник: docs/roadmap/02_findings.md, куда: безполый/docs/roadmap/02_findings.md}
       expect: {ok: true}
-    - run: scripts/guards/findings_count.py
-      with: {args: ["--check", "--root", "${full.path}"]}
-      expect: {ok: true, exit: 0, console: "реестр читается машиной"}
-    - python: workspace_path
-      with: {path: ужатый}
-      as: shrunk
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count_baseline.txt,
+             куда: безполый/scripts/guards/findings_count_baseline.txt}
       expect: {ok: true}
-    - run: scripts/guards/findings_count.py
-      with: {args: ["--check", "--root", "${shrunk.path}"]}
-      expect: {ok: false, exit: 1, console: "сломался разбор"}
+    - python: remove_path
+      with: {path: безполый/scripts/guards/findings_count_baseline.txt}
+      expect: {ok: true}
     - python: workspace_path
       with: {path: безполый}
       as: floorless
@@ -296,3 +288,75 @@
         ok: true
         exit: 0
         console: "незакрытых клеток"
+
+# Улика в объявлении стареет молча — это находка владельца 2026-09-14: «улики тут им не место…
+# мы только в радиус пишем, и не улику, а набор команд, который через цепочку воспроизводит дыру».
+# Поэтому ниже нет ни одной строки источника: сценарий называет ИСТОЧНИК и ПРАВКУ, а содержимое
+# всегда снимается живым. Форма изменится — сценарий поедет вместе с ней сам.
+
+- scenario: registry_judge_reads_the_live_registry
+  why: "положительный — живой реестр и живой пол: судья обязан сказать «читается машиной», а не молчать"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: docs/roadmap/02_findings.md, куда: дерево/docs/roadmap/02_findings.md}
+      expect: {ok: true}
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count_baseline.txt,
+             куда: дерево/scripts/guards/findings_count_baseline.txt}
+      expect: {ok: true}
+    - python: workspace_path
+      with: {path: дерево}
+      as: live
+      expect: {ok: true}
+    - run: scripts/guards/findings_count.py
+      with: {args: ["--check", "--root", "${live.path}"]}
+      expect: {ok: true, exit: 0, console: "реестр читается машиной"}
+
+- scenario: registry_judge_catches_a_shrunken_registry
+  why: "отрицательный — половина строк исчезла: пол обязан покраснеть и назвать причиной сломанный разбор"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: docs/roadmap/02_findings.md, куда: дерево/docs/roadmap/02_findings.md,
+             правка: половина-строк}
+      expect: {ok: true}
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count_baseline.txt,
+             куда: дерево/scripts/guards/findings_count_baseline.txt}
+      expect: {ok: true}
+    - python: workspace_path
+      with: {path: дерево}
+      as: shrunk
+      expect: {ok: true}
+    - run: scripts/guards/findings_count.py
+      with: {args: ["--check", "--root", "${shrunk.path}"]}
+      expect:
+        ok: false
+        exit: 1
+        console: "сломался разбор"
+        console_absent: "реестр читается машиной"
+
+- scenario: registry_judge_goes_blind_on_shifted_markup
+  why: "разрушительный — разметку сдвинули на один пробел: разбор обязан ОТКАЗАТЬ судить (код 2 «замер не состоялся»), а не показать чистоту и не притвориться ужавшимся реестром"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: docs/roadmap/02_findings.md, куда: дерево/docs/roadmap/02_findings.md,
+             правка: сдвиг-разметки}
+      expect: {ok: true}
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count_baseline.txt,
+             куда: дерево/scripts/guards/findings_count_baseline.txt}
+      expect: {ok: true}
+    - python: workspace_path
+      with: {path: дерево}
+      as: shifted
+      expect: {ok: true}
+    - run: scripts/guards/findings_count.py
+      with: {args: ["--check", "--root", "${shifted.path}"]}
+      expect:
+        ok: false
+        exit: 2
+        console: "замер не состоялся"
+        console_absent: "реестр читается машиной"
