@@ -1316,3 +1316,125 @@
     - run: scripts/guards/comment_guard.py
       with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
       expect: {ok: false, exit: 1, console: "код подписывает через _verdict", console_absent: "лжёт|вызывающего|адресата|шапки нет|паспорта нет|неточен|род действия|момент не отслежен|пересказ декларации"}
+
+# Носитель текста: где у языка начинается комментарий и что тем же знаком комментарием не является.
+
+- scenario: text_carrier_yaml_comment_verdict_is_sh1
+  why: "прошедший вердикт строкой-комментарием yaml без ключа — Ш1, как в докстринге: язык файла смысла не меняет"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: config/firewall.yaml, куда: носители/text_carrier_yaml_comment_verdict_is_sh1/firewall.yaml, правка: вердикт-решёткой}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "config/firewall.yaml", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вердикт вместо роли", console_absent: "способ запуска|вызывающего|адресата|шапки нет|паспорт"}
+
+- scenario: text_carrier_yaml_key_below_is_clean
+  why: "ключ подписи строкой ниже в том же блоке комментариев делает вердикт уликой"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: config/firewall.yaml, куда: носители/text_carrier_yaml_key_below_is_clean/firewall.yaml, правка: вердикт-решёткой-ключ-ниже}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "config/firewall.yaml", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: text_carrier_yaml_negation_is_clean
+  why: "отрицание в комментарии yaml гасит вердикт той же формулой, что в коде"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: config/firewall.yaml, куда: носители/text_carrier_yaml_negation_is_clean/firewall.yaml, правка: вердикт-решёткой-отрицанием}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "config/firewall.yaml", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: text_carrier_yaml_hash_in_string_is_not_comment
+  why: "решётка внутри строки-данных yaml — не комментарий: лексер языка отличает маркер от символа в кавычках"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: config/firewall.yaml, куда: носители/text_carrier_yaml_hash_in_string_is_not_comment/firewall.yaml, правка: вердикт-в-строке-yaml}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "config/firewall.yaml", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: text_carrier_yaml_tail_comment_is_declared_blind
+  why: "хвостовой комментарий после значения сторож не берёт по объявленному решению: слепая зона названа сценарием, а не молчанием"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: config/firewall.yaml, куда: носители/text_carrier_yaml_tail_comment_is_declared_blind/firewall.yaml, правка: вердикт-хвостом-yaml}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "config/firewall.yaml", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: text_carrier_shell_comment_verdict_is_sh1
+  why: "прошедший вердикт комментарием sh без ключа — Ш1"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: run.sh, куда: носители/text_carrier_shell_comment_verdict_is_sh1/run.sh, правка: вердикт-решёткой}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "run.sh", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вердикт вместо роли", console_absent: "способ запуска|вызывающего|адресата|шапки нет|паспорт"}
+
+- scenario: text_carrier_shell_key_after_blank_line_is_sh1
+  why: "лексер sh кладёт перевод строки в токен комментария; ключ через пустую строку — другой блок и вердикт не гасит"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: run.sh, куда: носители/text_carrier_shell_key_after_blank_line_is_sh1/run.sh, правка: вердикт-решёткой-ключ-через-пустую}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "run.sh", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вердикт вместо роли", console_absent: "способ запуска|вызывающего|адресата|шапки нет|паспорт"}
+
+- scenario: text_carrier_shell_heredoc_is_not_comment
+  why: "решётка внутри heredoc — данные команды, а не комментарий скрипта"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: run.sh, куда: носители/text_carrier_shell_heredoc_is_not_comment/run.sh, правка: вердикт-в-heredoc}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "run.sh", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: text_carrier_toml_comment_verdict_is_sh1
+  why: "прошедший вердикт комментарием toml без ключа — Ш1"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: pyproject.toml, куда: носители/text_carrier_toml_comment_verdict_is_sh1/pyproject.toml, правка: вердикт-решёткой}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "pyproject.toml", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вердикт вместо роли", console_absent: "способ запуска|вызывающего|адресата|шапки нет|паспорт"}
+
+- scenario: text_carrier_no_lexer_comment_verdict_is_sh1
+  why: "у .gitignore лексера нет: запасной разбор по решётке судит вердикт той же формулой"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: .gitignore, куда: носители/text_carrier_no_lexer_comment_verdict_is_sh1/.gitignore, правка: вердикт-решёткой}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", ".gitignore", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вердикт вместо роли", console_absent: "способ запуска|вызывающего|адресата|шапки нет|паспорт"}

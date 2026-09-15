@@ -212,13 +212,11 @@ def _review_text(path: Path | str, text: str) -> list[str]:
     """
     notes: list[str] = []
     seen: set[str] = set()
+    строки = text.split("\n")
     marked = _comment_lines(path, text)
-    for n, line in enumerate(text.split("\n"), 1):
-        if marked is None:
-            if not line.lstrip().startswith("#"):
-                continue
-        elif n not in marked:
-            continue
+    if marked is None:
+        marked = {n: line for n, line in enumerate(строки, 1) if line.lstrip().startswith("#")}
+    for n, line in marked.items():
         for pattern, why in NARRATIVE:
             if re.search(pattern, line) and why not in seen:
                 seen.add(why)
@@ -226,7 +224,8 @@ def _review_text(path: Path | str, text: str) -> list[str]:
                 break
         if (tag := _task_tag(line)) is not None:
             notes.append(_tag_note(path, n, tag))
-    return notes
+    # Пустую строку лексер sh кладёт в токен комментария: без отсева ключ соседнего абзаца гасил бы вердикт.
+    return notes + _смысл_текста(path, строки, [], [(n, line, True) for n, line in marked.items() if line.strip()])
 
 
 # Когда судью будят ИЗВНЕ кода: импортом этого не вывести, поэтому словарь закрыт, а слово сверяется
