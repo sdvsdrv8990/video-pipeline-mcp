@@ -1,6 +1,6 @@
 ---
 name: context-budget
-description: Use when the context window of a video_pipeline_mcp session fills too fast, output quality degrades late in a session, auto-compact fires early, or before adding another MCP server / skill / hook — measures what actually eats the window (MCP tool schemas, skill descriptions, CLAUDE.md chain, memory MEMORY.md, SessionStart hook injections, roadmap docs pulled in wholesale), ranks the consumers by measured token cost, and produces concrete reclaim actions. Accounting and budgeting of context, not judging the code that context describes. Measures by RUNNING the count, never by estimating from memory.
+description: Use when the context window of a video_pipeline_mcp session fills too fast, output quality degrades late in a session, auto-compact fires early, or before adding another MCP server / skill / hook — measures what actually eats the window (MCP tool schemas, skill descriptions, CLAUDE.md chain, memory MEMORY.md, SessionStart hook injections, roadmap docs pulled in wholesale), ranks the consumers by measured token cost, and produces concrete reclaim actions. Accounting and budgeting of context, not judging the code that context describes. Measures by RUNNING the count, never by estimating from memory. Neighbours: discipline-guard.
 allowed-tools: Read, Grep, Glob, Bash
 ---
 

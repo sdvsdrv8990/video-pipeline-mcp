@@ -610,3 +610,29 @@
     - run: scripts/guards/comment_guard.py
       with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
       expect: {ok: false, exit: 1, console: "шапки нет", console_absent: "лжёт|молчит|неточен|род действия|момент не отслежен|паспорта нет|пересказ декларации"}
+
+# Источник улики — не судья: паспорт у него не спрашивается, а «Зовёт / Зовут» сверяются так же строго.
+
+- scenario: header_source_without_passport_is_clean
+  why: "источник улики не судья и паспорта не несёт — его шапка с ролью и «Зовёт / Зовут» замечанием не становится"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/_evidence.py, куда: шапки/header_source_without_passport_is_clean/_evidence.py, правка: как-есть}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/_evidence.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_source_invented_caller_is_a_lie
+  why: "выдуманный вызывающий в «Зовут» у источника улики — ложь: нет его ни в разборе вызовов, ни в чьём-то коде, ни в словаре моментов"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/_evidence.py, куда: шапки/header_source_invented_caller_is_a_lie/_evidence.py, правка: вызывающий-выдуман}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/_evidence.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "лжёт", console_absent: "шапки нет|паспорта нет|молчит|неточен|род действия|момент не отслежен|пересказ декларации"}

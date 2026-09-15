@@ -1,6 +1,6 @@
 ---
 name: code-navigation
-description: Use when you need to FIND something in the video_pipeline_mcp repository before changing it — which file implements a tool, where a config value is actually read, who calls a function, when a line appeared and why, whether a claim in the docs still matches disk. Gives the entry-point map (server.py, 8 tool groups, core subsystems, config declarations, the roadmap registries), grep and git recipes tuned to THIS repo, and the rule that a statement is verified by RUNNING it, not by reading a neighbouring document. Locating and reading only; where to PUT a new file is project-conventions, judging the code you found is code-quality, diagnosing a failure is systematic-debugging.
+description: Use when you need to FIND something in the video_pipeline_mcp repository before changing it — which file implements a tool, where a config value is actually read, who calls a function, when a line appeared and why, whether a claim in the docs still matches disk. Gives the entry-point map (server.py, 8 tool groups, core subsystems, config declarations, the roadmap registries), grep and git recipes tuned to THIS repo, and the rule that a statement is verified by RUNNING it, not by reading a neighbouring document. Locating and reading only; where to PUT a new file is project-conventions, judging the code you found is code-quality, diagnosing a failure is systematic-debugging. Neighbours: docs-governance.
 allowed-tools: Read, Grep, Glob, Bash
 metadata:
   version: "1.0.0-vpm1"
