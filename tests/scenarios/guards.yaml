@@ -288,6 +288,12 @@
         ok: true
         exit: 0
         console: "незакрытых клеток"
+    - run: scripts/guards/patrol.py
+      with: {args: ["--паспорт"]}
+      expect:
+        ok: true
+        exit: 0
+        console: "patrol.py +улика~ состояния✓ радиус✓ роспись·"
 
 # Улика в объявлении стареет молча — это находка владельца 2026-09-14: «улики тут им не место…
 # мы только в радиус пишем, и не улику, а набор команд, который через цепочку воспроизводит дыру».
@@ -360,3 +366,247 @@
         exit: 2
         console: "замер не состоялся"
         console_absent: "реестр читается машиной"
+
+# Шапка судьи — объявление паспорта, по которому судится роспись.
+# Каждый сценарий — ОДНО условие со своей ценой и своим радиусом: живой судья, правка его шапки
+# в снимке и вердикт сторожа кодом возврата. Сценарий ждёт ТОЧНЫЙ класс беды, а не любое замечание.
+
+- scenario: header_passport_literal_steps_match_code
+  why: "у судьи с шагами-литералами верная шапка сходится с кодом: шаги, источники, подпись, адресаты"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_passport_literal_steps_match_code/findings_count.py, правка: как-есть}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_passport_hook_events_match_code
+  why: "у хука названы все события и пустая клетка росписи — словами, и сверка это принимает"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: .claude/hooks/vpm-intent-guard.py, куда: шапки/header_passport_hook_events_match_code/vpm-intent-guard.py, правка: как-есть}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", ".claude/hooks/vpm-intent-guard.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_passport_data_named_steps_match_code
+  why: "у судьи, чьи шаги именуются данными, шапка говорит это — и сверка принимает без имён шагов"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/invariants.py, куда: шапки/header_passport_data_named_steps_match_code/invariants.py, правка: как-есть}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/invariants.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_passport_own_git_is_read
+  why: "«читает git» подтверждается собственным кодом судьи, а не кодом его импортов"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/text_only.py, куда: шапки/header_passport_own_git_is_read/text_only.py, правка: как-есть}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/text_only.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_passport_form_is_not_retelling
+  why: "строки формы паспорта не считаются пересказом декларации: одна прозаическая строка «слово: …» рядом с ними предела не рвёт"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_passport_form_is_not_retelling/findings_count.py, правка: ключ-в-прозе}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_passport_unnamed_step_is_silence
+  why: "код расписывает шаг, а шапка его не называет — молчание замечание, а не чистота"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_passport_unnamed_step_is_silence/findings_count.py, правка: шаг-не-назван}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "молчит", console_absent: "лжёт|неточен|род действия|момент не отслежен|паспорта нет|шапки нет|пересказ декларации"}
+
+- scenario: header_passport_unnamed_evidence_is_silence
+  why: "улика объявлена судье в evidence.yaml, а шапка о ней молчит"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/comment_guard.py, куда: шапки/header_passport_unnamed_evidence_is_silence/comment_guard.py, правка: улика-не-названа}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/comment_guard.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "молчит", console_absent: "лжёт|неточен|род действия|момент не отслежен|паспорта нет|шапки нет|пересказ декларации"}
+
+- scenario: header_passport_cut_signing_cell_is_silence
+  why: "клетка подписи вырезана — пустую клетку не назвали словами"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_passport_cut_signing_cell_is_silence/findings_count.py, правка: подпись-вырезана}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "молчит", console_absent: "лжёт|неточен|род действия|момент не отслежен|паспорта нет|шапки нет|пересказ декларации"}
+
+- scenario: header_passport_git_through_imports_is_a_lie
+  why: "git зовут только импорты судьи: «читает git» в его шапке — ложь, импорт её не прикрывает"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_passport_git_through_imports_is_a_lie/findings_count.py, правка: git-через-импорт}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "лжёт", console_absent: "молчит|неточен|род действия|момент не отслежен|паспорта нет|шапки нет|пересказ декларации"}
+
+- scenario: header_retelling_still_counts
+  why: "четыре настоящие строки «ключ: значение» в шапке — по-прежнему пересказ декларации"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_retelling_still_counts/findings_count.py, правка: пересказ-декларации}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "пересказ декларации", console_absent: "лжёт|молчит|неточен|род действия|момент не отслежен|паспорта нет|шапки нет"}
+
+- scenario: header_passport_invented_step_is_refused
+  why: "врёт: назван шаг, которого код не расписывает"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_passport_invented_step_is_refused/findings_count.py, правка: шаг-выдуман}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "лжёт", console_absent: "молчит|неточен|род действия|момент не отслежен|паспорта нет|шапки нет|пересказ декларации"}
+
+- scenario: header_passport_invented_addressee_is_refused
+  why: "врёт: выдуманный адресат рядом с верными не прикрыт ими"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_passport_invented_addressee_is_refused/findings_count.py, правка: адресат-выдуман}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "лжёт", console_absent: "молчит|неточен|род действия|момент не отслежен|паспорта нет|шапки нет|пересказ декларации"}
+
+- scenario: header_passport_invented_source_is_refused
+  why: "врёт: источник, которого не называет ни код судьи, ни его импорты"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_passport_invented_source_is_refused/findings_count.py, правка: источник-выдуман}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "лжёт", console_absent: "молчит|неточен|род действия|момент не отслежен|паспорта нет|шапки нет|пересказ декларации"}
+
+- scenario: header_passport_invented_stdin_is_refused
+  why: "врёт источником без пути: «читает stdin» у судьи, чей код stdin не читает"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_passport_invented_stdin_is_refused/findings_count.py, правка: stdin-выдуман}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "лжёт", console_absent: "молчит|неточен|род действия|момент не отслежен|паспорта нет|шапки нет|пересказ декларации"}
+
+- scenario: header_passport_prose_source_is_refused
+  why: "не даёт точных данных: источник прозой вместо пути — сверить не с чем"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_passport_prose_source_is_refused/findings_count.py, правка: источник-прозой}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "неточен", console_absent: "лжёт|молчит|род действия|момент не отслежен|паспорта нет|шапки нет|пересказ декларации"}
+
+- scenario: header_passport_kindless_signing_is_refused
+  why: "по росписи не определить род действия: «расписывает» без шагов, без «данными» и без «не расписывает»"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_passport_kindless_signing_is_refused/findings_count.py, правка: роспись-без-рода}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "род действия", console_absent: "лжёт|молчит|неточен|момент не отслежен|паспорта нет|шапки нет|пересказ декларации"}
+
+- scenario: header_passport_untracked_event_is_refused
+  why: "событие не отслежено: хук назвал не все события, которыми его будят"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: .claude/hooks/vpm-intent-guard.py, куда: шапки/header_passport_untracked_event_is_refused/vpm-intent-guard.py, правка: событие-вырезано}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", ".claude/hooks/vpm-intent-guard.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "момент не отслежен", console_absent: "лжёт|молчит|неточен|род действия|паспорта нет|шапки нет|пересказ декларации"}
+
+- scenario: header_passport_untracked_moment_is_refused
+  why: "момент не отслежен: у сторожа не названо, когда его будят"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_passport_untracked_moment_is_refused/findings_count.py, правка: момент-вырезан}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "момент не отслежен", console_absent: "лжёт|молчит|неточен|род действия|паспорта нет|шапки нет|пересказ декларации"}
+
+- scenario: header_passport_cut_is_refused
+  why: "паспорт вырезан — отказ с названной причиной, а не «замечаний нет»"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_passport_cut_is_refused/findings_count.py, правка: паспорт-вырезан}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "паспорта нет", console_absent: "лжёт|молчит|неточен|род действия|момент не отслежен|шапки нет|пересказ декларации"}
+
+- scenario: header_cut_is_refused
+  why: "шапка вырезана целиком — отказ, а не пустая сверка"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_cut_is_refused/findings_count.py, правка: шапка-вырезана}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "шапки нет", console_absent: "лжёт|молчит|неточен|род действия|момент не отслежен|паспорта нет|пересказ декларации"}

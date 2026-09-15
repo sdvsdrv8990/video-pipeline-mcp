@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """scripts/guards/patrol.py — НАРЯД: поднять набор сторожей по улике и свести их вердикты.
 
+Паспорт: будит рука · читает scripts/guards/evidence.yaml, tests/.journal · шагов не расписывает ·
+  подписывает через _stamp, _verdict.
+Зовёт: _evidence, _stamp, _verdict, blast_radius.
+Зовут: comment_guard, blast_radius и рука.
+
 Ручной режим системы сторожей рядом с авто: событие будит хук само, а наряд поднимают, когда
 события не будет, — правка скриптом мимо `Edit`, чужое дерево, проверка перед сдачей. Кого
 поднимать, решает объявление `evidence.yaml`, а не этот файл; свой вердикт наряд не выносит —
@@ -17,6 +22,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 import subprocess
 import sys
@@ -180,6 +186,35 @@ def состояния(цель: str, root: Path = ROOT) -> int:
     return 0
 
 
+def роспись_кода(исходник: str) -> dict:
+    """Что судья расписывает и чем подписывается — разбором вызовов, а не поиском подстроки.
+
+    Строка-данные с именем вызова шагом не является: поиск текста выдал клетку «роспись» самому
+    наряду, в чьём исходнике этот текст стоит внутри проверки паспорта.
+    """
+    try:
+        дерево = ast.parse(исходник)
+    except SyntaxError:
+        return {"шаги": [], "данными": False, "подпись": []}
+    шаги: list[str] = []
+    данными = False
+    подпись: set[str] = set()
+    for узел in ast.walk(дерево):
+        if not (isinstance(узел, ast.Call) and isinstance(узел.func, ast.Attribute)
+                and isinstance(узел.func.value, ast.Name)):
+            continue
+        хозяин, вызов = узел.func.value.id, узел.func.attr
+        if хозяин == "_stamp" and вызов in ("шаг", "строка_шага"):
+            первый = узел.args[0] if узел.args else None
+            if isinstance(первый, ast.Constant) and isinstance(первый.value, str):
+                шаги.append(первый.value)
+            else:
+                данными = True
+        elif (хозяин, вызов) in (("_verdict", "close"), ("_stamp", "sign")):
+            подпись.add(хозяин)
+    return {"шаги": list(dict.fromkeys(шаги)), "данными": данными, "подпись": sorted(подпись)}
+
+
 def паспорт(root: Path = ROOT) -> dict[str, dict[str, bool | None]]:
     """{инструмент: что у него есть из полного набора}. Дыра тут — не мнение, а незакрытая клетка.
 
@@ -202,15 +237,13 @@ def паспорт(root: Path = ROOT) -> dict[str, dict[str, bool | None]]:
         дом = дом if дом.exists() else root / ".claude" / "hooks" / имя
         исходник = дом.read_text(encoding="utf-8", errors="replace") if дом.exists() else ""
         причины[имя] = {к: str(п) for к, п in ((тело or {}).get("неприменимо") or {}).items()}
+        роспись = роспись_кода(исходник)
         свод[имя] = {
             "улика": bool((тело or {}).get("улики")),
             "состояния": состояния_есть,
             "радиус": имя in в_карте,
-            # Три дороги к росписи: шаг пишется сразу (`шаг`), рядом рядом с другими (`роспись`)
-            # или собирается в список и уезжает в подпись прогона (`строка_шага`) — как у цикла.
-            "роспись": any(вызов in исходник for вызов in
-                           ("_stamp.шаг(", "_stamp.роспись(", "_stamp.строка_шага(")),
-            "подпись": "_verdict.close(" in исходник or "_stamp.sign(" in исходник,
+            "роспись": bool(роспись["шаги"]) or роспись["данными"],
+            "подпись": bool(роспись["подпись"]),
         }
         # Неприменимая клетка помечается ОТДЕЛЬНО и только с названной причиной: без причины
         # «неприменимо» стало бы лазейкой, которой закрывают любую дыру одним словом.

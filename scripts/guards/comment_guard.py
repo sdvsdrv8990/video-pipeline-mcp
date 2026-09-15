@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""comment_guard.py — сторож текста в коде: правило + храповик долга.
+"""scripts/guards/comment_guard.py — сторож текста в коде: правило и храповик долга.
+
+Паспорт: будит редактирование, создание, событие PostToolUse, гейт CI · читает
+  scripts/guards/comment_guard_baseline.txt, scripts/guards/comment_exceptions.yaml · расписывает
+  «собрать цели → снять объявленные зоны → проверить дом исключений → сверить с потолком →
+  заметить прополку» · подписывает через _verdict.
+Зовёт: _chains, _comments, _evidence, _verdict, patrol, pygments.
+Зовут: vpm-comment-intent, гейт CI и pre-commit.
 
 Комментарий объясняет НЕОЧЕВИДНОЕ поведение, терсово; разбор задачи, история и дубль декларации —
 в журнал и commit. Сюда же ЯРЛЫКИ: литерал прямым аргументом своей же функции — тот же текст в
 коде, только напечатанный человеку в отчёт.
 
 Судит ДЕРЕВО целиком, механически и без вопросов к автору. Смежный хук судит СОБЫТИЕ и спрашивает
-о ЦЕНЕ, содержимого не читая: одно и то же место они видят по-разному, и это разделение
-намеренное. Цели — отслеживаемое ВМЕСТЕ с неотслеживаемым, иначе новый файл не судится вовсе.
-
-Зовёт `_comments` (дом исключений), `_chains` (кого зовёт файл и кто зовёт его), `_verdict`
-(подпись вердикта) и `pygments` (комментарии не-питона). Зовут его хук `vpm-comment-intent` после
-записи и джоба CI `comment-guard`.
-
-Режимы: `--hook` · `--scan` · `--check` (exit 1) · `--bless`.
+о ЦЕНЕ, содержимого не читая: одно и то же место они видят по-разному. Цели — отслеживаемое ВМЕСТЕ
+с неотслеживаемым, иначе новый файл не судится вовсе.
 """
 
 import argparse
@@ -198,9 +199,193 @@ def _review_text(path: Path | str, text: str) -> list[str]:
     return notes
 
 
-def _состав_шапки(path: Path | str, text: str, шапка: str, зовут: dict[str, set[str]] | None,
-                  ) -> list[str]:
-    """Чего в шапке НЕ хватает, чтобы по ней судили о файле: зона · кого зовёт · кто зовёт.
+# Когда судью будят ИЗВНЕ кода: импортом этого не вывести, поэтому словарь закрыт, а слово сверяется
+# с тем, как объявление описывает запуск (`событие` и `авто` в evidence.yaml).
+МОМЕНТЫ = {"гейт CI": r"гейт CI", "pre-commit": r"pre-commit", "гейт поставки": r"гейт поставки",
+           "наряд": r"наряд", "рука": r"рук|человек", "цикл": r"цикл|намерени", "запись": r"запис"}
+СОБЫТИЕ_ХУКА = re.compile(r"\b(SessionStart|UserPromptSubmit|PreToolUse|PostToolUse|Stop)\b")
+# Источник без пути: история правок и событие хука. Сверяется по коду — литерал `git` или чтение stdin.
+ИСТОЧНИКИ_БЕЗ_ПУТИ = {"git": r"[\"']git[\"']", "stdin": r"sys\.stdin"}
+ФОРМА_ПАСПОРТА = re.compile(r"^\s*(?:Паспорт|Зовёт|Зовут):")
+ПАСПОРТ_ШАПКИ = re.compile(r"^Паспорт:\s*(.+?)(?=\n\s*\n|\nЗовёт:|\nЗовут:|\Z)", re.S | re.M)
+ЗОВЁТ_ШАПКИ = re.compile(r"(?:^|\s)Зовёт:\s*(.+?)\.(?=\s|$)", re.M)
+ЗОВУТ_ШАПКИ = re.compile(r"(?:^|\s)Зовут:\s*(.+?)\.(?=\s|$)", re.M)
+КЛЕТКИ_ПАСПОРТА = {"будит": ("будит ",), "читает": ("читает ",),
+                   "роспись": ("расписывает", "шагов не расписывает", "шаги именуются данными"),
+                   "подпись": ("подписывает", "не подписывает")}
+ДОМА_СУДЕЙ = ("scripts/guards", ".claude/hooks")
+
+
+def _имена(перечень: str) -> set[str]:
+    """Имена из перечня прозой: делят запятая и «и»; кавычки кода и «из кода никто» — не имена."""
+    куски = re.split(r",\s*|\s+и\s+", перечень.replace("из кода никто", ""))
+    return {к.strip(" `.") for к in куски if к.strip(" `.")}
+
+
+def _дом_модуля(имя: str) -> Path | None:
+    for дом in ДОМА_СУДЕЙ:
+        if (путь := PROJECT / дом / f"{имя}.py").is_file():
+            return путь
+    return None
+
+
+def _без_шапки(text: str) -> str:
+    """Исходник без докстринга модуля: иначе имя, названное шапкой, «нашлось» бы в ней самой."""
+    дерево = ast.parse(text)
+    первый = дерево.body[0] if дерево.body else None
+    if isinstance(первый, ast.Expr) and isinstance(первый.value, ast.Constant) \
+            and isinstance(первый.value.value, str) and первый.end_lineno:
+        строки = text.splitlines()
+        return "\n".join(строки[:первый.lineno - 1] + строки[первый.end_lineno:])
+    return text
+
+
+def _зовущие_шапки(rel: str, text: str, шапка: str, адресаты: set[str],
+                   зовущие: set[str]) -> list[str]:
+    """«Зовёт:» и «Зовут:» сверяются по КАЖДОМУ имени: верное имя рядом выдуманное не прикрывает."""
+    notes = []
+    код = _без_шапки(text)
+    if строка := ЗОВЁТ_ШАПКИ.search(шапка):
+        дерево = ast.parse(text)
+        импорты = {а.name.split(".")[0] for у in ast.walk(дерево) if isinstance(у, ast.Import)
+                   for а in у.names}
+        импорты |= {у.module.split(".")[0] for у in ast.walk(дерево)
+                    if isinstance(у, ast.ImportFrom) and у.module}
+        # Хук зовёт судью подпроцессом, а не импортом: улика тогда — имя судьи в его коде.
+        notes += [f"{rel}:1 — шапка лжёт: зовёт «{н}», а файл его не импортирует и в коде не называет"
+                  for н in sorted(_имена(строка.group(1)) - адресаты - импорты)
+                  if not (_дом_модуля(н) and н in код)]
+    if строка := ЗОВУТ_ШАПКИ.search(шапка):
+        for н in sorted(_имена(строка.group(1)) - зовущие - set(МОМЕНТЫ)):
+            if СОБЫТИЕ_ХУКА.fullmatch(н.removeprefix("событие ")):
+                continue
+            дом = _дом_модуля(н)
+            if дом and Path(rel).stem in _без_шапки(дом.read_text(encoding="utf-8", errors="replace")):
+                continue
+            notes.append(f"{rel}:1 — шапка лжёт: зовут «{н}», а ни разбор вызовов, ни код «{н}», "
+                         f"ни словарь моментов этого не подтверждают")
+    return notes
+
+
+def _будит(rel: str, перечень: str, тело: dict) -> list[str]:
+    """Клетка «будит»: улики и события из объявления, момент — словом, которое подтверждает `авто`."""
+    названо = _имена(перечень)
+    улики = {str(у) for у in тело.get("улики") or []}
+    запуск = f"{тело.get('событие') or ''} {тело.get('авто') or ''}"
+    объявлены = set(СОБЫТИЕ_ХУКА.findall(str(тело.get("событие") or "")))
+    notes: list[str] = []
+    моментов = 0
+    for н in sorted(названо - улики):
+        событие = н.removeprefix("событие ")
+        if (н != событие and событие in СОБЫТИЕ_ХУКА.findall(запуск)) or \
+                (н in МОМЕНТЫ and re.search(МОМЕНТЫ[н], запуск, re.I)):
+            моментов += 1
+        else:
+            notes.append(f"{rel}:1 — паспорт лжёт: будит «{н}», а объявление судьи такой улики, "
+                         f"события или момента не называет (evidence.yaml)")
+    notes += [f"{rel}:1 — паспорт молчит: об улике «{у}», объявленной судье в evidence.yaml"
+              for у in sorted(улики - названо)]
+    названные_события = {н.removeprefix("событие ") for н in названо}
+    notes += [f"{rel}:1 — момент не отслежен: хук будят событием {с}, а паспорт его не называет"
+              for с in sorted(объявлены - названные_события)]
+    if not моментов and not объявлены:
+        notes.append(f"{rel}:1 — момент не отслежен: паспорт не называет, когда судью будят — "
+                     f"событием, гейтом, нарядом или рукой")
+    return notes
+
+
+def _роспись(rel: str, клетка: str, роспись: dict) -> list[str]:
+    """Клетка «роспись»: шаги сверяются в обе стороны; «данными» и «не расписывает» — тоже утверждения."""
+    шаги = re.search(r"«([^»]+)»", клетка)
+    названы = [ш.strip() for ш in шаги.group(1).split("→")] if шаги else []
+    данными, нет = "данными" in клетка, "не расписывает" in клетка
+    if not (названы or данными or нет):
+        return [f"{rel}:1 — по росписи не определить род действия: «{клетка[:40]}» не называет ни "
+                f"шагов, ни «данными», ни «не расписывает»"]
+    notes = [f"{rel}:1 — паспорт лжёт: шаг «{ш}» назван, а код его не расписывает"
+             for ш in названы if ш not in роспись["шаги"]]
+    notes += [f"{rel}:1 — паспорт молчит: код расписывает шаг «{ш}», а шапка его не называет"
+              for ш in роспись["шаги"] if ш not in названы]
+    if роспись["данными"] and not данными:
+        notes.append(f"{rel}:1 — паспорт молчит: код именует шаги данными, а шапка этого не говорит")
+    if данными and not роспись["данными"]:
+        notes.append(f"{rel}:1 — паспорт лжёт: шапка говорит «данными», а код шаги так не именует")
+    if нет and (роспись["шаги"] or роспись["данными"]):
+        notes.append(f"{rel}:1 — паспорт лжёт: шапка говорит «не расписывает», а код расписывает")
+    return notes
+
+
+def _подпись(rel: str, клетка: str, код: list[str]) -> list[str]:
+    """Клетка «подпись»: через кого подписывает — в обе стороны; без имени род действия не определить."""
+    названо: set[str] = set()
+    if not клетка.startswith("не "):
+        названо = set(re.findall(r"_verdict|_stamp", клетка))
+        if not названо:
+            return [f"{rel}:1 — по росписи не определить род действия: «подписывает» не называет, "
+                    f"через что — _verdict или _stamp"]
+    notes = [f"{rel}:1 — паспорт лжёт: подписывает через {н}, а код через {н} не подписывает"
+             for н in sorted(названо - set(код))]
+    notes += [f"{rel}:1 — паспорт молчит: код подписывает через {н}, а шапка этого не говорит"
+              for н in sorted(set(код) - названо)]
+    return notes
+
+
+def _паспорт_судьи(rel: str, text: str, шапка: str, адресаты: set[str]) -> list[str]:
+    """Паспорт шапки судьи сверяется с кодом по КАЖДОМУ имени, и замечание называет класс беды.
+
+    Класс нужен сценарию: «любое замечание» засчитало бы выдуманный шаг за молчание о шаге.
+    """
+    if Path(rel).parent.as_posix() not in ДОМА_СУДЕЙ:
+        return []
+    import _evidence                                        # noqa: PLC0415 — объявление судей
+    import patrol                                           # noqa: PLC0415 — вывод росписи у паспорта
+    объявление = _evidence.словарь() or {}
+    судьи = {**(объявление.get("сторожа") or {}), **(объявление.get("хуки") or {})}
+    if Path(rel).name not in судьи:
+        return []
+    найден = ПАСПОРТ_ШАПКИ.search(шапка)
+    if not найден:
+        return [f"{rel}:1 — у судьи паспорта нет: шапка не говорит, что его будит, что он читает, "
+                f"что расписывает и чем подписывает, а роспись судится по ней"]
+    notes: list[str] = []
+    клетки: dict[str, str] = {}
+    for кусок in re.split(r"\s+·\s+", " ".join(найден.group(1).split())):
+        род = next((р for р, начала in КЛЕТКИ_ПАСПОРТА.items() if кусок.startswith(начала)), "")
+        if род:
+            клетки[род] = кусок.rstrip(".")
+        else:
+            notes.append(f"{rel}:1 — паспорт неточен: клетка «{кусок[:40]}» вне словаря "
+                         f"({' · '.join(КЛЕТКИ_ПАСПОРТА)}), сверить её не с чем")
+    notes += [f"{rel}:1 — паспорт молчит: нет клетки «{род}» — пустую клетку называют словами, "
+              f"иначе тишина неотличима от забытого" for род in КЛЕТКИ_ПАСПОРТА if род not in клетки]
+    if "будит" in клетки:
+        notes += _будит(rel, клетки["будит"].removeprefix("будит "), судьи[Path(rel).name] or {})
+    if "читает" in клетки:
+        свод = _без_шапки(text) + "".join(д.read_text(encoding="utf-8", errors="replace")
+                                          for д in map(_дом_модуля, sorted(адресаты)) if д)
+        for путь in sorted(_имена(клетки["читает"].removeprefix("читает "))):
+            if путь in ИСТОЧНИКИ_БЕЗ_ПУТИ:
+                # Только свой код: `_stamp` и `_verdict` зовут git сами, и через импорт «читает git»
+                # подтвердилось бы у любого судьи.
+                if not re.search(ИСТОЧНИКИ_БЕЗ_ПУТИ[путь], _без_шапки(text)):
+                    notes.append(f"{rel}:1 — паспорт лжёт: читает {путь}, а код судьи его не читает")
+            elif "/" not in путь and "." not in путь:
+                notes.append(f"{rel}:1 — паспорт неточен: читает «{путь}» — назови путь, прозу "
+                             f"сверить не с чем")
+            elif путь not in свод and Path(путь).name not in свод:
+                notes.append(f"{rel}:1 — паспорт лжёт: читает «{путь}», а ни код судьи, ни его "
+                             f"импорты этого пути не называют")
+    роспись = patrol.роспись_кода(text)
+    if "роспись" in клетки:
+        notes += _роспись(rel, клетки["роспись"], роспись)
+    if "подпись" in клетки:
+        notes += _подпись(rel, клетки["подпись"], роспись["подпись"])
+    return notes
+
+
+def состав_шапки(path: Path | str, text: str, шапка: str, зовут: dict[str, set[str]] | None,
+                 ) -> list[str]:
+    """Чего в шапке НЕ хватает или что в ней ложно: зона · кого зовёт · кто зовёт · паспорт судьи.
 
     Форму сторож держал на нуле замечаний, то есть ноль значил «другой предмет», а не чистоту;
     замер, на котором это видно, поднимается ключом ⟦vpm 9009⟧.
@@ -220,7 +405,7 @@ def _состав_шапки(path: Path | str, text: str, шапка: str, зо�
                      f"(`путь — за что отвечает`): зона файла читается только из кода")
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import _chains                                                # noqa: PLC0415 — разбор цепочек
-    адресаты = _chains.зовёт_код(rel, PROJECT)
+    адресаты = set(_chains.зовёт_код(rel, PROJECT))
     if адресаты and not any(а.lower() in низ for а in адресаты):
         notes.append(f"{rel}:1 — шапка не называет НИ ОДНОГО адресата, хотя файл зовёт "
                      f"{len(адресаты)}: «кого зовёт» — половина радиуса, и она не выводится текстом")
@@ -228,6 +413,8 @@ def _состав_шапки(path: Path | str, text: str, шапка: str, зо�
     if зовущие and not any(з.lower() in низ for з in зовущие):
         notes.append(f"{rel}:1 — шапка не называет НИ ОДНОГО вызывающего, хотя его зовут "
                      f"{len(зовущие)}: правка здесь отзовётся у них, и узнать это неоткуда")
+    notes += _зовущие_шапки(rel, text, шапка, адресаты, зовущие)
+    notes += _паспорт_судьи(rel, text, шапка, адресаты)
     return notes
 
 
@@ -245,7 +432,7 @@ def review(path: Path | str, text: str, зовут: dict[str, set[str]] | None =
         return [f"{path}:1 — файл не разбирается ({type(e).__name__}): сторож на нём слеп"]
 
     prose: dict[int, str] = {}
-    notes += _состав_шапки(path, text, ast.get_docstring(ast.parse(text)) or "", зовут)
+    notes += состав_шапки(path, text, ast.get_docstring(ast.parse(text)) or "", зовут)
     for start, length, is_module in docs:
         body = lines[start - 1:start - 1 + length]
         prose.update({start + k: ln for k, ln in enumerate(body)})
@@ -256,7 +443,8 @@ def review(path: Path | str, text: str, зовут: dict[str, set[str]] | None =
         if sections > SECTIONS_MAX:
             notes.append(f"{path}:{start} — {sections} разделов в одном докстринге: это документ, "
                          f"а не пояснение к коду (предел {SECTIONS_MAX})")
-        decl = sum(1 for ln in body if DECL_LINE.match(ln))
+        # Строки формы паспорта судит сверка паспорта; посчитанные здесь, они съедали бы весь предел.
+        decl = sum(1 for ln in body if DECL_LINE.match(ln) and not ФОРМА_ПАСПОРТА.match(ln))
         if decl > DECL_LINES_MAX:
             notes.append(f"{path}:{start} — {decl} строк вида «ключ: значение»: пересказ декларации "
                          f"прозой (предел {DECL_LINES_MAX}) — источник правды в `config/`, не здесь")
@@ -534,6 +722,29 @@ def cmd_hook() -> int:
     return 0
 
 
+def cmd_scan_as(как: str, targets: list[str]) -> int:
+    """Одна цель судится так, будто лежит по пути дерева: черновик шапки проверяется до записи.
+
+    Состав шапки и паспорт судьи зависят от места файла в дереве, поэтому копию вне дерева без
+    этого режима сторож не проверил бы вовсе — и промолчал бы чистотой.
+    """
+    if len(targets) != 1 or not (PROJECT / как).is_file():
+        print(f"comment_guard: --как судит ровно одну цель по существующему пути дерева "
+              f"(целей {len(targets)}, путь {как})", file=sys.stderr)
+        return 2
+    цель = Path(targets[0])
+    if not цель.is_file():
+        print(f"comment_guard: цель не найдена — {цель}", file=sys.stderr)
+        return 2
+    import _chains                                                # noqa: PLC0415 — разбор цепочек
+    зовут = _chains.карта_вызовов([_rel(f) for f in _tracked() if f.suffix == ".py"], PROJECT)
+    notes = review(как, цель.read_text(encoding="utf-8", errors="replace"), зовут)
+    for note in notes:
+        print(note)
+    print(f"\nВсего замечаний: {len(notes)} в 1 файлах")
+    return 1 if notes else 0
+
+
 def main() -> int:
     try:                                       # след: без отметки механизм выглядит пылящимся
         sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".claude" / "hooks"))
@@ -549,6 +760,8 @@ def main() -> int:
     mode.add_argument("--hook", action="store_true", help="событие PostToolUse со stdin")
     ap.add_argument("--почему", dest="причина", default="",
                     help="причина сдвига потолка — уедет в подпись журнала")
+    ap.add_argument("--как", dest="как", default="",
+                    help="с --scan: судить единственную цель так, будто она лежит по этому пути дерева")
     ap.add_argument("paths", nargs="*", help="цели для --scan")
     a = ap.parse_args()
     if a.check:
@@ -560,7 +773,7 @@ def main() -> int:
     if a.bless:
         return cmd_bless(getattr(a, "причина", ""))
     if a.scan:
-        return cmd_scan(a.paths)
+        return cmd_scan_as(a.как, a.paths) if a.как else cmd_scan(a.paths)
     return cmd_hook()
 
 
