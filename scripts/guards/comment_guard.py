@@ -74,6 +74,36 @@ DECL_LINE = re.compile(r"^\s*[-*•]?\s*`?[\w.\[\]]+`?\s*:\s+\S")
 # запись с командой повтора). Признак узкий — «N из M» и «замер N»: шире начинается спор.
 ЧИСЛО_О_ДЕРЕВЕ = re.compile(r"(?<!\S)(\d+\s+из\s+\d+|[Зз]амер\s+\d)")
 УЛИКА_ЧИСЛА = re.compile(r"⟨живое|⟦vpm\s+[0-9a-f]{4}")
+# Прошедший вердикт в прозе — история проверки: улику из него делает ключ подписи или команда
+# повтора в том же блоке. Настоящее время («краснеет») называет поведение и не судится.
+ВЕРДИКТ = re.compile(r"(?i)(?<!не\s)(?<!\w)(поймано|доказано|подтверждено|проверено\s+(?:прогоном|подсадкой|"
+                     r"мутацией)|покраснел[аои]?|замер\s+показал)(?!\w)")
+ГАСИТЕЛЬ = re.compile(r"(?i)(?:не|ни|бы|ли|что|чего|должн[оаы]|обязан[оаы]?|нужно|может|могут|будет|будут)")
+УЛИКА_ВЕРДИКТА = re.compile(r"⟦vpm\s+[0-9a-f]{4}|`[^`]*(?:python3?|pytest|grep|git)\s[^`]*`")
+ЗАПУСК = re.compile(r"^\s*(?:python3?|\.venv/bin/python|pytest)\s+\S+\.py\b")
+ПЛАТА = re.compile(r"(?i)(?<!\w)(намеренно|нарочно|временно|не\s+удалять|не\s+трогать|так\s+задумано|"
+                   r"осознанно)(?!\w)")
+# Класс — ключ храповика: одно число на файл прятало подмену одного класса другим при равном счёте.
+КЛАССЫ = (
+    ("состав: вызывающий", r"вызывающего|шапка лжёт: «из кода никто»|шапка лжёт: зовут"),
+    ("состав: адресат", r"адресата|шапка лжёт: зовёт"),
+    ("состав: шапка", r"шапки нет|НАЗНАЧЕНИЕ через тире"),
+    ("состав: паспорт", r"паспорт|род действия|момент не отслежен"),
+    ("Ш1 вердикт вместо роли", r"число о дереве без улики|вердикт вместо роли"),
+    ("Ш2 координата задачи", r"координата задачи"),
+    ("Ш4 пересказ", r"пересказ декларации|пересказывает следующую строку|дубль декларации|"
+                    r"источник правды `config/templates/`"),
+    ("Ш5 подмена предмета", r"разбор задачи|история «прежде было»|шапка-оглавление|план работ в коде|"
+                            r"способ запуска"),
+    ("длина", r"докстринг на \d+ строк|разделов в одном докстринге|строк комментария подряд"),
+    ("разбор", r"файл не разбирается"),
+)
+
+
+def класс_замечания(note: str) -> str | None:
+    """Класс замечания по таблице `КЛАССЫ`; None — у сторожа шаблон без класса, и это его дефект."""
+    текст = note.split(" — ", 1)[-1]
+    return next((имя for имя, образ in КЛАССЫ if re.search(образ, текст)), None)
 
 TASK_TAG = re.compile(r"(?<![\w:!.$])(?:[DFGM]\d{1,3}|S1\d(?:-[a-z])?|S2\d|Ф\d)(?![\w])")
 # Имя правила линтера выглядит координатой ровно так же; отличает его только то, чьё оно.
@@ -429,6 +459,70 @@ def состав_шапки(path: Path | str, text: str, шапка: str, зов
     return notes
 
 
+def _блоки(lines: list[str], docs: list[tuple[int, int, bool]],
+           comments: list[tuple[int, str, bool]]) -> list[list[tuple[int, str]]]:
+    """Текст блоками: докстринг целиком и серия комментариев подряд — вердикт и улика судятся вместе."""
+    блоки = [[(n + k, lines[n - 1 + k]) for k in range(length)] for n, length, _ in docs]
+    ряд: list[tuple[int, str]] = []
+    for n, s, _ in sorted(comments):
+        if ряд and n != ряд[-1][0] + 1:
+            блоки.append(ряд)
+            ряд = []
+        ряд.append((n, s))
+    return блоки + ([ряд] if ряд else [])
+
+
+def _вердикт(блок: list[tuple[int, str]]) -> int | None:
+    """Строка прошедшего вердикта в блоке. Слово гасит только СВОЯ клауза: отрицание, «бы», модальность,
+    будущее, «что»/«ли» не дальше трёх слов до него, вопрос после или кавычки вокруг. Гаситель
+    соседней клаузы не снимает: иначе «бы» в описании дефекта гасило бы вердикт в скобках рядом."""
+    for i, (n, s) in enumerate(блок):
+        for m in ВЕРДИКТ.finditer(s):
+            до = (блок[i - 1][1].lstrip(" #") + " " if i else "") + s[:m.start()]
+            клауза_до = re.split(r"[,;:()—–.!?]", до)[-1]
+            клауза_после = re.split(r"[,;:()—–.!]", s[m.end():])[0]
+            слова = [с.strip("«»\"'") for с in re.findall(r"[\w«»\"']+", клауза_до)[-3:]]
+            в_кавычках = bool(re.search(r"[«\"']\s*$", клауза_до) and re.match(r"\s*[»\"']", s[m.end():]))
+            if not (any(ГАСИТЕЛЬ.fullmatch(с) for с in слова) or "?" in клауза_после or в_кавычках):
+                return n
+    return None
+
+
+def _смысл_текста(path: Path | str, lines: list[str], docs: list[tuple[int, int, bool]],
+                  comments: list[tuple[int, str, bool]]) -> list[str]:
+    """Ш1 и Ш5 по смыслу: прошедший вердикт без ключа подписи и способ запуска в шапке."""
+    notes = []
+    for блок in _блоки(lines, docs, comments):
+        n = _вердикт(блок)
+        if n and not УЛИКА_ВЕРДИКТА.search(" ".join(s for _, s in блок)):
+            notes.append(f"{path}:{n} — вердикт вместо роли: прошедшая проверка без ключа подписи и "
+                         f"команды повтора — её дом журнал сессий, а в коде остаётся поведение")
+    for start, length, is_module in docs:
+        строка = next((start + k for k in range(length) if ЗАПУСК.match(lines[start - 1 + k])), None)
+        if is_module and строка:
+            notes.append(f"{path}:{строка} — способ запуска в шапке: команда живёт в `--help`, "
+                         f"а шапка называет роль")
+    return notes
+
+
+def _плата_словами(пути: list[str]) -> list[str]:
+    """Ш3 — замер без суда (решение владельца): цены снятием ещё нет, и обвинение было бы без выхода."""
+    места = []
+    for путь in sorted(пути):
+        if not путь.endswith(".py"):
+            continue
+        try:
+            text = (PROJECT / путь).read_text(encoding="utf-8", errors="replace")
+            docs, comments = _spans(text)
+        except (OSError, SyntaxError, ValueError, tokenize.TokenError):
+            continue
+        for блок in _блоки(text.split("\n"), docs, comments):
+            n = next((n for n, s in блок if ПЛАТА.search(s)), None)
+            if n and not УЛИКА_ВЕРДИКТА.search(" ".join(s for _, s in блок)):
+                места.append(f"{путь}:{n}")
+    return места
+
+
 def review(path: Path | str, text: str, зовут: dict[str, set[str]] | None = None) -> list[str]:
     """Замечания по одному файлу. Пусто = чисто."""
     if not str(path).endswith(".py"):
@@ -444,6 +538,7 @@ def review(path: Path | str, text: str, зовут: dict[str, set[str]] | None =
 
     prose: dict[int, str] = {}
     notes += состав_шапки(path, text, ast.get_docstring(ast.parse(text)) or "", зовут)
+    notes += _смысл_текста(path, lines, docs, comments)
     for start, length, is_module in docs:
         body = lines[start - 1:start - 1 + length]
         prose.update({start + k: ln for k, ln in enumerate(body)})
@@ -574,15 +669,25 @@ def _карта_дерева() -> dict[str, set[str]]:
                                  PROJECT)
 
 
-def _load_baseline() -> dict[str, int]:
+def _load_baseline() -> dict[tuple[str, str], int]:
     if not BASELINE.exists():
         raise SystemExit(f"comment_guard: нет потолка {BASELINE} — прогони --bless")
     ceiling = {}
     for ln in BASELINE.read_text(encoding="utf-8").splitlines():
         if ln.strip() and not ln.startswith("#"):
-            path, _, count = ln.rpartition(" ")
-            ceiling[path.strip()] = int(count)
+            ключ, _, count = ln.rpartition(" ")
+            path, _, класс = ключ.partition(" · ")
+            ceiling[(path.strip(), класс.strip())] = int(count)
     return ceiling
+
+
+def _по_классам(found: dict[str, list[str]]) -> dict[tuple[str, str], list[str]]:
+    """Замечания парой «файл × класс»; шаблон без класса ложится в «без класса» с потолком ноль."""
+    пары: dict[tuple[str, str], list[str]] = {}
+    for путь, notes in found.items():
+        for note in notes:
+            пары.setdefault((путь, класс_замечания(note) or "без класса"), []).append(note)
+    return пары
 
 
 def cmd_scan(targets: list[str]) -> int:
@@ -606,7 +711,7 @@ def cmd_bless(причина: str = "") -> int:
     было = _stamp.мера_потолка(BASELINE.read_text(encoding="utf-8") if BASELINE.exists() else "")
     found = collect()
     total = sum(len(n) for n in found.values())
-    body = "".join(f"{p} {len(n)}\n" for p, n in sorted(found.items()) if n)
+    body = "".join(f"{p} · {к} {len(n)}\n" for (p, к), n in sorted(_по_классам(found).items()))
     BASELINE.write_text(
         "# Потолок замечаний сторожа текста в коде (scripts/guards/comment_guard.py --check).\n"
         "# Вниз можно, вверх — нет: превышение красит джобу comment-guard в CI.\n"
@@ -661,14 +766,15 @@ def cmd_check() -> int:
         else "ни один файл не накрыт — весь замер идёт в долг"))
     жалобы = _comments.претензии(объявленные)
     ceiling = _load_baseline()
+    пары = _по_классам(found)
     total, cap = sum(len(n) for n in found.values()), sum(ceiling.values())
-    grown = [(p, ceiling.get(p, 0), n) for p, n in sorted(found.items()) if len(n) > ceiling.get(p, 0)]
-    for path, was, notes in grown:
-        print(f"✗ {path}: было ≤{was}, стало {len(notes)} — добавилось {len(notes) - was}")
+    grown = [(p, ceiling.get(p, 0), n) for p, n in sorted(пары.items()) if len(n) > ceiling.get(p, 0)]
+    for (path, класс), was, notes in grown:
+        print(f"✗ {path} · {класс}: было ≤{was}, стало {len(notes)} — добавилось {len(notes) - was}")
         for note in notes:
             print(f"    {note}")
-    dropped = sorted(p for p, n in found.items() if len(n) < ceiling.get(p, 0))
-    stale = sorted(set(ceiling) - set(found))
+    dropped = sorted(f"{п} · {к}" for (п, к), n in пары.items() if len(n) < ceiling.get((п, к), 0))
+    stale = sorted(f"{п} · {к}" for п, к in set(ceiling) - set(пары))
     for жалоба in жалобы:
         print(f"✗ {жалоба}")
     ряды.append(_stamp.строка_шага(
@@ -703,6 +809,7 @@ def cmd_check() -> int:
         следствие=f"опустить потолок можно у файлов: {len(dropped) + len(stale)}"
         if (dropped or stale) else "ниже потолка не опустился ни один файл"))
     print(f"Храповик: {total} замечаний при потолке {cap} в {len(found)} файлах — не выше.")
+    print(f"Ш3 плата словами — замер без суда: блоков {len(_плата_словами(list(found)))}")
     _расписаться(ряды)
     return 0
 

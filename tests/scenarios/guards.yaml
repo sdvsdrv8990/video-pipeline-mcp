@@ -741,6 +741,342 @@
       with: {args: ["--scan", "--как", "tools/excel/__init__.py", "${draft.path}"]}
       expect: {ok: false, exit: 1, console: "лжёт", console_absent: "вызывающего|адресата|шапки нет|паспорта нет|молчит|неточен|род действия|момент не отслежен|пересказ декларации"}
 
+- scenario: header_verdict_without_key_is_sh1
+  why: "прошедшая проверка прозой без ключа подписи — вердикт вместо роли: её дом журнал, а шапка называет поведение"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_without_key_is_sh1/findings_count.py, правка: вердикт-без-ключа}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вердикт вместо роли", console_absent: "способ запуска|вызывающего|адресата|шапки нет|паспорт|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_verdict_with_key_is_clean
+  why: "тот же вердикт с ключом подписи в том же блоке — улика с командой подъёма, а не история"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_with_key_is_clean/findings_count.py, правка: вердикт-с-ключом}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_present_tense_is_not_verdict
+  why: "«краснеет» в настоящем времени называет поведение судьи, а не прошедшую проверку — формула его не трогает"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_present_tense_is_not_verdict/findings_count.py, правка: поведение-настоящим}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_verdict_negation_is_not_verdict
+  why: "«не доказано» называет класс дефекта, а не прошедшую проверку — отрицание вердиктом не является"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_negation_is_not_verdict/findings_count.py, правка: вердикт-отрицанием}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_verdict_distant_negation_is_not_verdict
+  why: "отрицание через слово в своей клаузе гасит вердикт"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_distant_negation_is_not_verdict/findings_count.py, правка: вердикт-отрицание-через-слово}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_verdict_wrapped_negation_is_not_verdict
+  why: "отрицание на переносе строки — та же клауза"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_wrapped_negation_is_not_verdict/findings_count.py, правка: вердикт-отрицание-на-переносе}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_verdict_conditional_is_not_verdict
+  why: "условное «было бы» — не прошедшая проверка"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_conditional_is_not_verdict/findings_count.py, правка: вердикт-условное}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_verdict_modal_is_not_verdict
+  why: "модальность называет правило, а не результат"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_modal_is_not_verdict/findings_count.py, правка: вердикт-модальное}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_verdict_future_is_not_verdict
+  why: "будущее время — обещание, а не вердикт"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_future_is_not_verdict/findings_count.py, правка: вердикт-будущее}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_verdict_question_is_not_verdict
+  why: "вопрос не утверждает результат"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_question_is_not_verdict/findings_count.py, правка: вердикт-вопрос}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_verdict_quoted_word_is_not_verdict
+  why: "слово в кавычках — имя, а не утверждение"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_quoted_word_is_not_verdict/findings_count.py, правка: вердикт-цитата-слова}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_verdict_relative_what_is_not_verdict
+  why: "«что поймано» описывает содержимое отчёта, а не вердикт"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_relative_what_is_not_verdict/findings_count.py, правка: вердикт-что-поймано}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_verdict_lexeme_proven_is_sh1
+  why: "лексема «доказано» — прошедшая проверка"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_lexeme_proven_is_sh1/findings_count.py, правка: вердикт-лексема-доказано}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вердикт вместо роли", console_absent: "способ запуска|вызывающего|адресата|шапки нет|паспорт|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_verdict_lexeme_confirmed_is_sh1
+  why: "лексема «подтверждено» — прошедшая проверка"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_lexeme_confirmed_is_sh1/findings_count.py, правка: вердикт-лексема-подтверждено}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вердикт вместо роли", console_absent: "способ запуска|вызывающего|адресата|шапки нет|паспорт|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_verdict_lexeme_mutation_is_sh1
+  why: "лексема «проверено мутацией» — прошедшая проверка"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_lexeme_mutation_is_sh1/findings_count.py, правка: вердикт-лексема-проверено-мутацией}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вердикт вместо роли", console_absent: "способ запуска|вызывающего|адресата|шапки нет|паспорт|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_verdict_lexeme_turned_red_is_sh1
+  why: "лексема «покраснела» — прошедшая проверка"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_lexeme_turned_red_is_sh1/findings_count.py, правка: вердикт-лексема-покраснела}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вердикт вместо роли", console_absent: "способ запуска|вызывающего|адресата|шапки нет|паспорт|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_verdict_lexeme_measured_is_sh1
+  why: "лексема «замер показал» — прошедшая проверка"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_lexeme_measured_is_sh1/findings_count.py, правка: вердикт-лексема-замер-показал}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вердикт вместо роли", console_absent: "способ запуска|вызывающего|адресата|шапки нет|паспорт|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_verdict_capitals_is_sh1
+  why: "регистр смысла не меняет"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_capitals_is_sh1/findings_count.py, правка: вердикт-заглавными}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вердикт вместо роли", console_absent: "способ запуска|вызывающего|адресата|шапки нет|паспорт|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_verdict_far_conditional_still_sh1
+  why: "«бы» соседней клаузы вердикт не снимает"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_far_conditional_still_sh1/findings_count.py, правка: вердикт-бы-в-соседней-клаузе}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вердикт вместо роли", console_absent: "способ запуска|вызывающего|адресата|шапки нет|паспорт|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_verdict_far_negation_dash_still_sh1
+  why: "отрицание за тире — чужая клауза"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_far_negation_dash_still_sh1/findings_count.py, правка: вердикт-нет-через-тире}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вердикт вместо роли", console_absent: "способ запуска|вызывающего|адресата|шапки нет|паспорт|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_verdict_far_negation_comma_still_sh1
+  why: "отрицание до двоеточия — чужая клауза"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_far_negation_comma_still_sh1/findings_count.py, правка: вердикт-не-в-соседней-клаузе}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вердикт вместо роли", console_absent: "способ запуска|вызывающего|адресата|шапки нет|паспорт|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_verdict_far_modal_still_sh1
+  why: "модальность соседней клаузы вердикт не снимает"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_far_modal_still_sh1/findings_count.py, правка: вердикт-модальность-в-соседней-клаузе}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вердикт вместо роли", console_absent: "способ запуска|вызывающего|адресата|шапки нет|паспорт|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_verdict_question_other_sentence_still_sh1
+  why: "вопрос другого предложения вердикт не снимает"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_question_other_sentence_still_sh1/findings_count.py, правка: вердикт-вопрос-в-другом-предложении}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вердикт вместо роли", console_absent: "способ запуска|вызывающего|адресата|шапки нет|паспорт|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_verdict_far_future_still_sh1
+  why: "будущее соседней клаузы вердикт не снимает"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_far_future_still_sh1/findings_count.py, правка: вердикт-будущее-в-соседней-клаузе}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вердикт вместо роли", console_absent: "способ запуска|вызывающего|адресата|шапки нет|паспорт|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_verdict_key_in_other_block_still_sh1
+  why: "ключ в отдельном блоке — мнимая улика"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_key_in_other_block_still_sh1/findings_count.py, правка: вердикт-ключ-в-соседнем-блоке}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вердикт вместо роли", console_absent: "способ запуска|вызывающего|адресата|шапки нет|паспорт|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_verdict_backtick_word_still_sh1
+  why: "обратные кавычки без команды — мнимая улика"
+  род: разрушительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_backtick_word_still_sh1/findings_count.py, правка: вердикт-слово-в-кавычках-кода}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "вердикт вместо роли", console_absent: "способ запуска|вызывающего|адресата|шапки нет|паспорт|род действия|момент не отслежен|пересказ декларации"}
+
+- scenario: header_verdict_key_same_block_is_clean
+  why: "ключ в другой строке того же блока — настоящая улика"
+  род: положительный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_verdict_key_same_block_is_clean/findings_count.py, правка: вердикт-ключ-строкой-ниже}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: true, exit: 0, console: "Всего замечаний: 0"}
+
+- scenario: header_launch_line_is_sh5
+  why: "команда запуска в шапке — подмена предмета: её дом `--help`, шапка называет роль"
+  род: отрицательный
+  when:
+    - python: снимок_источника
+      with: {источник: scripts/guards/findings_count.py, куда: шапки/header_launch_line_is_sh5/findings_count.py, правка: запуск-в-шапке}
+      as: draft
+      expect: {ok: true}
+    - run: scripts/guards/comment_guard.py
+      with: {args: ["--scan", "--как", "scripts/guards/findings_count.py", "${draft.path}"]}
+      expect: {ok: false, exit: 1, console: "способ запуска", console_absent: "вердикт вместо роли|вызывающего|адресата|шапки нет|паспорт|род действия|момент не отслежен|пересказ декларации"}
+
 - scenario: header_caller_nobody_claimed_is_a_lie
   why: "«из кода никто» при живом вызывающем server — ложь, а не молчание: утверждение сверяется так же, как имя"
   род: разрушительный

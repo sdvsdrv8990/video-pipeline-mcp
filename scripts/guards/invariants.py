@@ -117,7 +117,7 @@ def skips_without_ci(root: Path = ROOT) -> list[str]:
     if not ci_file.exists():
         return []
     # Ищем в КОМАНДАХ и переменных джоб, а не в тексте файла: упоминание в комментарии — не
-    # установка, и поиск по сырому тексту принял бы объяснение за механизм (поймано мутацией).
+    # установка, и поиск по сырому тексту принял бы объяснение за механизм.
     workflow = yaml.safe_load(ci_file.read_text(encoding="utf-8")) or {}
     commands, env_names = [], set()
     for job in (workflow.get("jobs") or {}).values():
@@ -2402,7 +2402,7 @@ def acceptance_state_unproven(root: Path = ROOT) -> list[str]:
                     elif предмет is None and кусок.endswith(".py"):
                         предмет = (root / кусок).read_text(encoding="utf-8", errors="replace")
             # Флаг проверяется по тексту предмета: файл на месте, а ключа у него нет — улика мнимая
-            # ровно так же, только незаметнее (поймано на себе: объявлен `--объявление` при `--список`).
+            # ровно так же, только незаметнее: объявлен `--объявление`, а у предмета есть только `--список`.
             for флаг in re.findall(r"(?<!\S)--[\w-]+", цели):
                 if предмет is not None and флаг not in предмет:
                     notes.append(f"{адрес}: улика зовёт ключ `{флаг}`, которого у предмета нет")
