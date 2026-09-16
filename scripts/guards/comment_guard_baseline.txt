@@ -1,18 +1,11 @@
 # Потолок замечаний сторожа текста в коде (scripts/guards/comment_guard.py --check).
 # Вниз можно, вверх — нет: превышение красит джобу comment-guard в CI.
-# После прополки: python3 scripts/guards/comment_guard.py --bless. Сейчас всего: 182.
+# После прополки: python3 scripts/guards/comment_guard.py --bless. Сейчас всего: 175.
 .claude/hooks/vpm-delivery-gate.py · Ш1 вердикт вместо роли 1
 .claude/hooks/vpm-fact-gate.py · Ш1 вердикт вместо роли 2
 core/advice.py · состав: адресат 1
 core/advice.py · состав: вызывающий 1
 core/auth.py · состав: вызывающий 1
-core/contracts/__init__.py · состав: вызывающий 1
-core/contracts/error_detail.py · состав: вызывающий 1
-core/contracts/errors.py · состав: вызывающий 1
-core/contracts/fact.py · состав: вызывающий 1
-core/contracts/task_status.py · состав: вызывающий 1
-core/contracts/tool_result.py · состав: вызывающий 1
-core/contracts/untrusted.py · состав: вызывающий 1
 core/declaration.py · состав: вызывающий 1
 core/deploy.py · состав: адресат 1
 core/deploy.py · состав: вызывающий 1

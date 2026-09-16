@@ -1,5 +1,7 @@
 """core/contracts/error_detail.py — обёртка отказа для клиента: код реестра, полный текст беды и
 рецепт восстановления.
+
+Зовут: contracts, tool_result, task_status, trail, invariants.
 """
 
 from pydantic import BaseModel, field_validator
