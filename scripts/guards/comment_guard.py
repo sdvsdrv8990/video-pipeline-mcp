@@ -832,7 +832,7 @@ def cmd_hook() -> int:
         return 0
     head = "\n".join(f"  • {n}" for n in notes[:6])
     more = f"\n  … и ещё {len(notes) - 6}" if len(notes) > 6 else ""
-    print(json.dumps({"hookSpecificOutput": {
+    print(json.dumps(ensure_ascii=False, obj={"hookSpecificOutput": {
         "hookEventName": "PostToolUse",
         "additionalContext": (
             f"⚠️ Текст в коде (правило владельца: комментарий объясняет НЕОЧЕВИДНОЕ поведение кода, "

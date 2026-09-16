@@ -1009,6 +1009,29 @@ def main() -> int:
     ok(_зам["замыслов_сегодня"](Path(tempfile.mkdtemp(prefix="vpm-пусто-"))) == 0,
        "§11 журнала дня нет — ноль замыслов, а не падение")
 
+    # §13. Событие PostToolUse уходит судье ВМЕСТЕ с потоком: хук читает stdin до конца, а судья
+    # читает его снова, поэтому без подстановки потока судья берёт EOF и молчит так же, как на
+    # чистом файле — отличить «нет замечаний» от «событие потеряно» было нечем.
+    _песок = Path(tempfile.mkdtemp(prefix="vpm-событие-", dir=ROOT / "workspace"))
+    _грязный = _песок / "грязный.py"
+    _грязный.write_text('"""Модуль.\n\nПоймано на себе при первом прогоне.\n"""\n', encoding="utf-8")
+    _чистый = _песок / "чистый.py"
+    _чистый.write_text(f'"""{_чистый.relative_to(ROOT)} — проба: файл без замечаний.\n"""\n',
+                       encoding="utf-8")
+
+    def _через_хук(цель: Path) -> str:
+        событие = json.dumps({"hook_event_name": "PostToolUse", "tool_name": "Edit",
+                              "tool_input": {"file_path": str(цель)}}, ensure_ascii=False)
+        готово = subprocess.run([sys.executable, str(HOOKS / "vpm-comment-intent.py")],
+                                input=событие, capture_output=True, text=True, cwd=ROOT)
+        return готово.stdout
+
+    ok("вердикт вместо роли" in _через_хук(_грязный),
+       "§13 событие доходит до судьи: замечание по файлу приходит из хука, а не теряется в потоке")
+    ok(_через_хук(_чистый).strip() == "",
+       "§13 файл без замечаний — тишина: хук не выдаёт само событие за находку")
+    shutil.rmtree(_песок, ignore_errors=True)
+
     print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")
     for fail in _fails:
         print(f"  ✗ {fail}")

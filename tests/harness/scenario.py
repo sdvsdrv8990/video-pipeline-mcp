@@ -188,6 +188,9 @@ def _steps(raw: list, vocab: Vocabulary, where: str) -> list[Step]:
             raise ScenarioError(f"{where}[{i}]: шаг — ровно одно из `call` (инструмент), "
                                 f"`rpc` (метод протокола), `python` (шаг-помощник), `run` (команда "
                                 f"репозитория); указано {kinds or 'ничего'}")
+        if (item.get("with") or {}).get("stdin") is not None and not item.get("run"):
+            raise ScenarioError(f"{where}[{i}]: `stdin` — только у шага `run`: вход на стандартный "
+                                f"поток есть у команды, у остальных он был бы принят и потерян")
         expect = item.get("expect")
         out.append(Step(
             index=i, tool=str(item.get("call") or ""), python=str(item.get("python") or ""),
@@ -583,7 +586,9 @@ class Runner:
                                 "объявление исполняемо, поэтому цель обязана быть своей")
         argv = ([sys.executable, str(target)] if target.suffix == ".py" else [str(target)])
         argv += [str(a) for a in (args.get("args") or [])]
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=COMMAND_TIMEOUT, cwd=ROOT)
+        поток = args.get("stdin")
+        done = subprocess.run(argv, input=None if поток is None else str(поток),
+                              capture_output=True, text=True, timeout=COMMAND_TIMEOUT, cwd=ROOT)
         return {"ok": done.returncode == 0, "code": "",
                 "message": (done.stdout + done.stderr).strip()[-400:],
                 "data": {"exit": done.returncode}, "reaction_class": "", "recovery": {},

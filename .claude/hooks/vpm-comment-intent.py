@@ -22,6 +22,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -145,20 +146,31 @@ def ask(rel: str, state: dict, path: Path, post: bool) -> None:
     sys.exit(0)
 
 
-def судье(argv: list[str]) -> None:
-    """Передать управление судье содержимого. Нет репозитория — событие не наше, молчим."""
+def судье(argv: list[str], событие: str = "") -> None:
+    """Передать управление судье содержимого. Нет репозитория — событие не наше, молчим.
+
+    Поток события здесь уже вычитан до конца, а судья читает его снова: без подстановки он берёт
+    EOF, отвечает «разобрать нечего» кодом 0 и молчит так же, как на чистом файле.
+    """
     if not СУДЬЯ.exists():
         sys.exit(0)
+    if событие:
+        поток = tempfile.TemporaryFile()
+        поток.write(событие.encode("utf-8"))
+        поток.flush()
+        поток.seek(0)
+        os.dup2(поток.fileno(), 0)
     os.execv(sys.executable, [sys.executable, str(СУДЬЯ), *(argv or ["--hook"])])
 
 
 def main() -> None:
     if sys.argv[1:]:
         судье(sys.argv[1:])
-    data = json.loads(sys.stdin.read())
+    сырое = sys.stdin.read()
+    data = json.loads(сырое)
     tool, inp = data.get("tool_name", ""), (data.get("tool_input") or {})
     if data.get("hook_event_name") == "PostToolUse" and tool in ("Edit", "Write", "MultiEdit"):
-        судье([])
+        судье([], сырое)
     if os.environ.get("VPM_COMMENT_INTENT", "").lower() in ("off", "0", "false"):
         sys.exit(0)
     path = state_path(data.get("session_id") or "нет-сессии")
