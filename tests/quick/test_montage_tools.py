@@ -19,12 +19,12 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-import server  # noqa: E402
-from core.engine import Engine  # noqa: E402
-from core.ids import IDGenerator  # noqa: E402
-from core.montage import MontageError, RenderLedger, SceneBook  # noqa: E402
-from core.providers.ffmpeg import AudioTrack, FfmpegEngine, Layer  # noqa: E402
-from core.state import StateManager  # noqa: E402
+import server
+from core.engine import Engine
+from core.ids import IDGenerator
+from core.montage import MontageError, RenderLedger, SceneBook
+from core.providers.ffmpeg import AudioTrack, FfmpegEngine, Layer
+from core.state import StateManager
 
 CONFIG = ROOT / "config"
 MONTAGE = yaml.safe_load((CONFIG / "montage.yaml").read_text(encoding="utf-8"))
@@ -63,7 +63,7 @@ def refuses(fn, code, msg):
     except MontageError as e:
         ok(e.code == code, f"{msg} (получено {e.code})")
         return
-    except Exception as e:                                  # noqa: BLE001
+    except Exception as e:
         ok(False, f"{msg} — вместо кода реестра {type(e).__name__}: {e}")
         return
     got = getattr(getattr(result, "error", None), "code", None)
@@ -329,7 +329,7 @@ else:
     ok(_scr["file_path"].endswith(".py") and _scr["executed"] is False,
        f"файл лёг в объявленное место и НЕ исполнялся ({_scr['file_path']})")
     _ns: dict = {}
-    exec(compile(_src, "scene_template", "exec"), _ns)          # noqa: S102 — свой же скелет
+    exec(compile(_src, "scene_template", "exec"), _ns)  # свой же скелет
     ok(_ns["RESOLUTION"] == "640x360" and _ns["FPS"] == 25 and _ns["CODEC"] == "h264",
        f"требования канала подтянуты в скрипт ({_ns['RESOLUTION']}, {_ns['FPS']}, {_ns['CODEC']})")
     ok(_ns["ELEMENTS"] == [] and _ns["AUDIO"] == [],
@@ -347,7 +347,7 @@ else:
                       "скелет выдан при включённом тумблере")
     _on_src = (WS / _scr_on["file_path"]).read_text(encoding="utf-8")
     _ns_on: dict = {}
-    exec(compile(_on_src, "scene_template", "exec"), _ns_on)    # noqa: S102
+    exec(compile(_on_src, "scene_template", "exec"), _ns_on)
     ok(_ns_on["VARIANTS_ENABLED"] is True and _ns["VARIANTS_ENABLED"] is False,
        "флаг канала доезжает В СКРИПТ, а не остаётся в книге")
     ok(_ns_on["SLOTS"] and any(s.get("parent_slot") for s in _ns_on["SLOTS"]),
@@ -365,7 +365,7 @@ else:
     if _evil.status == "success":
         _evil_src = (WS / _evil.data["file_path"]).read_text(encoding="utf-8")
         _ns_evil: dict = {}
-        exec(compile(_evil_src, "evil", "exec"), _ns_evil)      # noqa: S102 — проверяем инертность
+        exec(compile(_evil_src, "evil", "exec"), _ns_evil)  # проверяем инертность
         ok(not _marker.exists(),
            "кавычки и перевод строки из ячейки НЕ становятся кодом: побочного действия не произошло")
         ok(_ns_evil["SCENE_ID"].startswith("S01") and "os.system" in _ns_evil["SCENE_ID"],

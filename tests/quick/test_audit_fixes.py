@@ -68,7 +68,7 @@ async def main():
           _rs.error.code if _rs.error else "")
     _src = (ROOT / "workspace" / "gen" / "evil.py").read_text(encoding="utf-8")
     _ns: dict = {}
-    exec(compile(_src, "gen", "exec"), _ns)                      # noqa: S102 — проверяем инертность
+    exec(compile(_src, "gen", "exec"), _ns)  # проверяем инертность
     check("описание не закрывает докстринг: побочного действия нет", not _marker.exists())
     check("каркас скрипта приходит из декларации, а не из строки в коде",
           "module.py.tpl" in (ROOT / "tools/filesystem/__init__.py").read_text(encoding="utf-8"))

@@ -2756,7 +2756,7 @@ def scenarios_same_radius(root: Path = ROOT) -> list[str]:
     разошёлся бы с делом на первой же правке сценария.
     """
     sys.path.insert(0, str(_at(root, GUARDS)))
-    import what_if  # noqa: PLC0415 — радиус сценария живёт у цикла: второй копии разбора не нужно
+    import what_if  # радиус сценария живёт у цикла: второй копии разбора не нужно
     свод = what_if.радиусы_сценариев(root)
     if not свод:
         raise НетУлики("объявленных сценариев в этом дереве нет — судить радиусы не у кого")
@@ -2810,7 +2810,7 @@ def set_copies_source_form(root: Path = ROOT) -> list[str]:
             continue
         try:
             модуль = importlib.import_module(Path(сторож).stem)
-        except Exception:      # noqa: BLE001 — сторож, который не импортируется, судит своя ось
+        except Exception:  # сторож, который не импортируется, судит своя ось
             continue
         разбирает = getattr(модуль, "разбирает", None)
         if not callable(разбирает) or not callable(getattr(модуль, "образец", None)):
@@ -3338,7 +3338,7 @@ def main() -> int:
         sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
         import _trace
         _trace.mark("invariants.py")
-    except Exception:                          # noqa: BLE001 — след не важнее самой работы
+    except Exception:  # след не важнее самой работы
         pass
     # Режим хука: молчим, когда чисто. Сторож, печатающий «всё хорошо» после каждой правки,
     # превращается в шум, и его перестают читать.

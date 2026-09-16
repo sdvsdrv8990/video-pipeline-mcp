@@ -168,8 +168,8 @@ for bname, sname, cname in _montage:
        f"{sname}.{cname} — словарь заглавными: {vals}")
 
 print("\n== книги материализуются ==")
-from core.engine.table_materializer import TableMaterializer  # noqa: E402
-from core.excel import ExcelEngine  # noqa: E402
+from core.engine.table_materializer import TableMaterializer
+from core.excel import ExcelEngine
 
 with tempfile.TemporaryDirectory() as td:
     root = Path(td)

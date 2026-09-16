@@ -18,13 +18,13 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from core.providers.ffmpeg import (  # noqa: E402
+from core.providers.ffmpeg import (
     AudioTrack, FfmpegDictionary, FfmpegEngine, FfmpegError, FilterUse, Layer, RenderProfile,
     SceneSpec, accept,
 )
-from core.providers.ffmpeg.command import escape_path, ramp, tempo_steps  # noqa: E402
-from core.providers.ffmpeg.dictionary import guard  # noqa: E402
-from core.providers.ffmpeg.spec import points  # noqa: E402
+from core.providers.ffmpeg.command import escape_path, ramp, tempo_steps
+from core.providers.ffmpeg.dictionary import guard
+from core.providers.ffmpeg.spec import points
 
 _checks = 0
 _fails = []
@@ -47,7 +47,7 @@ def refuses(fn, code, msg):
     except FfmpegError as e:
         ok(e.code == code, f"{msg} (получено {e.code})")
         return
-    except Exception as e:                                  # noqa: BLE001
+    except Exception as e:
         ok(False, f"{msg} — вместо кода реестра {type(e).__name__}: {e}")
         return
     ok(False, f"{msg} — отказа не было вовсе")

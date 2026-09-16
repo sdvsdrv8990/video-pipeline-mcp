@@ -28,7 +28,7 @@ try:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import _trace
     _trace.mark(Path(__file__).name)
-except Exception:                              # noqa: BLE001 — след не важнее самой проверки
+except Exception:  # след не важнее самой проверки
     pass
 
 # Корень — от места самого хука (`.claude/hooks/` в репозитории), а не зашит путём одной
@@ -459,7 +459,7 @@ def sign_refusal(reason: str, root: Path = PROJ) -> str:
         return _stamp.sign("гейт", "ОТКАЗ", reason.strip().splitlines()[0][:120],
                            intent="гейт поставки", expected="зелёное перед словом «сделано»",
                            actual="отказ гейта", cmd="см. команду в тексте отказа", root=root)[1]
-    except Exception as beda:                  # noqa: BLE001 — подпись не важнее самого отказа
+    except Exception as beda:  # подпись не важнее самого отказа
         return f"⟦vpm — ⟧ подписи нет ({beda})"
 
 

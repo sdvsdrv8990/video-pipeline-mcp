@@ -34,9 +34,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import _evidence                                                           # noqa: E402
-import _stamp  # noqa: E402 — тот же порядок: роспись шагов лежит рядом со сторожами
-import _verdict                                                            # noqa: E402
+import _evidence
+import _stamp  # тот же порядок: роспись шагов лежит рядом со сторожами
+import _verdict
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -666,7 +666,7 @@ def карта_классов(root: Path = ROOT) -> tuple[dict[str, set[str]], l
     карта: dict[str, set[str]] = {}
     вне = []
     sys.path.insert(0, str(root / "scripts" / "guards"))
-    import invariants  # noqa: PLC0415 — импорт внутри: карта строится по запросу, а сторож
+    import invariants  # импорт внутри: карта строится по запросу, а сторож
     # радиуса гоняется и там, где осей нет вовсе
     заголовки = {**{ч.__name__: и for и, ч in invariants.HARD},
                  **{с[1].__name__: с[0] for с in invariants.RATCHETS}}
@@ -699,14 +699,14 @@ def карта_классов(root: Path = ROOT) -> tuple[dict[str, set[str]], l
 
 def _роды_зон(зона: Path) -> dict[str, dict[str, str]]:
     """{файл: {сценарий: род}} — один читатель объявлений на весь сторож радиуса."""
-    from tests.harness.scenario import роды as читатель  # noqa: PLC0415 — род живёт в объявлении
+    from tests.harness.scenario import роды as читатель  # род живёт в объявлении
     return читатель(зона)
 
 
 def _роды_сценариев(root: Path = ROOT) -> dict[str, str]:
     """{сценарий: род} по всем объявлениям. Пусто — объявлений нет, и род спрашивать не у кого."""
     sys.path.insert(0, str(root))
-    from tests.harness.scenario import роды as роды_зон  # noqa: PLC0415 — род живёт в объявлении,
+    from tests.harness.scenario import роды as роды_зон  # род живёт в объявлении,
     # и разбор нужен только тем режимам, которые о нём спрашивают
     return {имя: род for зона in роды_зон(root / "tests" / "scenarios").values()
             for имя, род in зона.items()}
@@ -880,7 +880,7 @@ def показ_родов(root: Path = ROOT) -> int:
 
 def показ_скила(имя: str, раздел: str = "", root: Path = ROOT) -> int:
     """Цепочка скила: раздел → кого зовёт → чем кончается. Дыры названы и посчитаны."""
-    import _chains  # noqa: PLC0415 — по запросу: сторож радиуса гоняется и там, где скилов нет
+    import _chains  # по запросу: сторож радиуса гоняется и там, где скилов нет
     узлы = _chains.цепочка_скила(имя, root)
     if раздел:
         свои = [у for у in узлы if у["узел"] == раздел]
@@ -913,7 +913,7 @@ def показ_скила(имя: str, раздел: str = "", root: Path = ROOT
 
 def показ_связей(root: Path = ROOT) -> int:
     """Таблица связей цепочек: кто кого зовёт, кого не зовёт никто, чья цепочка кончается на себе."""
-    import _chains  # noqa: PLC0415 — по запросу: сторож радиуса гоняется и там, где скилов нет
+    import _chains
     таблица = _chains.связи(root)
     if not таблица:
         print("дерева скилов нет — таблицу связей строить не из чего")
@@ -1004,7 +1004,7 @@ def сценарии_сторожа(имя: str, root: Path = ROOT) -> list[tupl
 
 def шаги(адрес: str, root: Path = ROOT) -> list[dict]:
     """Набор команд одного адреса: [{звено, условие, команда, исход}]. Род пишется до двоеточия."""
-    import _chains  # noqa: PLC0415 — по запросу: сторож радиуса гоняется и там, где скилов нет
+    import _chains
     род, _, имя = адрес.partition(":")
     if род not in АДРЕСА or not имя:
         raise SystemExit(f"адрес `{адрес}`: род пишется до двоеточия, роды — {', '.join(АДРЕСА)}")
@@ -1046,7 +1046,7 @@ def шаги(адрес: str, root: Path = ROOT) -> list[dict]:
                       for сценарий, род in сценарии_сторожа(имя, root)]
     elif род == "ось":
         sys.path.insert(0, str(root / "scripts" / "guards"))
-        import invariants  # noqa: PLC0415 — заголовки осей живут у сторожа осей, а не здесь
+        import invariants  # заголовки осей живут у сторожа осей, а не здесь
         заголовки = {и for и, _ in invariants.HARD} | {с[0] for с in invariants.RATCHETS}
         if имя not in заголовки:
             raise SystemExit(f"оси «{имя}» нет среди {len(заголовки)} объявленных")
@@ -1100,7 +1100,7 @@ def _выполнить(команда: str, root: Path = ROOT) -> tuple[int, st
     try:
         r = subprocess.run(куски, cwd=str(root), env=env, capture_output=True,
                            text=True, timeout=900, check=False)
-    except (OSError, subprocess.SubprocessError) as e:  # noqa: BLE001 — упавший запуск чужой
+    except (OSError, subprocess.SubprocessError) as e:  # упавший запуск чужой
         # команды не имеет права ронять маршрут: он обязан назвать сломавшееся звено сам
         return -1, f"не запустилась: {e}"
     хвост = (r.stdout or r.stderr or "").strip().splitlines()
@@ -1155,7 +1155,7 @@ def показ_файла(rel: str, root: Path = ROOT) -> int:
     которое этот файл рождает. Порознь они были и раньше; вопрос «что вокруг ЭТОГО файла» не
     отвечался ничем, и набор цепочек висел над деревом целиком.
     """
-    import _chains  # noqa: PLC0415 — по запросу: сторож радиуса гоняется и там, где скилов нет
+    import _chains
     if not (root / rel).is_file():
         print(f"{rel}: файла нет — карту вокруг него строить не из чего")
         return 1
@@ -1169,7 +1169,7 @@ def показ_файла(rel: str, root: Path = ROOT) -> int:
         print("   никто: правку здесь ни один скил не сопровождает — инструкции о нём нет")
 
     sys.path.insert(0, str(root / "scripts" / "guards"))
-    import patrol  # noqa: PLC0415 — наряд владеет состояниями; вторая копия расходилась бы с ним
+    import patrol  # наряд владеет состояниями; вторая копия расходилась бы с ним
     print("\nсудьи и их состояние по этому файлу:")
     код_состояний = patrol.состояния(rel, root)
 
@@ -1194,7 +1194,7 @@ def main() -> int:
         sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
         import _trace
         _trace.mark("blast_radius.py")
-    except Exception:                          # noqa: BLE001 — след не важнее самой работы
+    except Exception:  # след не важнее самой работы
         pass
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", action="store_true")

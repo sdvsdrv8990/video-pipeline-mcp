@@ -41,7 +41,7 @@ def скилы(root: Path = ROOT) -> list[str]:
 def _цели() -> re.Pattern:
     """Регулярка живых целей живёт у сторожа осей — второй копии здесь быть не должно."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import invariants  # noqa: PLC0415 — импорт по запросу: разбор скилов гоняют и там, где осей нет
+    import invariants  # импорт по запросу: разбор скилов гоняют и там, где осей нет
     return invariants.ЖИВЫЕ_ЦЕЛИ
 
 
@@ -166,7 +166,7 @@ def зовёт_код(rel: str, root: Path = ROOT) -> set[str]:
     Импорт, а не граф вызовов: граф живёт во внешнем индексе (`_symbol_graph`), и в CI его нет —
     правило, опирающееся на сеть, молчало бы там, где обязано судить.
     """
-    import ast  # noqa: PLC0415 — разбор нужен только этому вопросу, а модуль зовут и без него
+    import ast  # разбор нужен только этому вопросу, а модуль зовут и без него
     try:
         дерево = ast.parse((root / rel).read_text(encoding="utf-8", errors="replace"))
     except (OSError, SyntaxError):
@@ -205,7 +205,7 @@ def личность(rel: str) -> str:
 def _путь_выражения(узел, среда: dict[str, str]) -> str | None:
     """Значение выражения пути без исполнения: литерал, имя, `/`, `str()`, `.resolve()`, `.parent`,
     `.parents[N]`. У `среда or запасной` берётся запасной: переменной среды разбору не видно."""
-    import ast  # noqa: PLC0415 — разбор нужен только этому вопросу, а модуль зовут и без него
+    import ast
     if isinstance(узел, ast.Constant) and isinstance(узел.value, str):
         return узел.value
     if isinstance(узел, ast.Name):
@@ -237,7 +237,7 @@ def _исполняемые_пути(дерево, файл: Path) -> set[Path]:
 
     Упоминание пути строкой вызовом не считается: совет «запусти scripts/…» ничего не исполняет.
     """
-    import ast  # noqa: PLC0415 — разбор нужен только этому вопросу, а модуль зовут и без него
+    import ast
     среда = {"__file__": str(файл)}
     for _ in range(2):                               # второй проход — имя через имя, объявленное ниже
         for у in ast.walk(дерево):
@@ -294,7 +294,7 @@ def модули_кода(rel: str, root: Path = ROOT) -> set[str]:
     Разрешается и относительный импорт, и `from пакет.модуль import Символ`. Имя без файла
     остаётся как написано, только если это сосед через `sys.path` (`import _stamp` из хука).
     """
-    import ast  # noqa: PLC0415 — разбор нужен только этому вопросу, а модуль зовут и без него
+    import ast
     def найти(база: Path, точками: str) -> str | None:
         путь = база.joinpath(*точками.split("."))
         for кандидат in (путь.with_suffix(".py"), путь / "__init__.py"):

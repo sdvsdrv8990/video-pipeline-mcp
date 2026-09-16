@@ -28,7 +28,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "guards"))
 
-import _verdict                                                            # noqa: E402
+import _verdict
 
 DECL = Path(__file__).with_name("stand.yaml")
 HOOKS = ROOT / ".claude" / "hooks"

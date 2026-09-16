@@ -89,7 +89,7 @@ def run(registry: str | None, floor: str | None, *argv) -> tuple[int, str, str]:
 # пользуются сценарии трёх родов (`tests/scenarios/steps.ПРАВКИ`), чтобы машина была одна.
 # Границы самого разбора (§1) по-прежнему сочиняются: там предмет пробы — регулярка, а не форма.
 sys.path.insert(0, str(ROOT))
-from tests.scenarios.steps import ПРАВКИ  # noqa: E402 — один список правок на набор и сценарии
+from tests.scenarios.steps import ПРАВКИ  # один список правок на набор и сценарии
 
 ИСТОЧНИК = ROOT / "docs" / "roadmap" / "02_findings.md"
 ОБРАЗЕЦ = fc.образец()

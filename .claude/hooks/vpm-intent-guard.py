@@ -128,7 +128,7 @@ def _дверь() -> str:
     try:
         import _permit
         return _permit.текст("VPM_INTENT_GUARD")
-    except Exception:                          # noqa: BLE001 — источника нет, но путь назвать надо
+    except Exception:  # источника нет, но путь назвать надо
         return "Запрет снимает человек: scripts/guards/_permit.py --запрос VPM_INTENT_GUARD"
 
 
@@ -167,7 +167,7 @@ def цена_прогона(root: Path = PROJ) -> str:
     try:
         import _stamp
         замеры = [м["секунд"] / м["прогонов"] for м in _stamp.цена(root).values() if м["секунд"]]
-    except Exception:                          # noqa: BLE001 — цена не важнее самого отказа
+    except Exception:  # цена не важнее самого отказа
         замеры = []
     if not замеры:
         return "Длительность прогона на этом дереве ещё не замерялась"
@@ -291,7 +291,7 @@ def _судимые_корни(root: Path = PROJ) -> list[str]:
         import _evidence
         return [к for д in (_evidence.деревья() or {}).values() if д.get("замысел")
                 for к in д.get("корни") or []]
-    except Exception:                          # noqa: BLE001 — нет объявления, нет и требования
+    except Exception:  # нет объявления, нет и требования
         return []
 
 
@@ -403,7 +403,7 @@ def инструменты(root: Path = PROJ) -> list[str]:
         import yaml
         задачи = yaml.safe_load(
             (root / "scripts" / "guards" / "evidence.yaml").read_text(encoding="utf-8"))["задачи"]
-    except Exception:                          # noqa: BLE001 — нет объявления, нет и обвинения
+    except Exception:  # нет объявления, нет и обвинения
         return []
     # Судим ровно тех, кого ИИ выбирает САМ: `сверх` (поднять руками сверх автоматики) и
     # `спросить`. Сторожа гейта сюда не идут — их и так гоняет CI, забыть их нельзя.
@@ -424,7 +424,7 @@ def дома(root: Path = PROJ) -> list[str]:
         import yaml
         объявлено = yaml.safe_load(
             (root / "scripts" / "guards" / "evidence.yaml").read_text(encoding="utf-8"))["дома"]
-    except Exception:                          # noqa: BLE001 — нет объявления, нет и обвинения
+    except Exception:
         return []
     return sorted({след for дом in объявлено.values() for след in (дом.get("следы") or ())})
 
@@ -465,7 +465,7 @@ def снят() -> bool:
     try:
         import _permit
         return _permit.снят("VPM_INTENT_GUARD")
-    except Exception:                          # noqa: BLE001 — моста нет, значит и разрешения нет
+    except Exception:  # моста нет, значит и разрешения нет
         return False
 
 
@@ -476,7 +476,7 @@ def main() -> None:
     try:
         import _trace
         _trace.mark("vpm-intent-guard.py")
-    except Exception:                          # noqa: BLE001 — след не важнее самой проверки
+    except Exception:  # след не важнее самой проверки
         pass
     data = json.loads(sys.stdin.read() or "{}")
     if снято and data.get("hook_event_name") != "Stop":
@@ -502,5 +502,5 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    except Exception:                          # noqa: BLE001 — сторож не вправе ронять сессию
+    except Exception:  # сторож не вправе ронять сессию
         sys.exit(0)

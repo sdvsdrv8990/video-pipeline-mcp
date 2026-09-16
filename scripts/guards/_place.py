@@ -200,7 +200,7 @@ def main() -> int:
         sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
         import _trace
         _trace.mark("_place.py")
-    except Exception:                          # noqa: BLE001 — след не важнее самой работы
+    except Exception:  # след не важнее самой работы
         pass
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)

@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import _stamp  # noqa: E402 — дорога к соседям кладётся строкой выше
+import _stamp  # дорога к соседям кладётся строкой выше
 
 СРОК = 30 * 60
 СТОРОЖА = {"VPM_INTENT_GUARD": "сторож остатков",
@@ -75,7 +75,7 @@ def снят(переменная: str, root: Path | None = None) -> bool:
     """
     try:
         запись = json.loads(файл(переменная).read_text(encoding="utf-8"))
-    except Exception:                          # noqa: BLE001 — нет файла или он битый = блок стоит
+    except Exception:  # нет файла или он битый = блок стоит
         return False
     if time.time() > float(запись.get("истекает") or 0):
         return False
@@ -115,7 +115,7 @@ def живые() -> list[dict]:
     for p in sorted(дом().glob("VPM_*.json")) if дом().is_dir() else []:
         try:
             запись = json.loads(p.read_text(encoding="utf-8"))
-        except Exception:                      # noqa: BLE001 — битый файл разрешением не считается
+        except Exception:  # битый файл разрешением не считается
             continue
         if time.time() <= float(запись.get("истекает") or 0):
             записи.append(запись)

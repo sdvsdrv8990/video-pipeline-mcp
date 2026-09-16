@@ -164,7 +164,7 @@ def _ключи_уроков(root: Path = ROOT) -> set[str] | None:
     """Ключи улик, УЖЕ записанных уроками. Дома нет — None: без него «в долгу» оказался бы ВЕСЬ
     журнал, и отсутствие источника читалось бы как огромная находка."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import invariants  # noqa: PLC0415 — дом памяти знает он, второй дороги туда быть не должно
+    import invariants  # дом памяти знает он, второй дороги туда быть не должно
     дом = invariants.memory_dir(root) / ДОМ_УРОКОВ
     if not дом.exists():
         return None
@@ -222,9 +222,9 @@ def показ_долга(root: Path = ROOT) -> int:
 def main() -> int:
     try:                                       # след: без отметки механизм выглядит пылящимся
         sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
-        import _trace  # noqa: PLC0415 — след живёт у хуков, и дорога к нему кладётся строкой выше
+        import _trace  # след живёт у хуков, и дорога к нему кладётся строкой выше
         _trace.mark("lesson_producer.py")
-    except Exception:                          # noqa: BLE001 — след не важнее самой работы
+    except Exception:  # след не важнее самой работы
         pass
     ap = argparse.ArgumentParser(description="из подписи прогона — заготовка урока с росписью шагов")
     ap.add_argument("--stamp", help="ключ подписи прогона, из которого рождается урок")

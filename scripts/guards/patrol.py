@@ -33,9 +33,9 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import _evidence                                                           # noqa: E402
-import _stamp                                                              # noqa: E402
-import _verdict                                                            # noqa: E402
+import _evidence
+import _stamp
+import _verdict
 
 ROOT = Path(__file__).resolve().parents[2]
 PYTHON = ROOT / ".venv" / "bin" / "python"
@@ -114,7 +114,7 @@ def факт(улики: list[str], минут: float) -> int:
     сегодняшнюю работу не говорит ничего.
     """
     sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
-    import _trace                                                          # noqa: PLC0415
+    import _trace
 
     ожидаемые = _evidence.ожидаются(улики)
     if not ожидаемые:
@@ -138,7 +138,7 @@ def _последний_вердикт(root: Path = ROOT) -> dict[str, float]:
     """{сторож: когда он в последний раз вынес вердикт}. Читается журнал подписей, а не след:
     след говорит «меня звали», вердикт — «я судил и сказал что».
     """
-    import json  # noqa: PLC0415 — разбор журнала нужен одному режиму, а наряд зовут и без него
+    import json  # разбор журнала нужен одному режиму, а наряд зовут и без него
     свод: dict[str, float] = {}
     for файл in sorted((root / "tests" / ".journal").glob("stamps-*.jsonl")):
         for строка in файл.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -241,7 +241,7 @@ def паспорт(root: Path = ROOT) -> dict[str, dict[str, bool | None]]:
     судьи = {**(объявление.get("сторожа") or {}), **(объявление.get("хуки") or {})}
     состояния_есть = bool(объявление.get("состояния"))
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import blast_radius  # noqa: PLC0415 — карта классов живёт у радиуса, второй копии быть не должно
+    import blast_radius  # карта классов живёт у радиуса, второй копии быть не должно
     карта, _ = blast_radius.карта_классов(root)
     в_карте = {м for механизмы in карта.values() for м in механизмы}
     свод: dict[str, dict[str, bool | None]] = {}
@@ -439,7 +439,7 @@ def новый(цели: list[str], таски: bool) -> int:
         sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
         import _trace
         _trace.mark("patrol.py")
-    except Exception:                          # noqa: BLE001 — след не важнее самой работы
+    except Exception:  # след не важнее самой работы
         pass
     файлы = цели or неотслеживаемые()
     if not файлы:

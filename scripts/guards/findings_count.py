@@ -23,8 +23,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import _stamp  # noqa: E402 — там же: роспись шагов лежит рядом со сторожами
-import _verdict                                                            # noqa: E402
+import _stamp
+import _verdict
 
 REGISTRY = Path(__file__).resolve().parents[2] / "docs" / "roadmap" / "02_findings.md"
 FLOOR = Path(__file__).with_name("findings_count_baseline.txt")
@@ -199,7 +199,7 @@ def main() -> int:
         sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".claude" / "hooks"))
         import _trace
         _trace.mark("findings_count.py")
-    except Exception:                          # noqa: BLE001 — след не важнее самой работы
+    except Exception:  # след не важнее самой работы
         pass
     global REGISTRY, FLOOR
     if (named := _named_tree(sys.argv)) is not None:

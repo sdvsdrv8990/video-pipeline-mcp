@@ -26,7 +26,7 @@ sys.path.insert(0, str(PROJ / "scripts" / "guards"))
 try:
     import _trace
     _trace.mark(Path(__file__).name)
-except Exception:                              # noqa: BLE001 — след не важнее самой двери
+except Exception:  # след не важнее самой двери
     pass
 
 СПРОС = """Снять запрет сторожа остатков — решение человека, не ИИ.
@@ -65,5 +65,5 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    except Exception:                          # noqa: BLE001 — запрет держит сторож, а не эта дверь
+    except Exception:  # запрет держит сторож, а не эта дверь
         sys.exit(0)

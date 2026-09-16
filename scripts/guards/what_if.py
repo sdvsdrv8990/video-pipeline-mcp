@@ -200,8 +200,8 @@ def радиусы_сценариев(root: Path = ROOT) -> dict[str, tuple[str,
     """
     sys.path.insert(0, str(root))
     try:
-        from tests.harness.scenario import read_yaml, scenario_files  # noqa: PLC0415 — разбор прогона
-        from tests.harness.scenario import роды as читатель  # noqa: PLC0415 — род живёт в объявлении
+        from tests.harness.scenario import read_yaml, scenario_files  # разбор прогона
+        from tests.harness.scenario import роды as читатель  # род живёт в объявлении
     except ImportError:
         # Чужое дерево без харнесса сценариев: радиусов там не бывает, и молчаливый пустой свод
         # честнее падения — судить нечего, а сторож обязан продолжать работу по своим осям.
@@ -535,7 +535,7 @@ def main() -> int:
         sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
         import _trace
         _trace.mark("what_if.py")
-    except Exception:                          # noqa: BLE001 — след не важнее самой работы
+    except Exception:  # след не важнее самой работы
         pass
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--intent", required=True, type=Path)

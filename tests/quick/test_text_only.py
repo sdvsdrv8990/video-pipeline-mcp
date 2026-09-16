@@ -11,8 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "guards"))
 
-import _tokens as T  # noqa: E402 — импорт после правки sys.path: источник улики лежит у сторожей
-import text_only as TO  # noqa: E402 — там же: роспись судим у самого сторожа, а не у источника
+import _tokens as T  # импорт после правки sys.path: источник улики лежит у сторожей
+import text_only as TO
 
 _checks = 0
 _fails: list[str] = []

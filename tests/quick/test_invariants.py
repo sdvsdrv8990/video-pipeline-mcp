@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "guards"))
 sys.path.insert(0, str(ROOT))
 
-from invariants import (  # noqa: E402
+from invariants import (
     НетУлики, axis_silent_without_reason, axis_undeclared, _немые, _шаг_оси,
     scenarios_without_destructive, judge_without_evidence_state,
     requirement_without_judge,
@@ -1046,7 +1046,7 @@ ok(_bless_stamp([], "нечего", make({})) == 0,
 print("\n== память выросла выше потолка ==")
 
 # Потолок читается из файла РЯДОМ со сторожем, поэтому в пробе подменяется он, а не дерево памяти.
-import invariants as _inv  # noqa: E402  ось судит каталог памяти, а не репозиторий
+import invariants as _inv  # ось судит каталог памяти, а не репозиторий
 
 print("\n== дверь у потолка: подъём — решение владельца ==")
 
@@ -1703,7 +1703,7 @@ ok(any(ось[0] == "мутация объявлена, а улики поимк
    "ось стоит в храповиках — иначе она считает в пустоту и потолок не судит никто")
 
 
-import _evidence  # noqa: E402  общая дверь к объявлению: набор подменяет её путь, а не файл
+import _evidence  # общая дверь к объявлению: набор подменяет её путь, а не файл
 
 _ГВАРДЫ = ROOT / "scripts" / "guards"
 _реестр = Path(tempfile.mkdtemp(prefix="vpm-оси-")) / "scripts" / "guards"
@@ -1740,7 +1740,7 @@ finally:
 shutil.rmtree(_реестр.parent.parent, ignore_errors=True)
 
 
-import _precision  # noqa: E402  журнал точности лежит под git, рядом с потолками
+import _precision  # журнал точности лежит под git, рядом с потолками
 _точн = Path(tempfile.mkdtemp(prefix="vpm-точность-")) / "precision.jsonl"
 _precision.записать("hook-a", "по-делу", "поймал настоящее", путь=_точн)
 _precision.записать("hook-a", "ложно", "сработал на литерале", проверка="§7 test_hooks", путь=_точн)
@@ -1793,7 +1793,7 @@ print("\n== живая величина: написанное против пр�
 # обвинение выключает сторожа быстрее, чем его отсутствие. Ожидаем: судится только маркер.
 
 sys.path.insert(0, str(ROOT / "scripts" / "guards"))
-import _live  # noqa: E402  источник улики: гоняет команды и находит маркеры
+import _live  # источник улики: гоняет команды и находит маркеры
 
 ok(_live.прогон("printf ''")[1] != "", "команда без вывода — ОТКАЗ, а не пустое значение: "
                                        "иначе величина согласна с любым написанным числом")
@@ -1805,7 +1805,7 @@ _жд = Path(tempfile.mkdtemp(prefix="vpm-живое-"))
 (_жд / "docs" / "roadmap" / "sessions").mkdir(parents=True)
 # Образец собирается на ходу, а не пишется буквально: набор лежит в ЖИВОЙ зоне, и написанный
 # целиком маркер сторож принял бы за настоящее утверждение о дереве — поймано им же на этом файле.
-_м = lambda имя, знач: "⟨живое " + f"{имя}={знач}⟩"           # noqa: E731
+_м = lambda имя, знач: "⟨живое " + f"{имя}={знач}⟩"
 (_жд / ".claude" / "skills" / "s.md").write_text(f"гейт — {_м('джобы', 8)} джоб\n", encoding="utf-8")
 (_жд / "docs" / "roadmap" / "sessions" / "s1.md").write_text(
     f"тогда было {_м('джобы', 6)} джоб\n", encoding="utf-8")
@@ -1834,7 +1834,7 @@ print("\n== место: где символ лежит и куда класть 
 # доказуемо битая ссылка. Зачем: «куда кинуть код» решалось догадкой, а ссылка на строку
 # протухала молча. Ожидаем: судится ТОЛЬКО доказанная битость, фикстуры не обвиняются.
 
-import _place  # noqa: E402  источник улики: индекс мест на ast
+import _place  # источник улики: индекс мест на ast
 
 _мд = Path(tempfile.mkdtemp(prefix="vpm-место-"))
 (_мд / "м.py").write_text(
@@ -1989,7 +1989,7 @@ ok("нет invariants.py" in отказ(axis_undeclared, make({"README.md": "x"}
    "ось, судящая объявление осей, тоже не выдаёт отсутствие файлов за чистоту")
 
 print("\n== роспись прохода оси: исход, причина, следствие ==")
-_ось = lambda имя: type("ф", (), {"__name__": имя})()          # noqa: E731 — нужен только `__name__`
+_ось = lambda имя: type("ф", (), {"__name__": имя})()  # нужен только `__name__`
 _сработала = _шаг_оси("ось", _ось("немая"), ["нарушение"], "", {"немая": "invariants.py:1"})
 ok(_сработала["исход"] == "сработал" and _сработала["причина"] == "все условия сошлись",
    "нашла нарушение — сработала, и обе стороны набора сошлись")
@@ -2110,7 +2110,7 @@ ok("пары" in отказ(_inv.set_copies_source_form, make({"scripts/guards/�
 
 print("\n== ссылка сценария: неразобранная НЕ уезжает в команду текстом ==")
 sys.path.insert(0, str(ROOT))
-from tests.harness.scenario import _resolve, ScenarioError  # noqa: E402 — путь к корню
+from tests.harness.scenario import _resolve, ScenarioError  # путь к корню
 # добавлен строкой выше: подстановку ссылок судим у самой машины сценариев
 try:
     _resolve("--root ${кириллица.path}", {"кириллица": {"path": "/tmp"}})

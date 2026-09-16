@@ -29,7 +29,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import _acceptance as общее                                                # noqa: E402
+import _acceptance as общее
 
 # Проверки зовутся по имени параметра, и подписи у них разные: общий тип нужен таблице,
 # иначе `check is общее.outside` сужает саму функцию до подписи соседки по таблице.
@@ -183,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
         import _trace
         _trace.mark("acceptance_server.py")
-    except Exception:                          # noqa: BLE001 — след не важнее самой работы
+    except Exception:  # след не важнее самой работы
         pass
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)

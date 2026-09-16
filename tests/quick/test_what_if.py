@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "guards"))
 
-import what_if  # noqa: E402
+import what_if
 
 _checks = 0
 _fails = []
@@ -390,7 +390,7 @@ def main() -> int:
     ok(поля["detail"]["роды"] == судимые, "роды лежат в detail поимённо, а не только числом")
 
     print("§роспись цикла: шаги с условиями, а не отметка о прогоне")
-    import _stamp as _п  # noqa: PLC0415 — подпись нужна только этой проверке
+    import _stamp as _п  # подпись нужна только этой проверке
     _шаг = _п.строка_шага(
         "отделить предсказание от тавтологии", "роды",
         [_п.условие("есть хоть одно предсказание", True, False)],

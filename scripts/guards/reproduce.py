@@ -366,8 +366,8 @@ def _reject_fiction(text: str) -> None:
     то есть через минуты ожидания вместо секунды.
     """
     sys.path.insert(0, str(ROOT))
-    from tests.harness.scenario import Vocabulary  # noqa: PLC0415
-    from tests.harness.scenario_map import analyse, load_map  # noqa: PLC0415
+    from tests.harness.scenario import Vocabulary
+    from tests.harness.scenario_map import analyse, load_map
     probe = ROOT / "tests" / "scenarios" / "_promote_probe.map.yaml"
     probe.write_text(text, encoding="utf-8")
     try:
@@ -469,7 +469,7 @@ def main() -> int:
         sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
         import _trace
         _trace.mark("reproduce.py")
-    except Exception:                          # noqa: BLE001 — след не важнее самой работы
+    except Exception:  # след не важнее самой работы
         pass
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--record", help="файл записи; по умолчанию самый свежий из следа и журнала")

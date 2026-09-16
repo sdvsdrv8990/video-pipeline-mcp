@@ -17,10 +17,10 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "guards"))
 sys.path.insert(0, str(ROOT))
 
-import _symbol_graph  # noqa: E402
-import _stamp  # noqa: E402  мера потолка и подпись сдвига — общие у всех сторожей
-import _chains  # noqa: E402 — путь к сторожам добавлен выше: разбор цепочек скилов
-import blast_radius as br  # noqa: E402
+import _symbol_graph
+import _stamp  # мера потолка и подпись сдвига — общие у всех сторожей
+import _chains  # путь к сторожам добавлен выше: разбор цепочек скилов
+import blast_radius as br
 
 _checks = 0
 _fails = []

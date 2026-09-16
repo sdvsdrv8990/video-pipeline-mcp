@@ -256,7 +256,7 @@ class Диагностика:
     def _поднять_приёмник(self, принято: list[bytes]) -> HTTPServer:
         """Точка наблюдения на приёме: слушает только петлю и живёт до уборки."""
         class Ручка(BaseHTTPRequestHandler):
-            def do_POST(self) -> None:  # noqa: N802 — имя задано базовым классом
+            def do_POST(self) -> None:  # имя задано базовым классом
                 длина = int(self.headers.get("Content-Length") or 0)
                 принято.append(self.rfile.read(длина))
                 self.send_response(204)

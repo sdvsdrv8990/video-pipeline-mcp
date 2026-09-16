@@ -23,9 +23,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import _stamp  # noqa: E402 — там же: роспись шагов лежит рядом со сторожами
-import _tokens  # noqa: E402 — импорт после правки sys.path: источник улики лежит рядом
-import _verdict  # noqa: E402 — там же
+import _stamp
+import _tokens  # импорт после правки sys.path: источник улики лежит рядом
+import _verdict
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -100,7 +100,7 @@ def main() -> int:
         sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
         import _trace
         _trace.mark("text_only.py")
-    except Exception:                          # noqa: BLE001 — след не важнее самой работы
+    except Exception:  # след не важнее самой работы
         pass
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)

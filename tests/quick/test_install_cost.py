@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-import install_cost  # noqa: E402  счёт установки: его же читают install.sh и configure.py
+import install_cost  # счёт установки: его же читают install.sh и configure.py
 
 _checks = 0
 _fails = []
@@ -91,7 +91,7 @@ ok("User-Agent" in install_cost.ЗАГОЛОВКИ,
 
 print("\n== 7. Установка модели отказывает по МЕСТУ, а не только предупреждает в списке ==")
 sys.path.insert(0, str(ROOT))
-import models  # noqa: E402  тот же скрипт, что зовут меню настройки и CLI
+import models  # тот же скрипт, что зовут меню настройки и CLI
 
 
 class _Каталог:

@@ -17,8 +17,8 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import _evidence                                                           # noqa: E402
-import _verdict                                                            # noqa: E402
+import _evidence
+import _verdict
 
 ROOT = Path(__file__).resolve().parents[2]
 SCENARIOS = Path(__file__).resolve().parent / "acceptance_scenarios.yaml"

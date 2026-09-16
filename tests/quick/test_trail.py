@@ -17,10 +17,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from core.observability import Trail  # noqa: E402
+from core.observability import Trail
 
 sys.path.insert(0, str(ROOT / "scripts" / "guards"))
-from reproduce import (_entries, _fill, artefacts, as_steps, depends, exemptions,  # noqa: E402
+from reproduce import (_entries, _fill, artefacts, as_steps, depends, exemptions,
                        pick, promote, render)
 
 _checks = 0
@@ -55,7 +55,7 @@ t = _trail(tmp)
 t.write("fs_read_file", {"path": "a.txt", "token": "sk-1"}, _Result(status="success", data={"content": "x"}))
 rows = list(tmp.glob("trail-*.jsonl"))
 ok(len(rows) == 1, "первая запись создала файл прогона")
-import json  # noqa: E402
+import json
 entry = json.loads(rows[0].read_text(encoding="utf-8").splitlines()[0])
 ok(entry["tool"] == "fs_read_file" and entry["ok"] is True, "инструмент и исход записаны")
 ok(entry["args"]["token"] == "***REDACTED***", "секрет в аргументах маскируется тем же санитизатором")
@@ -94,7 +94,7 @@ ok(True, "второй вызов после отказа НЕ падает: л�
 
 
 print("\n== синтез: запись → объявление ==")
-import yaml as _yaml  # noqa: E402
+import yaml as _yaml
 
 REC = Path(tempfile.mkdtemp(prefix="vpm-rep-")) / "trail-x.jsonl"
 REC.write_text("\n".join([
@@ -292,8 +292,8 @@ ok(not exemptions([{"tool": "excel_read_range", "scenario": "res_refusals", "cod
 
 print("\n== подпись вывода и её разбор по ключу ==")
 sys.path.insert(0, str(ROOT / "scripts" / "guards"))
-import _stamp  # noqa: E402  источник улики: подпись пишется им, читается производителем
-from reproduce import resolve_stamp  # noqa: E402
+import _stamp  # источник улики: подпись пишется им, читается производителем
+from reproduce import resolve_stamp
 
 tree = Path(tempfile.mkdtemp(prefix="vpm-подпись-"))
 # Правило стоит только у роли УЛИКА: отказ и вердикт повторяются своим прогоном, а не
@@ -398,8 +398,8 @@ for _файл in (_дерево / "tests" / ".journal").glob("stamps-*.jsonl"):
 ok([x["key"] for x in _stamp.tails(_дерево)] == [] and _дом.exists(),
    "след дня снесён целиком — дом на месте: ровно это и значит «переживёт чистку»")
 
-import shutil  # noqa: E402  чистка временного дерева нужна только здесь
-import subprocess  # noqa: E402  зона_чиста спрашивает git — дереву нужен настоящий git
+import shutil  # чистка временного дерева нужна только здесь
+import subprocess  # зона_чиста спрашивает git — дереву нужен настоящий git
 
 print("\n== запись остатка НЕ делает зону грязной: дом остатков — журнал, а не код ==")
 _гит = Path(tempfile.mkdtemp(prefix="vpm-чистота-"))
@@ -428,7 +428,7 @@ print("\n== у остатка есть зона, тип и приоритет ==
 # Что проверяем: зона объявляется словарём и выводится из путей команды; тип и приоритет считаются
 # по самой записи. Зачем: показ группируется зона × тип, и «что закрыть первым» обязано быть
 # ответом механизма, а не чтением прозы. Ожидаем: выдуманная зона — отказ, выведенная — помечена.
-import time  # noqa: E402  возраст хвоста — множитель приоритета, считается здесь же
+import time  # возраст хвоста — множитель приоритета, считается здесь же
 
 _з = Path(tempfile.mkdtemp(prefix="vpm-зона-"))
 try:
@@ -601,7 +601,7 @@ ok(_цена["ось 0"] == (0, 1) and _цена["ось 1"] == (1, 0),
    "цена шага считается по обеим формам: шаг, ни разу не сработавший, — кандидат на снос")
 
 print("\n== роспись судьи: состояние улики отличает чистоту от отсутствия источника ==")
-import _verdict  # noqa: E402 — дорога к сторожам уложена выше
+import _verdict  # дорога к сторожам уложена выше
 _чист = _verdict.роспись("судья", 0, True, "есть", "")
 ok(_чист["исход"] == "молчал" and "смотрел" in _чист["следствие"],
    "источник читался, находок нет — это ЧИСТОТА, и она сказана словом")
@@ -636,7 +636,7 @@ except ValueError as _б:
        "состояние вне словаря отвергнуто: свободное слово тут значило бы, что счёт не собрать")
 
 print("\n== производитель урока: из подписи прогона — заготовка с тремя частями ==")
-import lesson_producer as _пр  # noqa: E402 — дорога к сторожам уложена выше
+import lesson_producer as _пр
 
 _шаги, _заготовка = _пр.произвести("нет-ключа", _дер)
 ok(_шаги[0]["исход"] == "молчал" and not _заготовка,
@@ -691,9 +691,9 @@ ok(_свод["поднять запись"][0] >= 2 and _свод["найти р
 
 
 print("\n== долг уроков: повод был, урока нет ==")
-import io as _ио  # noqa: E402 — блок дописан к готовому набору, импорты живут рядом с ним
-import contextlib as _кс  # noqa: E402 — там же
-from types import ModuleType as _Модуль  # noqa: E402 — там же
+import io as _ио  # блок дописан к готовому набору, импорты живут рядом с ним
+import contextlib as _кс
+from types import ModuleType as _Модуль
 
 _дер_ур = Path(tempfile.mkdtemp(prefix="vpm-урок-"))
 (_дер_ур / "tests" / ".journal").mkdir(parents=True)

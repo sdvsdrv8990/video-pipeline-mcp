@@ -30,7 +30,7 @@ try:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import _trace
     _trace.mark(Path(__file__).name)
-except Exception:                              # noqa: BLE001 — след не важнее самой проверки
+except Exception:  # след не важнее самой проверки
     pass
 
 # Корень — от места самого хука (`.claude/hooks/` в репозитории), а не зашит путём одной

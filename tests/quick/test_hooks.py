@@ -120,10 +120,10 @@ def main() -> int:
     # Общий HOME на взгляд и правку: состояние гейта лежит на диске, и свежий дом на каждый
     # вызов стирал бы ровно то, что проверяется.
     дом = tempfile.mkdtemp(prefix="vpm-пошлина-")
-    взгляд = lambda путь, sid: fire("vpm-fact-gate.py", {  # noqa: E731
+    взгляд = lambda путь, sid: fire("vpm-fact-gate.py", {
         "hook_event_name": "PostToolUse", "tool_name": "Bash", "session_id": sid,
         "tool_input": {"command": f"grep -n ToolResult {путь}"}}, home=дом)
-    правка = lambda sid: fire("vpm-fact-gate.py", {  # noqa: E731
+    правка = lambda sid: fire("vpm-fact-gate.py", {
         "hook_event_name": "PreToolUse", "tool_name": "Edit", "session_id": sid,
         "tool_input": {"file_path": цель}}, home=дом)[1]
     взгляд(цель, "looked-own")
@@ -617,7 +617,7 @@ def main() -> int:
     (гнездо / "хук-0.py.json").write_bytes(b"{\xd1")
     try:                                       # мусор не вправе ронять читателя — иначе слепнет всё
         живые = [и for и, з in трасса["след"](гнездо).items() if з]
-    except Exception as беда:                  # noqa: BLE001 — предмет проверки и есть «что угодно»
+    except Exception as беда:  # предмет проверки и есть «что угодно»
         живые = [f"чтение упало: {беда!r}"]
     ok(живые == sorted(имена[1:]) and трасса["рождение"](гнездо),
        "рваная запись уносит только свой файл, а не весь след с рождением")

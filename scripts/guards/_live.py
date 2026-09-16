@@ -53,7 +53,7 @@ def прогон(команда: str, root: Path = ROOT) -> tuple[str, str]:
     try:
         r = subprocess.run(["bash", "-lc", команда], cwd=str(root), capture_output=True,
                            text=True, timeout=120)
-    except (OSError, subprocess.SubprocessError) as e:                     # noqa: BLE001
+    except (OSError, subprocess.SubprocessError) as e:
         return "", f"команда не запустилась: {e}"
     if r.returncode != 0:
         return "", f"команда вернула код {r.returncode}: {(r.stderr or '').strip()[:120]}"

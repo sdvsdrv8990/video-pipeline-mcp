@@ -29,9 +29,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import _comments  # noqa: E402 — импорт после правки sys.path: источник улики лежит рядом
-import _stamp  # noqa: E402 — тот же порядок: роспись шагов живёт рядом со сторожами
-import _verdict                                                            # noqa: E402
+import _comments  # импорт после правки sys.path: источник улики лежит рядом
+import _stamp  # тот же порядок: роспись шагов живёт рядом со сторожами
+import _verdict
 
 from pygments.lexers import get_lexer_for_filename
 from pygments.token import Comment
@@ -366,8 +366,8 @@ def _паспорт_судьи(rel: str, text: str, шапка: str, адрес�
     """
     if Path(rel).parent.as_posix() not in ДОМА_СУДЕЙ:
         return []
-    import _evidence                                        # noqa: PLC0415 — объявление судей
-    import patrol                                           # noqa: PLC0415 — вывод росписи у паспорта
+    import _evidence  # объявление судей
+    import patrol  # вывод росписи у паспорта
     объявление = _evidence.словарь() or {}
     судьи = {**(объявление.get("сторожа") or {}), **(объявление.get("хуки") or {})}
     if Path(rel).name not in судьи:
@@ -439,7 +439,7 @@ def состав_шапки(path: Path | str, text: str, шапка: str, зов
         notes.append(f"{rel}:1 — первая строка не называет НАЗНАЧЕНИЕ через тире "
                      f"(`путь — за что отвечает`): зона файла читается только из кода")
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import _chains                                                # noqa: PLC0415 — разбор цепочек
+    import _chains  # разбор цепочек
     адресаты = set(_chains.зовёт_код(rel, PROJECT))
     if адресаты and not any(_назван(а, низ) for а in адресаты):
         notes.append(f"{rel}:1 — шапка не называет НИ ОДНОГО адресата, хотя файл зовёт "
@@ -663,7 +663,7 @@ def _карта_дерева() -> dict[str, set[str]]:
     замера и правдивое «Зовут: server» читает ложью: `--scan tools`, событие хука, черновик `--как`.
     Строится один раз на замер: поштучно она стоила бы разбора дерева на каждый файл."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import _chains                                                # noqa: PLC0415 — разбор цепочек
+    import _chains
     return _chains.карта_вызовов([_rel(f) for f in _tracked() if f.suffix == ".py" and f.exists()],
                                  PROJECT)
 
@@ -706,7 +706,7 @@ def cmd_bless(причина: str = "") -> int:
     # Мера потолка берётся у ХОЗЯИНА подписи, а не считается здесь: ось сверяет подпись своим
     # мерилом, и вторая мера рядом давала бы «сдвиг без записи» на подписанном сдвиге.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import _stamp                                                  # noqa: PLC0415 — подпись сдвига
+    import _stamp  # подпись сдвига
     было = _stamp.мера_потолка(BASELINE.read_text(encoding="utf-8") if BASELINE.exists() else "")
     found = collect()
     total = sum(len(n) for n in found.values())
@@ -869,7 +869,7 @@ def main() -> int:
         sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".claude" / "hooks"))
         import _trace
         _trace.mark("comment_guard.py")
-    except Exception:                          # noqa: BLE001 — след не важнее самой работы
+    except Exception:  # след не важнее самой работы
         pass
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     mode = ap.add_mutually_exclusive_group()

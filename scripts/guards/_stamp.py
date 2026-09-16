@@ -48,7 +48,7 @@ def _след(что: str) -> None:
         sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
         import _trace
         _trace.mark(что)
-    except Exception:                          # noqa: BLE001 — след не важнее самой записи
+    except Exception:  # след не важнее самой записи
         pass
 ROLES = ("УЛИКА", "ОТКАЗ", "ВЕРДИКТ", "ОСТАТОК", "ОТЛОЖЕН", "В РАБОТЕ", "РЕШЕНИЕ",
          "ЗАМЫСЕЛ")

@@ -212,7 +212,7 @@ ok("правило без числа обвинением не становит�
    not any("число о дереве" in з for з in _правило), _правило)
 
 # ── Состав шапки: судится радиус файла, а не длина текста (владелец 2026-09-13) ───────────────
-import tempfile as _вр  # noqa: E402 — блок дописан к готовому набору, импорты живут рядом с ним
+import tempfile as _вр  # блок дописан к готовому набору, импорты живут рядом с ним
 
 _дерево_состава = Path(_вр.mkdtemp(prefix="vpm-состав-"))
 (_дерево_состава / "core").mkdir(parents=True)
@@ -262,12 +262,12 @@ finally:
     G.PROJECT = _прежний_корень
 
 # ── Дом исключений: объявляет владелец, и незаконная строка обязана быть ГРОМКОЙ ──────────────
-import datetime as _dt  # noqa: E402 — блок дописан к готовому набору, импорты живут рядом с ним
-import json as _json  # noqa: E402 — там же
-import tempfile as _tmp  # noqa: E402 — там же
+import datetime as _dt
+import json as _json
+import tempfile as _tmp
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "guards"))
-import _comments as C  # noqa: E402 — импорт после правки sys.path: источник улики лежит в дереве сторожей
+import _comments as C  # импорт после правки sys.path: источник улики лежит в дереве сторожей
 
 
 def _дерево(строки: str, *, ключ: str | None = None, файл: str = "core/жив.py"):
@@ -323,8 +323,8 @@ ok("дома нет — исключений не объявлено, и это 
    C.зоны(Path(_tmp.mkdtemp(prefix="vpm-пусто-"))) == [], "пустое дерево")
 
 # ── ЧИТАТЕЛЬ дома: сторож дерева обязан снимать замечание с долга и НАЗЫВАТЬ зону ─────────────
-import contextlib as _ctx                  # noqa: E402 — блок дописан к готовому набору
-import io as _io  # noqa: E402 — там же
+import contextlib as _ctx  # блок дописан к готовому набору
+import io as _io
 
 
 _роспись = []

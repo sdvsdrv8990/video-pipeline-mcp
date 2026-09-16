@@ -48,7 +48,7 @@ def размер(url: str) -> int:
         запрос = urllib.request.Request(url, method="HEAD", headers=ЗАГОЛОВКИ)
         with urllib.request.urlopen(запрос, timeout=ТАЙМАУТ_СЕТИ) as ответ:
             return int(ответ.headers.get("Content-Length") or 0)
-    except Exception:                    # noqa: BLE001 — сеть, код ответа, редирект: исход один
+    except Exception:  # сеть, код ответа, редирект: исход один
         return 0
 
 

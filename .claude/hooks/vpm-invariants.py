@@ -26,7 +26,7 @@ try:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import _trace
     _trace.mark(Path(__file__).name)
-except Exception:                              # noqa: BLE001 — след не важнее самой проверки
+except Exception:  # след не важнее самой проверки
     pass
 
 # Корень — от места самого хука (`.claude/hooks/` в репозитории), а не зашит путём одной
@@ -145,7 +145,7 @@ def acceptance(paths: list[str], scenarios: Path = SCENARIOS) -> list[str]:
 
         import _evidence
         объявлено = yaml.safe_load(scenarios.read_text(encoding="utf-8")) or {}
-    except Exception:                          # noqa: BLE001 — сломанное объявление судит ось
+    except Exception:  # сломанное объявление судит ось
         return []
     роды = set(_evidence.rods_of(paths))
     имена = [s["имя"] for s in (объявлено.get("сценарии") or [])
