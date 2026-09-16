@@ -1,11 +1,11 @@
 ---
 name: scenario-sets
-description: Use when designing or reviewing SCENARIO SETS in the video_pipeline_mcp project — positive, negative and destructive sets built from ONE-CONDITION scenarios, each with its own unique set of conditions (its radius is the step plus its `with`), its own cost and a predictable consequence. Fires when declaring a cycle intent (what_if) and anchoring its expectations by scenario, when a change needs proof by behaviour rather than by a mutation, when the harness rejects a declaration, or when a set collapses into one scenario with many checks. Teaches how to choose conditions that can change the result, how to prove each condition directly before the slow live run, and how a guard verdict is expressed (exit code and console, never a server reaction code). Designs the SET, not the test itself — pytest suites, fixtures, ToolResult contract assertions and mutation registries belong to test-master; finding why a set turned red is systematic-debugging.
+description: Use when designing or reviewing SCENARIO SETS in the video_pipeline_mcp project — positive, negative and destructive sets built from ONE-CONDITION scenarios, each with its own unique set of conditions (its radius is the step plus its `with`), its own cost and a predictable consequence. Fires when declaring a cycle intent (what_if) and anchoring its expectations by scenario, when a change needs proof by behaviour rather than by a mutation, when the harness rejects a declaration, or when a set collapses into one scenario with many checks. Teaches how to derive the maximal set of conditions from the radius of the code under change instead of copying a registered set, how to read each scenario kind off what its condition does to the input, how to state a hypothesis (condition then consequence then mechanism) before the run, and how to build the set twice — once to find the defect, once to prove the fix bore no new one. Also how to prove each condition directly before the slow live run, and how a guard verdict is expressed (exit code and console, never a server reaction code). Designs the SET, not the test itself — pytest suites, fixtures, ToolResult contract assertions and mutation registries belong to test-master; finding why a set turned red is systematic-debugging.
 license: MIT
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 metadata:
   author: video_pipeline_mcp (заказ владельца 2026-09-15)
-  version: "1.0.0-vpm"
+  version: "1.1.0-vpm"
   domain: quality
   project: video_pipeline_mcp
   triggers: набор сценариев, условие, радиус сценария, положительный, отрицательный, разрушительный, what_if intent, закрепление сценарием, scenario set, destructive scenario
@@ -75,7 +75,7 @@ metadata:
 1. **Замысел до кода:** `_stamp.py --kind проба --role ЗАМЫСЕЛ --what … --expected …` на ЧИСТОЙ зоне.
    В прогнозе — какие существующие проверки сменят цвет и почему.
 2. **Условия списком:** для каждого — вход, следствие, род, почему цена ненулевая. Откуда брать
-   условия и как предсказать беду до сценария — §7.
+   условия, как вывести их максимум по радиусу и род по самому условию — §7 и §8.
 3. **Прямой прогон каждого условия ДО набора.** Вызови шаг и команду напрямую и сравни класс с
    ожидаемым. Живой прогон долгий; расхождение, найденное здесь, стоит секунды.
 4. **Объявление** в файле своей зоны (`tests/CATALOG.md`); латиница в `as:` и в ссылках `${…}`.
@@ -147,6 +147,58 @@ metadata:
 
 Окружение, которое харнесс выразить не умеет (событие хука со stdin), доказывается прямым прогоном и
 остаётся подписанным остатком, а не молчанием.
+
+## 8. Набор ВЫВОДИТСЯ: максимум условий по радиусу, гипотеза до прогона, два прохода
+
+Зарегистрированный набор — образец ФОРМЫ, а не меню. Похожие сценарии расходятся окружением и
+составом условий, поэтому копия чужого набора закрывает чужой радиус. Свой — выводят.
+
+**Шаг 1. Максимум, который на этом месте вообще возможен.** Радиус спрашивают у карты:
+
+```bash
+.venv/bin/python scripts/guards/blast_radius.py --цепочка <файл>                # узлы файла · рода покрытия · дыры
+.venv/bin/python scripts/guards/blast_radius.py --цепочка <файл> --узел <узел>  # три набора узла и команда на каждый
+.venv/bin/python scripts/guards/blast_radius.py --роды                          # каких родов зона не имеет вовсе
+.venv/bin/python scripts/guards/blast_radius.py --класс <источник>              # кто уже стоит на этом источнике
+```
+
+«НАБОРА НЕТ — эта сторона узла не проверялась ни разу» и зона без единого разрушительного — это
+расстояние до максимума, названное машиной, а не на глаз. Покрытие снимается по СЕРВЕРНОМУ дереву:
+сторож, хук и скил в карту не попадают, и для них максимум выводится осями §7 и прямым прогоном —
+ответ «файла нет в карте радиуса» здесь означает границу замера, а не чистоту.
+
+Максимум набора — решётка: оси §7 (форма входа · состояние объявления · окружение · носитель
+текста) × значения, которые ось принимает ЗДЕСЬ. Клетка — один сценарий. Клетка, которую нечем
+отличить от соседней, не экономия, а необъявленная слепая зона: её заполняют либо называют остатком.
+
+**Шаг 2. Род выводится из того, что условие делает со входом**, а не выбирается по вкусу:
+
+| Условие делает со входом | Род | Что этим проверяется |
+|---|---|---|
+| оставляет законную форму, меняя лишь её вид | положительный | сущность узнаётся в КАЖДОЙ своей форме |
+| убирает, гасит или подменяет то, что механизм обязан поймать | отрицательный | молчание отличимо от правды и краснеет |
+| лишает вход определимости: род действия, момент, границу | разрушительный | неопределимое не принимается за законное |
+
+Условие с одинаковым исходом во всех трёх строках рода не имеет — это декорация (§1).
+
+**Шаг 3. Гипотеза пишется ДО прогона** — по одной на условие и одна на набор, в форме
+`условие → следствие → МЕХАНИЗМ, по которому следствие наступает`. Гипотеза без механизма
+(«наверное, сломается») сбудется по любой причине и закрепит чужую беду как свою. Ценность несёт
+сбывшееся ОТРИЦАТЕЛЬНОЕ предсказание; положительное — лишь проба ключа. Ожидание вида «появится
+новая проверка» предсказанием не является: это пересказ собственной правки, и ровно его считает
+ось тавтологии цикла (находка F241). Счёт «предсказаний из предсказанных» и скрытые риски читают
+у подписи цикла (`what_if.py --intent`), а не на глаз.
+
+**Шаг 4. Набор строят дважды, и это РАЗНЫЕ наборы.**
+
+1. **Поисковый** — до правки, по всей решётке и по всем трём родам; его задача покраснеть. Набор,
+   собранный после правки, доказательства не даёт: он подогнан под лечение и сбудется всегда.
+2. **Доказательный** — тот же набор после правки ПЛЮС колонка «изменилось незаявленное». Зелень без
+   этой колонки говорит лишь, что исходное условие перестало срабатывать, а не что механизм стал
+   правильным: беда обязана уйти и новой не родиться.
+
+Граница между ними — проба различимости (§7.5): сними лечение и прогони набор снова. Не покраснел —
+доказательным он не был, и закрывать им находку нельзя.
 
 ## Граница
 
