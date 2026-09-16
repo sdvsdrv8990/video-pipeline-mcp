@@ -177,6 +177,21 @@ def main() -> int:
         raised = True
     ok(raised, "ОТСУТСТВИЕ `expect` по-прежнему отказ: промолчать про поведение нельзя")
 
+    общее = Path(tempfile.mkdtemp()) / "общее.yaml"
+    общее.write_text("intent: п\nwhere: п\nwhy: п\nexpect: []\nузлы: [core/a.py::f]\nдыры: []\n",
+                     encoding="utf-8")
+    ok(sorted(what_if.load_intent(общее)) == ["expect", "intent", "where", "why", "дыры", "узлы"],
+       "объявление ОДНО на обе ступени: радиус в `узлы` не отвергается циклом")
+    чужое = Path(tempfile.mkdtemp()) / "чужое.yaml"
+    чужое.write_text("intent: п\nwhere: п\nwhy: п\nexpect: []\nопечатка: 1\n", encoding="utf-8")
+    try:
+        with redirect_stdout(io.StringIO()):
+            what_if.load_intent(чужое)
+        отверг = False
+    except SystemExit:
+        отверг = True
+    ok(отверг, "чужой ключ по-прежнему отказ: расширение словаря не сняло сам словарь")
+
     print("§7 одна метка на несколько проверок не съедает соседей")
     tree = Path(tempfile.mkdtemp())
     (tree / "tests" / "quick").mkdir(parents=True)
