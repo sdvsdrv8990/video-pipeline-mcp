@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -115,6 +116,19 @@ ENV_PATH = BASE_PATH / ENV_FILE
 MCP_AUTH_DIGEST = ""
 # Явная и громкая калитка для локальной разработки и тестов (по умолчанию закрыта).
 ALLOW_NO_AUTH = os.environ.get("MCP_ALLOW_NO_AUTH", "") == "1"
+
+
+def root_refusal(euid: int, env: Mapping[str, str]) -> str:
+    """Причина отказа стартовать от root; пусто — стартуем.
+
+    Процесс root превращает любую дыру в инструменте — обход containment, подменённый бинарник,
+    внушённый агенту вызов — в захват всей машины. `MCP_ALLOW_ROOT=1` — только для одноразового
+    контейнера разработки, где root и есть единственный пользователь.
+    """
+    if euid != 0 or env.get("MCP_ALLOW_ROOT", "") == "1":
+        return ""
+    return ("сервер запущен от root. Запусти его от обычного пользователя; одноразовый контейнер "
+            "разработки — MCP_ALLOW_ROOT=1")
 
 
 # ═══ ХЕЛПЕРЫ ═══
@@ -589,6 +603,11 @@ def main():
     parser.add_argument("--rotate-key", action="store_true", help="Перевыпустить ключ доступа и выйти (S1)")
     parser.add_argument("--re-adopt", action="store_true", help="Присвоить рабочую область этому серверу после переноса (S9)")
     args = parser.parse_args()
+
+    refusal = root_refusal(os.geteuid() if hasattr(os, "geteuid") else 1, os.environ)
+    if refusal:
+        print(f"ОТКАЗ СТАРТА: {refusal}", file=sys.stderr)
+        raise SystemExit(2)
 
     if args.re_adopt:
         # Явное подтверждение владельца, что перенос/восстановление — его действие.

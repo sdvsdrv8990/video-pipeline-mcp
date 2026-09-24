@@ -104,3 +104,37 @@
     - call: fs_create_project_structure
       with: {template: нет-такого-шаблона}
       expect: {ok: false, code: TEMPLATE_NOT_FOUND, console_absent: Traceback}
+
+- scenario: fs_delete_is_recoverable_by_owner
+  why: >
+    подтверждение `force` решает тот же агент, которого могла уговорить инъекция в файле или
+    подменённый ответ, — поэтому защита от потери данных живёт на сервере: удалённое уходит в
+    корзину вне рабочей области, куда инструменты не дотягиваются
+  given:
+    files:
+      notes/ценное.txt: "ХВОСТ-МАРКЕР-УДАЛЁННОГО"
+  when:
+    - call: fs_delete
+      with: {path: notes/ценное.txt, force: true}
+      as: gone
+      expect: {ok: true, facts: [FileDeleted], data: {recoverable: true}}
+    - call: fs_read_file
+      with: {path: notes/ценное.txt}
+      expect: {ok: false, code: FILE_NOT_FOUND}
+    - python: trashed
+      with: {batch: "${gone.trash_id}", path: notes/ценное.txt}
+      expect: {ok: true, data_contains: {content: ХВОСТ-МАРКЕР-УДАЛЁННОГО}}
+
+- scenario: fs_overwrite_keeps_previous_version
+  why: полная перезапись стирает прежнее содержимое так же необратимо, как удаление
+  given:
+    files:
+      notes/черновик.txt: "ПРЕЖНЯЯ-ВЕРСИЯ"
+  when:
+    - call: fs_write_file
+      with: {path: notes/черновик.txt, content: "новая версия"}
+      as: rewritten
+      expect: {ok: true, facts: [FileWritten]}
+    - python: trashed
+      with: {batch: "${rewritten.previous_version}", path: notes/черновик.txt}
+      expect: {ok: true, data_contains: {content: ПРЕЖНЯЯ-ВЕРСИЯ}}

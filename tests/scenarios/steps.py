@@ -150,8 +150,17 @@ def hold_connections(srv, count: int, seconds: float = 2.5) -> dict:
     return {"ok": True, "data": {"держали": len(held)}}
 
 
+def trashed(srv, batch: str, path: str) -> dict:
+    """Что лежит в корзине партии: владелец восстанавливает отсюда, инструменты сюда не видят."""
+    from core.trash import trash_root
+    target = trash_root(Path(srv.workspace)) / batch / path
+    if not batch or not target.is_file():
+        return {"ok": False, "code": "FILE_NOT_FOUND", "message": f"в корзине нет: {batch}/{path}"}
+    return {"ok": True, "data": {"content": target.read_text(encoding="utf-8")}}
+
+
 STEPS = {"remove_path": remove_path, "branch_state": branch_state,
          "workspace_path": workspace_path,
          "busy_server_still_answers": busy_server_still_answers,
          "trail_says": trail_says, "speak_garbage": speak_garbage,
-         "hold_connections": hold_connections}
+         "hold_connections": hold_connections, "trashed": trashed}

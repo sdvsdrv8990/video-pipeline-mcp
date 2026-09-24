@@ -24,6 +24,9 @@ from urllib.parse import urlparse
 
 from core.providers.resolver import ProviderError
 
+# Пользователь без прав на хосте: им становится процесс раннера, когда сервер сам запущен от root.
+NOBODY = 65534
+
 TOKEN_ENV = "MCP_RUNNER_TOKEN"
 
 
@@ -230,7 +233,14 @@ class RunnerSupervisor:
                    "-p", f"{parsed.hostname}:{parsed.port}:{parsed.port}",
                    # Имя переменной без значения: docker возьмёт его из нашего окружения. Написать
                    # `-e ИМЯ=токен` значило бы показать токен в выводе `ps` любому процессу.
-                   "-e", TOKEN_ENV]
+                   "-e", TOKEN_ENV,
+                   # Внутри — не root, даже если сервер поднят от root: файлы в томах получают
+                   # владельца хоста, а побег из контейнера не даёт root на машине.
+                   "--user", self._container_user(),
+                   "--cap-drop=ALL", "--security-opt=no-new-privileges",
+                   # Образ неизменяем: писать можно только в тома и во временную память,
+                   # туда же смотрит HOME — кешам библиотек нужен записываемый дом.
+                   "--read-only", "--tmpfs=/tmp", "-e", "HOME=/tmp"]
         for device in docker.get("devices") or []:
             command += ["--device", str(device)]
         for gid in self._device_gids(docker.get("devices") or []):
@@ -239,6 +249,12 @@ class RunnerSupervisor:
             source = workspace if str(host_path) == "workspace" else self.root / str(host_path)
             command += ["-v", f"{Path(source).resolve()}:{inner}"]
         return command + [str(docker.get("image") or "video-pipeline-runner")]
+
+    @staticmethod
+    def _container_user() -> str:
+        uid = os.getuid() if hasattr(os, "getuid") else 0
+        gid = os.getgid() if hasattr(os, "getgid") else 0
+        return f"{uid}:{gid}" if uid else f"{NOBODY}:{NOBODY}"
 
     @staticmethod
     def _device_gids(devices) -> list[str]:

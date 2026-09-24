@@ -10,7 +10,6 @@ tools/filesystem — группа инструментов файловой си
 """
 
 import re
-import shutil
 from pathlib import Path
 
 import yaml
@@ -20,6 +19,7 @@ from core.engine import Engine
 from core.ids import LinkError
 from core.paths import is_secret_path
 from core.search.fs_searcher import FsSearcher, FsSearchError, FsSearchTask
+from core.trash import discard, keep_copy
 from tools._context import ANNOTATIONS_MODIFY, ANNOTATIONS_READONLY, ToolContext
 
 
@@ -157,10 +157,13 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             return denied
         target.parent.mkdir(parents=True, exist_ok=True)
         old_size = target.stat().st_size if target.exists() else 0
+        previous = keep_copy(target, ctx.workspace_path) if target.is_file() else ""
         target.write_text(content, encoding="utf-8")
         res = _created_result(path, len(content), assign_id, "FileWritten")
         if res.status == "success":
             res.data["old_size"] = old_size
+            if previous:
+                res.data["previous_version"] = previous
         return res
 
     async def fs_move(source: str, destination: str) -> "ToolResult":
@@ -237,14 +240,11 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             n = len(list(target.iterdir())) if target.is_dir() else 1
             return ctx.err("CONFIRM_REQUIRED",
                            f"Удаление требует подтверждения: {kind} {path} ({n} объект(ов))")
-        if target.is_dir():
-            shutil.rmtree(target)
-        else:
-            target.unlink()
+        batch = discard(target, ctx.workspace_path)
         # Реестр не должен переживать диск: снятые записи возвращаются клиенту явно.
         dropped = ctx.link_registry.forget_subtree(path)
         return ToolResult(status="success",
-                          data={"deleted": path,
+                          data={"deleted": path, "recoverable": True, "trash_id": batch,
                                 "entities_dropped": [{"id": d["id"], "type": d["type"], "path": d["path"]}
                                                      for d in dropped]},
                           facts=[Fact(type="FileDeleted", data={"path": path})])
