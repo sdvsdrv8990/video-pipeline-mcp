@@ -1,6 +1,6 @@
 ---
 name: security-reviewer
-description: Use when auditing security of the video_pipeline_mcp server — BOTH directions. Inbound (attacker→server): core/firewall rules and their wiring, path-traversal / injection / cache / bot-army / rate-limit-bypass threats from docs/roadmap/06_threat_catalog.md, cloudflared tunnel, secrets, fail-open paths. Outbound (compromised/malicious server→its client, Claude AI Web + the user): indirect prompt injection via tool output, tool-description poisoning, rug-pull, cross-tool shadowing, exfiltration, and weaponized destructive tools (fs_delete/write/move) — the lethal trifecta on the client's machine. Covers the MCP tool attack surface (fs_*, table_*, media_*, search_*). Produces empirical, proof-backed findings in the project's D# defect format. Python-first (bandit/semgrep/gitleaks); once the React studio exists it is a THIRD party to both directions — our own markup revives XSS, and untrusted workspace content stops being model context and becomes markup.
+description: Use when auditing security of the video_pipeline_mcp server — BOTH directions. Inbound (attacker→server): core/firewall rules and their wiring, path-traversal / injection / cache / bot-army / rate-limit-bypass threats from docs/roadmap/06_threat_catalog.md, cloudflared tunnel, secrets, fail-open paths. Outbound (malicious server→its client, Claude AI Web + the user): indirect prompt injection via tool output, tool-description poisoning, rug-pull, cross-tool shadowing, exfiltration, and weaponized destructive tools (fs_delete/write/move) — the lethal trifecta on the client's machine. Covers the MCP tool attack surface. Findings are proof-backed, in D# format. Python-first (bandit/semgrep/gitleaks); once the React studio exists it is a THIRD party to both directions — our own markup revives XSS, and untrusted workspace content becomes markup; browser hardening of the studio is here, its acceptance per domain is studio-acceptance, its browser norms are studio-web-standards.
 license: MIT
 allowed-tools: Read, Grep, Glob, Bash
 metadata:
@@ -107,7 +107,10 @@ Security-аналитик **этого** проекта: аудит `core/firewa
   добавлением `unsafe-inline`. Заголовки ответа сервер уже умеет ставить (`F109`): политика
   доезжает тем же путём, отдельного механизма не нужно.
 - **Цепочка поставок разворачивается на порядок.** npm — это `dependency-hygiene`; счёт
-  транзитивных пакетов там другой, чем в pip, а состав node-джоб гейта пока не решён (`20` §4).
+  транзитивных пакетов там другой, чем в pip; node-джобы гейта — `studio` и `studio-app` в `ci.yml`.
+- **Своя страница целиком** — ссылки из данных, внешние получатели, секрет в собранном бандле,
+  хранилище, заголовки `index.html`, сервер разработки, CSV-выгрузка, фреймы:
+  `references/studio-page.md`. Нормы платформы (скорость, экраны, доступность) — `studio-web-standards`.
 
 ---
 
@@ -170,6 +173,7 @@ Security-аналитик **этого** проекта: аудит `core/firewa
 | Пен-тест техники | `references/penetration-testing.md` | активная проверка/PoC |
 | **Server→client угрозы** | `references/malicious-server-threats.md` | outbound-аудит: T1–T7, lethal trifecta, tool-poisoning, rug-pull, weaponized деструктив |
 | **Браузерный класс** | `references/browser-threats.md` | транспорт: CORS/preflight, `Origin`, CSRF простым запросом, SSE, сессия, `credentials`, заголовки ответа — с пруфами и датами |
+| **Своя страница студии** | `references/studio-page.md` | разметка из данных, адреса, внешние получатели, секрет в бандле, хранилище, заголовки страницы, сервер разработки, выгрузки |
 
 Формат отчёта — **не** generic-шаблон, а `docs/roadmap/02_findings.md` (жанр D#). Угрозы проекта — `docs/roadmap/06_threat_catalog.md`.
 

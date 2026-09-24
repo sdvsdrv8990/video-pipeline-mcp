@@ -1,6 +1,6 @@
 ---
 name: test-master
-description: Use when writing or reviewing tests for the video_pipeline_mcp server — pytest unit/integration tests, adversarial simulation tests (virus_injection, cache_injection, cache_overflow, bot_army) that exercise core/firewall, regression tests that reproduce fixed D# defects, coverage gaps against docs/roadmap/03_testing_plan.md, and asserting ToolResult/ErrorDetail contracts + server_reactions codes. Also capability-aware & forward-looking test design: build the test matrix from the live tools/list including UNDEVELOPED capabilities — honest-stub contracts (NotImplementedError must fail loudly, not fake success), xfail spec-tests for planned tools (Ф3/Ф4/core-search), property-based + metamorphic tests across tool families, and adversarial tests where the server's own output is the attack (outbound prompt-injection). Python + pytest on the server; the same conventions carry into the React studio's tests once it exists — the four studio invariants (size/font past a token, data-component on every primitive, exactly one write per gesture on release, stale-row refusal), and the rule that a snapshot is not an assertion.
+description: Use when writing or reviewing tests for the video_pipeline_mcp server — pytest unit/integration tests, adversarial simulation tests (virus_injection, cache_injection, cache_overflow, bot_army) that exercise core/firewall, regression tests that reproduce fixed D# defects, coverage gaps against docs/roadmap/03_testing_plan.md, and asserting ToolResult/ErrorDetail contracts + server_reactions codes. Also capability-aware & forward-looking test design: build the test matrix from the live tools/list including UNDEVELOPED capabilities — honest-stub contracts (NotImplementedError must fail loudly, not fake success), xfail spec-tests for planned tools (Ф3/Ф4/core-search), property-based + metamorphic tests across tool families, and adversarial tests where the server's own output is the attack (outbound prompt-injection). Python + pytest on the server; in the React studio a condition of studio-acceptance becomes judged only through a test here, and a snapshot is not an assertion. Tools under test are built by mcp-developer.
 license: MIT
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 metadata:
@@ -187,15 +187,16 @@ metadata:
 
 ## Студия (React/TS): что здесь вообще подлежит проверке
 
-Фронтенд-кода в проекте пока нет ни одного файла — раздел вступает в силу с первого `.tsx`.
+Студия живёт в `studio/app`; условия её приёмки по доменам — скил `studio-acceptance`, а здесь —
+каким тестом условие переходит из «нет» в «судится».
 Конвенции выше НЕ меняются: тест — сценарий реального поведения, ассерт — на контракт, docstring
 терсовый, эталон вычисляется, а не вписывается. Меняется список того, что обязано быть проверено.
 
 **Четыре инварианта студии, которые обязаны стать тестами** — правило проекта «инвариант вешается
 тестом, а не дисциплиной» (`20` §4а):
 
-1. **Размер/шрифт мимо токена валит проверку.** Это временная замена храповику для UI: сторож
-   `.tsx` не заведён (условие — первый компонент), значит инвариант держит тест.
+1. **Размер/шрифт мимо токена валит проверку.** Судит сторож `acceptance_studio.py` (П2); тест
+   нужен там, где сторож слеп (классы переходов — остаток `7fec`).
 2. **Каждый примитив отдаёт стабильный `data-component`** (`20` §4б) — иначе на вопрос «какой
    компонент это рисует» не ответить ни по DOM, ни по скриншоту.
 3. **Жест даёт РОВНО ОДИН вызов записи, и по отпусканию** (`20` §3). Тест СЧИТАЕТ вызовы: поток
@@ -215,9 +216,9 @@ metadata:
 - **зелено, потому что ничего не нашлось** — UI-версия пустого ассерта: элемент не найден, ассерт
   по пустому множеству проходит всегда. Сначала распечатай, что реально в DOM, потом ассертируй.
 
-Раннер и состав node-джоб гейта не решены (`20` §4). Пока их нет, «гейт зелёный» означает шесть
-джоб `ci.yml` по Python, и ни одна из них про студию не знает: говорить «проверено» про UI на этом
-основании нельзя.
+Node-джобы гейта — `studio` (эмуляция: `tsc`, `eslint`, геометрия в Chromium) и `studio-app`
+(`tsc`, `eslint`, сборка). Поведения студии (жест, отказ, домен) не судит ни одна из них:
+«гейт зелёный» про UI значит «типы, линт и сборка», а не «экран работает».
 
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: code-quality
-description: Use when reviewing or improving CODE QUALITY of the video_pipeline_mcp server — adherence to the declarative architecture (config/*.yaml declarations → core/ engines → ToolResult/ErrorDetail contract → server_reactions), library-first discipline (take the mechanism from the installed library, keep only policy in our code — fewer lines, not more), simplification / altitude cleanups, contract-parity gaps (internal ToolResult richer than MCP CallToolResult, D22/D30), dead code and dead inject-params (D28), honest-stub discipline (G16 — unfinished must SHOUT), stringly-typed drift → Literal/registry (G15), Bounded-Context placement, and the modest efficiency this I/O-bound server actually needs. Quality only — for correctness bugs/security use security-reviewer, for tests use test-master, for building new tools use mcp-developer, for hardcoded values/logic specifically use anti-hardcode. Python + Pydantic v2 on the server; the SAME axes re-read for React/TypeScript in the studio (fat component, props contract, dead props, variant strings, five copies of one card, generated markup bloat).
+description: Use when reviewing or improving CODE QUALITY of the video_pipeline_mcp server — adherence to the declarative architecture (config/*.yaml declarations → core/ engines → ToolResult/ErrorDetail contract → server_reactions), library-first discipline (take the mechanism from the installed library, keep only policy in our code — fewer lines, not more), simplification / altitude cleanups, contract-parity gaps (internal ToolResult richer than MCP CallToolResult, D22/D30), dead code and dead inject-params (D28), honest-stub discipline (G16 — unfinished must SHOUT), stringly-typed drift → Literal/registry (G15), Bounded-Context placement, and the modest efficiency this I/O-bound server actually needs. Quality only — for correctness bugs/security use security-reviewer, for tests use test-master, for building new tools use mcp-developer, for hardcoded values/logic specifically use anti-hardcode. Python + Pydantic v2 on the server; the SAME axes re-read for the React studio (fat component, props contract, dead props, variant strings, five copies of one card); browser norms of the studio are studio-web-standards.
 license: MIT
 allowed-tools: Read, Grep, Glob, Edit, Bash
 metadata:
@@ -242,7 +242,7 @@ metadata:
 
 ## Те же оси в React (студия) — не новый список, а их прочтение
 
-Фронтенд-кода в проекте пока нет ни одного файла: раздел вступает в силу с первого `.tsx`.
+Студия живёт в `studio/app`; приёмку правки в ней ведёт `studio-acceptance`.
 Оси НЕ удваиваются — меняется только то, на что каждая показывает.
 
 | Ось | Как та же ось читается в студии |
@@ -251,11 +251,11 @@ metadata:
 | 1a. Механизм библиотечный | не писать свой стор/роутер/фокус-ловушку/виртуальный список поверх готового; проверка на выходе та же — строк стало МЕНЬШЕ. Реактовская ловушка оси: свой `useEffect` там, где механизм уже есть (`no-unnecessary-effects` — дерево решений ДО написания эффекта) |
 | 2. Контракт на выходе | контракт компонента — его `props`; `any`/безымянный объект здесь то же, что сырой текст вместо `ToolResult`. И parity-gap не исчезает, а переезжает: отказ обязан доехать до экрана кодом реакции и `recovery`, а не строкой «что-то пошло не так» |
 | 3. Честность незавершённого | нереализованный экран обязан КРИЧАТЬ. Пустой список вместо «данных ещё нет» и заглушка, нарисованная как рабочая кнопка, — тот же doc-lie (D3/D24) |
-| 4. Мёртвое | неиспользуемые `props`, экспорт без импортёра, компонент, который нигде не отрисован. Ищет линтер, а не глаза — аналог разведочного прогона `ruff`: `tsc --noEmit` + `eslint` (неиспользуемые переменные и пропсы). Состав node-джоб гейта не решён (`20` §4), поэтому пока это разведка, а не гейт |
+| 4. Мёртвое | неиспользуемые `props`, экспорт без импортёра, компонент, который нигде не отрисован. Ищет линтер, а не глаза — аналог разведочного прогона `ruff`: `tsc --noEmit` + `eslint` (неиспользуемые переменные и пропсы). Оба стоят в джобе `studio-app` гейта |
 | 5. Stringly-typed drift | `variant="prim"` строкой вместо union-типа — тот же `G15`; варианты примитива объявляются один раз и типом |
 | 6. Bounded Context | экран продакшена не лезет во внутренности редактора; общее уезжает в примитив, а не копируется вбок |
 | 7. Простота / дубли | пять карточек одного назначения — это `F99`/`F100` в UI: пять источников одной правды, и одна всегда отстаёт (`20` §4а) |
-| 7a. Process-нарратив и ИИ-мусор | в `.tsx` он приходит ДВУМЯ путями: те же координаты задачи и эссе в комментариях — **и вода в РАЗМЕТКЕ** (обёртка ради обёртки, класс, не меняющий ничего, пропс «на будущее»). Сторож `.tsx` не покрывает (условие — первый компонент, `20` §4), значит ловит ревью. Штампы визуального стиля — не сюда, это `frontend-design` |
+| 7a. Process-нарратив и ИИ-мусор | в `.tsx` он приходит ДВУМЯ путями: те же координаты задачи и эссе в комментариях — **и вода в РАЗМЕТКЕ** (обёртка ради обёртки, класс, не меняющий ничего, пропс «на будущее»). Комментарии в `.tsx` судит `comment_guard`, воду в разметке — только ревью. Штампы визуального стиля — не сюда, это `frontend-design` |
 | 8. Эффективность | тот же принцип «в меру проекта»: мемоизировать всё подряд не надо. Настоящая цель ровно одна — жест не шлёт правку на каждое движение мыши, запись идёт по отпусканию (`20` §3) |
 
 ---
