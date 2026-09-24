@@ -173,6 +173,7 @@ Security-аналитик **этого** проекта: аудит `core/firewa
 | Пен-тест техники | `references/penetration-testing.md` | активная проверка/PoC |
 | **Server→client угрозы** | `references/malicious-server-threats.md` | outbound-аудит: T1–T7, lethal trifecta, tool-poisoning, rug-pull, weaponized деструктив |
 | **Браузерный класс** | `references/browser-threats.md` | транспорт: CORS/preflight, `Origin`, CSRF простым запросом, SSE, сессия, `credentials`, заголовки ответа — с пруфами и датами |
+| **Методы аудита** | `references/audit-methods.md` | подтвердить находку путём «источник → сток», найти её варианты, опасные умолчания, ревью диффа по риску, CI как поверхность атаки, сверка с OWASP LLM Top 10 |
 | **Своя страница студии** | `references/studio-page.md` | разметка из данных, адреса, внешние получатели, секрет в бандле, хранилище, заголовки страницы, сервер разработки, выгрузки |
 
 Формат отчёта — **не** generic-шаблон, а `docs/roadmap/02_findings.md` (жанр D#). Угрозы проекта — `docs/roadmap/06_threat_catalog.md`.
