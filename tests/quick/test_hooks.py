@@ -271,6 +271,18 @@ def main() -> int:
     ok("не знает сценариев" in gate["map_untrustworthy"](["server.py"], {"server.py": []}),
        "карта без сегодняшних сценариев недостоверна раньше и независимо от разговора про файлы")
 
+    print("§8б сторожей гейт зовёт интерпретатором проекта")
+    _py = gate.get("project_python")
+    _голое = Path(tempfile.mkdtemp(prefix="vpm-без-venv-"))
+    _с_venv = Path(tempfile.mkdtemp(prefix="vpm-с-venv-"))
+    (_с_venv / ".venv" / "bin").mkdir(parents=True)
+    (_с_venv / ".venv" / "bin" / "python").write_text("", encoding="utf-8")
+    ok(_py is not None and _py(_с_venv) == str(_с_venv / ".venv" / "bin" / "python"),
+       "есть окружение проекта — сторож идёт им: у системного python нет зависимостей сторожей, и "
+       "падение импорта с кодом 1 читалось как вердикт «молчание выросло»")
+    ok(_py is not None and _py(_голое) == sys.executable,
+       "окружения нет — остаётся интерпретатор самого хука, а не отказ")
+
     print("§9 подсказка зоны: рост ВНУТРИ набора")
     check = "ok(1, 'новая проверка')\n"
     _, out, _ = fire("vpm-fact-gate.py", edit("tests/quick/test_invariants.py", new_string=check))

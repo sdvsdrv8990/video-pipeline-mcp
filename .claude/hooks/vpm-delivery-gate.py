@@ -221,11 +221,22 @@ def affected_scenarios(touched: list[str]) -> tuple[set[str], str]:
     for rel in touched:
         names |= set((radius.get(rel) or {}))
     try:
-        out = subprocess.run([sys.executable, "scripts/guards/blast_radius.py", "--affected"],
+        out = subprocess.run([project_python(), "scripts/guards/blast_radius.py", "--affected"],
                              cwd=str(PROJ), capture_output=True, text=True, timeout=60).stdout
     except (OSError, subprocess.SubprocessError):
         out = ""
     return names, out
+
+
+def project_python(root: Path = PROJ) -> str:
+    """Интерпретатор, которым звать сторожей и сценарии: окружение проекта, если оно есть.
+
+    Хук запускается системным python3, а сторожам нужны зависимости проекта. Без них сторож
+    падает на импорте с кодом 1 — тем же кодом, что его вердикт «хуже», и гейт отказывал за
+    рост молчания, которого не было.
+    """
+    venv = root / ".venv" / "bin" / "python"
+    return str(venv) if venv.exists() else sys.executable
 
 
 def verify_blindness() -> None:
@@ -235,7 +246,7 @@ def verify_blindness() -> None:
     сервера: иначе непокрытый код накапливается, а карта о нём молчит по построению.
     """
     try:
-        done = subprocess.run([sys.executable, "scripts/guards/blast_radius.py", "--blind"],
+        done = subprocess.run([project_python(), "scripts/guards/blast_radius.py", "--blind"],
                               cwd=str(PROJ), capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.SubprocessError):
         return                                     # карты нет — гейт не выдумывает, а молчит
@@ -255,7 +266,7 @@ def run_scenarios(names: set[str]) -> tuple[int, str]:
     """Запасной путь: гоним задетое сами. Улику пишет сам прогон — она и станет доказательством."""
     limit = int(os.environ.get("VPM_GATE_RUN_LIMIT") or 540)
     try:
-        done = subprocess.run([sys.executable, "tests/scenarios/test_scenarios.py"],
+        done = subprocess.run([project_python(), "tests/scenarios/test_scenarios.py"],
                               cwd=str(PROJ), capture_output=True, text=True, timeout=limit,
                               env={**os.environ, "VPM_SCENARIO": ",".join(sorted(names))})
     except subprocess.TimeoutExpired:
@@ -272,7 +283,7 @@ def produced_scenario(record: Path | None = None, root: Path = PROJ) -> str:
     Производитель сценариев иначе стоит без дела: отказ ловится, регрессия на него пишется руками,
     а руками через неделю она не пишется вовсе. Нет воспроизводимого отказа — так и говорим.
     """
-    argv = [sys.executable, str(root / "scripts" / "guards" / "reproduce.py")]
+    argv = [project_python(), str(root / "scripts" / "guards" / "reproduce.py")]
     if record is not None:
         argv += ["--record", str(record)]
     try:
