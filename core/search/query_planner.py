@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any
 import concurrent.futures
 
-from core.paths import safe_resolve  # containment внутри workspace/
+from core.paths import Files  # containment внутри workspace/
 from core.contracts import ContractError
 
 
@@ -57,10 +57,7 @@ class QueryPlanner:
 
     def load_query(self, yaml_path: str | Path) -> QueryPlan:
         """Загрузка YAML-файла запроса из workspace/ (путь контейнится — анти-traversal)."""
-        try:
-            p = safe_resolve(str(yaml_path), self.workspace)
-        except ValueError as e:
-            raise SearchError("PATH_ESCAPE", f"Путь запроса вне workspace: {yaml_path}") from e
+        p = Files(self.workspace).place(yaml_path)
         if not p.exists():
             raise SearchError("QUERY_NOT_FOUND", f"Файл запроса не найден: {yaml_path}")
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}

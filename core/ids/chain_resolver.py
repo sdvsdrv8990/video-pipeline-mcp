@@ -8,7 +8,7 @@
 
 from pathlib import Path, PurePosixPath
 
-from core.paths import safe_resolve
+from core.paths import Files
 
 
 class ChainResolver:
@@ -57,10 +57,11 @@ class ChainResolver:
             {target, node_type, chain, chain_id, owner_id, skipped, missing_required, unresolved}
 
         Raises:
-            PathEscapeError: путь вне workspace (маппится обёрткой в PATH_ESCAPE)
+            PathRefused: путь вне workspace или в закрытом каталоге
         """
-        rel = self._norm(target_dir)
-        safe_resolve(rel, self.ws)  # containment-чек, результат не нужен
+        files = Files(self.ws)
+        # Цепочка — по настоящему пути: `a/../b` и ссылка внутри области судятся по месту на диске.
+        rel = files.name(files.place(self._norm(target_dir)))
 
         chain: list[dict] = []
         unresolved: list[dict] = []
@@ -73,7 +74,7 @@ class ChainResolver:
             if rec:
                 chain.append(rec)
             else:
-                unresolved.append({"path": anc, "exists": (self.ws / anc).exists()})
+                unresolved.append({"path": anc, "exists": files.place(anc).exists()})
 
         inferred = node_type or self._infer_type(chain, rel)
         skipped: list[str] = []

@@ -16,7 +16,7 @@ import stat
 import time
 from pathlib import Path
 
-from core.paths import safe_resolve
+from core.paths import Files
 from core.contracts import ContractError
 
 try: # Шифрование — опциональная зависимость: без неё честно объявляем себя недоступным.
@@ -57,9 +57,8 @@ class ChannelSecrets:
                 reason="Поставь зависимости сервера (pip install -e .) — хранить ключи провайдеров "
                        "в открытом виде сервер не станет.")
         path = self.home / BOX_KEY_FILE
-        if not path.exists():
-            path.write_bytes(Fernet.generate_key())
-            os.chmod(path, SECRET_MODE)
+        if not path.exists():  # проба — только чтобы не писать на каждом обращении; гонку держит create, он не затирает
+            Files(self.home).create(BOX_KEY_FILE, Fernet.generate_key(), mode=SECRET_MODE)
         os.chmod(path, SECRET_MODE)           # права чинятся при каждом обращении, а не однажды
         return Fernet(path.read_bytes().strip())
 
@@ -69,7 +68,7 @@ class ChannelSecrets:
         """Путь к файлу ключей канала. Единственное место, где закрытый каталог открывается."""
         rel = f"{str(channel).strip('/')}/{SECRETS_DIR}/{KEYS_FILE}" if str(channel).strip("/") \
             else f"{SECRETS_DIR}/{KEYS_FILE}"
-        return safe_resolve(rel, self.workspace, allow_secrets=True)
+        return Files(self.workspace).place(rel, secrets=True)
 
     def owner_of(self, path: str) -> str:
         """Чей ключ действует для адреса: ближайший канал ВВЕРХ по дереву, у которого он есть.
@@ -99,16 +98,19 @@ class ChannelSecrets:
                         "(scripts/set_provider_key.py); прочитать их уже нечем.")) from e
         return json.loads(raw.decode("utf-8"))
 
+    def _guard(self, channel: str):
+        """Замок ОС на файл ключей канала: его меняют «прочитать — изменить — записать» сервер и
+        scripts/set_provider_key.py. Каталог секретов рождается 0700 до замка — иначе его создал бы файл замка."""
+        path = self.file_for(channel)
+        path.parent.mkdir(mode=stat.S_IRWXU, parents=True, exist_ok=True)
+        os.chmod(path.parent, stat.S_IRWXU)   # 0700: каталог секретов не для чужих глаз
+        return Files(self.workspace).lock(path, secrets=True)
+
     def _write(self, channel: str, data: dict) -> Path:
         path = self.file_for(channel)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        os.chmod(path.parent, stat.S_IRWXU)   # 0700: каталог секретов не для чужих глаз
         blob = self._box().encrypt(json.dumps(data, ensure_ascii=False).encode("utf-8"))
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_bytes(blob)
-        os.chmod(tmp, SECRET_MODE)
-        tmp.replace(path)                     # атомарно: половины файла ключей не бывает
-        return path
+        # Заменой слоя: половины файла ключей не бывает, права владельца — до первого байта.
+        return Files(self.workspace).replace(path, blob, mode=SECRET_MODE, secrets=True)
 
     # ═══ Операции ═══
 
@@ -122,12 +124,13 @@ class ChannelSecrets:
             raise SecretError("VALIDATION_ERROR", "Пустой ключ не сохраняется.",
                               reason="Пустая строка выглядела бы как «ключ есть», а вызов падал бы "
                                      "у провайдера — это хуже, чем честное отсутствие ключа.")
-        data = self._read(channel)
-        previous = data.get(name) or {}
-        data[name] = {"value": value, "fingerprint": fingerprint(value),
-                      "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
-                      "replaced": previous.get("fingerprint", "")}
-        self._write(channel, data)
+        with self._guard(channel):
+            data = self._read(channel)
+            previous = data.get(name) or {}
+            data[name] = {"value": value, "fingerprint": fingerprint(value),
+                          "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+                          "replaced": previous.get("fingerprint", "")}
+            self._write(channel, data)
         return {"provider": name, "fingerprint": data[name]["fingerprint"],
                 "updated": data[name]["updated"], "replaced": data[name]["replaced"]}
 
@@ -150,11 +153,12 @@ class ChannelSecrets:
 
     def remove(self, channel: str, provider: str) -> bool:
         """Убрать ключ провайдера (владелец, вручную)."""
-        data = self._read(channel)
-        if str(provider).strip() not in data:
-            return False
-        data.pop(str(provider).strip())
-        self._write(channel, data)
+        with self._guard(channel):
+            data = self._read(channel)
+            if str(provider).strip() not in data:
+                return False
+            data.pop(str(provider).strip())
+            self._write(channel, data)
         return True
 
 

@@ -9,19 +9,33 @@
 """
 
 import base64
+import functools
+import json
+import random
+import socket
 import time
 from pathlib import Path
+from typing import ClassVar
 from urllib.parse import urlparse
 
+from core.declaration import Declaration
+from core.paths import Files
+
 from ..adapters import MediaOutcome, MediaRequest
+from ..download import REDIRECTS, REFUSED_FROM, results, retry_after
 from ..resolver import ProviderError
 
 
 class HttpImageAPI:
     """Синхронный или очередной адаптер: файл → запрос провайдеру → файл на диске."""
 
-    def __init__(self, registry):
+    # Сеть загрузчика результата (MF-16): None — настоящий транспорт; адаптер поднимает реестр, подмена — на классе.
+    transport: ClassVar = None
+    resolve: ClassVar = staticmethod(socket.getaddrinfo)
+
+    def __init__(self, registry, rng: random.Random | None = None):
         self.registry = registry
+        self._rng = rng or random.Random()                  # разброс паузы — от своего генератора, не общего
         self._decl_cache: dict = {}
         self._status_url = ""                               # адрес статуса задачи, если он динамический
         self._result_url = ""                               # у очереди fal результат лежит отдельно
@@ -47,25 +61,32 @@ class HttpImageAPI:
     def _url(self, decl: dict, params: dict) -> str:
         """Адрес вызова. В шаблон может подставляться модель из строки канала — но только имя.
 
-        Строку канала правит ИИ, поэтому после подстановки адрес проверяется заново: он обязан
-        остаться https и на том же хосте, что объявлен. Иначе `model` увела бы ключ на чужой сервер.
+        Строку канала правит ИИ, поэтому после подстановки адрес судится заново (`_own`): иначе `model`
+        увела бы ключ на чужой сервер.
         """
         template = str(decl.get("url") or "")
         url = template
         if "{" in template:
             url = template.format_map({k: str(v) for k, v in params.items()})
-        declared_host = urlparse(template.split("{", 1)[0]).netloc
-        parsed = urlparse(url)
+        return self._own(decl, url)
+
+    @staticmethod
+    def _own(decl: dict, url: str) -> str:
+        """Адрес, куда уйдёт ключ: https и ровно объявленный хост с портом; иначе отказ до сети.
+
+        Судится и адрес вызова, и адреса из ответа провайдера (статус, результат): хост, который назвал сам ответ,
+        ключа не получает. В фактах только хост: в query бывают токены, в имени пользователя — пароль.
+        """
+        declared = urlparse(str(decl.get("url") or "").split("{", 1)[0]).netloc
+        parsed = urlparse(str(url))
         # Петля — единственное послабление, и оно объявлено ДАННЫМИ: раннер живёт на 127.0.0.1, а
         # требовать https от петли значит запретить саму идею раннера. Действует только на
         # объявленный хост и только на http; чужой адрес по http остаётся отказом.
         insecure_host = str(decl.get("allow_insecure_host") or "")
         loopback_ok = bool(insecure_host) and parsed.scheme == "http" and parsed.hostname == insecure_host
-        if (parsed.scheme != "https" and not loopback_ok) or (declared_host and parsed.netloc != declared_host):
-            raise ProviderError(
-                "DOWNLOAD_FORBIDDEN", f"Адрес вызова не совпал с объявленным: {url}",
-                reason=f"Ключ уходит только по https и только на {declared_host or 'объявленный хост'}. "
-                       "Проверь столбец model строки канала — он подставляется в адрес.")
+        if (parsed.scheme != "https" and not loopback_ok) or parsed.netloc != declared:
+            raise ProviderError("DOWNLOAD_FORBIDDEN",
+                                facts={"host": parsed.netloc.rpartition("@")[2], "allowed": declared})
         return url
 
     @staticmethod
@@ -91,8 +112,10 @@ class HttpImageAPI:
         """Достать значение по пути вида `output[0]` / `images[0].url`.
 
         Ответы этих API вложены: плоского поля со ссылкой у них нет, и искать её перебором имён
-        значило бы угадывать. Путь объявлен провайдером в декларации.
+        значило бы угадывать. Путь объявлен провайдером в декларации; пустой путь — поле не объявлено, значения нет.
         """
+        if not str(path or "").strip():
+            return None
         node = data
         for part in str(path).replace("]", "").replace("[", ".").split("."):
             if part == "":
@@ -242,9 +265,16 @@ class HttpImageAPI:
         Повторяем только то, что повторять осмысленно: перегрузку и временную недоступность
         (`retry_on` в декларации — те же коды, что и у официальных клиентов этих API). Отказ по
         ключу или по содержимому повтором не лечится, и повторять его значит жечь платный лимит.
+        Неидемпотентный запрос после ошибки, при которой провайдер мог его получить, не повторяется:
+        работа могла выполниться и списаться (`online.retry` в декларации).
         """
         import httpx
 
+        retry = ("online", "retry")
+        idempotent = {str(m).upper() for m in self.registry.need(*retry, "idempotent_methods", kind=list)}
+        after_max = self.registry.need(*retry, "retry_after_max_sec", kind=float)
+        pause_max = self.registry.need(*retry, "backoff_max_sec", kind=float)
+        jitter = self.registry.need(*retry, "backoff_jitter_ratio", kind=float)
         attempts = max(0, int(request.params.get("retry_count") or 0)) + 1
         pause = float(request.params.get("retry_delay") or 0)
         retry_on = {int(c) for c in (decl.get("retry_on") or [])}
@@ -261,6 +291,9 @@ class HttpImageAPI:
                                          follow_redirects=False, **(body or {}))
             except Exception as e:  # сеть/таймаут
                 last = self._unreachable(decl, request.provider, e)
+                # ошибка соединения — запрос не ушёл; любая другая — мог дойти и выполниться
+                if method.upper() not in idempotent and not isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout)):
+                    raise last from e
             else:
                 if response.status_code < 400:
                     return response
@@ -270,10 +303,10 @@ class HttpImageAPI:
                         "PROVIDER_FAILED", "Провайдер не ответил и не назвал причины.",
                         reason="Ни одна попытка не дошла до ответа — повтори позже.")
                 # Провайдер сам говорит, когда повторять — его срок важнее нашего.
-                pause = max(pause, float(response.headers.get("Retry-After") or 0))
+                pause = max(pause, retry_after(response.headers.get("Retry-After"), after_max, pause))
             if attempt + 1 < attempts and pause:
-                time.sleep(pause)
-                pause *= 2                                  # перегрузку не лечат равномерным долблением
+                time.sleep(min(pause, pause_max) * (1 + jitter * self._rng.random()))
+                pause = min(pause * 2, pause_max)           # перегрузку не лечат равномерным долблением
         raise last or ProviderError(
             "PROVIDER_FAILED", "Провайдер не ответил и не назвал причины.",
             reason="Ни одна попытка не дошла до ответа — повтори позже или смени провайдера.")
@@ -320,33 +353,33 @@ class HttpImageAPI:
                    "платный лимит, неподходящий файл).")
 
     def _named_refusal(self, response) -> ProviderError | None:
-        """Отказ, названный кодом реестра самим адресатом (если он умеет — `error_fields`).
+        """Отказ, названный кодом реестра самим адресатом — если он объявлен отвечающим формой сервера (`error_detail`).
 
         Чужой платный сервис говорит своими словами, и его отказ честно приходит как
-        PROVIDER_FAILED с цитатой. Раннер — наш же процесс, и он называет причину нашим кодом:
-        свернуть его LOCAL_MODEL_MISSING в общий PROVIDER_FAILED значило бы стереть и причину, и
-        подсказку. Код принимается только если он объявлен И имеет форму кода реестра — иначе
-        ответ на порту решал бы, каким кодом отвечает сервер.
+        PROVIDER_FAILED с цитатой. Раннер — наш же процесс: он отвечает ErrorDetail (код, текст, факты, ошибки
+        ввода), и код с фактами едут дальше как есть. Код принимается только если адресат объявлен И код имеет форму
+        кода реестра — иначе ответ на порту решал бы, каким кодом отвечает сервер.
         """
         import re
 
         first: dict = next(iter(self._decl_cache.values()), {})
-        fields = first.get("error_fields") or {}
-        if not fields:
+        if not first.get("error_detail"):
             return None
         try:
             body = response.json()
         except Exception:  # не JSON в теле
             return None
-        code = str(self.dig(body, str(fields.get("code") or "")) or "")
+        code = str(body.get("code") or "") if isinstance(body, dict) else ""
         if not re.fullmatch(r"[A-Z][A-Z_]{2,48}", code):
             return None
-        # Текст приходит от того, кто ответил на порту, — а это не обязательно наш раннер: порт мог
-        # занять посторонний процесс. Режем так же, как режем ответ платного провайдера: чужой
-        # текст доезжает до ИИ как цитата, а не как простыня произвольной длины.
+        # Ответ приходит от того, кто занял порт, — не обязательно наш раннер: факты и текст режутся так же, как
+        # ответ платного провайдера, чтобы чужое доезжало до ИИ цитатой, а не простынёй произвольной длины.
+        facts = body.get("facts") if isinstance(body.get("facts"), dict) else {}
+        errors = body.get("errors") if isinstance(body.get("errors"), list) else []
         return ProviderError(
-            code, str(self.dig(body, str(fields.get("message") or "")) or code)[:300],
-            reason=str(self.dig(body, str(fields.get("reason") or "")) or "")[:300])
+            code, str(body.get("message") or "")[:300],
+            facts={str(k)[:60]: str(v)[:300] for k, v in list(facts.items())[:20]},
+            errors=[e for e in errors if isinstance(e, dict)][:20])
 
     @staticmethod
     def _json(response) -> dict:
@@ -362,60 +395,70 @@ class HttpImageAPI:
 
     def poll(self, task_id: str) -> dict:
         """Статус задачи. Слова статусов разбирает общий цикл — здесь только запрос."""
-        import httpx
+        return self._answer(self._status_url)
 
-        try:
-            response = httpx.get(self._status_url, headers=self._poll_headers(), timeout=60,
-                                 follow_redirects=False)
-        except Exception as e:  # сеть/таймаут
-            raise ProviderError(
-                "PROVIDER_FAILED", f"Не удалось прозвонить задачу '{task_id}': {e}",
-                reason="Задача осталась на стороне провайдера — прозвони её повторным вызовом.") from e
-        if response.status_code >= 400:
-            raise self._refusal(response)
-        return self._json(response)
-
-    def _poll_headers(self) -> dict:
+    def _poll_headers(self, url: str) -> dict:
+        """Ключ к адресу, который назвал ответ провайдера, — только после суда адреса (`_own`), как у вызова."""
         decl: dict = next(iter(self._decl_cache.values()), {})
+        self._own(decl, url)
         return self._headers(decl, self._api_key) if self._api_key else {}
 
     def fetch(self, answer: dict, target: Path) -> Path:
-        """Забрать результат. Правила загрузки — общие, из media_tasks.yaml."""
-        from ..download import ResultDownloader
-
+        """Забрать результат: ссылку — по объявленному пути или полям, файл — общим загрузчиком результатов, без ключа."""
         decl: dict = next(iter(self._decl_cache.values()), {})
         if self._result_url:
             # Очередь fal отдаёт результат отдельным адресом: статус говорит лишь «готово».
-            answer = self._json(self._get(self._result_url))
+            answer = self._answer(self._result_url)
+        fetcher = results(self._tasks.config_file, transport=self.transport, resolve=self.resolve)
         url = ""
         if decl.get("result_path"):
             found = self.dig(answer, str(decl["result_path"]))
             url = found if isinstance(found, str) else ""
-        downloader = ResultDownloader(Path(self.registry.config_file).with_name("media_tasks.yaml"))
-        if not url:
-            for field in (downloader.rules.get("url_fields") or []):
-                value = answer.get(field)
-                if isinstance(value, str) and value.strip():
-                    url = value.strip()
-                    break
+        for field in ([] if url else fetcher.policy["url_fields"]):
+            value = answer.get(field)
+            if isinstance(value, str) and value.strip():
+                url = value.strip()
+                break
         if not url:
             raise ProviderError(
                 "PROVIDER_FAILED", "В ответе провайдера нет ссылки на результат.",
                 reason=f"Искали по объявленному пути ({decl.get('result_path') or '—'}) и в полях "
                        "config/media_tasks.yaml → download.fetch.url_fields. Поправь путь в "
                        "config/providers.yaml → online.http.")
-        downloader.fetch(url, target)
+        target = Path(target)
+        fetcher.fetch(url, Files(target.parent), target.name, "result")
         return target
 
-    def _get(self, url: str):
+    def _answer(self, url: str) -> dict:
+        """JSON статуса или адреса результата с объявленного хоста: ключ — после суда адреса, тело — по ходу и не больше
+        объявленного предела, запрос — не дольше объявленного срока (`download.answer` декларации задач)."""
         import httpx
 
+        headers = self._poll_headers(url)
+        limit = self._tasks.need("download", "answer", "max_bytes", kind=int)
+        timeout = self._tasks.need("download", "answer", "timeout_sec", kind=float)
+        host, body = urlparse(url).hostname or "", bytearray()
         try:
-            response = httpx.get(url, headers=self._poll_headers(), timeout=60, follow_redirects=False)
+            with httpx.stream("GET", url, headers=headers, timeout=timeout, follow_redirects=False) as response:
+                if response.status_code >= REFUSED_FROM:
+                    response.read()
+                    raise self._refusal(response)
+                if response.status_code in REDIRECTS:       # по переходу с ключом не идём: адрес назвал бы ответ
+                    raise ProviderError("PROVIDER_FAILED", facts={"host": host, "status": response.status_code})
+                for chunk in response.iter_bytes():
+                    body += chunk
+                    if len(body) > limit:
+                        raise ProviderError("DOWNLOAD_TOO_LARGE", facts={"limit_mb": round(limit / 2**20, 3)})
+        except ProviderError:
+            raise
         except Exception as e:  # сеть/таймаут
-            raise ProviderError(
-                "PROVIDER_FAILED", f"Результат задачи не забрать: {e}",
-                reason="Задача готова, но её результат недоступен — повтори прозвонку.") from e
-        if response.status_code >= 400:
-            raise self._refusal(response)
-        return response
+            raise ProviderError("PROVIDER_FAILED", facts={"host": host, "status": type(e).__name__}) from e
+        try:
+            return json.loads(bytes(body))
+        except ValueError as e:
+            raise ProviderError("PROVIDER_FAILED", facts={"host": host, "status": "ответ не JSON"}) from e
+
+    @functools.cached_property
+    def _tasks(self) -> Declaration:
+        return Declaration(Path(self.registry.config_file).with_name("media_tasks.yaml"), ProviderError, "ожидания",
+                           "Заведи config/media_tasks.yaml — правила ожидания и загрузки объявлены там.")

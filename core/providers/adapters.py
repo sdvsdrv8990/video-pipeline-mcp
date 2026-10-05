@@ -9,17 +9,19 @@
 """
 
 import importlib
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar, TypeVar, overload
 
 if TYPE_CHECKING:                       # рантайм-импорт остаётся ленивым (цикл модулей)
     from .pool import ModelPool
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from core.paths import PathEscapeError, safe_resolve
+from core.paths import Files
 
 from core.declaration import Declaration
 from .resolver import ProviderError
+
+T = TypeVar("T")
 
 
 @dataclass
@@ -101,40 +103,16 @@ class AdapterRegistry:
 
         Имя из данных — это `id` объявленной модели; тогда путь берётся из декларации. Если имени
         в каталоге нет, оно трактуется как путь относительно корня весов (модель положили руками).
-        В обоих случаях путь проходит containment: строку канала правит ИИ, и `../../.env` в поле
-        `model` иначе читало бы чужое.
+        В обоих случаях путь проходит дверь каталога весов: строку канала правит ИИ, и `../../.env` в поле
+        `model` иначе читало бы чужое. Путь наружу — отказ двери PATH_ESCAPE (`facts.path` — путь от корня), а не
+        «весов нет»: у этой причины свой код.
         """
         wanted = str(name or "").strip()
-        if not wanted:
-            raise ProviderError(
-                "LOCAL_MODEL_MISSING", "В строке провайдера не указана модель.",
-                reason="Впиши в столбец model имя объявленной модели "
-                       f"({', '.join(str(e.get('id')) for e in self.catalog) or 'каталог пуст'}) "
-                       "или путь внутри каталога весов.",
-                suggested_tool="table_update")
+        if not wanted:   # лист и строку книги допишет слой, который их знает (`with_facts` в media_generate)
+            raise ProviderError("BOOK_ROW_INVALID", errors=[{"field": "model", "rule": "required"}])
         declared = {str(e.get("id")): str(e.get("path") or e.get("dest") or "") for e in self.catalog}
         rel = declared.get(wanted) or wanted
-        try:
-            return safe_resolve(rel, self.models_dir)
-        except PathEscapeError as e:
-            raise ProviderError(
-                "LOCAL_MODEL_MISSING", f"Имя модели ведёт за пределы каталога весов: {wanted}",
-                reason="Модель берётся только из каталога локальных весов — путь наружу не читается.",
-            ) from e
-
-    def require_model(self, name: str, must_be_dir: bool = False) -> Path:
-        """То же, но с проверкой, что веса действительно лежат. Нет — отказ, а не тишина."""
-        path = self.model_path(name)
-        present = path.is_dir() if must_be_dir else path.is_file()
-        if not present:
-            raise ProviderError(
-                "LOCAL_MODEL_MISSING", f"Нет весов локальной модели: {name}",
-                reason=("Веса не лежат в git. Посмотри, что можно поставить — media_models "
-                        "(scope='local'), поставь — media_model_install; из терминала то же самое "
-                        "делает python scripts/models.py install <id> --kind <вид>. "
-                        f"Ожидались в {path}. Либо переключи строку канала на другого провайдера."),
-                suggested_tool="media_provider_status")
-        return path
+        return Files(self.models_dir).place(rel)
 
     def _entry(self, provider: str, resource_type: str = "") -> dict | None:
         """Объявление провайдера: строка-путь или запись с полями (`adapter`, `requires_key`)."""
@@ -196,3 +174,54 @@ class AdapterRegistry:
                         "config/providers.yaml → adapters.by_provider и установку зависимостей."),
             ) from e
         return adapter_cls(self)
+
+    @overload
+    def need(self, *path: str) -> object: ...
+
+    @overload
+    def need(self, *path: str, kind: type[T]) -> T: ...
+
+    def need(self, *path: str, kind: type | None = None) -> object:
+        """Объявленное значение по пути декларации; ключа нет или тип не тот (`kind`) — отказ кодом реестра."""
+        return self._decl.need(*path) if kind is None else self._decl.need(*path, kind=kind)
+
+    # Политика `local.hand_placed` → пускать ли веса, положенные руками, по наличию файла.
+    HAND_PLACED: ClassVar[dict[str, bool]] = {"by_presence": True, "refuse": False}
+
+    def ready(self, name: str, must_be_dir: bool = False) -> dict:
+        """Готовность модели к подъёму: путь весов и названная ступень проверки; не готова — отказ кодом причины.
+
+        Модель описи судится составом по длине — дёшево, на каждом подъёме. Имя вне описи — веса, положенные руками:
+        состава у них нет, и пускать ли их по наличию, решает объявленная политика `local.hand_placed`, а не код.
+        """
+        from .catalog import ModelCatalog
+
+        path, entry = self.model_path(name), self.model_entry(name)
+        if entry:
+            catalog = ModelCatalog(self.config_file, self.models_dir)
+            disk = catalog.judge(entry)
+            if disk["verdict"] != "ready":
+                raise catalog.refusal(entry, disk)
+            return {**disk, "path": path}
+        if not (path.is_dir() if must_be_dir else path.is_file()):
+            raise ProviderError("LOCAL_MODEL_MISSING", facts={
+                "model": str(name), "path": str(path.relative_to(Path(self.models_dir).resolve()))})
+        policy = self.need("local", "hand_placed", kind=str)
+        if policy not in self.HAND_PLACED:
+            raise ProviderError(
+                "SCHEMA_INVALID", f"local.hand_placed = '{policy}' — такой политики нет; допустимо: "
+                f"{', '.join(self.HAND_PLACED)} (config/providers.yaml → local.hand_placed).")
+        if not self.HAND_PLACED[policy]:
+            raise ProviderError(
+                "MODEL_UNVERIFIED", f"Модель '{name}' положена руками: состава нет, судить её целость нечем "
+                f"(local.hand_placed = {policy}); поставь её через python scripts/models.py install — опись получит "
+                "состав, — либо объяви local.hand_placed: by_presence в config/providers.yaml.")
+        return {"verdict": "ready", "checked": "по наличию (состав не объявлен)", "plan": [], "path": path,
+                "why": "веса положены руками: лежат по пути, целость не судима — пускает local.hand_placed"}
+
+    def readiness(self) -> list[dict]:
+        """Готовность каждой модели описи по составу на диске (по длине): готова, чего не хватает или судить нечем."""
+        from .catalog import ModelCatalog
+
+        catalog = ModelCatalog(self.config_file, self.models_dir)
+        return [{"id": e.get("id"), "kind": e.get("kind"), **catalog.judge(e)} for e in catalog.entries()]

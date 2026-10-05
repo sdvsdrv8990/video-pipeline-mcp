@@ -36,27 +36,27 @@ class ProviderResolver:
     @property
     def sheet(self) -> str:
         """Лист книги канала, где живут строки провайдеров."""
-        return str(self._decl.need("source", "sheet"))
+        return self._decl.need("source", "sheet", kind=str)
 
     @property
     def fallback_book(self) -> str:
         """Книга, откуда берутся строки, когда у канала своих нет."""
-        return str(self._decl.need("source", "fallback_book"))
+        return self._decl.need("source", "fallback_book", kind=str)
 
     @property
     def type_column(self) -> str:
         """Столбец с типом ресурса."""
-        return str(self._decl.need("source", "type_column"))
+        return self._decl.need("source", "type_column", kind=str)
 
     @property
     def limit_column(self) -> str:
         """Столбец суточного лимита."""
-        return str(self._decl.need("limits", "limit_column"))
+        return self._decl.need("limits", "limit_column", kind=str)
 
     @property
     def usage_column(self) -> str:
         """Столбец израсходованного за сутки."""
-        return str(self._decl.need("limits", "usage_column"))
+        return self._decl.need("limits", "usage_column", kind=str)
 
     # ═══ Состояние строки ═══
 
@@ -66,13 +66,13 @@ class ProviderResolver:
         usage = row.get(self.usage_column) or 0
         if limit is None or not isinstance(limit, (int, float)):
             return False
-        if limit < float(str(self._decl.need("limits", "unlimited_below"))):
+        if limit < self._decl.need("limits", "unlimited_below", kind=float):
             return False
         return float(usage) >= float(limit)
 
     def _warning(self, row: dict) -> bool:
         """Пора предупредить: расход дошёл до объявленного порога."""
-        threshold = row.get(str(self._decl.need("limits", "warning_column")))
+        threshold = row.get(self._decl.need("limits", "warning_column", kind=str))
         usage = row.get(self.usage_column) or 0
         if threshold is None or not isinstance(threshold, (int, float)) or threshold < 0:
             return False
@@ -88,8 +88,8 @@ class ProviderResolver:
     def resolve(self, rows: list[dict], resource_type: str, source: str = "") -> dict:
         """Кем исполнять `resource_type` прямо сейчас: строка данных → решение для адаптера."""
         type_col = self.type_column
-        prov_col = str(self._decl.need("source", "provider_column"))
-        fb_col = str(self._decl.need("source", "fallback_column"))
+        prov_col = self._decl.need("source", "provider_column", kind=str)
+        fb_col = self._decl.need("source", "fallback_column", kind=str)
 
         candidates = [r for r in rows if r.get(type_col) == resource_type]
         if not candidates:
@@ -103,7 +103,7 @@ class ProviderResolver:
         chain: list[str] = []
         skipped: list[dict] = []
         current = candidates[0]
-        depth = int(str(self._decl.need("max_fallback_depth")))
+        depth = self._decl.need("max_fallback_depth", kind=int)
         for _ in range(depth):
             name = str(current.get(prov_col) or "")
             if not name or name in chain:

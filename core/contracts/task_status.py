@@ -13,10 +13,13 @@ from .error_detail import ErrorDetail
 
 
 class TaskStatus(BaseModel):
-    """Статус async задачи для поллинга."""
+    """Статус долгой задачи для опроса — одна форма на все долгие операции (установка модели, задача провайдера).
+    `params` — с чем задачу запустили: живёт во всех статусах, в отличие от `result`. `task_id=None` — задача не
+    заводилась: исход известен сразу (например, «уже стоит»), прозванивать нечего."""
 
-    task_id: str
+    task_id: str | None
     status: Literal["pending", "processing", "completed", "failed"]
+    params: dict | None = None
     progress: dict | None = None
     result: dict | None = None
     error: ErrorDetail | None = None

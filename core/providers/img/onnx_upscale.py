@@ -20,7 +20,7 @@ class OnnxUpscale(OnnxImage):
                 "CONTENT_REJECTED", "Увеличивать нечего: не передан исходный файл.",
                 reason="Для этого вида ресурса input — путь к картинке внутри рабочей области.")
         params = request.params
-        model_path = self.registry.require_model(params.get("model"))
+        model_path = self.registry.ready(params.get("model"))["path"]
         session = self.session(model_path)
         prep = self.preprocessing(model_path)
         image = self.open_image(request.source).convert("RGB")

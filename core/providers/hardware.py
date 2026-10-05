@@ -206,11 +206,16 @@ def probe(disk_for: str | Path = ".", gpu_rules: dict | None = None) -> dict:
     if limit and (not total or limit < total):
         total = limit
         available = min(available or limit, limit)
-    try:
-        free_disk = shutil.disk_usage(str(disk_for)).free
-    except OSError:
-        free_disk = 0
     cards, unknown = _gpus(gpu_rules or {})
+    # Каталога весов может ещё не быть (первая установка): меряется диск ближайшего существующего предка — туда он ляжет.
+    disk_at = next((p for p in (Path(disk_for).absolute(), *Path(disk_for).absolute().parents) if p.exists()),
+                   Path(disk_for))
+    try:
+        free_disk = shutil.disk_usage(str(disk_at)).free
+    except OSError as exc:
+        # Не прочитано — не ноль: «0 свободно» назвало бы неверную причину (нет места вместо нет данных).
+        free_disk = None
+        unknown.append(f"свободное место под веса ({disk_for}: {exc.strerror or exc})")
     if not mem:
         unknown.append("объём памяти (нет /proc/meminfo — не Linux?)")
     return {
@@ -218,7 +223,7 @@ def probe(disk_for: str | Path = ".", gpu_rules: dict | None = None) -> dict:
         "ram_available_mb": round(available / 1e6),
         "container_limit_mb": round(limit / 1e6) if limit else 0,
         "cpu_count": os.cpu_count() or 0,
-        "disk_free_mb": round(free_disk / 1e6),
+        "disk_free_mb": None if free_disk is None else round(free_disk / 1e6),
         "gpu": cards,
         "unknown": unknown,
         "note": ("Прочитано без прав root: /proc/meminfo, cgroup, число ядер, свободное место и "

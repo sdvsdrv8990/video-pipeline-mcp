@@ -14,8 +14,10 @@ warnings.simplefilter("error", UserWarning) # чужой Fact.type → паде�
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from core.engine import TemplateEngine, TemplateError
+from core.engine import Engine, TemplateEngine, TemplateError
 from core.ids import ChainResolver, IDGenerator, LinkRegistry, LinkError, Taxonomy
+from core.paths import PathRefused
+from core.reactions import Reactions
 
 TPL_DIR = ROOT / "config" / "templates" / "workspace"
 
@@ -93,15 +95,20 @@ res = eng.create_node("competitor_video", "cv1", parent_path="x/videos/")
 ok((ws / "x/videos/cv1/read.json").exists(), "competitor_video read.json создан")
 ok(res["node_id"].startswith("CVID"), "префикс CVID")
 
-print("== 5. containment: имя с обходом → ValueError (→ PATH_ESCAPE у обёртки) ==")
+print("== 5. containment: имя с обходом → VALIDATION_ERROR, контейнер с обходом → отказ двери ==")
 eng, ws = new_engine()
 try:
     eng.create_node("niche", "../evil")
     ok(False, "traversal должен был бросить")
-except ValueError:
-    ok(True, "traversal имя → ValueError")
 except TemplateError as e:
     ok(e.code == "VALIDATION_ERROR", "traversal имя → VALIDATION_ERROR (имя с '/')")
+try:
+    eng.create_node("niche", "evil", parent_path="../../outside")
+    ok(False, "обход через parent_path должен был отказать")
+except PathRefused as e:
+    _said5 = Engine(reactions=Reactions(ROOT / "config" / "server_reactions.yaml")).refusal(e).error
+    ok(_said5.code == "PATH_ESCAPE" and _said5.facts == {"path": "../../outside/evil"}
+       and not (ws / "../../outside").resolve().exists(), f"обход контейнером → PATH_ESCAPE с путём от корня, на диске ничего ({_said5})")
 
 print("== 6. неизвестный тип → TEMPLATE_NOT_FOUND ==")
 eng, ws = new_engine()
@@ -250,9 +257,7 @@ _stray.rmdir()
 print("== 18. Инструменты: создание ВТОРЫМ вызовом наследует цепочку (F63, сценарий владельца) ==")
 import asyncio
 
-from core.engine import Engine
 from core.excel import ExcelEngine
-from core.reactions import Reactions
 from core.state import StateManager
 from tools import structure as _structure_group
 from tools._context import ToolContext
@@ -401,6 +406,7 @@ ok([m["id"] for m in mvf.data["entities_moved"]] == [withid.data["id"]],
 blocked_file = call("fs_create_file", path="niches/gaming/networks/ghostnet2/x.md", content="", assign_id=True)
 ok(blocked_file.status == "error" and blocked_file.error.code == "CHAIN_UNRESOLVED",
    "ID в незарегистрированном поддереве → отказ, а не выдуманная цепочка")
+ok(not (ws18 / "niches/gaming/networks/ghostnet2/x.md").exists(), "отказ в ID не оставил файла на диске")
 ok(call("fs_create_file", path="niches/gaming/networks/ghostnet2/x.md", content="").status == "success",
    "тот же файл без assign_id создаётся спокойно")
 
@@ -549,7 +555,6 @@ except LinkError as e:
     ok(e.code == "FOREIGN_WRITE", "чужая запись → FOREIGN_WRITE")
 ok(reg28.get("VID_alien") is None, "состояние НЕ изменилось после отказа")
 
-# Ручная правка файла мимо сервера
 tampered = __import__("json").loads((ws28 / "_id_registry.json").read_text(encoding="utf-8"))
 tampered["entities"]["VID_s9"]["name"] = "подменено"
 (ws28 / "_id_registry.json").write_text(__import__("json").dumps(tampered), encoding="utf-8")
@@ -599,7 +604,7 @@ for good in ("notes.md", "data.json", "scene.svg", "tool.py", "book.xlsx"):
 for bad in ("evil.sh", "page.html", "virus.exe", "run.bat", "noext"):
     _r = call("fs_create_file", path=f"{V2}/{bad}", content="x")
     ok(_r.status == "error" and _r.error.code == "FILE_TYPE_FORBIDDEN", f"запрещённый тип отклонён: {bad}")
-ok(call("fs_write_file", path=f"{V2}/evil.sh", content="x").error.code == "FILE_TYPE_FORBIDDEN",
+ok(getattr(call("fs_write_file", path=f"{V2}/evil.sh", content="x").error, "code", None) == "FILE_TYPE_FORBIDDEN",
    "перезапись запрещённого типа тоже отклонена (не только создание)")
 ok(not (ws18 / V2 / "evil.sh").exists(), "запрещённый файл на диске не появился")
 _fw_cfg = _y.safe_load((ROOT / "config" / "firewall.yaml").read_text(encoding="utf-8"))["write_allowlist"]
@@ -626,9 +631,11 @@ ok((ws18 / V2 / "plain.md").exists(), "файл на месте после от�
 ok(call("fs_delete", path=f"{V2}/plain.md", force=True).status == "success", "с force=true удаление проходит")
 
 # Проверяем НЕ функцию-санитайзер, а фактический журнал: мутация «писать сырой Fact.data»
-# обязана краснеть, поэтому идём через log_event с подменённым путём лога.
+# обязана краснеть, поэтому идём через log_event в журнал фактов во временном каталоге.
+from core.observability import Journal as _Journal
+
 _logdir = Path(tempfile.mkdtemp(prefix="vpm_log_"))
-_sm_log = StateManager(_logdir / "ws", log_path=_logdir / "session.md")
+_sm_log = StateManager(_logdir / "ws", journal=_Journal(_logdir / "session.md", 1 << 20, 1))
 _sm_log.log_event("FileRead", {"path": "x.md", "content": "A" * 500,
                                "api_key": "sk-secret", "note": "строка\nс переводом"})
 _written = (_logdir / "session.md").read_text(encoding="utf-8")
@@ -649,9 +656,8 @@ for _name, _body, _what in (
     _r = call("fs_create_file", path=_name, content=_body)
     ok(_r.status == "error" and _r.error.code == "FILE_TYPE_FORBIDDEN", f"{_what} отклонён")
     ok(not (ws18 / _name).exists(), f"{_what}: на диске ничего не появилось")
-ok(call("fs_write_file", path=f"{V2}/notes.md",
-        content="#!/usr/bin/env python").error.code == "FILE_TYPE_FORBIDDEN",
-   "перезапись проверяет содержимое так же, как создание")
+ok(getattr(call("fs_write_file", path=f"{V2}/notes.md", content="#!/usr/bin/env python").error, "code", None)
+   == "FILE_TYPE_FORBIDDEN", "перезапись проверяет содержимое так же, как создание")
 ok(call("fs_create_file", path=f"{V2}/honest.md",
         content="# Заметка\nСценарий: приветствие, разбор, финал").status == "success",
    "честная заметка проходит (проверка не бьёт по легиту)")
@@ -695,10 +701,12 @@ print("== 33. Механизм kind: config — копия дефолта в п�
 _cfgdir33 = Path(tempfile.mkdtemp(prefix="vpm_cfgdir_")) / "config"
 (_cfgdir33 / "templates" / "workspace").mkdir(parents=True)
 (_cfgdir33 / "probe_defaults.yaml").write_text("# СЕРВЕРНЫЙ ДЕФОЛТ\nkey: value\n", encoding="utf-8")
-# Корень серверных деклараций обязан объявлять разрешённые к записи типы: копия шаблона идёт
-# в ту же дверь, что и fs_write_file, и без объявления дверь отказывает.
+# Корень серверных деклараций обязан объявлять разрешённые к записи типы и пределы: копия шаблона идёт
+# в ту же дверь, что и fs_write_file, и без объявления дверь отказывает. Пределы — боевые.
+_LIMITS_YAML = _y.safe_dump({"file_limits": _y.safe_load(
+    (ROOT / "config" / "firewall.yaml").read_text(encoding="utf-8"))["file_limits"]})
 (_cfgdir33 / "firewall.yaml").write_text(
-    'write_allowlist:\n  enabled: true\n  extensions: [".yaml"]\n', encoding="utf-8")
+    'write_allowlist:\n  enabled: true\n  extensions: [".yaml"]\n' + _LIMITS_YAML, encoding="utf-8")
 (_cfgdir33 / "templates" / "workspace" / "probe.tpl.yaml").write_text(
     'probe:\n  id:\n    prefix: PR\n    strategy: hex\n  files:\n'
     '    - { name: "probe_defaults.yaml", kind: config, source: probe_defaults.yaml, required: true }\n',
@@ -823,8 +831,10 @@ _tpl34 = Path(tempfile.mkdtemp(prefix="vpm_tpl34_"))
 _ws34 = Path(tempfile.mkdtemp(prefix="vpm_ws34_"))
 _r34 = TemplateEngine(_ws34, IDGenerator(), _tpl34, ROOT / "config").create_node("evil", "n1")
 _sk34 = {s["name"]: s["reason"] for s in _r34["skipped"]}
-ok(_sk34.get("payload.sh") == "forbidden", "шаблон не пишет .sh мимо allowlist")
-ok(_sk34.get("notes.md") == "forbidden", "shebang под .md отклонён и в шаблоне")
+ok(_sk34.get("payload.sh") == "FILE_TYPE_FORBIDDEN", "шаблон не пишет .sh мимо allowlist")
+ok(_sk34.get("notes.md") == "FILE_TYPE_FORBIDDEN", "shebang под .md отклонён и в шаблоне")
+ok([s.get("signature") for s in _r34["skipped"] if s["name"] == "notes.md"] == ["shebang (скрипт)"],
+   "пропуск по содержимому называет сигнатуру фактом — форма «пропущено» одна: код, имя, факты")
 ok(_sk34.get("stolen.yaml") == "source escape", "kind: config не тянет файл из-за пределов config/")
 for _rel in ("payload.sh", "notes.md", "stolen.yaml"):
     ok(not (_ws34 / "evil/n1" / _rel).exists(), f"{_rel}: на диске ничего не появилось")
@@ -909,8 +919,8 @@ _e35 = _call35("structure_create", type="network", name="n1",
                parent_path="niches/n1/networks/", mode="custom")
 ok(_e35.data["templates_source"] == "project", "custom реально взял шаблон ПРОЕКТА")
 _sk35 = {(s.get("name") or ""): s.get("reason") for s in _e35.data.get("skipped", [])}
-ok(_sk35.get("payload.sh") == "forbidden", "custom: .sh отбит allowlist так же, как в default")
-ok(_sk35.get("notes.md") == "forbidden", "custom: shebang под .md отбит")
+ok(_sk35.get("payload.sh") == "FILE_TYPE_FORBIDDEN", "custom: .sh отбит allowlist так же, как в default")
+ok(_sk35.get("notes.md") == "FILE_TYPE_FORBIDDEN", "custom: shebang под .md отбит")
 ok(_sk35.get("stolen.yaml") == "source escape", "custom: source за пределы config/ отбит")
 _base35 = _ws35 / "niches/n1/networks/n1"
 ok({p.name for p in _base35.iterdir()} == {"ok.md"} if _base35.exists() else False,
@@ -1160,6 +1170,283 @@ _off42 = Path(_tf42.mkdtemp())
 (_off42 / "firewall.yaml").write_text("write_allowlist:\n  enabled: false\n", encoding="utf-8")
 _WP42(_off42).check("payload.sh")
 ok(True, "`enabled: false` в ПРИСУТСТВУЮЩЕМ объявлении — осознанный выключатель владельца, он цел")
+
+print("== 44. Обход слоя: дверь на каждом элементе, ссылки по политике, непрочитанное полем (FS-04/05/11) ==")
+import os as _os43
+
+_w43 = ws18 / "walk43"
+(_w43 / "inner").mkdir(parents=True)
+(_w43 / "inner" / "deep.txt").write_text("marker внутри", encoding="utf-8")
+(_w43 / "plain.txt").write_text("marker", encoding="utf-8")
+(_w43 / ".secrets").mkdir()
+(_w43 / ".secrets" / "key.txt").write_text("marker ключ", encoding="utf-8")
+_out43 = Path(tempfile.mkdtemp(prefix="vpm_outside_"))
+(_out43 / "чужое.txt").write_text("marker снаружи", encoding="utf-8")
+for _name43, _to43 in (("out_dir", _out43), ("out_file.txt", _out43 / "чужое.txt"),
+                       ("to_secret", _w43 / ".secrets"), ("to_secret_file.txt", _w43 / ".secrets" / "key.txt"),
+                       ("inner_link", _w43 / "inner"), ("inner_file_link.txt", _w43 / "inner" / "deep.txt"),
+                       ("loop_a", _w43 / "loop_b"), ("loop_b", _w43 / "loop_a")):
+    (_w43 / _name43).symlink_to(_to43)
+(_w43 / "locked").mkdir()
+(_w43 / "locked" / "x.txt").write_text("marker", encoding="utf-8")
+(_w43 / "locked").chmod(0o000)
+_locked43 = not _os43.access(_w43 / "locked", _os43.R_OK)  # под root права не действуют
+try:
+    _tree43 = call("fs_get_directory_tree", path="walk43")
+    _search43 = call("fs_smart_search", directory="walk43", keyword="marker")
+finally:
+    (_w43 / "locked").chmod(0o755)
+    _shutil.rmtree(_out43)
+_deep43, _lost43 = len("marker внутри".encode()), [{"path": "walk43/locked", "reason": "EACCES"}] * _locked43
+ok(_tree43.data["tree"] == {"inner/": {"deep.txt": {"size": _deep43}}, "inner_file_link.txt": {"size": _deep43},
+                            "inner_link": {"link": True}, "locked/": {} if _locked43 else {"x.txt": {"size": 6}},
+                            "plain.txt": {"size": 6}},
+   f"дерево: ссылок наружу и в закрытый каталог нет, ссылка на каталог не раскрыта, кольцо не роняет обход "
+   f"({_tree43.data['tree']})")
+ok(_tree43.data["unreadable"] == _lost43, f"дерево: нечитаемый каталог назван полем фактами ({_tree43.data['unreadable']})")
+ok(sorted(r["path"] for r in _search43.data["results"])
+   == sorted(["walk43/inner/deep.txt", "walk43/inner_file_link.txt", "walk43/plain.txt"]
+             + ["walk43/locked/x.txt"] * (not _locked43)),
+   f"поиск по содержимому не читает сквозь ссылку наружу и в закрытый каталог ({_search43.data['results']})")
+ok(_search43.data["unreadable"] == _lost43, f"поиск: нечитаемый каталог назван полем фактами ({_search43.data['unreadable']})")
+
+print("== 45. Запись инструментов — заменой слоя: читатель дочитывает старое, права целы, остатка нет (FS-06) ==")
+_w45 = ws18 / "write45"
+_w45.mkdir()
+for _tool45, _name45, _args45 in (
+        ("fs_write_file", "fs_write_file.md", {"path": "write45/fs_write_file.md", "content": "НОВОЕ содержимое"}),
+        ("memory_write", "memory_write.md", {"path": "write45/memory_write.md", "entry_date": "2026-10-05",
+                                             "title": "т", "decision": "д", "reason": "п"})):
+    _f45 = _w45 / _name45
+    _f45.write_text("## [2026-01-01] СТАРОЕ\n" * 50, encoding="utf-8")
+    _f45.chmod(0o640)
+    with open(_f45, "rb", buffering=0) as _reader45:  # без буфера: остаток читается с диска, а не из памяти
+        _head45 = _reader45.read(10)
+        _r45 = call(_tool45, **_args45)
+        _rest45 = _reader45.read()
+    ok(_r45.status == "success" and (_head45 + _rest45).decode("utf-8") == "## [2026-01-01] СТАРОЕ\n" * 50,
+       f"{_tool45}: читатель, открывший файл до записи, дочитал старое целиком ({_r45.status})")
+    ok(_f45.read_text(encoding="utf-8") != "## [2026-01-01] СТАРОЕ\n" * 50 and (_f45.stat().st_mode & 0o777) == 0o640,
+       f"{_tool45}: под именем новое, права заменённого файла целы ({oct(_f45.stat().st_mode & 0o777)})")
+ok(not [n for n in _os43.listdir(_w45) if n.endswith(".part")], f"остатков записи нет ({_os43.listdir(_w45)})")
+# «Создать» не затирает (FS-07): занятый путь — FILE_EXISTS через путь доставки, чужие байты целы.
+for _tool45, _name45, _args45 in (("fs_create_file", "занят.md", {"content": "ЧУЖОЕ"}),
+                                  ("fs_create_python_script", "занят.py", {"description": "каркас"})):
+    (_w45 / _name45).write_text("СВОЁ", encoding="utf-8")
+    _r45 = asyncio.run(_eng.call(_tool45, {"path": f"write45/{_name45}", **_args45}))
+    ok(_r45.status == "error" and _r45.error.code == "FILE_EXISTS" and _r45.error.facts == {"path": f"write45/{_name45}"}
+       and (_w45 / _name45).read_text(encoding="utf-8") == "СВОЁ",
+       f"{_tool45} по занятому пути — FILE_EXISTS с путём от корня, файл не тронут ({_r45.error})")
+_new45 = asyncio.run(_eng.call("fs_create_file", {"path": "write45/новый.md", "content": "новое"}))
+ok(_new45.status == "success" and (_w45 / "новый.md").read_text(encoding="utf-8") == "новое", "fs_create_file по свободному пути создаёт")
+(_w45 / "frag.md").write_text("ПРАВКА ПОЛЬЗОВАТЕЛЯ", encoding="utf-8")
+_frag45 = asyncio.run(_eng.call("fs_create_project_structure", {"fragments": [
+    {"name": "write45/frag.md", "content": "КАРКАС"}, {"name": "write45/frag_new.md", "content": "КАРКАС"}]}))
+ok(_frag45.status == "success" and _frag45.data["created"] == [{"name": "write45/frag_new.md", "type": "file"}]
+   and _frag45.data["skipped"] == [{"reason": "FILE_EXISTS", "name": "write45/frag.md"}]
+   and any(f.type == "FragmentsSkipped" for f in _frag45.facts)
+   and (_w45 / "frag.md").read_text(encoding="utf-8") == "ПРАВКА ПОЛЬЗОВАТЕЛЯ",
+   f"повторная материализация: занятый фрагмент назван в skipped (FILE_EXISTS), правка цела, свободный создан ({_frag45.data})")
+
+print("== 46. Удаление и перенос действуют на названную ссылку и не затирают (FS-14) ==")
+_w46 = ws18 / "move46"
+(_w46 / "data").mkdir(parents=True)
+(_w46 / "data" / "ценное.txt").write_text("ЦЕННОЕ", encoding="utf-8")
+(_w46 / "file.txt").write_text("ФАЙЛ", encoding="utf-8")
+(_w46 / "link_dir").symlink_to(_w46 / "data")
+(_w46 / "link_file.txt").symlink_to(_w46 / "file.txt")
+_d46 = call("fs_delete", path="move46/link_dir", force=True)
+ok(_d46.status == "success" and not (_w46 / "link_dir").is_symlink() and (_w46 / "data" / "ценное.txt").is_file(),
+   "fs_delete ссылки на каталог снял ссылку, каталог и его содержимое целы (прежде rmtree шёл по раскрытому пути)")
+_d46 = call("fs_delete", path="move46/link_file.txt", force=True)
+ok(_d46.status == "success" and not (_w46 / "link_file.txt").is_symlink() and (_w46 / "file.txt").is_file(),
+   "fs_delete ссылки на файл снял ссылку, файл цел")
+_root46 = asyncio.run(_eng.call("fs_delete", {"path": ".", "force": True}))
+ok(_root46.status == "error" and _root46.error.code == "VALIDATION_ERROR"
+   and _root46.error.errors == [{"field": "path", "rule": "not_root"}] and (_w46 / "file.txt").is_file(),
+   f"удалить корень рабочей области нельзя: отказ кодом, всё на месте ({_root46.error})")
+(_w46 / "busy.txt").write_text("ЗАНЯТО", encoding="utf-8")
+for _tool46, _args46 in (("fs_move", {"source": "move46/file.txt", "destination": "move46/busy.txt"}),
+                         ("fs_rename", {"path": "move46/file.txt", "new_name": "busy.txt"})):
+    _r46 = asyncio.run(_eng.call(_tool46, _args46))
+    ok(_r46.status == "error" and _r46.error.code == "FILE_EXISTS" and _r46.error.facts == {"path": "move46/busy.txt"}
+       and (_w46 / "busy.txt").read_text(encoding="utf-8") == "ЗАНЯТО" and (_w46 / "file.txt").read_text(encoding="utf-8") == "ФАЙЛ",
+       f"{_tool46} в занятое имя — FILE_EXISTS, оба файла целы ({_r46.error})")
+(_w46 / "empty_dst").mkdir()
+_r46 = asyncio.run(_eng.call("fs_move", {"source": "move46/data", "destination": "move46/empty_dst"}))
+ok(_r46.status == "error" and _r46.error.code == "FILE_EXISTS" and (_w46 / "data" / "ценное.txt").is_file(),
+   "перенос каталога на занятое имя (даже пустой каталог) — FILE_EXISTS, источник на месте")
+for _tool46, _args46 in (("fs_move", {"source": "move46/нет-такого.md", "destination": "../../ушло.md"}),
+                         ("fs_rename", {"path": "move46/нет-такого.md", "new_name": "../../../ушло.md"})):
+    _r46 = asyncio.run(_eng.call(_tool46, _args46))
+    ok(_r46.status == "error" and _r46.error.code == "PATH_ESCAPE",
+       f"{_tool46}: путь назначения за корнем судится дверью первым, раньше «источника нет» ({_r46.error})")
+(_w46 / "flink.txt").symlink_to(_w46 / "file.txt")
+_m46 = call("fs_move", source="move46/flink.txt", destination="move46/flink_moved.txt")
+ok(_m46.status == "success" and (_w46 / "flink_moved.txt").is_symlink()
+   and (_w46 / "file.txt").read_text(encoding="utf-8") == "ФАЙЛ",
+   "fs_move ссылки на файл перенёс саму ссылку, а не жёсткую копию цели")
+(_w46 / "link_again").symlink_to(_w46 / "data")
+_m46 = call("fs_move", source="move46/link_again", destination="move46/moved_link")
+ok(_m46.status == "success" and (_w46 / "moved_link").is_symlink() and (_w46 / "data" / "ценное.txt").is_file()
+   and not (_w46 / "link_again").exists(follow_symlinks=False),
+   "fs_move ссылки перенёс саму ссылку, каталог-цель на месте")
+
+
+def _key46() -> Path:
+    """Ключ канала заново перед каждым вызовом: проверки независимы и при пробитой двери."""
+    (ws18 / ".secrets").mkdir(exist_ok=True)
+    (ws18 / ".secrets" / "канал.enc").write_text("КЛЮЧ", encoding="utf-8")
+    return ws18 / ".secrets" / "канал.enc"
+
+
+# У удаления и переноса `named` — единственная дверь: закрытый каталог судится по самому имени.
+for _tool46, _args46 in (("fs_move", {"source": ".secrets", "destination": "move46/ключи"}),
+                         ("fs_move", {"source": "move46/file.txt", "destination": ".secrets"}),
+                         ("fs_rename", {"path": ".secrets", "new_name": "открыто"}),
+                         ("fs_delete", {"path": ".secrets", "force": True})):
+    _k46 = _key46()
+    _r46 = asyncio.run(_eng.call(_tool46, _args46))
+    ok(_r46.status == "error" and _r46.error.code == "SECRET_ACCESS_DENIED"
+       and _k46.is_file() and _k46.read_text(encoding="utf-8") == "КЛЮЧ" and (_w46 / "file.txt").is_file(),
+       f"{_tool46} {_args46}: закрытый каталог — отказ двери, ключ и файл на месте ({_r46.error})")
+# Корень и каталог внутрь самого себя — отказ ввода кодом, а не сырой EINVAL с путём сервера; данные целы.
+for _tool46, _args46, _rule46 in (
+        ("fs_move", {"source": "move46/..", "destination": "move46/корень"}, {"field": "source", "rule": "not_root"}),
+        ("fs_rename", {"path": "move46/..", "new_name": "корень"}, {"field": "source", "rule": "not_root"}),
+        ("fs_move", {"source": ".", "destination": "move46/корень"}, {"field": "source", "rule": "not_root"}),
+        ("fs_move", {"source": "", "destination": "move46/корень"}, {"field": "source", "rule": "not_root"}),
+        ("fs_rename", {"path": ".", "new_name": "корень"}, {"field": "source", "rule": "not_root"}),
+        ("fs_move", {"source": "move46/data", "destination": "move46/data/внутрь"},
+         {"field": "destination", "rule": "inside_source"}),
+        ("fs_rename", {"path": "move46/data", "new_name": "data/внутрь"}, {"field": "destination", "rule": "inside_source"})):
+    _r46 = asyncio.run(_eng.call(_tool46, _args46))
+    ok(_r46.status == "error" and _r46.error.code == "VALIDATION_ERROR" and _r46.error.errors == [_rule46]
+       and (_w46 / "data" / "ценное.txt").is_file()
+       and not [p for p in (ws18 / "корень", _w46 / "корень", _w46 / "data" / "внутрь") if p.exists()],
+       f"{_tool46} {_args46}: {_rule46['rule']} — отказ кодом, дерево на месте ({_r46.error})")
+# `<каталог>/..` — это корень: удаление судится по раскрытому пути, а не по написанному (последним — пробитая дверь
+# снесла бы рабочую область).
+_r46 = asyncio.run(_eng.call("fs_delete", {"path": "move46/..", "force": True}))
+ok(_r46.status == "error" and _r46.error.code == "VALIDATION_ERROR"
+   and _r46.error.errors == [{"field": "path", "rule": "not_root"}] and (_w46 / "data" / "ценное.txt").is_file(),
+   f"fs_delete move46/.. — это корень: отказ not_root, всё на месте ({_r46.error})")
+_cfg45 = Path(tempfile.mkdtemp(prefix="vpm_cfg45_")) / "config"
+(_cfg45 / "templates" / "workspace").mkdir(parents=True)
+(_cfg45 / "firewall.yaml").write_text('write_allowlist:\n  enabled: true\n  extensions: [".md"]\n' + _LIMITS_YAML,
+                                     encoding="utf-8")
+(_cfg45 / "templates" / "workspace" / "note45.tpl.yaml").write_text(
+    'note45:\n  id:\n    prefix: NT\n    strategy: hex\n  files:\n'
+    '    - { name: "readme.md", content: "ИЗ ШАБЛОНА" }\n', encoding="utf-8")
+_ws45 = Path(tempfile.mkdtemp(prefix="vpm_tpl45_"))
+_tpl45 = TemplateEngine(_ws45, IDGenerator(), _cfg45 / "templates" / "workspace", _cfg45)
+_tpl45.create_node("note45", "n1", parent_path="x/")
+(_ws45 / "x/n1/readme.md").write_text("ПРАВКА ПРОЕКТА", encoding="utf-8")
+_again45 = _tpl45.create_node("note45", "n1", parent_path="x/")
+ok((_ws45 / "x/n1/readme.md").read_text(encoding="utf-8") == "ПРАВКА ПРОЕКТА",
+   "файловый фрагмент: правка проекта переживает повторную материализацию (create не затирает)")
+ok(not [c for c in _again45["created"] if c.get("path", "").endswith("readme.md")]
+   and {"kind": "file", "name": "readme.md", "reason": "FILE_EXISTS"} in _again45["skipped"],
+   f"незаписанный файл не отчитан «создан»: он в skipped с FILE_EXISTS ({_again45['skipped']})")
+
+print("== 47. Пределы и политика записи у двери слоя (FS-12/13/15): ответ инструмента и диск ==")
+from core.contracts import as_untrusted as _untrusted47
+
+_w47 = ws18 / "lim47"
+_w47.mkdir()
+_rl47 = _ctx.read_limit
+_wl47 = _y.safe_load((ROOT / "config" / "firewall.yaml").read_text(encoding="utf-8"))["file_limits"]["write_bytes"]
+
+
+def _call47(tool, **args):
+    return asyncio.run(_eng.call(tool, args))
+
+
+# Под пределом ответ прежний: ровно поля content и size, один факт FileRead.
+(_w47 / "мало.md").write_text("короткий текст — ё", encoding="utf-8")
+_r47 = _call47("fs_read_file", path="lim47/мало.md")
+ok(_r47.status == "success" and _r47.data == {
+       "content": _untrusted47("короткий текст — ё", "workspace:lim47/мало.md", _ctx.injection_flagger).model_dump(),
+       "size": len("короткий текст — ё")} and [f.type for f in _r47.facts] == ["FileRead"],
+   f"под пределом fs_read_file отвечает прежними полями и одним фактом ({_r47.error or sorted(_r47.data)})")
+# Больше предела — голова до предела, обрезание названо полями и фактом; срез посреди символа — не порча.
+_big47 = "a" + "я" * _rl47  # 1 + 2·предел байт: граница предела режет «я» пополам
+(_w47 / "много.md").write_text(_big47, encoding="utf-8")
+_r47 = _call47("fs_read_file", path="lim47/много.md")
+_head47 = (_r47.data.get("content") or {}).get("value", "") if _r47.status == "success" else ""
+ok(_r47.status == "success" and _r47.data.get("truncated") is True and _r47.data.get("limit") == _rl47
+   and _r47.data.get("file_bytes") == len(_big47.encode("utf-8")) and _big47.startswith(_head47)
+   and len(_head47.encode("utf-8")) == _rl47 - 1,
+   f"больше предела: голова {len(_head47.encode('utf-8'))} байт при пределе {_rl47}, поля обрезания ({_r47.error})")
+ok([f.data for f in _r47.facts if f.type == "FileTruncated"]
+   == [{"path": "lim47/много.md", "limit": _rl47, "file_bytes": len(_big47.encode("utf-8"))}],
+   "обрезание — отдельный факт FileTruncated в канале фактов, а не только поле данных")
+# Не текст и каталог — отказ кодом через путь доставки, а не INTERNAL_ERROR.
+(_w47 / "кадр.png").write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe\x00")
+(_w47 / "папка").mkdir()
+_r47 = _call47("fs_read_file", path="lim47/кадр.png")
+ok(_r47.status == "error" and _r47.error.code == "FILE_NOT_TEXT" and _r47.error.facts == {"path": "lim47/кадр.png"},
+   f"бинарный файл — FILE_NOT_TEXT с путём от корня ({_r47.error})")
+_r47 = _call47("fs_read_file", path="lim47/папка")
+ok(_r47.status == "error" and _r47.error.code == "VALIDATION_ERROR"
+   and _r47.error.errors == [{"field": "path", "rule": "not_file"}], f"каталог — not_file ({_r47.error})")
+# Память нужна целиком: больше предела — отказ, файл не тронут (вставка в половину потеряла бы хвост).
+_mem47 = "# Память\n\n## [2026-01-01] Решение: старое\n" + "я" * _rl47
+(_w47 / "память.md").write_text(_mem47, encoding="utf-8")
+for _tool47, _args47 in (("memory_read", {"path": "lim47/память.md"}),
+                         ("memory_write", {"path": "lim47/память.md", "entry_date": "2026-10-05", "title": "т",
+                                           "decision": "д", "reason": "п"})):
+    _r47 = _call47(_tool47, **_args47)
+    ok(_r47.status == "error" and _r47.error.code == "FILE_TOO_LARGE"
+       and _r47.error.facts == {"path": "lim47/память.md", "size": len(_mem47.encode("utf-8")), "limit": _rl47}
+       and (_w47 / "память.md").read_text(encoding="utf-8") == _mem47,
+       f"{_tool47}: файл памяти больше предела — FILE_TOO_LARGE, файл цел ({_r47.error})")
+# memory_write — та же дверь записи, что у fs_*: тип судит политика, на диске ничего.
+_r47 = _call47("memory_write", path="lim47/решения.sh", entry_date="2026-10-05", title="т", decision="д", reason="п")
+ok(_r47.status == "error" and _r47.error.code == "FILE_TYPE_FORBIDDEN"
+   and _r47.error.facts == {"path": "lim47/решения.sh"} and not (_w47 / "решения.sh").exists(),
+   f"memory_write в .sh — FILE_TYPE_FORBIDDEN, файла нет (прежде писал мимо политики) ({_r47.error})")
+# Предел записи — до первого байта: прежний файл цел, нового нет.
+(_w47 / "старое.md").write_text("СТАРОЕ", encoding="utf-8")
+_over47 = "ы" * (_wl47 // 2 + 1)  # предел + 2 байта
+for _tool47, _path47 in (("fs_write_file", "lim47/старое.md"), ("fs_create_file", "lim47/новое.md")):
+    _r47 = _call47(_tool47, path=_path47, content=_over47)
+    ok(_r47.status == "error" and _r47.error.code == "FILE_TOO_LARGE"
+       and _r47.error.facts == {"path": _path47, "size": len(_over47.encode("utf-8")), "limit": _wl47}
+       and (_w47 / "старое.md").read_text(encoding="utf-8") == "СТАРОЕ" and not (_w47 / "новое.md").exists(),
+       f"{_tool47}: больше предела записи — FILE_TOO_LARGE до первого байта, диск прежний ({_r47.error})")
+_r47 = _call47("fs_create_project_structure", fragments=[{"name": "lim47/крупно.md", "content": _over47},
+                                                          {"name": "lim47/мелко.md", "content": "ок"}])
+ok(_r47.status == "success" and {"reason": "FILE_TOO_LARGE", "name": "lim47/крупно.md", "path": "lim47/крупно.md",
+                                  "size": len(_over47.encode("utf-8")), "limit": _wl47} in _r47.data["skipped"]
+   and not (_w47 / "крупно.md").exists() and (_w47 / "мелко.md").is_file(),
+   f"фрагмент больше предела — в skipped кодом и фактами, соседний создан ({_r47.data.get('skipped')})")
+# Поиск по содержимому: файл больше предела не «не совпал», а назван непрочитанным.
+(_w47 / "искомое.md").write_text("ключ-47", encoding="utf-8")
+_r47 = _call47("fs_smart_search", directory="lim47", keyword="ключ-47")
+ok(_r47.status == "success" and [r["path"] for r in _r47.data["results"]] == ["lim47/искомое.md"]
+   and {"path": "lim47/много.md", "reason": "FILE_TOO_LARGE"} in _r47.data["unreadable"],
+   f"поиск: совпадение найдено, файл больше предела назван в unreadable ({_r47.data.get('unreadable')})")
+
+print("== 48. Пределы чтения и записи — разные ключи объявления: равные числа подмену ключа не прячут (FS-12) ==")
+_cfg48 = Path(tempfile.mkdtemp(prefix="vpm_cfg48_")) / "config"
+_shutil.copytree(CFG, _cfg48)
+_fw48 = _y.safe_load((_cfg48 / "firewall.yaml").read_text(encoding="utf-8"))
+_fw48["file_limits"] = {"read_bytes": 64 * 1024, "write_bytes": 128 * 1024}
+(_cfg48 / "firewall.yaml").write_text(_y.safe_dump(_fw48, allow_unicode=True), encoding="utf-8")
+_ws48 = Path(tempfile.mkdtemp(prefix="vpm_ws48_"))
+_sm48, _ids48 = StateManager(_ws48), IDGenerator()
+_eng48 = Engine(reactions=Reactions(_cfg48 / "server_reactions.yaml"), state_manager=_sm48)
+_fs_group.register(_eng48, ToolContext(_eng48, _ids48, _sm48, None, ExcelEngine(_ws48),
+                                       TemplateEngine(_ws48, _ids48, TPL_DIR), LinkRegistry(_ws48), _ws48, _cfg48))
+_mid48 = "ж" * (50 * 1024)  # 100 КБ: больше предела чтения, меньше предела записи
+_w48 = asyncio.run(_eng48.call("fs_write_file", {"path": "mid.md", "content": _mid48}))
+_r48 = asyncio.run(_eng48.call("fs_read_file", {"path": "mid.md"}))
+ok(_w48.status == "success" and (_ws48 / "mid.md").read_text(encoding="utf-8") == _mid48,
+   f"запись 100 КБ при пределе записи 128 КБ проходит ({_w48.error})")
+ok(_r48.status == "success" and _r48.data.get("truncated") is True and _r48.data.get("limit") == 64 * 1024
+   and _r48.data.get("file_bytes") == 100 * 1024,
+   f"чтение того же файла при пределе чтения 64 КБ — с обрезанием ({_r48.error or {k: _r48.data.get(k) for k in ('truncated', 'limit')}})")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

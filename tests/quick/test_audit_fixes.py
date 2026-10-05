@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 import server as S
+from tests.harness.inprocess import create_server
 from core.firewall import Firewall, FirewallRequest
 from core.ids import IDGenerator
 
@@ -44,7 +45,7 @@ def _reactions_registry():
 
 
 async def main():
-    engine, transport, firewall = S.create_server()
+    engine, transport, firewall = create_server()
 
     # Path traversal заблокирован, легитимный путь работает
     r = await engine.call("fs_read_file", {"path": "../../../../../etc/passwd"})
@@ -52,7 +53,8 @@ async def main():
           r.error.code if r.error else "")
     r2 = await engine.call("fs_read_file", {"path": "../server.py"})
     check("traversal ../server.py blocked", r2.status == "error" and r2.error.code == "PATH_ESCAPE")
-    await engine.call("fs_create_file", {"path": "ok/inside.txt", "content": "hi"})
+    # Рабочая область настоящая и переживает прогон: запись, а не создание (создание по занятому пути — FILE_EXISTS).
+    await engine.call("fs_write_file", {"path": "ok/inside.txt", "content": "hi"})
     r3 = await engine.call("fs_read_file", {"path": "ok/inside.txt"})
     check("legit path inside workspace works",
           r3.status == "success" and r3.data.get("content", {}).get("value") == "hi",
@@ -63,6 +65,7 @@ async def main():
     _marker = Path("/tmp/vpm_desc_pwned")
     _marker.unlink(missing_ok=True)
     _evil_desc = '"""\nimport os\nos.system("touch /tmp/vpm_desc_pwned")\n"""'
+    (S.WORKSPACE_PATH / "gen" / "evil.py").unlink(missing_ok=True)  # след прошлого прогона: «новый» скрипт не затирает
     _rs = await engine.call("fs_create_python_script", {"path": "gen/evil.py", "description": _evil_desc})
     check("создание скрипта с враждебным описанием не отказывает", _rs.status == "success",
           _rs.error.code if _rs.error else "")
@@ -170,16 +173,17 @@ async def main():
           == len(_decl_fw["anomaly_detection"]["dangerous_tools"]))
 
     # FsSearcher.root traversal — escape-root должен давать PATH_ESCAPE.
-    from core.search.fs_searcher import FsSearcher, FsSearchTask, FsSearchError as _FsErr
+    from core.search.fs_searcher import FsSearcher, FsSearchTask
+    from core.contracts import ContractError as _Refusal
     from pathlib import Path as _P
     _ws = _P("workspace").resolve(); _ws.mkdir(exist_ok=True)
-    _fs = FsSearcher(_ws)
+    _fs = FsSearcher(_ws, read_bytes=_decl_fw["file_limits"]["read_bytes"])
     def _esc(root):
         try:
             _fs.search(FsSearchTask(id="t", root=root, content_keywords=["root"]))
             return False  # не должно пройти
-        except _FsErr as e:
-            return getattr(e, "code", "") == "PATH_ESCAPE"
+        except _Refusal as e:
+            return engine.refusal(e).error.code == "PATH_ESCAPE"
     check("FsSearcher root='/etc' → PATH_ESCAPE (traversal contained)", _esc("/etc"))
     check("FsSearcher root='../../../../etc' → PATH_ESCAPE", _esc("../../../../etc"))
     (_ws / "_probe36").mkdir(exist_ok=True)
@@ -273,19 +277,17 @@ async def main():
     check("разнотипная сортировка не роняет TypeError", _f42_ok and len(_f42_sorted) == 3,
           f"raised? {not _f42_ok}")
 
-    # safe_resolve кидает типизированный PathEscapeError (подтип ValueError = back-compat);
-    # _safe теперь мапит escape→PATH_ESCAPE, а прочий ValueError→INTERNAL_ERROR (не вводит в заблуждение).
-    from core.paths import safe_resolve as _sr, PathEscapeError as _PEE
-    from pathlib import Path as _P37
-    _ws37 = _P37("workspace").resolve()
-    try:
-        _sr("../../../../etc", _ws37); _f37_raised = None
-    except _PEE as _e:
-        _f37_raised = _e
-    check("traversal → PathEscapeError", isinstance(_f37_raised, _PEE))
-    check("PathEscapeError — подтип ValueError (back-compat except ValueError)", isinstance(_f37_raised, ValueError))
-    check("обычный ValueError НЕ PathEscapeError (→ пойдёт в INTERNAL_ERROR)",
-          not isinstance(ValueError("bad arg"), _PEE))
+    # Отказ двери пути — отказ ядра: клиент получает код и факт `path` от корня, места сервера на диске в ответе нет.
+    _root37 = str(S.WORKSPACE_PATH)
+    for _asked37, _code37, _named37 in (
+            ("../../../../etc", "PATH_ESCAPE", "../../../../etc"),
+            (f"{_root37}/../outside.txt", "PATH_ESCAPE", "../outside.txt"),
+            ("ch/.secrets/provider_keys.enc", "SECRET_ACCESS_DENIED", "ch/.secrets/provider_keys.enc")):
+        _r37 = await engine.call("fs_read_file", {"path": _asked37})
+        _said37 = _r37.model_dump_json()
+        check(f"отказ двери {_asked37!r} → {_code37}, path={_named37!r}, корня сервера в ответе нет",
+              _r37.error is not None and _r37.error.code == _code37
+              and _r37.error.facts.get("path") == _named37 and _root37 not in _said37, _said37[:300])
 
     # validate_formulas ПЕРЕСЧИТЫВАЕТ формулы (LibreOffice headless) → ловит =1/0.
     from core.excel import ExcelEngine
@@ -361,12 +363,12 @@ async def main():
           check_auth({"x-api-key": "anything"}, "") == "AUTH_REQUIRED")
 
     # S1/§3-тер: секрет недостижим для файловых инструментов ПО ПОСТРОЕНИЮ (.env вне workspace/)
-    from core.paths import PathEscapeError, safe_resolve
+    from core.paths import Files, PathEscapeError
     _ws = Path(_tf.mkdtemp(prefix="s1ws_")) / "workspace"
     _ws.mkdir(parents=True)
     _escaped = False
     try:
-        safe_resolve("../.env", _ws)
+        Files(_ws).place("../.env")
     except PathEscapeError:
         _escaped = True
     check(".env вне workspace: путь к секрету не резолвится инструментами", _escaped)
@@ -416,21 +418,35 @@ async def main():
                       text=True, check=True).stdout.split():
         if _f == "core/contracts/errors.py":
             continue
+        _zone = {"ContractError"}  # база и её наследники в этом файле
         for _n in _ast.parse((ROOT / _f).read_text(encoding="utf-8")).body:
-            if not isinstance(_n, _ast.ClassDef) or not _n.name.endswith("Error"):
+            if not isinstance(_n, _ast.ClassDef):
                 continue
             _bases = [_ast.unparse(_b) for _b in _n.bases]
-            # ValueError-подтипы `core/paths` — намеренно другой канал: старые перехваты не рвём.
+            if _zone & set(_bases):
+                _zone.add(_n.name)
             # TunnelError живёт на подъёме сервера, а не на пути инструмента: до клиента он
             # не доходит вовсе, и код реестра ему не нужен.
-            if _bases == ["ContractError"] or "ValueError" in _bases or _n.name == "TunnelError":
+            if not _n.name.endswith("Error") or _n.name in _zone or _n.name == "TunnelError":
                 continue
             _outsiders.append(f"{_f}:{_n.name}({','.join(_bases)})")
     check(f"каждое исключение зоны наследует ContractError (мимо базы: {_outsiders or '—'})",
           not _outsiders)
-    check("ctx.safe ловит базу, а не перечень зон",
-          "except ContractError" in (ROOT / "tools" / "_context.py").read_text(encoding="utf-8")
-          and _CE is not None)
+    # Перевод исключения в отказ — одна функция Engine.refusal, ctx.safe её зовёт: инвариант держит поведение
+    # (новая зона доходит своим кодом), а не строка `except ContractError` в файле, которой там больше нет.
+    from types import SimpleNamespace as _NS
+    from core.engine.engine import Engine as _EngineForSafe
+    from tools._context import ToolContext as _TC
+
+    class _NewZoneError(_CE):
+        pass
+
+    def _raise_new_zone():
+        raise _NewZoneError("SHEET_NOT_FOUND", "новая зона")
+
+    _ok, _got = _TC.safe(_NS(engine=_EngineForSafe(reactions=_reactions_registry())), _raise_new_zone)
+    check("ctx.safe ловит базу, а не перечень зон: новая зона доходит своим кодом",
+          not _ok and _got.error.code == "SHEET_NOT_FOUND", _got.error.code if not _ok else "успех")
 
     # Предел одновременности: перебор обязан вернуть КОД, а не ждать за пределом клиента.
     from core.contracts import ToolResult as _ToolResult

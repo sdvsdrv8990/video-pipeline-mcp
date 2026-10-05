@@ -23,6 +23,13 @@ VALIDATION_ERROR:
     suggested_tool: "tools/list"
     reason: "Сверь параметры со схемой инструмента и повтори вызов."
 
+BOOK_ROW_INVALID:
+  class: ai_recoverable
+  message_template: "Строка {row} листа {sheet} книги канала не принята: какое поле и какое правило нарушено — в errors."
+  recovery:
+    suggested_tool: table_update
+    reason: "Это данные канала, а не вызов инструмента: поправь ячейки этой строки (table_update) и повтори."
+
 INTERNAL_ERROR:
   class: human_required
   message_template: "Внутренняя ошибка сервера."
@@ -33,9 +40,9 @@ INTERNAL_ERROR:
 
 PATH_ESCAPE:
   class: ai_recoverable
-  message_template: "Путь выходит за пределы workspace/."
+  message_template: "Путь «{path}» выходит за пределы своего корня."
   recovery:
-    reason: "Используй путь ВНУТРИ workspace, без '..' и абсолютных путей."
+    reason: "Путь задаётся внутри своего корня — рабочей области или каталога весов, — без '..' и абсолютных путей."
 
 FILE_NOT_FOUND:
   class: ai_recoverable
@@ -127,7 +134,7 @@ ROW_NOT_FOUND:
   message_template: "Строка с таким ID не найдена."
   recovery:
     suggested_tool: table_find_row
-    reason: "Если известно ЗНАЧЕНИЕ, а не ID — найди ID через table_find_row(where={столбец: значение}); иначе создай строку через table_append."
+    reason: "Если известно ЗНАЧЕНИЕ, а не ID — найди ID через table_find_row(where={{столбец: значение}}); иначе создай строку через table_append."
 
 COMPUTED_READONLY:
   class: ai_recoverable
@@ -161,6 +168,12 @@ SHEET_EXISTS:
   message_template: "Лист с таким именем уже существует."
   recovery:
     reason: "Выбери свободное имя или переименуй существующий через excel_rename_sheet."
+
+SHEET_NAME_INVALID:
+  class: ai_recoverable
+  message_template: "Имя листа не принято книгой."
+  recovery:
+    reason: "Имя листа — непустое и без символов \\ / ? * [ ] :, а длиннее 31 символа его не прочтут другие программы."
 
 LAST_SHEET:
   class: ai_recoverable
@@ -216,9 +229,21 @@ PROVIDER_TIMEOUT:
 
 DOWNLOAD_INCOMPLETE:
   class: server_recoverable
-  message_template: "Файл не загружен полностью: успех провайдера не подтверждён диском."
+  message_template: "Файл с «{host}» не загружен полностью: на диске {got} байт из {expected}."
   recovery:
-    reason: "Ответ 200 не означает загрузку — файла нет, он пуст или размер не сошёлся с обещанным. Повтори загрузку; при повторе проверь ссылку и место на диске."
+    reason: "Ответ 200 не означает загрузку — файла нет, он пуст или размер не сошёлся с обещанным. Оборванная часть лежит остатком: повтор той же установки докачает её с места обрыва; при повторе проверь ссылку и место на диске."
+
+DOWNLOAD_RANGE_INVALID:
+  class: server_recoverable
+  message_template: "«{host}» ответил на докачку не с того места: ждали байт {expected}, пришло «{got}»."
+  recovery:
+    reason: "Сервер прислал часть файла не с той позиции, и дописать её к остатку значило бы испортить файл. Остаток не тронут; повтор начнёт заново, если сервер ответит целиком."
+
+DOWNLOAD_TOO_LARGE:
+  class: integrity
+  message_template: "Ответ больше объявленного предела {limit_mb} МБ — чтение оборвано, недописанное убрано."
+  recovery:
+    reason: "Предел считается по ходу потока, а не после записи. Если такой размер штатный — подними предел в config/media_tasks.yaml: download.fetch.max_bytes для файла результата, download.answer.max_bytes для ответа статуса задачи."
 
 SECRET_ACCESS_DENIED:
   class: integrity
@@ -247,9 +272,9 @@ SECRET_ENCRYPTION_UNAVAILABLE:
 
 DOWNLOAD_FORBIDDEN:
   class: integrity
-  message_template: "Ссылка провайдера не пропущена: адрес или размер вне объявленных границ."
+  message_template: "Адрес «{host}» не пропущен: туда не уходят ни ключ, ни запрос (разрешён: {allowed})."
   recovery:
-    reason: "Сервер не ходит по ссылкам во внутреннюю сеть и не пишет файлы сверх объявленного предела. Проверь, что вернул провайдер; границы — config/media_tasks.yaml → download.fetch."
+    reason: "Ключ уходит только по https на объявленный хост провайдера (config/providers.yaml → online.http), даже если адрес статуса или результата назвал сам провайдер. По ссылкам во внутреннюю сеть и на необъявленные схемы и хосты сервер тоже не ходит: результаты — config/media_tasks.yaml → download.fetch, веса — config/providers.yaml → local.install.fetch. Проверь, что вернул провайдер, и столбец model строки канала — он подставляется в адрес вызова."
 
 PROVIDER_ADAPTER_MISSING:
   class: human_required
@@ -266,18 +291,129 @@ RUNNER_NOT_RUNNING:
     suggested_params: {action: start}
     reason: "Раннер поднимается явной командой и сам не стартует (демона на сервере нет). Подними его — media_runner(action='start') — либо переключи строку канала на провайдера, который считает в самом сервере (table_update). Молчаливого отката в процесс нет намеренно: он скрыл бы, что изоляции больше нет."
 
-NO_DISK_SPACE:
+DISK_SPACE_UNKNOWN:
   class: human_required
-  message_template: "На диске сервера не хватает места под веса модели."
+  message_template: "Хватит ли места под веса '{model}', не определить: свободное место в {dir} не прочитано."
+  recovery:
+    reason: "Сервер не смог прочитать свободное место на диске весов (причина — в строке «НЕ ЗНАЕМ» вывода python scripts/models.py hardware), а качать вслепую он не станет. Другая модель здесь не поможет: владелец проверяет доступ к {dir} и его диск."
+
+MODEL_SIZE_UNKNOWN:
+  class: human_required
+  message_template: "Хватит ли места под веса '{model}', не определить: источник не назвал длину частей — {parts}."
+  recovery:
+    suggested_tool: media_models
+    reason: "Без длины каждой части место не проверить, а качать вслепую сервер не станет. Выбери модель, размер которой источник называет (media_models, scope='local'); иначе решает владелец — проверяет место сам и ставит модель вручную."
+
+INSTALL_STALLED:
+  class: ai_recoverable
+  message_template: "Установка '{model}' не подаёт признаков работы дольше {seconds} с: байты не растут, загрузчик молчит."
+  recovery:
+    suggested_tool: media_model_install
+    reason: "Сеть встала, сервер перезапустили или загрузка зависла. Повтори установку: целые части в план не войдут, а оборванная часть докачается с места обрыва, если источник не сменил файл (докачку подтверждает валидатор ответившего сервера); сменил — часть качается заново."
+
+MODEL_INSTALL_BUSY:
+  class: ai_recoverable
+  message_template: "Модель '{model}' уже ставится: её части сейчас пишет другая установка — в этом сервере или в другом процессе (scripts/models.py)."
+  recovery:
+    suggested_tool: media_install_status
+    reason: "Две установки одной модели пишут один остаток части и портят его, поэтому вторая не начинается. Прозвони идущую (media_install_status) и дождись её исхода; не поставила — повтори установку: целые части в план не войдут, оборванная докачается."
+
+MODEL_NO_DISK_SPACE:
+  class: human_required
+  message_template: "Весам '{model}' нужно {need_mb} МБ, а на диске под веса свободно {free_mb} МБ."
   recovery:
     suggested_tool: media_models
     reason: "Освободи место либо выбери модель меньше: media_models(scope='local', fits=true) отдаёт только те, что влезают на эту машину."
 
 LOCAL_MODEL_MISSING:
   class: human_required
-  message_template: "Веса локальной модели не найдены."
+  message_template: "Веса локальной модели '{model}' не найдены (ожидались в {path})."
   recovery:
-    reason: "Веса не лежат в git: вытяни их командой python scripts/models.py pull, либо переключи строку канала на другого провайдера (table_update)."
+    suggested_tool: media_models
+    reason: "Веса не лежат в git. Посмотри, что можно поставить — media_models (scope='local'), поставь — media_model_install; из терминала то же делает python scripts/models.py install <id> --kind <вид>, а поставленное по описи на другой машине вернёт python scripts/models.py pull. Либо переключи строку канала на другого провайдера (table_update)."
+
+MODEL_SOURCE_FAILED:
+  class: server_recoverable
+  message_template: "Источник весов «{host}» отказал: ответ {status}."
+  recovery:
+    suggested_tool: media_models
+    reason: "Источник не отдал часть весов, а повтором такой ответ не лечится (перегрузку и недоступность сервер уже повторил сам). Уже скачанное лежит остатком; проверь модель у источника или поставь другую из media_models (scope='local')."
+
+MODEL_REVISION_UNKNOWN:
+  class: server_recoverable
+  message_template: "Состояние репозитория '{model}' у «{host}» не узнать: {status}."
+  recovery:
+    reason: "Без ревизии веса не тянутся: файлы одной модели могли бы приехать из разных состояний репозитория. Ничего не скачано, запрос сервер не повторял — повтори установку позже или проверь сеть сервера. Владелец может закрепить ревизию в config/providers.yaml → local.install.revisions: тогда источник о ней не спрашивается."
+
+MODEL_SOURCE_FORBIDDEN:
+  class: ai_recoverable
+  message_template: "Источник весов «{source}» не объявлен разрешённым (разрешены: {allowed})."
+  recovery:
+    suggested_tool: media_models
+    reason: "Веса — исполняемое содержимое, и брать их откуда попало сервер не станет. Выбери модель из разрешённого источника (media_models, scope='local'); список правит владелец в config/providers.yaml → local.install.allow_sources."
+
+MODEL_TOO_LARGE:
+  class: ai_recoverable
+  message_template: "Модель '{model}' весит {mb} МБ при объявленном пределе {limit_mb} МБ."
+  recovery:
+    suggested_tool: media_models
+    reason: "Возьми модель полегче (media_models, scope='local', fits=true); если такой размер осмыслен на этой машине, владелец поднимет local.install.max_total_mb в config/providers.yaml."
+
+MODEL_NOT_IN_CATALOG:
+  class: ai_recoverable
+  message_template: "Модели '{model}' нет в каталоге {source}."
+  recovery:
+    suggested_tool: media_models
+    reason: "Имя не из каталога источника. Посмотри доступные: media_models(scope='local') или python scripts/models.py local --kind <вид>."
+
+MODEL_NAME_TAKEN:
+  class: human_required
+  message_template: "Имя '{model}' ({kind}) уже занято моделью {held_by}: веса двух репозиториев легли бы в один каталог."
+  recovery:
+    suggested_tool: media_models
+    reason: "Модель ищется по короткому имени (столбец model строки канала), а у этой оно совпало с уже поставленной из другого репозитория — вторая перезаписала бы первую. Поставить её можно, только если владелец уберёт поставленную; другую модель посмотри в media_models(scope='local')."
+
+MODEL_GATED:
+  class: ai_recoverable
+  message_template: "Модель '{model}' закрыта автором (gated): ставится только с доступом, выданным автором."
+  recovery:
+    suggested_tool: media_models
+    reason: "Выбери открытую модель того же вида: media_models(scope='local')."
+
+MODEL_FORMAT_MISSING:
+  class: ai_recoverable
+  message_template: "У модели '{model}' нет файла нужного формата ({formats})."
+  recovery:
+    suggested_tool: media_models
+    reason: "Модель этого вида ставится одним файлом графа объявленного формата. Выбери другую: media_models(scope='local')."
+
+MODEL_UNLOADABLE:
+  class: ai_recoverable
+  message_template: "Веса модели '{model}' лежат, но не поднимаются в процесс."
+  recovery:
+    suggested_tool: media_model_install
+    reason: "Библиотека расчёта не читает файлы: веса битые, неполные или чужого формата. Перекачай модель тем же именем (media_model_install или python scripts/models.py pull <id>); причина — в журнале сервера."
+
+MODEL_INCOMPLETE:
+  class: human_required
+  message_template: "Веса локальной модели лежат не целиком."
+  recovery:
+    suggested_tool: media_models
+    reason: "Части из состава модели нет на диске или она короче объявленной — загрузка оборвалась. python scripts/models.py pull <id> идёт по плану разницы и тянет только недостающее; либо переключи строку канала на другого провайдера (table_update)."
+
+MODEL_CORRUPT:
+  class: integrity
+  message_template: "Веса локальной модели расходятся с объявленным составом."
+  recovery:
+    suggested_tool: media_models
+    reason: "Длина или отпечаток части не совпали с составом, снятым с источника: файл испорчен или подменён, и поднимать его нельзя. python scripts/models.py pull <id> заменит расходящиеся части."
+
+MODEL_UNVERIFIED:
+  class: human_required
+  message_template: "Целость весов локальной модели судить нечем."
+  recovery:
+    suggested_tool: media_models
+    reason: "Запись описи сделана до состава модели (или веса положены руками, а local.hand_placed в config/providers.yaml их не пускает). python scripts/models.py pull <id> снимет состав с источника и сверит диск."
 
 USAGE_UNIT_UNKNOWN:
   class: human_required
@@ -329,13 +465,6 @@ SCHEMA_INVALID:
   message_template: "Декларация таблицы некорректна: {details}"
   recovery:
     reason: "Схема книги (config/templates/tables/*.schema.yaml) не соответствует формату spec/TABLE_SCHEMA_FORMAT.md — правит человек, автоматически не чинится."
-
-SHEET_COPY_ERROR:
-  class: ai_recoverable
-  message_template: "Ошибка копирования листа: {details}"
-  recovery:
-    suggested_tool: "excel_add_sheet"
-    reason: "Проверь имя листа назначения или создай новый лист вручную."
 
 # ═══ Проверка целостности ═══
 
@@ -394,6 +523,25 @@ FILE_TYPE_FORBIDDEN:
   message_template: "Запись файлов этого типа запрещена: {path}"
   recovery:
     reason: "Сервер материализует только объявленные типы (данные, книги, документы, ассеты, .py). Исполняемое и веб-содержимое (.sh/.html/.exe/.bat) не создаётся намеренно. Список — config/firewall.yaml → write_allowlist; менять его должен человек, а не диалог."
+
+FILE_TOO_LARGE:
+  class: ai_recoverable
+  message_template: "Файл {path} больше объявленного предела: {size} байт при пределе {limit}."
+  recovery:
+    reason: "Предел проверяется до действия, файл на диске не тронут. Запись — раздели содержимое на несколько файлов; чтение целиком (память) — файл не читается частями, его разбирает человек; fs_read_file отдаёт голову такого файла с пометкой truncated. Пределы — config/firewall.yaml → file_limits."
+
+FILE_NOT_TEXT:
+  class: ai_recoverable
+  message_template: "Файл {path} — не текст в UTF-8, текстом его не прочитать."
+  recovery:
+    suggested_tool: fs_get_directory_tree
+    reason: "Это бинарный файл (картинка, звук, книга) или текст в другой кодировке. Текстовые инструменты читают только UTF-8; размер и место файла видны в дереве каталога."
+
+NO_DISK_SPACE:
+  class: human_required
+  message_template: "Запись {path} не помещается на диск сервера: {size} байт при свободных {free}."
+  recovery:
+    reason: "Место проверено до записи, файл на диске не тронут. Освободить место на диске сервера может только человек: сервер чужое не удаляет."
 
 CONFIRM_REQUIRED:
   class: ai_recoverable
@@ -467,6 +615,26 @@ RENDER_UNVERIFIED:
   message_template: "Файл собран, но приёмка его не подтверждает: {reason}"
   recovery:
     reason: "ffprobe не нашёл в результате того, что обещал профиль (поток, длительность, размер кадра). Файл есть, но считать его готовым нельзя — это немая потеря, поэтому отказ."
+
+# ═══ Среда расчёта: пакеты (core/packages) ═══
+
+PACKAGE_GROUP_UNKNOWN:
+  class: human_required
+  message_template: "Группы пакетов не объявлены в проекте: {groups}."
+  recovery:
+    reason: "Объявленные группы: {known}. Группа среды расчёта для карты задаётся в config/providers.yaml → local.gpu.drivers[<драйвер>].extras и обязана быть в pyproject.toml → project.optional-dependencies."
+
+PACKAGE_INSTALL_FAILED:
+  class: human_required
+  message_template: "Установщик пакетов вернул {exit_code}, не поставив: {requirements}."
+  recovery:
+    reason: "Вывод установщика — в журнале сервера. Частые причины: индекс недоступен, нет колеса под эту платформу, конфликт версий. Повтор поставит только то, чего по-прежнему нет."
+
+PACKAGE_INSTALL_INCOMPLETE:
+  class: human_required
+  message_template: "Установщик завершился успешно, но среда всё ещё не по требованиям: {requirements}."
+  recovery:
+    reason: "Суд после установки видит не то, что заказано (версия вне требования, пакет не появился). Сверь, в какой интерпретатор шла установка, и повтори."
 
 # ═══ Fallback ═══
 

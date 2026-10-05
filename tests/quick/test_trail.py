@@ -8,14 +8,19 @@ tests/quick/test_trail.py — след вызовов сервера: удерж
 живому серверу. Здесь — то, что сценарием не выразить: прополка старых файлов, предел на файл,
 неполное объявление и сломанная запись, которая обязана потерять НАБЛЮДЕНИЕ, а не вызов.
 """
+import io
 import sys
 import tempfile
+from contextlib import redirect_stdout
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from core.observability import Trail
+import platformdirs
+import yaml
+
+from core.observability import Journal, Logs, Trail
 
 sys.path.insert(0, str(ROOT / "scripts" / "guards"))
 from reproduce import (_entries, _fill, artefacts, as_steps, depends, exemptions,
@@ -80,15 +85,57 @@ print("\n== выключенный и сломанный ==")
 off = Trail(None)
 off.write("fs_read_file", {}, _Result())
 ok(not off.enabled, "без каталога след выключен и ничего не пишет")
-ok(not Trail.from_declaration({"trail": {"enabled": True, "dir": "x"}}, ROOT).enabled,
+ok(not Logs.from_declaration({"logs": {"app": "x"}, "trail": {"enabled": True, "dir": "x"}}, str(tmp)).trail.enabled,
    "неполное объявление гасит след, а не дописывается значением из кода")
-ok(not Trail.from_declaration({}, ROOT).enabled, "нет объявления — нет следа")
+ok(not Logs.from_declaration({}, str(tmp)).trail.enabled, "нет объявления — нет следа")
 
 broken = _trail(Path("/proc/нельзя-сюда-писать"))
 broken.write("fs_read_file", {"path": "a"}, _Result())
 ok(not broken.enabled, "отказ записи гасит след")
 broken.write("fs_read_file", {"path": "b"}, _Result())
 ok(True, "второй вызов после отказа НЕ падает: ломается наблюдение, а не работа владельца")
+
+print("\n== журналы: один корень, журнал фактов с пределом и ротацией (FS-17/18) ==")
+declared = yaml.safe_load((ROOT / "config" / "observability.yaml").read_text(encoding="utf-8"))
+own = Path(tempfile.mkdtemp(prefix="vpm-logs-"))
+logs = Logs.from_declaration(declared, str(own))
+ok(logs.root == own and logs.trail.directory == own / declared["trail"]["dir"]
+   and logs.session is not None and logs.session.path == own / declared["logs"]["session"]["file"],
+   "переопределение средой: след и журнал фактов — под одним корнем из MCP_LOGS")
+default = Logs.from_declaration(declared, None).root
+ok(default == Path(platformdirs.user_log_dir(declared["logs"]["app"], appauthor=False)) and not default.is_relative_to(ROOT),
+   f"без переопределения — каталог журналов пользователя этой ОС, не каталог кода ({default})")
+with redirect_stdout(io.StringIO()) as said:
+    none = Logs.from_declaration({"trail": declared["trail"]}, None)
+ok(none.root is None and not none.trail.enabled and none.session is None and "logs.app" in said.getvalue(),
+   "нет имени приложения и нет переопределения — журналы не пишутся, и это сказано")
+for bad, why in (({"file": "s.md", "max_bytes": 1000}, "неполно"), ({"file": "s.md", "max_bytes": 0, "backup_count": 3}, "max_bytes 0"),
+                 ({"file": "s.md", "max_bytes": 1000, "backup_count": 0}, "backup_count 0")):
+    with redirect_stdout(io.StringIO()) as said:
+        got = Logs.from_declaration({"logs": {"app": "x", "session": bad}}, str(own)).session
+    ok(got is None and "[journal]" in said.getvalue(), f"журнал фактов: {why} — не пишется, и это сказано, а не «без предела»")
+
+rot = Path(tempfile.mkdtemp(prefix="vpm-journal-"))
+journal = Journal(rot / "session.md", max_bytes=200, backup_count=2)
+entries = [f"\n## [запись {n:02d}] FileRead\n- **path:** файл-{n:02d}.md\n" for n in range(12)]
+for entry in entries:
+    journal.write(entry)
+names = sorted(p.name for p in rot.iterdir())
+ok(names == ["session.md", "session.md.1", "session.md.2"], f"ротация держит не больше backup_count+1 файлов ({names})")
+ok(all(p.stat().st_size <= 200 for p in rot.iterdir()), "ни один файл журнала не больше предела")
+ok(entries[-1] in (rot / "session.md").read_text(encoding="utf-8")
+   and entries[0] not in "".join(p.read_text(encoding="utf-8") for p in rot.iterdir()),
+   "свежая запись — в текущем файле, старейшая ушла с ротацией")
+lazy = Path(tempfile.mkdtemp(prefix="vpm-journal-lazy-"))
+Journal(lazy / "sub" / "session.md", 1000, 1)
+ok(not (lazy / "sub").exists(), "журнал без записей не оставляет каталога на диске")
+(lazy / "занято" / "session.md").mkdir(parents=True)  # на месте файла журнала — каталог: падает открытие в обработчике
+try:
+    Journal(lazy / "занято" / "session.md", 1000, 1).write("\n## запись\n")
+    raised = ""
+except OSError as e:
+    raised = type(e).__name__
+ok(bool(raised), f"отказ записи журнала уходит вызывающему, а не глушится ({raised or 'тихо'})")
 
 
 print("\n== синтез: запись → объявление ==")

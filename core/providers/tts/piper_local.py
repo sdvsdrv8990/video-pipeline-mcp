@@ -41,7 +41,7 @@ class PiperLocalTTS:
             raise ProviderError(
                 "CONTENT_REJECTED", "Пустой текст озвучивать нечем.",
                 reason="Передай текст фрагмента — повтор пустого запроса даст тот же отказ.")
-        voice = self._voice(self.registry.require_model(request.params.get("model")))
+        voice = self._voice(self.registry.ready(request.params.get("model"))["path"])
         syn = self._synthesis_config(request.params)
         request.target.parent.mkdir(parents=True, exist_ok=True)
         try:

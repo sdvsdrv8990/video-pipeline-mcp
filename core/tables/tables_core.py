@@ -48,7 +48,7 @@ class TableEngine:
     def _load(self, table: str) -> dict:
         """Читает read.json. TABLE_NOT_FOUND если сущности/снапшота нет.
 
-        ValueError (path escape) прокидывается наружу — обёртка маппит в PATH_ESCAPE.
+        Отказ двери пути (PathRefused) прокидывается наружу — клиент получает его код и факт `path`.
         """
         snapshot = self.state.read_snapshot(table)
         if snapshot is None:
@@ -129,7 +129,6 @@ class TableEngine:
         return {"sheet": sheet, "where": dict(where), "row_ids": found[:limit],
                 "count": len(found), "truncated": len(found) > limit}
 
-    # ═══ ВАЛИДАЦИЯ ЗАПИСИ (защита формул + enum) ═══
 
     def _validate_write(self, sheet_obj: dict, sheet: str, column: str, value) -> None:
         """Общая проверка перед записью поля: computed-защита + enum.

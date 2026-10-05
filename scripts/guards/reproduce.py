@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """scripts/guards/reproduce.py — след отказа становится объявленным сценарием.
 
-Читает logs/trail, tests/.journal, tests/scenarios.
-Зовёт: invariants (непокрытые коды отказа).
+Читает след сервера (под корнем журналов), tests/.journal, tests/scenarios.
+Зовёт: Logs (где след), invariants (непокрытые коды отказа).
 Зовут: tests/quick/test_trail.py; запускается руками.
 
 Отказ, случившийся один раз, воспроизводят по тому, что от него осталось. След сервера и журнал
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -27,7 +28,12 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCES = (ROOT / "logs" / "trail", ROOT / "tests" / ".journal")
+sys.path.insert(0, str(ROOT))
+from core.observability import Logs  # noqa: E402
+
+# След сервера — там, где его пишет сервер: корень журналов из MCP_LOGS или каталог журналов пользователя этой ОС.
+_TRAIL = Logs.from_config(ROOT / "config", os.environ.get("MCP_LOGS")).trail.directory
+SOURCES = tuple(s for s in (_TRAIL, ROOT / "tests" / ".journal") if s)
 RUNNER = ROOT / "tests" / "scenarios" / "test_scenarios.py"
 OBSERVATIONS = ROOT / "tests" / "harness" / "observations.yaml"
 # Полная решётка растёт как 2^N: дальше карта нечитаема, а обход дороже пользы. Длиннее — минимизируй.

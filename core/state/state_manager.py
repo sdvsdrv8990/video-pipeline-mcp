@@ -7,30 +7,24 @@
 секретные ключи маскируются.
 """
 
+from __future__ import annotations
+
 import json
-import os
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from core.paths import safe_resolve
+from core.paths import Files
+
+if TYPE_CHECKING:
+    from core.observability import Journal
 
 
 def _atomic_write_json(path: Path, data: Any):
-    """Атомарная запись JSON — temp-файл в том же каталоге + os.replace.
-
-    os.replace атомарен в пределах одной ФС: читатель видит либо старый,
-    либо новый файл целиком, но никогда не «рваную» запись. Это устраняет
-    порчу read.json/write.json при обрыве/конкурентной записи.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+    """JSON снимка, очереди и реестра — заменой слоя (FS-06): читатель видит старый файл целиком или новый, обрыв
+    оставляет остаток с владельцем. Путь уже прошёл дверь у вызывающего; корень здесь — каталог самого файла."""
+    Files(path.parent).replace(path.name, json.dumps(data, indent=2, ensure_ascii=False))
 
 
 # Журнал сервера — не место для содержимого рабочей области и секретов.
@@ -59,16 +53,17 @@ class StateManager:
         workspace_path: Путь к рабочему пространству
     """
 
-    def __init__(self, workspace_path: str | Path, log_path=None):
+    def __init__(self, workspace_path: str | Path, journal: Journal | None = None):
         """Инициализация.
 
         Args:
             workspace_path: Путь к workspace/
+            journal: журнал фактов из объявления (`Logs.from_declaration`); нет — факты не пишутся (наборы без сервера)
         """
         self.workspace_path = Path(workspace_path)
-        self.log_path = Path(log_path) if log_path else None
-        # Сериализуем read-modify-write очереди в пределах процесса.
-        # Кросс-процессную блокировку (несколько инстансов) добавит filelock.
+        self.journal = journal
+        # Очередь и снимки пишет только процесс сервера (раннер их не трогает): потоков хватает потокового замка,
+        # межпроцессный здесь не нужен — в отличие от реестра связей и ключей канала.
         self._lock = threading.Lock()
 
     def read_snapshot(self, entity_path: str) -> dict | None:
@@ -81,10 +76,9 @@ class StateManager:
             Словарь данных или None
 
         Raises:
-            ValueError: если путь выходит за пределы workspace
+            PathRefused: путь вне workspace или в закрытом каталоге
         """
-        safe_resolve(entity_path, self.workspace_path)
-        snapshot_file = self.workspace_path / entity_path / "read.json"
+        snapshot_file = Files(self.workspace_path).place(entity_path) / "read.json"
 
         if not snapshot_file.exists():
             return None
@@ -100,10 +94,9 @@ class StateManager:
             data: Данные для записи
 
         Raises:
-            ValueError: если путь выходит за пределы workspace
+            PathRefused: путь вне workspace или в закрытом каталоге
         """
-        safe_resolve(entity_path, self.workspace_path)
-        snapshot_file = self.workspace_path / entity_path / "read.json"
+        snapshot_file = Files(self.workspace_path).place(entity_path) / "read.json"
         _atomic_write_json(snapshot_file, data)
 
     def push_to_queue(self, entity_path: str, operation: dict) -> bool:
@@ -117,10 +110,9 @@ class StateManager:
             True если добавлено успешно
 
         Raises:
-            ValueError: если путь выходит за пределы workspace
+            PathRefused: путь вне workspace или в закрытом каталоге
         """
-        safe_resolve(entity_path, self.workspace_path)
-        queue_file = self.workspace_path / entity_path / "write.json"
+        queue_file = Files(self.workspace_path).place(entity_path) / "write.json"
 
         # Read-modify-write под локом + атомарная запись (без гонок/порчи).
         with self._lock:
@@ -144,8 +136,7 @@ class StateManager:
         Пустой список и на отсутствующий файл — для читателя «пусто» и «файла нет» одно и то же;
         отсутствие самой таблицы отвечает уровнем выше своим кодом.
         """
-        safe_resolve(entity_path, self.workspace_path)
-        queue_file = self.workspace_path / entity_path / "write.json"
+        queue_file = Files(self.workspace_path).place(entity_path) / "write.json"
         with self._lock:
             if not queue_file.exists():
                 return []
@@ -162,10 +153,9 @@ class StateManager:
             Список выполненных операций
 
         Raises:
-            ValueError: если путь выходит за пределы workspace
+            PathRefused: путь вне workspace или в закрытом каталоге
         """
-        safe_resolve(entity_path, self.workspace_path)
-        queue_file = self.workspace_path / entity_path / "write.json"
+        queue_file = Files(self.workspace_path).place(entity_path) / "write.json"
 
         # Атомарный «забрать и очистить» под локом.
         with self._lock:
@@ -183,10 +173,9 @@ class StateManager:
         """Очистка очереди без выполнения: в отличие от execute_queue операции НЕ применяются
         к read.json, а выбрасываются.
 
-        Возвращает число отброшенных операций; ValueError — путь вне workspace.
+        Возвращает число отброшенных операций; PathRefused — путь вне workspace или в закрытом каталоге.
         """
-        safe_resolve(entity_path, self.workspace_path)
-        queue_file = self.workspace_path / entity_path / "write.json"
+        queue_file = Files(self.workspace_path).place(entity_path) / "write.json"
 
         # Read-modify-write под локом + атомарная запись.
         with self._lock:
@@ -198,22 +187,16 @@ class StateManager:
         return count
 
     def log_event(self, event_type: str, data: dict):
-        """Логирование события в _SESSION_LOG.
-
-        Лог пишется в корень проекта (не в workspace/), т.к. это лог сервера,
-        а не пользовательские данные.
+        """Факт в журнал фактов — под объявленным корнем журналов, с пределом и ротацией (`observability.yaml → logs`).
+        Журнала нет — ничего не пишется.
 
         Args:
             event_type: Тип события
             data: Данные события
         """
-        # Лог в корне проекта (не в workspace/); путь переопределяем — иначе поведение
-        # санитизации нельзя проверить, не пачкая боевой журнал.
-        log_file = self.log_path or (Path(__file__).resolve().parents[2] / "_SESSION_LOG.md")
-
+        if self.journal is None:
+            return
         entry = f"\n## [{time.strftime('%Y-%m-%d %H:%M:%S')}] {event_type}\n"
         for key, value in _sanitize_for_log(data).items():
             entry += f"- **{key}:** {value}\n"
-
-        with open(log_file, "a", encoding="utf-8") as f:
-            f.write(entry)
+        self.journal.write(entry)

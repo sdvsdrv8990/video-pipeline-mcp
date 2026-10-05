@@ -7,18 +7,30 @@
 """
 
 from typing import ClassVar
-import contextlib
 import json
 import re
+import socket
 from pathlib import Path
 from urllib.parse import urlparse
 
+from filelock import Timeout
+
 from core.declaration import Declaration
+from core.paths import Files
+from .download import Fetcher, file_digest
 from .resolver import ProviderError
 
 
 class ModelCatalog:
     """Живые каталоги моделей + правила отбора и установки из декларации."""
+
+    # Вердикт диска (`judge`) → код отказа: у каждой причины свой рецепт в server_reactions.yaml.
+    REFUSALS: ClassVar[dict[str, str]] = {
+        "incomplete": "MODEL_INCOMPLETE", "corrupt": "MODEL_CORRUPT", "unverified": "MODEL_UNVERIFIED"}
+    # Сеть загрузчика (MF-16): None — настоящий транспорт; подставной видит каждый запрос. Атрибут класса — каталог
+    # строит и сервер, и CLI, подмена доходит до любого из них.
+    transport: ClassVar = None
+    resolve: ClassVar = staticmethod(socket.getaddrinfo)
 
     def __init__(self, config_file: str | Path, models_dir: str | Path):
         self.config_file = Path(config_file)
@@ -83,7 +95,7 @@ class ModelCatalog:
         return ""
 
     def installed(self) -> list[dict]:
-        """Модели, известные серверу, с отметкой, лежат ли веса на диске."""
+        """Модели, известные серверу, с готовностью по диску (`judge` по длине) и занятым местом."""
         out = []
         for entry in self.entries():
             path = self.models_dir / str(entry.get("path") or entry.get("dest") or "")
@@ -91,7 +103,7 @@ class ModelCatalog:
                 [path] if path.is_file() else [])
             out.append({"id": entry.get("id"), "kind": entry.get("kind"), "repo": entry.get("repo"),
                         "path": str(entry.get("path") or entry.get("dest") or ""),
-                        "present": bool(files),
+                        "disk": self.judge(entry),
                         # Вариант весов — свойство ТОГО, ЧТО ЛЕЖИТ на диске, и его надо поставить
                         # в столбец строки: без него модель с файлами fp16 не поднимется вовсе.
                         "variant": str(entry.get("variant") or ""),
@@ -101,22 +113,87 @@ class ModelCatalog:
                         "params_active": int(entry.get("params_active") or 0)})
         return out
 
+    def judge(self, entry: dict, deep: bool = False, mark=None) -> dict:
+        """Вердикт по диску и план разницей: части нет или она короче — докачать, длиннее или отпечаток разошёлся — заменить.
+
+        Ступень названа в ответе: «по длине» дёшева — для списка и подъёма модели; «по отпечатку» читает все байты —
+        конец установки, pull и явная проверка. Запись без состава (поставлена до него) судить нечем — `unverified`.
+        """
+        parts = entry.get("parts") or []
+        if not parts:
+            return {"verdict": "unverified", "checked": "", "plan": [],
+                    "why": "состава в описи нет — судить нечем; снять его с источника и сверить: "
+                           f"python scripts/models.py pull {entry.get('id')}"}
+        place = self.models_dir / str(entry.get("dest") or "")
+        plan, blind = [], []
+        for part in parts:
+            path = place / part["path"]
+            size = path.stat().st_size if path.is_file() else None
+            if size is None or (part["size"] is not None and size < part["size"]):
+                plan.append({**part, "job": "докачать"})
+            elif part["size"] is not None and size > part["size"]:
+                plan.append({**part, "job": "заменить"})
+            elif deep and part["digest"]:
+                if self._digest(path, part["algo"], mark) != part["digest"]:
+                    plan.append({**part, "job": "заменить"})
+            elif part["size"] is None:
+                blind.append(part["path"])
+        checked = "по отпечатку" if deep and all(p["digest"] for p in parts) else "по длине"
+        names = ", ".join(p["path"] for p in plan)
+        if any(p["job"] == "заменить" for p in plan):
+            verdict, why = "corrupt", f"расходятся с составом {len(plan)} из {len(parts)} частей ({names}), проверено {checked}"
+        elif plan:
+            verdict, why = "incomplete", f"не хватает {len(plan)} из {len(parts)} частей ({names}), проверено {checked}"
+        elif blind:
+            verdict, why = "unverified", f"источник не назвал длину ({', '.join(blind)}) — судить нечем"
+        else:
+            verdict, why = "ready", f"все {len(parts)} частей на месте, проверено {checked}"
+        return {"verdict": verdict, "checked": checked, "why": why, "plan": plan}
+
+    @staticmethod
+    def _digest(path: Path, algo: str, mark=None) -> str:
+        """Отпечаток части для суда готовности — тем же счётом, что и загрузчик перед тем, как поставить часть."""
+        return file_digest(path, algo, mark)
+
+    def refusal(self, entry: dict, disk: dict) -> ProviderError:
+        """Отказ кодом причины по вердикту диска: части не хватает, часть расходится, судить нечем.
+
+        План и команда — в `message`: для кода из реестра клиенту доходит он, а рецепт берётся из реестра.
+        """
+        jobs = "; ".join(f"{p['job']} {p['path']}" for p in disk["plan"]) or "снять состав с источника"
+        return ProviderError(
+            self.REFUSALS[disk["verdict"]],
+            f"Модель '{entry.get('id')}' не готова: {disk['why']}. План: {jobs}; выполнить: "
+            f"python scripts/models.py pull {entry.get('id')}.")
+
+    def installed_as(self, model_id: str, kind: str) -> dict | None:
+        """Модель уже стоит той же ревизией и цела по длине — исход «уже стоит» без загрузки, потока и чтения весов (MF-17).
+
+        Сначала диск (по длине, без сети), затем ревизия: закреплённая (`local.install.revisions`) сверяется с описью
+        без сети, плавающая — одним запросом коммита к источнику. Ответ называет, чем судили: был ли поход в сеть.
+        """
+        piper = str(self.source(kind).get("kind") or "") == "piper_index"
+        entry = next((e for e in self.inventory() if e.get("kind") == kind
+                      and str(e.get("id") if piper else e.get("repo")) == model_id), None)
+        if not entry or self.judge(entry)["verdict"] != "ready":
+            return None
+        repo = str(self.source(kind)["repo"] if piper else model_id)
+        pinned = repo in (self.install_rules.get("revisions") or {})
+        if not pinned:
+            self._open_source(kind)
+        if self.revision(repo) != entry.get("revision"):
+            return None
+        return {"outcome": "already_installed", "revision": entry.get("revision"),
+                "checked": "по длине, ревизия закреплена" if pinned else "по длине, ревизия сверена с источником",
+                "path": entry.get("path"), "mb": entry.get("mb")}
+
     # ═══ Что доступно (живые каталоги) ═══
 
     @property
     def cache_dir(self) -> Path:
-        """Куда складывает загрузчик. Внутри каталога весов, а не в домашнем каталоге.
-
-        Иначе одни и те же гигабайты лежат дважды — в кэше и здесь, — и «сколько весит проект»
-        не имеет одного ответа.
-        """
+        """Куда ложатся малые файлы источника (индекс голосов, карточки) — внутри каталога весов, по репозиторию и
+        ревизии: «сколько весит проект» имеет один ответ, а новая ревизия не читает старый файл."""
         return self.models_dir / str(self.local.get("cache_dir") or ".cache")
-
-    @property
-    def _hf(self) -> dict:
-        """Общее для всех вызовов загрузчика: куда класть скачанное."""
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        return {"cache_dir": str(self.cache_dir)}
 
     def revision(self, repo: str) -> str:
         """Состояние репозитория, к которому привязана загрузка.
@@ -128,6 +205,7 @@ class ModelCatalog:
 
         Объявленная ревизия сильнее вычисленной: `local.install.revisions.<repo>` в
         `config/providers.yaml` — это настоящий пин, который делает владелец.
+        Источник не назвал ревизию — отказ кодом причины: закрыто автором, репозитория нет, источник не ответил.
         """
         if repo in self._revisions:
             return self._revisions[repo]
@@ -135,15 +213,23 @@ class ModelCatalog:
         if declared:
             self._revisions[repo] = str(declared)
             return self._revisions[repo]
-        from huggingface_hub import HfApi
+        import httpx
+        from huggingface_hub import HfApi, constants
+        from huggingface_hub.errors import GatedRepoError, HfHubHTTPError, RepositoryNotFoundError
+
+        host = urlparse(constants.ENDPOINT).hostname
         try:
             sha = HfApi().repo_info(repo_id=repo, repo_type="model").sha
-        except Exception as exc:  # причина уедет клиенту кодом
-            raise ProviderError(
-                "DOWNLOAD_FORBIDDEN", f"Не удалось узнать состояние репозитория '{repo}'.",
-                reason="Веса не тянутся вслепую: без привязки к ревизии повторная установка "
-                       "может дать другие файлы. Проверь сеть или объяви ревизию в "
-                       "config/providers.yaml → local.install.revisions.") from exc
+        except GatedRepoError as e:                 # подкласс RepositoryNotFoundError: порядок от частного к общему
+            raise ProviderError("MODEL_GATED", facts={"model": repo}) from e
+        except RepositoryNotFoundError as e:
+            raise ProviderError("MODEL_NOT_IN_CATALOG", facts={"model": repo, "source": host}) from e
+        except HfHubHTTPError as e:
+            raise ProviderError("MODEL_REVISION_UNKNOWN",
+                                facts={"model": repo, "host": host, "status": e.response.status_code}) from e
+        except (httpx.HTTPError, OSError) as e:    # сеть; офлайн-режим hf — ConnectionError
+            raise ProviderError("MODEL_REVISION_UNKNOWN",
+                                facts={"model": repo, "host": host, "status": type(e).__name__}) from e
         self._revisions[repo] = str(sha or "")
         return self._revisions[repo]
 
@@ -163,21 +249,9 @@ class ModelCatalog:
 
     def _from_piper(self, src: dict, filters: dict, limit: int) -> list[dict]:
         """Индекс голосов piper: одна запись = голос со своими файлами и размерами."""
-        from huggingface_hub import hf_hub_download
-
-        path = hf_hub_download(src["repo"], src.get("index", "voices.json"),
-                               revision=self.revision(src["repo"]), **self._hf)
-        index = json.loads(Path(path).read_text(encoding="utf-8"))
-        language = str(filters.get("language") or "")
-        max_mb = float(filters.get("max_mb") or 0)
         rows = []
-        for name, voice in index.items():
-            if language and voice.get("language", {}).get("code") != language:
-                continue
-            mb = round(sum(f.get("size_bytes", 0) for f in (voice.get("files") or {}).values()) / 1e6, 1)
-            if max_mb and mb > max_mb:
-                continue
-            rows.append({"id": name, "kind": "tts", "repo": src["repo"], "mb": mb,
+        for name, voice in self._piper_voices(src, filters).items():
+            rows.append({"id": name, "kind": "tts", "repo": src["repo"], "mb": self._voice_mb(voice),
                          "language": voice.get("language", {}).get("code", ""),
                          "quality": voice.get("quality", ""),
                          "files": sorted(voice.get("files") or {}),
@@ -297,12 +371,8 @@ class ModelCatalog:
 
     def _prose(self, repo: str, rules: dict) -> str:
         """Первый связный абзац карточки: заголовки, картинки, таблицы и код описанием не считаем."""
-        from huggingface_hub import hf_hub_download
-
         try:
-            path = hf_hub_download(repo, str(rules.get("from") or "README.md"),
-                                   revision=self.revision(repo), **self._hf)
-            text = Path(path).read_text(encoding="utf-8")
+            text = self._small(repo, str(rules.get("from") or "README.md"))
         except Exception:  # карточки может не быть
             return ""
         text = re.sub(r"^---.*?---", "", text, flags=re.S)  # фронт-маттер — не проза
@@ -346,6 +416,21 @@ class ModelCatalog:
                     return int(value)
         return 0
 
+    def _piper_index(self, src: dict) -> dict:
+        """Индекс голосов piper из объявленной ревизии: имя голоса → язык, качество, файлы с размером и md5."""
+        return json.loads(self._small(src["repo"], src.get("index", "voices.json")))
+
+    @staticmethod
+    def _voice_mb(voice: dict) -> float:
+        return round(sum(f.get("size_bytes", 0) for f in (voice.get("files") or {}).values()) / 1e6, 1)
+
+    def _piper_voices(self, src: dict, filters: dict) -> dict:
+        """Голоса индекса, прошедшие объявленный отсев (язык, предел размера): имя → запись индекса."""
+        language, max_mb = str(filters.get("language") or ""), float(filters.get("max_mb") or 0)
+        return {name: voice for name, voice in self._piper_index(src).items()
+                if (not language or voice.get("language", {}).get("code") == language)
+                and not (max_mb and self._voice_mb(voice) > max_mb)}
+
     # ═══ Правила установки ═══
 
     @property
@@ -368,11 +453,7 @@ class ModelCatalog:
         host = "huggingface.co" if self.HF_ID.fullmatch(name) else (urlparse(name).netloc or name).lower()
         if host in allow:
             return
-        raise ProviderError(
-            "LOCAL_MODEL_MISSING", f"Источник '{repo}' не объявлен разрешённым.",
-            reason=f"Ставим только из объявленных источников: {', '.join(allow)}. "
-                   "Список правится в config/providers.yaml → local.install.allow_sources; "
-                   "веса — исполняемое содержимое, и брать их откуда попало сервер не станет.")
+        raise ProviderError("MODEL_SOURCE_FORBIDDEN", facts={"source": str(repo), "allowed": ", ".join(allow)})
 
     def allowed_files(self, names: list[str]) -> tuple[list[str], list[dict]]:
         """Разделить файлы на «можно ставить» и «отказ с причиной» по объявленным форматам."""
@@ -391,30 +472,45 @@ class ModelCatalog:
                 keep.append(name)
         return keep, refused
 
-    def check_size(self, total_mb: float) -> None:
+    def check_size(self, total_mb: float, model_id: str) -> None:
         limit = float(self.install_rules.get("max_total_mb") or 0)
         if limit and total_mb > limit:
-            raise ProviderError(
-                "LOCAL_MODEL_MISSING",
-                f"Модель весит {round(total_mb)} МБ при объявленном пределе {round(limit)} МБ.",
-                reason="Подними local.install.max_total_mb в config/providers.yaml, если такой "
-                       "размер осмыслен на этой машине, или возьми модель полегче.")
+            raise ProviderError("MODEL_TOO_LARGE", facts={"model": model_id, "mb": round(total_mb), "limit_mb": round(limit)})
 
 
-    def место_под(self, model_id: str, kind: str) -> dict:
-        """Хватит ли ДИСКА под веса этой модели. Один читатель на сервер и на CLI.
+    def место_под(self, model_id: str, kind: str, force: bool = False) -> dict:
+        """Хватит ли ДИСКА под загрузку модели — и снимок, по которому её потом качают (`install_planned`).
 
-        Размер берётся из живого каталога, свободное место — тем же `probe`, что и остальное
-        железо. Ряда в каталоге нет (сеть молчит, имя своё) — «не проверено»: отказывать по
-        незнанию нельзя, но и молчать о незнании тоже.
+        Состав снимается здесь один раз: ревизия и план (`judge` по длине — лежащее целым не считается; при явном
+        `force` — все части), по которым судили место, и уходят в загрузку. Длина части плана не названа —
+        MODEL_SIZE_UNKNOWN, место не прочитано — DISK_SPACE_UNKNOWN: «нет данных» — не «хватает» и не «нет места»;
+        места меньше плана — MODEL_NO_DISK_SPACE с обоими числами, до загрузки. Имя того же вида уже принадлежит
+        другому репозиторию — MODEL_NAME_TAKEN: модель ищут по имени, и вторая перезаписала бы первую.
         """
         from core.providers.hardware import probe
 
-        ряд = next((r for r in self.available(kind, limit=0) if r["id"] == model_id), None)
-        нужно = float((ряд or {}).get("mb") or 0)
-        свободно = float(probe(self.models_dir)["disk_free_mb"])
-        return {"нужно_мб": нужно, "свободно_мб": свободно,
-                "хватает": bool(not нужно or свободно >= нужно), "проверено": bool(нужно)}
+        self._open_source(kind)
+        entry = self.manifest(model_id, kind)
+        taken = next((e for e in self.inventory() if e.get("kind") == entry["kind"]
+                      and str(e.get("id")) == str(entry["id"]) and e.get("repo") != entry["repo"]), None)
+        if taken:
+            raise ProviderError("MODEL_NAME_TAKEN",
+                                facts={"model": entry["id"], "kind": entry["kind"], "held_by": str(taken.get("repo"))})
+        plan = entry["parts"] if force else self.judge(entry)["plan"]
+        свободно = probe(self.models_dir)["disk_free_mb"]
+        blind = [p["path"] for p in plan if p["size"] is None]
+        if blind:
+            raise ProviderError("MODEL_SIZE_UNKNOWN", facts={"model": model_id, "parts": ", ".join(blind)})
+        if свободно is None:
+            raise ProviderError("DISK_SPACE_UNKNOWN", facts={"model": model_id, "dir": str(self.models_dir)})
+        нужно = round(sum(p["size"] for p in plan) / 1e6, 1)
+        if свободно < нужно:
+            raise ProviderError("MODEL_NO_DISK_SPACE", facts={"model": model_id, "need_mb": нужно, "free_mb": свободно})
+        files = Files(self.models_dir)
+        # Что лежало под именами частей до загрузки (inode): вставшую часть `publish` кладёт новым inode — без часов.
+        marks = {rel: (files.place(rel).stat().st_ino if files.place(rel).is_file() else None)
+                 for rel in (self.landing(entry, p) for p in plan)}
+        return {"нужно_мб": нужно, "свободно_мб": float(свободно), "entry": entry, "plan": plan, "marks": marks}
 
     def with_fit(self, rows: list[dict], hardware: dict | None = None) -> list[dict]:
         """Дописать к строкам вердикт «влезет ли на эту машину»."""
@@ -456,173 +552,213 @@ class ModelCatalog:
 
     # ═══ Установка ═══
 
-    def apply_transfer(self) -> str:
-        """Каким протоколом тянуть веса. Решает декларация, а не переменная окружения снаружи.
+    def restore(self, entry: dict, force: bool = False, progress=lambda _m: None) -> dict:
+        """Восстановить модель описи по плану разницы: докачать недостающее, заменить расходящееся.
 
-        Клиент HF по умолчанию идёт через Xet; на этой сети он давал 0.08–3 МБ/с и подвисал на
-        середине, обычный HTTPS — 9.5 МБ/с на том же файле. Константа читается ЖИВЬЁМ на каждой
-        загрузке, поэтому её достаточно выставить здесь, а не переменной среды при запуске.
+        Запись без состава (поставлена до него) получает состав с источника по имени и виду — диск сверяется с ним.
         """
-        from huggingface_hub import constants
-        mode = str((self.local.get("install") or {}).get("transfer") or "https").lower()
-        constants.HF_HUB_DISABLE_XET = mode != "xet"
-        return mode
+        kind, fresh = str(entry.get("kind") or ""), not entry.get("parts")
+        self._open_source(kind)
+        if fresh:
+            piper = str(self.source(kind).get("kind") or "") == "piper_index"
+            entry = self.manifest(str(entry["id"] if piper else entry["repo"]), kind)
+        disk = self.judge(entry, deep=True)
+        plan = entry["parts"] if force else disk["plan"]
+        if plan:
+            return self._install(entry, plan, progress)
+        if fresh:
+            self._remember(entry)
+        return {**entry, "disk": disk, "fetched": []}
 
-    def install(self, model_id: str, kind: str, progress=lambda _m: None) -> dict:
-        """Поставить модель: проверить источник, формат и размер, скачать, записать в опись."""
+    def _open_source(self, kind: str) -> None:
+        """Источник вида разрешён декларацией — до первого запроса к источнику."""
+        self.check_repo(self.source(kind).get("repo") or "huggingface.co")
+
+    def _install(self, entry: dict, parts: list[dict], progress, mark=None, held=lambda: None) -> dict:
+        """Скачать части плана, записать состав в опись и судить по отпечатку: расхождение — отказ кодом причины.
+
+        Модель ставит одна установка на все процессы (MF-10): замок по владельцу её остатков, занят — MODEL_INSTALL_BUSY
+        до первой записи; `held()` — замок взят. Порядок замков: модель → опись.
+        Состав ложится в опись и при отказе загрузчика: `pull` знает, что чинить, и докачивает свой остаток (MF-04).
+        `mark()` — признак работы для наблюдателя: загрузка и сверка отмечают себя по ходу, а не одной отметкой до.
+        """
+        try:
+            hold = Files(self.models_dir).lock(self.owner(entry)).acquire(timeout=0)
+        except Timeout:
+            raise ProviderError("MODEL_INSTALL_BUSY", facts={"model": entry["id"]}) from None
+        with hold:
+            held()
+            try:
+                self._pull(entry, parts, progress, mark)
+            finally:
+                self._remember(entry)
+            disk = self.judge(entry, deep=True, mark=mark)
+        if disk["verdict"] != "ready":
+            raise self.refusal(entry, disk)
+        return {**entry, "disk": disk, "fetched": [p["path"] for p in parts]}
+
+    def _pull(self, entry: dict, parts: list[dict], progress, mark=None) -> None:
+        """Части плана — одним загрузчиком туда, где их судит `judge`: свой остаток докачивается, отпечаток сверяется до
+        того, как часть встанет под имя; заголовки источника уходят только на его хост."""
+        fetcher, files, owner, headers = self.fetcher(mark), Files(self.models_dir), self.owner(entry), self._hf_headers()
+        for part in parts:
+            progress(f"тяну {part['path']}")
+            fetcher.fetch(self._source_url(entry["repo"], entry["revision"], part["source"]), files,
+                          self.landing(entry, part), owner, size=part["size"], digest=part["digest"] or "",
+                          algo=part["algo"] or "sha256", headers=headers)
+
+    def fetcher(self, mark=None) -> Fetcher:
+        """Загрузчик весов по объявленной политике `local.install.fetch`: ключа нет — отказ кодом, а не умолчание."""
+        return Fetcher(self._decl.need("local", "install", "fetch", kind=dict), transport=self.transport,
+                       resolve=self.resolve, mark=mark)
+
+    def silence_sec(self) -> float:
+        """Наибольшая тишина загрузчика весов между признаками работы — простой обязан быть длиннее (`Fetcher.silence_sec`)."""
+        return self.fetcher().silence_sec()
+
+    @staticmethod
+    def owner(entry: dict) -> str:
+        """Владелец остатков модели — один на вид и имя: следующая установка той же модели докачивает (MF-04)."""
+        return re.sub(r"[^\w-]", "_", f"{entry.get('kind')}-{entry.get('id')}")
+
+    @staticmethod
+    def landing(entry: dict, part: dict) -> str:
+        """Куда ложится часть — от каталога весов: там же её судит `judge`."""
+        return str(Path(str(entry.get("dest") or "")) / part["path"])
+
+    def on_disk(self, место: dict) -> int:
+        """Сколько байт плана уже легло: свои остатки частей и части, вставшие под имя после снимка (FS-10)."""
+        entry, files, total = место["entry"], Files(self.models_dir), 0
+        for part in место["plan"]:
+            rel = self.landing(entry, part)
+            remnant, target = files.remnant(rel, self.owner(entry)), files.place(rel)
+            if remnant.is_file():
+                total += remnant.stat().st_size
+            elif target.is_file() and target.stat().st_ino != место["marks"].get(rel):
+                total += target.stat().st_size
+        return total
+
+    @staticmethod
+    def _source_url(repo: str, revision: str, name: str) -> str:
+        from huggingface_hub import hf_hub_url
+        return hf_hub_url(repo, name, revision=revision)
+
+    @staticmethod
+    def _hf_headers() -> dict:
+        from huggingface_hub.utils import build_hf_headers
+        return build_hf_headers()
+
+    def _small(self, repo: str, name: str) -> str:
+        """Малый файл источника той же ревизии (индекс голосов, карточка): лежит — без сети, нет — тем же
+        загрузчиком."""
+        revision, files = self.revision(repo), Files(self.cache_dir)
+        rel = f"{repo}/{revision}/{name}"
+        with files.lock(rel):           # остаток владельца "source" общий: второй писатель ждёт и читает файл первого
+            if not files.place(rel).is_file():
+                self.fetcher().fetch(self._source_url(repo, revision, name), files, rel, "source",
+                                     headers=self._hf_headers())
+        return files.place(rel).read_text(encoding="utf-8")
+
+    def _remember(self, entry: dict) -> None:
+        """Дописать в опись, заменив прежнюю запись того же имени (второй копии не заводим). Опись общая для всех моделей
+        и процессов: «прочитать — изменить — записать» под её замком (FS-09), замена целиком через дверь слоя — обрыв
+        оставляет прежнюю опись, а не половину (FS-06)."""
+        import yaml
+        files = Files(self.inventory_file.parent)
+        with files.lock(self.inventory_file.name):
+            rows = [r for r in self.inventory() if str(r.get("id")) != str(entry["id"])]
+            rows.append({k: v for k, v in entry.items() if k != "refused"})
+            files.replace(self.inventory_file.name, yaml.safe_dump({"models": rows}, allow_unicode=True, sort_keys=False))
+
+    def manifest(self, model_id: str, kind: str) -> dict:
+        """Состав модели: части с длиной и отпечатком из объявленного поля источника; весь отбор файлов — здесь.
+
+        Отпечаток — целостность (обрыв, порча), а не подлинность: от подмены защищают https и суд адреса.
+        Части отсортированы по пути: тот же ответ источника даёт тот же состав.
+        """
         src = self.source(kind)
-        self.check_repo(src.get("repo") or "huggingface.co")
-        self.apply_transfer()
-        how = str(src.get("kind") or "")
-        entry = (self._install_piper(model_id, src, progress) if how == "piper_index"
-                 else self._install_hf(model_id, src, progress, kind))
-        self._remember(entry)
-        return entry
+        if str(src.get("kind") or "") == "piper_index":
+            return self._manifest_piper(model_id, src)
+        return self._manifest_hf(model_id, src, kind)
 
-    def _install_piper(self, model_id: str, src: dict, progress) -> dict:
-        from huggingface_hub import hf_hub_download
+    @staticmethod
+    def _part(path: str, source: str, size, digest, algo) -> dict:
+        """Часть состава; источник не назвал длину или отпечаток — они неизвестны (None), а не ноль и не пусто."""
+        return {"path": path, "source": source, "size": None if size is None else int(size),
+                "digest": digest or None, "algo": algo if digest else None}
 
-        candidates = [v for v in self.available("tts", limit=0, language="") if v["id"] == model_id]
-        if not candidates:
-            raise ProviderError(
-                "LOCAL_MODEL_MISSING", f"Голоса '{model_id}' нет в каталоге {src['repo']}.",
-                reason="Посмотри доступные: python scripts/models.py local --kind tts.",
-                suggested_tool="media_models")
-        voice = candidates[0]
-        keep, refused = self.allowed_files(voice["files"])
-        self.check_size(voice["mb"])
-        rev = self.revision(src["repo"])
-        dest = Path(str(src.get("dest") or "tts"))
-        target_dir = self.models_dir / dest
-        target_dir.mkdir(parents=True, exist_ok=True)
-        import shutil
-        for remote in keep:
-            progress(f"тяну {Path(remote).name}")
-            got = hf_hub_download(src["repo"], remote, revision=rev, **self._hf)
-            shutil.copyfile(got, target_dir / Path(remote).name)
-        model_file = next((f for f in keep if f.endswith(".onnx")), keep[0] if keep else "")
-        return {"id": model_id, "kind": "tts", "repo": src["repo"], "revision": rev,
-                "path": str(dest / Path(model_file).name), "mb": voice["mb"], "refused": refused}
+    @staticmethod
+    def _sibling_digest(sibling) -> tuple:
+        """Отпечаток файла из ответа model_info: LFS — sha256 содержимого; иначе id git-блоба (sha1 от
+        «blob <длина>\\0» и содержимого); нет ни того, ни другого — неизвестен."""
+        lfs = getattr(sibling, "lfs", None)
+        sha = getattr(lfs, "sha256", None) or (lfs.get("sha256") if isinstance(lfs, dict) else None)
+        if sha:
+            return sha, "sha256"
+        blob = getattr(sibling, "blob_id", None)
+        return (blob, "git-blob-sha1") if blob else (None, None)
 
-    def _install_hf(self, model_id: str, src: dict, progress, kind: str = "image") -> dict:
-        from huggingface_hub import model_info, snapshot_download
+    def _manifest_piper(self, model_id: str, src: dict) -> dict:
+        voice = self._piper_voices(src, dict(src.get("filters") or {})).get(model_id)
+        if not voice:
+            raise ProviderError("MODEL_NOT_IN_CATALOG", facts={"model": model_id, "source": src["repo"]})
+        files = voice.get("files") or {}
+        keep, refused = self.allowed_files(sorted(files))
+        mb = self._voice_mb(voice)
+        self.check_size(mb, model_id)
+        dest = str(src.get("dest") or "tts")
+        parts = sorted((self._part(Path(n).name, n, files[n].get("size_bytes"), files[n].get("md5_digest"), "md5")
+                        for n in keep), key=lambda p: p["path"])
+        graph = next((p["path"] for p in parts if p["path"].endswith(".onnx")), parts[0]["path"] if parts else "")
+        return {"id": model_id, "kind": "tts", "repo": src["repo"], "revision": self.revision(src["repo"]),
+                "dest": dest, "path": str(Path(dest) / graph), "mb": mb, "parts": parts, "refused": refused}
+
+    def _manifest_hf(self, model_id: str, src: dict, kind: str) -> dict:
+        from huggingface_hub import model_info
 
         rev = self.revision(model_id)
         # Список файлов и сами файлы обязаны быть из ОДНОГО состояния репозитория.
         info = model_info(model_id, revision=rev, files_metadata=True)
         if getattr(info, "gated", False):
-            raise ProviderError(
-                "LOCAL_MODEL_MISSING", f"Модель '{model_id}' закрыта (gated) — нужен доступ автора.",
-                reason=f"Выбери открытую модель: python scripts/models.py local --kind {kind}.")
-        names = [s.rfilename for s in (info.siblings or [])]
-        keep, refused = self.allowed_files(names)
-        sizes = {s.rfilename: (s.size or 0) for s in (info.siblings or [])}
-        if src.get("require_formats"):
-            return self._install_single(model_id, src, progress, kind, keep, refused, sizes)
-        # Половинная точность и полная — одни и те же веса; берём одну, иначе диск съедается вдвое.
-        variant = [n for n in keep if ".fp16." in n]
-        chosen = variant + [n for n in keep if not n.endswith(".safetensors")] if variant else keep
-        total_mb = round(sum(sizes.get(n, 0) for n in chosen) / 1e6, 1)
-        self.check_size(total_mb)
-        dest = Path(str(src.get("dest") or "img")) / model_id.split("/")[-1]
-        progress(f"тяну {len(chosen)} файлов, ~{round(total_mb)} МБ")
-        snapshot_download(repo_id=model_id, local_dir=str(self.models_dir / dest),
-                          allow_patterns=chosen or None, revision=rev, **self._hf)
+            raise ProviderError("MODEL_GATED", facts={"model": model_id})
+        siblings = {s.rfilename: s for s in (info.siblings or [])}
+        keep, refused = self.allowed_files(list(siblings))
+        name, want = model_id.split("/")[-1], tuple(str(f).lower() for f in (src.get("require_formats") or []))
+        if want:
+            # Модель — ОДИН файл графа: рядом те же веса в других разрядностях; описания (.json) нужны адаптеру.
+            graphs = [n for n in keep if n.lower().endswith(want)]
+            chosen = self.prefer(graphs) or (graphs[0] if graphs else "")
+            if not chosen:
+                raise ProviderError("MODEL_FORMAT_MISSING", facts={"model": model_id, "formats": ", ".join(want)})
+            picked = [chosen, *(n for n in keep if n.lower().endswith(".json") and Path(n).name != "README.md")]
+            dest = Path(str(src.get("dest") or kind)) / name
+        else:
+            # Половинная точность и полная — одни и те же веса; берём одну, иначе диск съедается вдвое.
+            fp16 = [n for n in keep if ".fp16." in n]
+            picked = fp16 + [n for n in keep if not n.endswith(".safetensors")] if fp16 else keep
+            dest = Path(str(src.get("dest") or "img")) / name
+        parts = sorted((self._part(Path(n).name if want else n, n, siblings[n].size,
+                                   *self._sibling_digest(siblings[n])) for n in picked), key=lambda p: p["path"])
+        mb = round(sum(p["size"] or 0 for p in parts) / 1e6, 1)
+        self.check_size(mb, model_id)
+        entry = {"id": name, "kind": kind, "repo": model_id, "revision": rev, "dest": str(dest), "mb": mb,
+                 "parts": parts, "refused": refused}
+        if want:
+            return {**entry, "path": str(dest / Path(chosen).name), "file": Path(chosen).name}
         st = getattr(info, "safetensors", None)
-        return {"id": model_id.split("/")[-1], "kind": kind, "repo": model_id, "revision": rev,
-                "path": str(dest), "mb": total_mb, "refused": refused,
-                "variant": "fp16" if variant else "",
-                # Число параметров кладём в опись сразу: потом оно понадобится, чтобы судить
-                # о пригодности железа, а спрашивать сеть ради уже стоящей модели незачем.
+        return {**entry, "path": str(dest), "variant": "fp16" if fp16 else "",
+                # Число параметров — в опись сразу: по нему судят о пригодности железа без запроса к сети.
                 "params_total": int(getattr(st, "total", 0) or 0),
                 "params_by_dtype": dict(getattr(st, "parameters", None) or {}),
                 "params_active": self._active_params(info)}
 
-    def _install_single(self, model_id: str, src: dict, progress, kind: str,
-                        keep: list[str], refused: list[dict], sizes: dict) -> dict:
-        """Модель — ОДИН файл графа (ONNX): рядом лежат те же веса в других разрядностях.
+    def install_planned(self, место: dict, progress=lambda _m: None, mark=None, held=lambda: None) -> dict:
+        """Поставить модель по снимку `место_под`: скачать его план, записать состав в опись и судить по отпечатку.
 
-        Снимок репозитория тянуть незачем — это копии одного и того же. Берём файл по
-        объявленному порядку предпочтения плюс мелкие описания рядом (их читает адаптер).
+        Источник заново не спрашивается: качаются ровно та ревизия и тот план, по которым судили место. План снят до
+        замка модели: закончившаяся между ними установка той же модели даст повторную загрузку, а не порчу.
         """
-        from huggingface_hub import hf_hub_download
-
-        rev = self.revision(model_id)
-        want = tuple(str(f).lower() for f in (src.get("require_formats") or []))
-        graphs = [n for n in keep if n.lower().endswith(want)]
-        chosen = self.prefer(graphs) or (graphs[0] if graphs else "")
-        if not chosen:
-            raise ProviderError(
-                "LOCAL_MODEL_MISSING", f"У '{model_id}' нет файла нужного формата ({', '.join(want)}).",
-                reason="Модель этого вида ставится одним файлом графа. Посмотри, что доступно: "
-                       f"python scripts/models.py local --kind {kind}.",
-                suggested_tool="media_models")
-        # Мелкие описания (нормализация, размер входа) лежат рядом и нужны адаптеру; веса —
-        # только выбранный граф.
-        extras = [n for n in keep if n.lower().endswith(".json") and Path(n).name != "README.md"]
-        total_mb = round((sizes.get(chosen, 0) + sum(sizes.get(n, 0) for n in extras)) / 1e6, 1)
-        self.check_size(total_mb)
-        dest = Path(str(src.get("dest") or kind)) / model_id.split("/")[-1]
-        target_dir = self.models_dir / dest
-        target_dir.mkdir(parents=True, exist_ok=True)
-        for remote in [chosen, *extras]:
-            progress(f"тяну {Path(remote).name}")
-            # Сразу в целевой каталог, а не через кэш: иначе те же байты лежат дважды — блобом
-            # в кэше и копией здесь (проверено: 33 МБ кэша на 33 МБ моделей).
-            got = Path(hf_hub_download(model_id, remote, local_dir=str(target_dir), revision=rev))
-            # Плоско по имени: адаптеру важен файл графа рядом с его описаниями, а не раскладка
-            # репозитория (в ней граф лежит в подкаталоге onnx/).
-            if got.parent != target_dir:
-                got.replace(target_dir / got.name)
-                with contextlib.suppress(OSError):
-                    got.parent.rmdir()                      # опустевший каталог репозитория
-        return {"id": model_id.split("/")[-1], "kind": kind, "repo": model_id, "revision": rev,
-                "path": str(dest / Path(chosen).name), "mb": total_mb, "refused": refused,
-                "file": Path(chosen).name}
-
-    def install_declared(self, entry: dict, progress=lambda _m: None) -> dict:
-        """Поставить модель, объявленную в конфиге: тянем ровно то, что там перечислено.
-
-        Отличие от `install`: источник и файлы уже названы владельцем в декларации, каталог
-        живых моделей не опрашивается — клон репозитория должен подниматься и без сети к нему.
-        """
-        import shutil
-
-        from huggingface_hub import hf_hub_download, snapshot_download
-
-        self.check_repo(str(entry.get("repo") or ""))
-        # Объявленная ревизия сильнее вычисленной: это настоящий пин, сделанный владельцем.
-        rev = str(entry.get("revision") or self.revision(str(entry["repo"])))
-        dest = self.models_dir / str(entry.get("dest") or "")
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if entry.get("snapshot"):
-            progress(f"тяну снимок {entry.get('repo')}")
-            snapshot_download(repo_id=str(entry["repo"]), local_dir=str(dest),
-                              allow_patterns=entry.get("allow") or None, revision=rev, **self._hf)
-        else:
-            dest.mkdir(parents=True, exist_ok=True)
-            keep, _ = self.allowed_files(list(entry.get("files") or []))
-            for remote in keep:
-                progress(f"тяну {Path(remote).name}")
-                got = hf_hub_download(str(entry["repo"]), remote, revision=rev, **self._hf)
-                # Плоско по имени: piper ждёт .onnx и .onnx.json рядом, без вложенности репозитория.
-                shutil.copyfile(got, dest / Path(remote).name)
-        path = self.models_dir / str(entry.get("path") or entry.get("dest") or "")
-        files = [f for f in path.rglob("*") if f.is_file()] if path.is_dir() else (
-            [path] if path.is_file() else [])
-        return {"id": entry.get("id"), "kind": entry.get("kind"), "repo": entry.get("repo"),
-                "revision": rev,
-                "path": str(entry.get("path") or entry.get("dest") or ""),
-                "mb": round(sum(f.stat().st_size for f in files) / 1e6, 1)}
-
-    def _remember(self, entry: dict) -> None:
-        """Дописать в опись, заменив прежнюю запись того же имени (второй копии не заводим)."""
-        import yaml
-        rows = [r for r in self.inventory() if str(r.get("id")) != str(entry["id"])]
-        rows.append({k: v for k, v in entry.items() if k != "refused"})
-        self.inventory_file.parent.mkdir(parents=True, exist_ok=True)
-        self.inventory_file.write_text(yaml.safe_dump(
-            {"models": rows}, allow_unicode=True, sort_keys=False), encoding="utf-8")
+        return self._install(место["entry"], место["plan"], progress, mark, held)
 
 
 class OnlineCatalog:
@@ -666,9 +802,7 @@ class OnlineCatalog:
         url = str(decl.get("url") or "")
         if not url.lower().startswith("https://"):
             # Ключ в открытом канале виден любому посреднику — это отказ, а не предупреждение.
-            raise ProviderError(
-                "DOWNLOAD_FORBIDDEN", f"Адрес списка моделей не https: {url}",
-                reason="С ключом ходим только по https — иначе его увидит любой посредник.")
+            raise ProviderError("DOWNLOAD_FORBIDDEN", facts={"host": urlparse(url).hostname or url, "allowed": "https"})
         try:
             import httpx
             headers = self._auth_headers(str(decl.get("auth") or "bearer"), api_key)

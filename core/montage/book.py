@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 import yaml
+from pydantic import ValidationError
 
 from core.declaration import Declaration
 from core.providers.ffmpeg import AudioTrack, Layer, RenderProfile, SceneSpec
@@ -94,9 +95,9 @@ class SceneBook:
         values["profile_id"] = wanted           # имя столбца может отличаться от имени поля
         try:
             profile = RenderProfile(**values)
-        except ValueError as exc:
+        except ValidationError as exc:
             raise MontageError(
-                "RENDER_PROFILE_INVALID", f"Строка профиля `{wanted}` не годится для рендера: {exc}",
+                "RENDER_PROFILE_INVALID", f"Строка профиля `{wanted}` не годится для рендера: {_rejected(exc)}",
                 reason="Значения профиля едут в команду кодирования — почини строку в книге канала.",
                 suggested_tool="table_set") from exc
         return profile, {"profile_id": wanted, "profile_source": source, "profile_owner": owner}
@@ -276,8 +277,14 @@ class SceneBook:
         """Строка книги → типизированный кусок замысла. Отказ называет ЛИСТ и СТРОКУ."""
         try:
             return model(**values)
-        except ValueError as exc:
+        except ValidationError as exc:
             raise MontageError(
-                "VALIDATION_ERROR", f"Строка {row_id} листа {sheet} не годится для рендера: {exc}",
+                "VALIDATION_ERROR", f"Строка {row_id} листа {sheet} не годится для рендера: {_rejected(exc)}",
                 reason="Значение едет в команду сборки — почини ячейку в книге.",
                 suggested_tool="table_set") from exc
+
+
+def _rejected(exc: ValidationError) -> str:
+    """Что не так со строкой книги — поля и правила модели, без значений ячеек: значения — данные канала."""
+    return "; ".join(f"{'.'.join(map(str, e['loc'])) or 'строка'} — {e['msg']}"
+                     for e in exc.errors(include_url=False, include_input=False))

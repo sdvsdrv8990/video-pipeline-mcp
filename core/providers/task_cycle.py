@@ -10,7 +10,7 @@
 import time
 from pathlib import Path
 
-from core.paths import safe_resolve
+from core.paths import Files
 
 from core.declaration import Declaration
 from core.contracts import ContractError
@@ -102,7 +102,7 @@ class TaskCycle:
         """
         rules = ((self.config.get("download") or {}).get("verify") or {})
         # Ссылка приходит извне, адресу доверять нельзя: containment обязателен.
-        target = safe_resolve(rel_path, Path(workspace))
+        target = Files(Path(workspace)).place(rel_path)
         checks: dict[str, bool] = {}
 
         if rules.get("exists", True):

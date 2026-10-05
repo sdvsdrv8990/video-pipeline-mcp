@@ -2,7 +2,7 @@
 
 from .adapters import AdapterRegistry, MediaOutcome, MediaRequest
 from core.declaration import Declaration
-from .download import ResultDownloader
+from .download import Fetcher, results
 from .installer import ModelInstaller
 from .model_spec import ModelSpec
 from .pool import ModelPool
@@ -12,4 +12,4 @@ from .usage import UsageLedger
 
 __all__ = ["ProviderResolver", "ProviderError", "TaskCycle", "TaskCycleError",
            "AdapterRegistry", "MediaRequest", "MediaOutcome", "Declaration",
-           "ResultDownloader", "UsageLedger", "ModelInstaller", "ModelSpec", "ModelPool"]
+           "Fetcher", "results", "UsageLedger", "ModelInstaller", "ModelSpec", "ModelPool"]

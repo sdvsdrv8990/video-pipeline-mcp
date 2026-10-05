@@ -81,7 +81,7 @@ def _at(root: Path, parts: tuple[str, ...]) -> Path:
 
 
 # Код отказа бросают либо исключением зоны, либо обёрткой контекста.
-RAISED_CODE = re.compile(r'(?:Error|\berr|_err|err_path)\(\s*\n?\s*"([A-Z][A-Z_0-9]{3,})"')
+RAISED_CODE = re.compile(r'(?:Error|\berr|_err)\(\s*\n?\s*"([A-Z][A-Z_0-9]{3,})"')
 
 
 def enum_without_values(root: Path = ROOT) -> list[str]:

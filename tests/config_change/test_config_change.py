@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 # создавал бы каталоги в боевой рабочей области владельца.
 os.environ.setdefault("MCP_WORKSPACE", tempfile.mkdtemp(prefix="cfgchange_ws_"))
 
-from server import create_server
+from tests.harness.inprocess import create_server
 from tests.harness import live_server
 
 results = []

@@ -11,6 +11,7 @@ import json
 import time
 from typing import Any
 from pathlib import Path
+from urllib.parse import urlparse
 
 from core.declaration import Declaration
 from .resolver import ProviderError
@@ -91,10 +92,8 @@ class ModelSpec:
             return {}
         # `model_path` — имя без версии: у Replicate в строке канала стоит `owner/name:версия`.
         url = url.format_map({"model": str(model), "model_path": str(model).split(":", 1)[0]})
-        if not url.lower().startswith("https://"):
-            raise ProviderError(
-                "DOWNLOAD_FORBIDDEN", f"Адрес спецификации не https: {url}",
-                reason="Спека тянется только по https — с ключом тем более.")
+        if not url.lower().startswith("https://"):          # спека тянется только по https, с ключом тем более
+            raise ProviderError("DOWNLOAD_FORBIDDEN", facts={"host": urlparse(url).hostname or url, "allowed": "https"})
         try:
             import httpx
             headers = {"Authorization": f"Bearer {api_key}"} if auth == "bearer" else {}

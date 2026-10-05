@@ -390,6 +390,21 @@ else:
     book({**ELEMENTS, "E4": {**ELEMENTS["E1"], "element_id": "E4", "speed": "быстро"}}, AUDIO)
     refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S01"),
             "VALIDATION_ERROR", "нечисло в числовой ячейке отбивается с именем строки и листа")
+    _said = call("montage_render_scene", table="ch1/v1", scene_id="S01").error.message
+    ok("speed" in _said and "быстро" not in _said and "input_value" not in _said and "pydantic" not in _said,
+       f"отказ ячейки называет поле и правило, а не значение и не текст pydantic ({_said[:80]!r})")
+
+    _channel = WS / "ch1" / "read.json"
+    _kept = _channel.read_text(encoding="utf-8")
+    _bent = json.loads(_kept)
+    _bent["RENDER_CONFIG"]["rows"]["P1"]["fps"] = -7
+    _channel.write_text(json.dumps(_bent, ensure_ascii=False), encoding="utf-8")
+    _r = call("montage_render_scene", table="ch1/v1", scene_id="S01")
+    _channel.write_text(_kept, encoding="utf-8")
+    _said = _r.error.message if _r.error else ""
+    ok(_r.status == "error" and _r.error.code == "RENDER_PROFILE_INVALID" and "fps" in _said
+       and "-7" not in _said and "input_value" not in _said and "pydantic" not in _said,
+       f"негодный профиль называет поле и правило, а не значение и не текст pydantic ({_said[:80]!r})")
 
     book(ELEMENTS, AUDIO, meta={"video_id": "VID1"})
     _no_choice = call("montage_render_scene", table="ch1/v1", scene_id="S01")

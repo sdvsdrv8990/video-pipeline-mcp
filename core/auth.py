@@ -15,6 +15,8 @@ import stat
 from pathlib import Path
 from typing import Mapping
 
+from core.paths import Files
+
 TOKEN_VAR = "MCP_AUTH_TOKEN"          # значение: принимается из окружения, на диск НЕ пишется
 DIGEST_VAR = "MCP_AUTH_TOKEN_SHA256"  # то, что реально лежит в .env
 ENV_FILE = ".env"
@@ -53,8 +55,8 @@ def _write_digest(env_path: Path, digest: str) -> None:
         new = re.sub(rf"^{DIGEST_VAR}=.*$", line, existing, flags=re.MULTILINE)
     else:
         new = (existing.rstrip("\n") + "\n" if existing.strip() else "") + line + "\n"
-    env_path.write_text(new, encoding="utf-8")
-    os.chmod(env_path, SECRET_MODE)
+    # Заменой слоя: .env правит и владелец руками — читатель не застанет половину, права владельца до первого байта.
+    Files(env_path.parent).replace(env_path.name, new, mode=SECRET_MODE)
 
 
 def token_digest(token: str) -> str:

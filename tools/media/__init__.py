@@ -17,11 +17,13 @@ from collections import defaultdict
 from functools import partial
 from pathlib import Path
 
-from core.contracts import Fact, ToolResult
+from core.contracts import ContractError, Fact, ToolResult
 from core.engine import Engine
 from core.providers import (AdapterRegistry, MediaRequest, ModelSpec, ProviderError, ProviderResolver,
-                            ResultDownloader, TaskCycle, UsageLedger)
+                            TaskCycle, UsageLedger)
+from core.paths import Files
 from core.providers.catalog import ModelCatalog, OnlineCatalog
+from core.providers.download import results
 from core.providers.hardware import probe
 from core.providers.installer import ModelInstaller
 from core.runner import RunnerSupervisor
@@ -286,7 +288,14 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                                models_dir=registry.models_dir, api_key=api_key, source=source_file,
                                provider=decision["provider"], resource_type=resource_type,
                                workspace=ctx.workspace_path)
-        ok, outcome = ctx.safe(lambda: adapter.generate(request))
+
+        def generate():
+            try:
+                return adapter.generate(request)
+            except ContractError as e:  # отказ обработки строки — с листом и строкой, которые знает резолвер
+                raise e.with_facts(sheet=sheet, row=decision["row_id"])
+
+        ok, outcome = ctx.safe(generate)
         if not ok:
             return _hide_key(outcome, api_key)
 
@@ -315,8 +324,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                         "PROVIDER_FAILED", "Задача готова, но в ответе нет ссылки на результат.",
                         "Сервер ищет ссылку в полях, объявленных в config/media_tasks.yaml → "
                         "download.fetch.url_fields. Добавь туда поле этого провайдера.")
-                ok, fetched = ctx.safe(
-                    lambda: ResultDownloader(ctx.config_path / "media_tasks.yaml").fetch(url, target))
+                ok, fetched = ctx.safe(lambda: results(ctx.config_path / "media_tasks.yaml").fetch(
+                    url, Files(Path(target).parent), Path(target).name, "result"))
             if not ok:
                 return fetched
             outcome.files = [target]
@@ -371,6 +380,9 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         `scope=installed` — что уже лежит; `local` — что можно поставить сюда;
         `online` — что умеет вызвать шлюз. С `provider` и `table` онлайн-список спрашивается у
         САМОГО провайдера его ключом: новая линейка появляется у него раньше, чем в реестре шлюза.
+
+        Строка `installed` несёт `disk` — готовность по диску: `verdict` (ready / incomplete / corrupt /
+        unverified), `checked` (как проверено), `why` и `plan` (что докачать или заменить).
         """
         registry = AdapterRegistry(ctx.config_path / "providers.yaml", ctx.config_path.parent)
         catalog = ModelCatalog(ctx.config_path / "providers.yaml", registry.models_dir)
@@ -478,55 +490,56 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """Наблюдатель за установками: пределы прозвонки — из декларации, не из кода."""
         registry = AdapterRegistry(ctx.config_path / "providers.yaml", ctx.config_path.parent)
         catalog = ModelCatalog(ctx.config_path / "providers.yaml", registry.models_dir)
-        progress = ((catalog.install_rules.get("progress")) or {})
+        progress = ("local", "install", "progress")
         return ModelInstaller(catalog,
-                              heartbeat_sec=float(progress.get("heartbeat_sec", 2)),
-                              stale_after_sec=float(progress.get("stale_after_sec", 120)))
+                              heartbeat_sec=registry.need(*progress, "heartbeat_sec", kind=float),
+                              stale_after_sec=registry.need(*progress, "stale_after_sec", kind=float))
 
-    async def media_model_install(model_id: str, kind: str, confirm: bool = False) -> "ToolResult":
+    async def media_model_install(model_id: str, kind: str, confirm: bool = False,
+                                  force: bool = False) -> "ToolResult":
         """Начать установку локальной модели. Идёт в фоне — ход прозванивается отдельно.
 
         Ставится только объявленный формат и только из объявленного источника: `.bin/.ckpt/.pt`
-        это pickle, его загрузка выполняет код из файла. Размер ограничен декларацией.
+        это pickle, его загрузка выполняет код из файла. Размер ограничен декларацией. Уже стоящая
+        той же ревизией модель — исход «уже стоит» сразу, без задачи; `force` — перекачать.
         """
         if not confirm:
             return ctx.err(
                 "CONFIRM_REQUIRED", f"Установка '{model_id}' скачает веса на диск сервера.",
                 "Это гигабайты и внешний источник — операция подтверждается явно: повтори с "
                 "confirm=true. Сначала посмотри, что ставишь: media_models(scope='local').")
-        ok, state = ctx.safe(lambda: _installer().start(model_id, kind))
+        ok, task = ctx.safe(lambda: _installer().start(model_id, kind, force=force))
         if not ok:
-            return state
+            return task
+        if task["task_id"] is None:
+            return ToolResult(status="success", data=task, facts=[Fact(type="CreationSkipped", data={
+                "model_id": model_id, "kind": kind, "revision": task["result"]["revision"],
+                "checked": task["result"]["checked"]})])
         return ToolResult(status="success", data={
-            "install_id": state["install_id"], "model_id": model_id, "kind": kind,
-            "phase": state["phase"],
+            **task,
             "next": ("Установка идёт в фоне — гигабайты качаются минутами. Прозвони её: "
-                     f"media_install_status(install_id='{state['install_id']}'). Отвалившийся "
+                     f"media_install_status(install_id='{task['task_id']}'). Отвалившийся "
                      "клиент установку не теряет и не спасает: она продолжается, статус "
                      "прозванивается заново."),
         }, facts=[Fact(type="ModelInstallStarted", data={
-            "install_id": state["install_id"], "model_id": model_id, "kind": kind})])
+            "install_id": task["task_id"], "model_id": model_id, "kind": kind})])
 
     async def media_install_status(install_id: str = "") -> "ToolResult":
-        """Что с установками моделей: идёт, готово, отказ или прервано.
+        """Что с установками моделей — статус задачи каждой (`TaskStatus`): идёт, готово или отказ.
 
         Прогресс считается по диску, а не по отчёту загрузчика: он способен отрапортовать и
-        оборваться. Если байты не растут дольше объявленного срока — это «прервано», а не «идёт».
+        оборваться. Если байты не растут дольше объявленного срока — это отказ INSTALL_STALLED, а не «идёт».
         """
         ok, rows = ctx.safe(lambda: _installer().status(install_id))
         if not ok:
             return rows
-        done = [r for r in rows if r["phase"] == "done"]
-        broken = [r for r in rows if r["phase"] in ("failed", "stale")]
         return ToolResult(status="success", data={
             "installs": rows,
-            "running": [r["install_id"] for r in rows if r["phase"] == "running"],
-            "hint": ("Прерванную или упавшую установку можно просто повторить: скачанное не "
-                     "выбрасывается, загрузка продолжится с места обрыва."),
+            "running": [r["task_id"] for r in rows if r["status"] == "processing"],
         }, facts=[Fact(type="ModelInstallStatus", data={
-            "total": len(rows), "done": [r["model_id"] for r in done],
-            "failed": [{"model": r["model_id"], "code": r.get("code", ""),
-                        "phase": r["phase"]} for r in broken]})])
+            "total": len(rows), "done": [r["params"]["model_id"] for r in rows if r["status"] == "completed"],
+            "failed": [{"model": r["params"]["model_id"], "code": r["error"]["code"]}
+                       for r in rows if r["status"] == "failed"]})])
 
     async def media_runner(action: str = "status", mode: str = "process") -> "ToolResult":
         """Поднять, остановить или прозвонить раннер локальных моделей.
@@ -607,8 +620,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         title="Медиа: поставить локальную модель",
         description=(
             "Начинает загрузку весов локальной модели на диск сервера. Гигабайты качаются "
-            "минутами, поэтому установка идёт В ФОНЕ и возвращает install_id — ход прозванивается "
-            "через media_install_status, который скажет и об успехе, и об обрыве. По завершении "
+            "минутами, поэтому установка идёт В ФОНЕ и возвращает статус задачи с task_id — ход "
+            "прозванивается через media_install_status, который скажет и об успехе, и об обрыве. "
+            "Модель уже стоит той же ревизией и цела — исход «уже стоит» сразу (task_id=null, "
+            "result.outcome=already_installed), без загрузки; force=true — перекачать. По завершении "
             "модель попадает в опись, и канал может исполнять ею (table_update по столбцу model). "
             "Ставится только объявленный формат из объявленного источника и не больше объявленного "
             "размера: веса .bin/.ckpt/.pt — это pickle, чья загрузка выполняет код из файла. "
@@ -618,6 +633,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "kind": {"type": "string", "description": "Вид модели: tts, image, bg_removal, upscale"},
             "confirm": {"type": "boolean", "default": False,
                         "description": "Осознанное подтверждение загрузки весов на диск сервера"},
+            "force": {"type": "boolean", "default": False,
+                      "description": "Перекачать все части, даже если модель уже стоит (починка испорченных весов)"},
         }, "required": ["model_id", "kind"]},
         handler=media_model_install, group="media", annotations=ANNOTATIONS_MODIFY)
 

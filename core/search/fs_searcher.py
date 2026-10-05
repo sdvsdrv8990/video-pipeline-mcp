@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 import concurrent.futures
 from datetime import datetime
 
-from core.paths import is_secret_path, safe_resolve  # секреты вне выдачи
+from core.paths import Files  # обход через дверь: секреты и ссылки наружу вне выдачи
 from core.contracts import ContractError
 
 
@@ -50,9 +50,9 @@ class FsSearchTask:
     status: str = "pending"
     result: list = field(default_factory=list)
     error: str | None = None
-    # Файлы, которые не удалось прочитать при фильтре по содержимому. Молчаливый пропуск
-    # неотличим от «не совпало», и клиент считает поиск полным, а он неполный.
-    unreadable: list[str] = field(default_factory=list)
+    # Что не удалось прочитать — каталог при обходе, файл при фильтре по содержимому ({path, reason}). Молчаливый
+    # пропуск неотличим от «не совпало», и клиент считает поиск полным, а он неполный.
+    unreadable: list[dict] = field(default_factory=list)
 
 
 class FsSearchError(ContractError):
@@ -66,12 +66,14 @@ class FsSearcher:
         workspace: путь к workspace/
     """
 
-    def __init__(self, workspace: str | Path, registry=None, taxonomy=None):
+    def __init__(self, workspace: str | Path, registry=None, taxonomy=None, *, read_bytes: int):
         self.workspace = Path(workspace)
         # Личность файлов живёт в реестре, а не в их именах. Без реестра поиск
         # продолжает работать, но ID/владельца отдать неоткуда.
         self.registry = registry
         self.taxonomy = taxonomy
+        # Сколько байт файла читать ради совпадения по содержимому (`firewall.yaml → file_limits.read_bytes`).
+        self.read_bytes = read_bytes
 
     def _path_index(self) -> dict:
         """Снимок реестра «путь → запись» один раз на поиск (а не на каждый файл)."""
@@ -99,26 +101,22 @@ class FsSearcher:
         """Выполнение задачи поиска."""
         task.status = "running"
         try:
-            # task.root под контролем клиента → containment внутри workspace/ (анти-traversal).
-            try:
-                root = safe_resolve(str(task.root), self.workspace) if task.root else self.workspace.resolve()
-            except ValueError as e:
-                raise FsSearchError("PATH_ESCAPE", f"root вне workspace: {task.root}") from e
-            if not root.exists():
+            # task.root под контролем клиента → обход слоя: каждый элемент через дверь; пусто — сам корень.
+            files = Files(self.workspace)
+            walk = files.walk(task.root or "")
+            if not walk.start.exists():
                 raise FsSearchError("PATH_NOT_FOUND", f"Каталог не найден: {task.root}")
 
             index = self._path_index()
             results = []
-            for item in root.rglob("*"):
-                if not item.is_file():
+            for entry in walk:
+                if entry.kind != "file":
                     continue
-                # Обход идёт по диску, а не через резолвер — закрытый каталог не попадает
-                # ни в имена, ни в поиск по содержимому.
-                if is_secret_path(item.relative_to(self.workspace.resolve())):
-                    continue
+                # Имя — то, что видит клиент; размер, время и содержимое — настоящего файла.
+                named, item = PurePosixPath(entry.path), entry.real
 
                 # Фильтр по расширению
-                if task.extensions and item.suffix not in task.extensions:
+                if task.extensions and named.suffix not in task.extensions:
                     continue
 
                 # Фильтр по размеру
@@ -140,7 +138,7 @@ class FsSearcher:
                         continue
 
                 # Определяем тип сущности по пути
-                entity_type = self._detect_entity_type(item)
+                entity_type = self._detect_entity_type(self.workspace / entry.path)
 
                 # Фильтр по типу сущности
                 if task.entity_types and entity_type not in task.entity_types:
@@ -148,22 +146,25 @@ class FsSearcher:
 
                 # Фильтр по имени (regex)
                 if task.name_pattern:
-                    if not re.search(task.name_pattern, item.name):
+                    if not re.search(task.name_pattern, named.name):
                         continue
 
                 # Фильтр по содержимому
                 if task.content_keywords:
                     try:
-                        content = item.read_text(encoding="utf-8", errors="ignore")
+                        content = files.read(entry.path, self.read_bytes, whole=True, errors="ignore").text
                     except OSError as e:
                         # Не прочитали ≠ не совпало: считаем потерю поимённо и отдаём наверх.
-                        task.unreadable.append(f"{item.relative_to(self.workspace)}: {e.strerror or e}")
+                        task.unreadable.append(files.unread(entry.path, e))
+                        continue
+                    except ContractError as e:  # больше предела — тоже не прочитан, а не «не совпал»
+                        task.unreadable.append({"path": entry.path, "reason": e.code})
                         continue
                     if not all(kw.lower() in content.lower() for kw in task.content_keywords):
                         continue
 
                 # Личность берётся из РЕЕСТРА по вместимости, а не из имени файла.
-                rel = str(item.relative_to(self.workspace))
+                rel = entry.path
                 entity_id, lineage = self._lineage(rel, index)
                 owner_id = lineage[-1]["id"] if lineage else ""
                 chain = "/".join(e["id"] for e in lineage)
@@ -185,12 +186,12 @@ class FsSearcher:
 
                 results.append(FileResult(
                     path=rel,
-                    name=item.name,
+                    name=named.name,
                     size=size,
                     modified=mtime.isoformat(),
                     entity_type=entity_type,
                     entity_id=entity_id,
-                    parent_path=str(item.parent.relative_to(self.workspace)),
+                    parent_path=str(named.parent),
                     owner_id=owner_id,
                     chain=chain,
                 ))
@@ -198,6 +199,7 @@ class FsSearcher:
                 if len(results) >= task.limit:
                     break
 
+            task.unreadable.extend(walk.unreadable)
             task.status = "done"
             task.result = results
             return results

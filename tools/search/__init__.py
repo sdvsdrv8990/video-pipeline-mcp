@@ -9,7 +9,7 @@
 
 from core.contracts import Fact, ToolResult
 from core.engine import Engine
-from core.search.query_planner import QueryPlanner, SearchError
+from core.search.query_planner import QueryPlanner
 from tools._context import ANNOTATIONS_READONLY, ToolContext
 
 
@@ -24,29 +24,30 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         Принимает YAML-строку или dict с запросом. Возвращает объединённые
         результаты с прогрессом выполнения.
         """
-        try:
-            if yaml_query:
-                import yaml
+        if yaml_query:
+            import yaml
+            try:
                 data = yaml.safe_load(yaml_query)
-            elif query_dict:
-                data = query_dict
-            else:
-                return ctx.err("VALIDATION_ERROR", "Укажи yaml_query или query_dict")
+            except yaml.YAMLError as e:
+                # Битый запрос — вина клиента: место ошибки, а не текст запроса.
+                mark = getattr(e, "problem_mark", None)
+                where = f" (строка {mark.line + 1}, столбец {mark.column + 1})" if mark else ""
+                return ctx.err("VALIDATION_ERROR", f"yaml_query не разбирается как YAML{where}")
+        elif query_dict:
+            data = query_dict
+        else:
+            return ctx.err("VALIDATION_ERROR", "Укажи yaml_query или query_dict")
 
-            plan = planner.load_query_from_dict(data)
-            result = planner.execute_plan(plan)
+        plan = planner.load_query_from_dict(data)
+        result = planner.execute_plan(plan)
 
-            return ToolResult(status="success", data=result,
-                              facts=[Fact(type="SearchCompleted", data={
-                                  "query": plan.name,
-                                  "reads": result["metadata"]["reads_executed"],
-                                  "rows": result["metadata"]["total_rows"],
-                                  "errors": result["metadata"]["reads_failed"],
-                              })])
-        except SearchError as e:
-            return ctx.err(e.code, e.message, e.reason, e.suggested_tool)
-        except Exception as e:
-            return ctx.err("INTERNAL_ERROR", f"Ошибка поиска: {e}")
+        return ToolResult(status="success", data=result,
+                          facts=[Fact(type="SearchCompleted", data={
+                              "query": plan.name,
+                              "reads": result["metadata"]["reads_executed"],
+                              "rows": result["metadata"]["total_rows"],
+                              "errors": result["metadata"]["reads_failed"],
+                          })])
 
     async def search_quick(table: str, sheet: str, column: str = "",
                            filter_col: str = "", filter_op: str = "eq",

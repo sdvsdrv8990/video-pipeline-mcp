@@ -37,9 +37,13 @@ _КОДЫ = {
     "NO_FRAGMENTS", "INVALID_EXTENSION",
     "PROVIDER_FAILED", "CONTENT_REJECTED", "LOCAL_INFERENCE_FAILED",
     "PROVIDER_NOT_CONFIGURED", "PROVIDER_EXHAUSTED",
-    "PROVIDER_TIMEOUT", "DOWNLOAD_INCOMPLETE", "DOWNLOAD_FORBIDDEN",
+    "PROVIDER_TIMEOUT", "DOWNLOAD_INCOMPLETE", "DOWNLOAD_FORBIDDEN", "DOWNLOAD_RANGE_INVALID", "DOWNLOAD_TOO_LARGE",
     "PROVIDER_ADAPTER_MISSING", "LOCAL_MODEL_MISSING", "USAGE_UNIT_UNKNOWN",
-    "NO_DISK_SPACE",
+    "MODEL_INCOMPLETE", "MODEL_CORRUPT", "MODEL_UNVERIFIED",
+    "MODEL_SOURCE_FORBIDDEN", "MODEL_SOURCE_FAILED", "MODEL_TOO_LARGE", "MODEL_NOT_IN_CATALOG", "MODEL_GATED", "MODEL_FORMAT_MISSING",
+    "MODEL_REVISION_UNKNOWN", "MODEL_NAME_TAKEN",
+    "MODEL_UNLOADABLE", "BOOK_ROW_INVALID",
+    "MODEL_NO_DISK_SPACE", "DISK_SPACE_UNKNOWN", "MODEL_SIZE_UNKNOWN", "INSTALL_STALLED", "MODEL_INSTALL_BUSY",
     "RESOURCE_BUSY",
     # Объявлены в server_reactions.yaml и реально бросаются, но выпали отсюда —
     # ErrorDetail предупреждал «код не в реестре» на штатных отказах поиска и пересчёта
@@ -52,16 +56,13 @@ _КОДЫ = {
     "SECRET_ACCESS_DENIED", "PROVIDER_KEY_MISSING", "SECRET_UNREADABLE",
     "SECRET_ENCRYPTION_UNAVAILABLE",
     "AUTH_REQUIRED", "AUTH_FAILED", "DEFAULT", "UNKNOWN_ERROR",
-    # Таблицы: данные (Категория 3)
     "SHEET_NOT_FOUND", "COLUMN_NOT_FOUND", "ROW_NOT_FOUND",
     "COMPUTED_READONLY", "ENUM_VIOLATION", "INVALID_ACTION",
     # Таблицы: структура (Категория 2, excel_*)
-    "WORKBOOK_NOT_FOUND", "SHEET_EXISTS", "LAST_SHEET",
+    "WORKBOOK_NOT_FOUND", "SHEET_EXISTS", "SHEET_NAME_INVALID", "LAST_SHEET",
     "COLUMN_EXISTS", "FORMULA_PROTECTED", "COLUMN_HAS_DEPENDENTS",
     # Структура: реестр связей
     "ENTITY_NOT_FOUND",
-    # Анализ данных
-    "SHEET_COPY_ERROR",
     # Проверка целостности
     "DUPLICATE_ID",
     # Таблицы: материализация книг по декларации
@@ -74,12 +75,16 @@ _КОДЫ = {
     "FOREIGN_WRITE", "MACHINE_MISMATCH",
     # Тип файла запрещён к записи
     "FILE_TYPE_FORBIDDEN",
+    # Слой файлов: предел из объявления, не текст, место на диске под запись
+    "FILE_TOO_LARGE", "FILE_NOT_TEXT", "NO_DISK_SPACE",
     # Подтверждение необратимой операции
     "CONFIRM_REQUIRED",
     # Монтаж: словарь ffmpeg, сборка команды, запуск и приёмка результата
     "FFMPEG_MISSING", "FILTER_UNKNOWN", "RENDER_PROFILE_INVALID",
     "RENDER_INPUT_UNPREPARED", "RENDER_FAILED", "RENDER_TIMEOUT", "RENDER_UNVERIFIED",
     "SCENE_EMPTY", "VARIANT_INCOMPATIBLE",
+    # Среда расчёта: пакеты
+    "PACKAGE_GROUP_UNKNOWN", "PACKAGE_INSTALL_FAILED", "PACKAGE_INSTALL_INCOMPLETE",
 }
 
 KNOWN_ERROR_CODES = frozenset(_КОДЫ)
@@ -121,6 +126,8 @@ class ErrorDetail(BaseModel):
     reaction_class: str = "unknown"  # класс задаёт реестр, не эмитент
     message: str
     recovery: Recovery
+    facts: dict = {}  # факты отказа машиной: то же, что подставлено в текст и подсказку
+    errors: list[dict] = []  # ошибки ввода [{field, rule}] — что не так и где (RFC 9457 errors)
     raw_response: dict | None = None  # секреты маскируются до попадания сюда
 
     @field_validator("code")

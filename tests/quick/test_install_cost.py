@@ -69,6 +69,11 @@ _строки, _хватает = install_cost.отчёт([_дорого], _те�
 ok(not _хватает, "вердикт отрицательный: свободного меньше, чем размер скачивания")
 ok(any("НЕ ХВАТАЕТ МЕСТА" in с and "6494" in с and "500" in с for с in _строки),
    "в отказе оба числа — нужное и свободное; без них он не проверяем")
+_слепо = {"свободно_мб": None, "озу_мб": 8000, "ядра": 4}
+_строки, _хватает = install_cost.отчёт([_дорого], _слепо)
+ok(not _хватает and any("не прочитано" in с and "6494" in с for с in _строки)
+   and not any("НЕ ХВАТАЕТ МЕСТА" in с for с in _строки),
+   "место не прочитано — вердикт отрицательный с названной причиной, а не «не хватает» и не «хватает»")
 
 print("\n== 4. Цена складывается по целям, а свободное место берётся у машины ==")
 _дёшево = {"цель": ".", "пакетов": 66, "скачать_мб": 115.0, "без_размера": [], "ошибка": ""}
@@ -94,29 +99,27 @@ sys.path.insert(0, str(ROOT))
 import models  # тот же скрипт, что зовут меню настройки и CLI
 
 
+from core.providers import ProviderError
+
+
 class _Каталог:
-    """Каталог ровно в той части, которую спрашивает проверка: ряд модели и вердикт влезания."""
+    """Каталог ровно в той части, которую спрашивает CLI: снимок места (`место_под`) и вердикт влезания."""
 
-    def __init__(self, мб, вердикт="yes"):
+    def __init__(self, мб, вердикт="yes", отказ=None):
         self.models_dir = ROOT
-        self._мб, self._вердикт = мб, вердикт
+        self._мб, self._вердикт, self._отказ = мб, вердикт, отказ
 
-    def available(self, kind, limit=0, **_):
-        return [{"id": "проба", "mb": self._мб}] if self._мб is not None else []
+    def installed_as(self, model_id, kind):
+        return None                             # здесь судится место, а не «уже стоит»
+
+    def место_под(self, model_id, kind, force=False):
+        if self._отказ:
+            raise self._отказ                   # нехватка места и прочие отказы — у каталога (`место_под`)
+        return {"нужно_мб": self._мб, "свободно_мб": 100000.0, "entry": {"id": model_id, "mb": self._мб}, "plan": []}
 
     def with_fit(self, rows, hardware=None):
         return [{**rows[0], "fit": {"verdict": self._вердикт, "need_mb": 99999,
                                     "device": "процессор", "available_mb": 1000}}]
-
-
-ok(models._хватит_места(_Каталог(1.0), "проба", "tts"),
-   "модель в мегабайт при свободных гигабайтах ставится — отказ по месту не должен быть всегда")
-ok(not models._хватит_места(_Каталог(10 ** 9), "проба", "tts"),
-   "модель больше диска НЕ ставится: место кончится на середине скачивания")
-ok(models._хватит_места(_Каталог(None), "проба", "tts"),
-   "ряда в каталоге нет — «не проверено», и это не повод отказывать")
-ok(models._хватит_места(_Каталог(1.0, вердикт="no"), "проба", "tts"),
-   "веса влезли, а расчёт нет — это предупреждение, а не отказ: диск и память разные вопросы")
 
 
 class _Ставит(_Каталог):
@@ -127,24 +130,46 @@ class _Ставит(_Каталог):
     # мутация ловится падением вместо названного провала — улика хуже, чем могла бы быть.
     inventory_file = ROOT / "vendor" / "models" / "installed.yaml"
 
-    def install(self, model_id, kind, progress=None):
+    def install_planned(self, место, progress=None):
         _Ставит.ставили = True
-        return {"id": model_id, "mb": 1, "path": "x"}
+        return {**место["entry"], "path": "x"}
 
+
+import contextlib
+import io
+
+for _вердикт, _ждём, _что in (
+        ("yes", False, "веса и расчёт влезают — предупреждения нет, установка идёт молча"),
+        ("no", True, "веса влезли, а расчёт нет — это предупреждение, а не отказ: диск и память разные вопросы")):
+    _к = _Каталог(1.0, вердикт=_вердикт)
+    _печать = io.StringIO()
+    with contextlib.redirect_stdout(_печать):
+        models._предупредить_о_расчёте(_к, _к.место_под("проба", "tts"))
+    ok(("расчёт — нет" in _печать.getvalue()) is _ждём, f"{_что} ({_печать.getvalue().strip() or 'тишина'})")
 
 _прежний = models._catalog
-models._catalog = lambda: _Ставит(10 ** 9)
+models._catalog = lambda: _Ставит(10 ** 9, отказ=ProviderError(
+    "MODEL_NO_DISK_SPACE", facts={"model": "проба", "need_mb": 1000000000.0, "free_mb": 100000}))
 _Ставит.ставили = False
+_вывод = io.StringIO()
+with contextlib.redirect_stdout(_вывод):
+    _код = models.main(["models.py", "install", "проба", "--kind", "tts"])
+ok(_код == 2 and not _Ставит.ставили and "MODEL_NO_DISK_SPACE" in _вывод.getvalue()
+   and "1000000000" in _вывод.getvalue() and "100000 МБ" in _вывод.getvalue(),
+   f"проверка ПОДКЛЮЧЕНА: места меньше весов — отказ каталога кодом с обоими числами, до скачивания не дошло "
+   f"(код {_код}, установка {'была' if _Ставит.ставили else 'не начата'})")
 
-
-class _Аргументы:
-    id, kind = "проба", "tts"
-
-
-_код = models.cmd_install(_Аргументы())
+models._catalog = lambda: _Ставит(1.0, отказ=ProviderError(
+    "MODEL_SIZE_UNKNOWN", facts={"model": "проба", "parts": "unet/w.safetensors"}))
+_вывод = io.StringIO()
+with contextlib.redirect_stdout(_вывод):
+    _код = models.main(["models.py", "install", "проба", "--kind", "tts"])
 models._catalog = _прежний
-ok(_код == 1 and not _Ставит.ставили,
-   "проверка ПОДКЛЮЧЕНА: при нехватке места установка возвращает 1 и до скачивания не доходит")
+ok(_код == 2 and not _Ставит.ставили,
+   "размер не назван источником — отказ кодом, а не «не проверено, ставим»: незнание не выдаётся за «хватает»")
+ok("MODEL_SIZE_UNKNOWN" in _вывод.getvalue() and "unet/w.safetensors" in _вывод.getvalue()
+   and "'проба'" in _вывод.getvalue(),
+   f"CLI печатает текст реестра с подставленными фактами, а не пустое «✗ КОД: » ({_вывод.getvalue().strip()})")
 
 print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")
 for _f in _fails:

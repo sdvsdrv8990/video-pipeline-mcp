@@ -9,10 +9,11 @@
 
 import re
 
-from core.contracts import Fact, ToolResult, as_untrusted
+from core.contracts import ContractError, Fact, ToolResult, as_untrusted
 from core.engine import Engine, TableMaterializer, TemplateEngine
 from core.engine.template_resolver import PROJECT_TEMPLATES_DIR
 from core.ids import LinkError
+from core.paths import Files
 from core.write_policy import WritePolicyError
 from tools._context import ANNOTATIONS_MODIFY, ANNOTATIONS_READONLY, ToolContext
 
@@ -248,7 +249,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         ok, root = ctx.safe(lambda: ctx.resolve(path))
         if not ok:
             return root
-        policy = ctx.write_policy
+        files, policy = Files(ctx.workspace_path), ctx.write_policy
         subs = ("workspace", "tables") if what == "both" else (what,)
         copied: list[dict] = []
         skipped: list[dict] = []
@@ -261,20 +262,18 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             for src in sorted(src_dir.glob("*.yaml")):
                 dst = dst_dir / src.name
                 rel = str(dst.relative_to(ctx.workspace_path))
-                # Копия шаблона — обычная запись в workspace: та же дверь, что у fs_*.
+                # Копия шаблона — обычная запись в workspace: та же дверь с политикой, что у fs_*. Без overwrite правку
+                # проекта не затираем — тот же закон, что у kind: config; занятое имя решает `create`, а не проба.
                 text = src.read_text(encoding="utf-8")
                 try:
-                    policy.check(rel)
-                    policy.check_content(rel, text)
+                    if overwrite:
+                        files.replace(dst, text, policy=policy)
+                    elif not files.create(dst, text, policy=policy):
+                        skipped.append({"path": rel, "reason": "already customized"})
+                        continue
                 except WritePolicyError as e:
-                    skipped.append({"path": rel, "reason": e.message})
+                    skipped.append({"reason": e.code, **e.facts})
                     continue
-                if dst.exists() and not overwrite:
-                    # Правку проекта не затираем молча — тот же закон, что у kind: config.
-                    skipped.append({"path": rel, "reason": "already customized"})
-                    continue
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                dst.write_text(text, encoding="utf-8")
                 copied.append({"path": rel, "what": sub})
         return ToolResult(status="success", data={
             "path": path, "templates_dir": f"{path.rstrip('/')}/{PROJECT_TEMPLATES_DIR}",
@@ -359,10 +358,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         находятся через structure_find, и перечитывать историю не нужно. Возвращает
         также ID, упомянутые в памяти, но отсутствующие в реестре (висящие ссылки).
         """
-        try:
-            target = ctx.resolve(path)
-        except ValueError as _pe:
-            return ctx.err_path(_pe, f"Path escapes workspace: {path}")
+        target = ctx.resolve(path)
         if not target.exists():
             return ctx.err("FILE_NOT_FOUND", f"Файл памяти не найден: {path}")
 
@@ -371,7 +367,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         annotated: list[dict] = []
         unknown: list[str] = []
         seen: set = set()
-        for line in target.read_text(encoding="utf-8").split("\n"):
+        # Висящие ссылки ищутся по файлу целиком: больше предела — отказ, а не разбор половины.
+        for line in Files(ctx.workspace_path).read(target, ctx.read_limit, whole=True).text.split("\n"):
             head = re.match(r"^##\s*(?:\[(.+?)\])?\s*(.+)$", line)
             if head:
                 heading = head.group(2).strip()
@@ -426,17 +423,11 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                         "Сначала создай её через structure_create.", "structure_status")
         old_path = entity.get("path", "")
         # Проверяем что старый путь существует
-        try:
-            old_full = ctx.resolve(old_path)
-        except ValueError as _pe:
-            return ctx.err_path(_pe, f"Старый путь выходит за workspace: {old_path}")
+        old_full = ctx.resolve(old_path)
         if not old_full.exists():
             return ctx.err("FILE_NOT_FOUND", f"Папка не найдена: {old_path}")
         # Проверяем что новый путь не занят
-        try:
-            new_full = ctx.resolve(new_path)
-        except ValueError as _pe:
-            return ctx.err_path(_pe, f"Новый путь выходит за workspace: {new_path}")
+        new_full = ctx.resolve(new_path)
         if new_full.exists():
             return ctx.err("FILE_EXISTS", f"Путь уже существует: {new_path}")
         # Физический перенос
@@ -542,9 +533,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 _move_entity(new_path, old_path)
             for child_id, parent_id in linked:
                 ctx.link_registry.unlink(child_id, parent_id)
-            return ctx.err("RECONCILE_ROLLED_BACK", f"Reconcile откачен: {e}",
-                           "Ни одна сущность не сдвинута — устрани помеху и повтори.",
-                           "structure_status")
+            raise ContractError("RECONCILE_ROLLED_BACK", "Reconcile откачен: ни одна сущность не сдвинута",
+                                reason="Устрани помеху и повтори.", suggested_tool="structure_status") from e
 
         facts = [Fact(type="EntityLinked", data={
             "child_id": p["id"], "child_type": p["type"], "child_name": "",

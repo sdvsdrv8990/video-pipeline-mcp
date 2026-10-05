@@ -69,20 +69,28 @@ def _среда_расчёта() -> None:
 
 
 def _поставить(extras: str, index: str) -> None:
-    """Одна команда установки, напечатанная ДО запуска: её же можно повторить руками."""
+    """Среда расчёта по плану разницы: стоящее не переставляется, суд — до сети; команда печатается ДО запуска."""
     if not extras:
         print("Чем ставить эту карту — не объявлено (config/providers.yaml → local.gpu).")
         return
-    if not _требования([(".[local]", ""), (f".[{extras}]", index)]):
-        print("Установка среды расчёта отменена: не хватает места.")
+    from core.packages import PackageError, Packages
+    from core.reactions import cli_text
+
+    группы, пакеты = ["local", extras], Packages(ROOT)
+    try:
+        план = пакеты.judge(группы)["plan"]
+        if not план:
+            print("✓ среда расчёта уже стоит: всё объявленное на месте, ставить нечего")
+            return
+        if not _требования([(п["requirement"], index) for п in план]):
+            print("Установка среды расчёта отменена: не хватает места.")
+            return
+        итог = пакеты.install(группы, index, announce=lambda команда: print("  " + " ".join(команда)))
+    except PackageError as e:
+        print(cli_text(e, ROOT / "config" / "server_reactions.yaml"))
         return
-    команда = [sys.executable, "-m", "pip", "install", "-e", f".[local,{extras}]"]
-    if index:
-        команда += ["--extra-index-url", index]
-    print("  " + " ".join(команда))
-    готово = subprocess.run(команда, cwd=ROOT, check=False)
-    print("✓ среда расчёта поставлена" if готово.returncode == 0
-          else f"✗ установка вернула {готово.returncode} — команда выше повторяема руками")
+    print(f"✓ среда расчёта поставлена: {', '.join(итог['installed'])}" if итог["installed"]
+          else "✓ среда расчёта уже стоит")
 
 
 def _pick(prompt: str, options: list[str]) -> int | None:

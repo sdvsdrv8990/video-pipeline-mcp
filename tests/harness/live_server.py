@@ -18,6 +18,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from core.observability import Logs
+
 from .console import Console
 from .jsonrpc import JsonRpc
 
@@ -43,6 +45,8 @@ class LiveServer:
         self.token = secrets.token_urlsafe(24)
         self.workspace = Path(tempfile.mkdtemp(prefix="live_ws_")) / "workspace"
         self.workspace.mkdir(parents=True)
+        # Свой корень журналов: тестовый сервер не дописывает журнал владельца и не вытесняет его след.
+        self.logs = self.workspace.parent / "logs"
         self.extra_env = env or {}
         self.ready_timeout = ready_timeout
         self.echo = echo
@@ -55,10 +59,16 @@ class LiveServer:
     def url(self) -> str:
         return f"http://127.0.0.1:{self.port}/mcp"
 
+    @property
+    def journals(self) -> Logs:
+        """Журналы этого сервера той же функцией, что строит их сам сервер: где его след и журнал фактов."""
+        return Logs.from_config(self.extra_env.get("MCP_CONFIG") or ROOT / "config", str(self.logs))
+
     def _env(self) -> dict:
         return {**os.environ,
                 "MCP_HOST": "127.0.0.1", "MCP_PORT": str(self.port),
                 "MCP_WORKSPACE": str(self.workspace),
+                "MCP_LOGS": str(self.logs),
                 # Ключ через среду: `ensure_digest` берёт его первым и .env проекта не трогает.
                 "MCP_AUTH_TOKEN": self.token,
                 "PYTHONUNBUFFERED": "1",

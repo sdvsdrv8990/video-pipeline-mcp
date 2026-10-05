@@ -200,13 +200,16 @@ import json as _json
 import importlib.util as _ilu
 from core.engine import Engine as _Eng
 from core.ids import IDGenerator as _IDG
+from core.reactions import Reactions as _Reactions
 from core.state import StateManager as _SM
 import server as _srv
 
 _ws = Path(tempfile.mkdtemp(prefix="prov_")) / "workspace"
 _ws.mkdir(parents=True)
 _sm = _SM(_ws)
-_eng = _Eng(state_manager=_sm)
+# Движок — с реестром реакций, как его собирает сервер (server.py): набор судит тот отказ, что получает клиент.
+_REACTIONS = _Reactions(ROOT / "config" / "server_reactions.yaml")
+_eng = _Eng(reactions=_REACTIONS, state_manager=_sm)
 _srv.register_basic_tools(_eng, _IDG(), _sm)
 (_ws / "ch").mkdir()
 
@@ -388,8 +391,9 @@ ok(_lreg.model_path("руками_положенная.onnx") == (_lmodels / "р
 try:
     _lreg.model_path("../../../../etc/passwd")
     ok(False, "путь наружу должен падать")
-except ProviderError as e:
-    ok(e.code == "LOCAL_MODEL_MISSING", f"имя модели из данных не выводит за корень весов ({e.code})")
+except PathEscapeError as e:
+    ok(e.code == "PATH_ESCAPE" and e.facts.get("path") == "../../../../etc/passwd",
+       f"имя модели из данных не выводит за корень весов — отказ двери, путь назван от корня ({e.code}, {e.facts})")
 for _mod in ("core/providers/tts/piper_local.py", "core/providers/img/diffusers_local.py",
              "core/providers/stt/whisper_local.py"):
     _msrc = (ROOT / _mod).read_text(encoding="utf-8")
@@ -436,8 +440,10 @@ else:
     "L1": {**_row_local, "model": "../../../../etc/passwd"}}}}), encoding="utf-8")
 _esc = _call("media_generate", table="v", resource_type="tts_characters",
              input="текст", scene_id="s1", video_slug="demo")
-ok(_esc.status == "error" and _esc.error.code == "LOCAL_MODEL_MISSING",
-   f"путь наружу в имени модели отбит containment ({_esc.error.code if _esc.error else 'success'})")
+ok(_esc.status == "error" and _esc.error.code == "PATH_ESCAPE"
+   and not Path(_esc.error.facts.get("path", "/")).is_absolute(),
+   f"путь наружу в имени модели отбит дверью: PATH_ESCAPE, путь без места сервера "
+   f"({_esc.error.code if _esc.error else 'success'}, {_esc.error.facts if _esc.error else ''})")
 
 (_ws / "v" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
     "L1": {**_row_local, "model": "нет-такой-модели.onnx"}}}}), encoding="utf-8")
@@ -446,6 +452,16 @@ _nom = _call("media_generate", table="v", resource_type="tts_characters",
 ok(_nom.status == "error" and _nom.error.code == "LOCAL_MODEL_MISSING"
    and "media_model_install" in (_nom.error.recovery.reason if _nom.error.recovery else ""),
    "нет весов → честный отказ и назван инструмент, которым модель ставят")
+
+(_ws / "v" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+    "L1": {**_row_local, "model": ""}}}}), encoding="utf-8")
+_unnamed = _call("media_generate", table="v", resource_type="tts_characters",
+                 input="текст", scene_id="s1", video_slug="demo")
+ok(_unnamed.status == "error" and _unnamed.error.code == "BOOK_ROW_INVALID"
+   and _unnamed.error.facts.get("sheet") == "RESOURCE_LIMITS" and _unnamed.error.facts.get("row") == "L1"
+   and {"field": "model", "rule": "required"} in _unnamed.error.errors and "L1" in _unnamed.error.message,
+   f"пустой model — ошибка строки книги: лист и строка от резолвера, поле и правило в errors "
+   f"({_unnamed.error.code if _unnamed.error else 'успех!'}, {_unnamed.error.facts if _unnamed.error else ''})")
 
 (_ws / "v" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
     "L1": {**_row_local, "response_format": "sh"}}}}), encoding="utf-8")
@@ -486,7 +502,7 @@ from core.providers.hardware import probe as _probe
 
 _gpu_decl = (yaml.safe_load(CFG.read_text(encoding="utf-8"))["local"] or {}).get("gpu") or {}
 _img_entry = next((e for e in _MCat(CFG, _reg.models_dir).installed()
-                   if e["kind"] == "image" and e["present"]), None)
+                   if e["kind"] == "image" and e["disk"]["verdict"] == "ready"), None)
 # То же правило, что у озвучки: веса без среды расчёта живым прогоном не проверяются. `torch`
 # приезжает группой ускорителя под КАРТУ машины, и на дереве без него набор обязан пропускать
 # прогон с причиной, а не краснеть за отсутствие необязательного.
@@ -544,20 +560,34 @@ print("== 12a-2. Установка модели отказывает по МЕ�
 from core.providers.installer import ModelInstaller as _Инсталлятор
 
 
+import threading as _потоки
+
+
 class _КаталогМеста:
     def __init__(self, мб):
         self.models_dir = _ws
         self._мб = мб
         self.ставил = False
+        self.снимки, self.поставлено, self.готово = [], None, _потоки.Event()
 
-    def место_под(self, model_id, kind):
+    def installed_as(self, model_id, kind):
+        return None                             # здесь судится место, а не «уже стоит»
+
+    def место_под(self, model_id, kind, force=False):
         свободно = 100.0
-        return {"нужно_мб": self._мб, "свободно_мб": свободно,
-                "хватает": свободно >= self._мб, "проверено": True}
+        if self._мб > свободно:                 # как у настоящего каталога: нехватку отказывает сам `место_под`
+            raise ProviderError("MODEL_NO_DISK_SPACE", facts={"model": model_id, "need_mb": self._мб, "free_mb": свободно})
+        self.снимки.append({"нужно_мб": self._мб, "свободно_мб": свободно})
+        return self.снимки[-1]
 
-    def install(self, model_id, kind, progress=None):
-        self.ставил = True
-        return {"id": model_id, "mb": self._мб, "path": "x"}
+    def install_planned(self, место, progress=None, mark=None, held=lambda: None):
+        held()                                  # замок модели взят — как у настоящего каталога
+        self.ставил, self.поставлено = True, место
+        self.готово.set()
+        return {"id": "проба", "mb": self._мб, "path": "x"}
+
+    def silence_sec(self):
+        return 0.0                              # здесь судится место, а не тишина загрузчика
 
 
 _тесный = _КаталогМеста(10 ** 6)
@@ -565,15 +595,15 @@ try:
     _Инсталлятор(_тесный).start("проба", "tts")
     ok(False, "установка при нехватке места обязана отказать, а не начать загрузку")
 except ProviderError as _отказ:
-    ok(_отказ.code == "NO_DISK_SPACE", f"код отказа из реестра, а не общий ({_отказ.code})")
-    ok("1000000" in _отказ.message and "100" in _отказ.message,
-       f"в сообщении оба числа — нужное и свободное ({_отказ.message})")
+    ok(_отказ.code == "MODEL_NO_DISK_SPACE", f"отказ каталога по месту доходит из start своим кодом ({_отказ.code})")
 ok(not _тесный.ставил,
    "до скачивания дело не дошло: проверка стоит ДО фонового потока, а не после гигабайтов")
 _просторный = _КаталогМеста(1.0)
 _состояние = _Инсталлятор(_просторный).start("проба", "tts")
-ok(_состояние["phase"] == "running",
+ok(_состояние["status"] == "processing",
    "когда места хватает, установка стартует обычным порядком — отказ не стал всегдашним")
+ok(_просторный.готово.wait(10) and len(_просторный.снимки) == 1 and _просторный.поставлено is _просторный.снимки[0],
+   "поток ставит по тому же снимку, по которому судили место: место спрошено один раз")
 
 print("== 12a-3. Отбор по машине: отсеянные посчитаны, а не потеряны ==")
 _все = _call("media_models", scope="installed")
@@ -669,7 +699,7 @@ _adata["adapters"]["by_provider"]["Обл_link"] = "fake_async:_FakeLink"
 (_acfg_dir / "providers.yaml").write_text(yaml.safe_dump(_adata, allow_unicode=True), encoding="utf-8")
 # Тестовый провайдер живёт на петле — послабление объявлено в КОПИИ конфига, боевой запрет цел.
 _mdata = yaml.safe_load((_acfg_dir / "media_tasks.yaml").read_text(encoding="utf-8"))
-_mdata["download"]["fetch"].update({"allow_schemes": ["http", "https"], "block_private_hosts": False})
+_mdata["download"]["fetch"].update({"schemes": ["http", "https"], "block_private": False})
 (_acfg_dir / "media_tasks.yaml").write_text(yaml.safe_dump(_mdata, allow_unicode=True), encoding="utf-8")
 
 (_ws / "a").mkdir()
@@ -681,7 +711,7 @@ _arow = {"resource_type": "tts_characters", "provider": "Обл_async", "fallbac
 _cfg_was = _srv.CONFIG_PATH
 try:
     _srv.CONFIG_PATH = _acfg_dir
-    _eng_a = _Eng(state_manager=_sm)
+    _eng_a = _Eng(reactions=_REACTIONS, state_manager=_sm)
     _srv.register_basic_tools(_eng_a, _IDG(), _sm)
     _ga = _aio.run(_eng_a.call("media_generate", {
         "table": "a", "resource_type": "tts_characters", "input": "пять!",
@@ -707,24 +737,32 @@ ok((_ws / _ga.data["files"][0]).is_file() and _ga.data["usage"]["charged"],
 print("== 13. Загрузка по ссылке провайдера: адрес и размер проверяются ДО диска ==")
 import http.server as _http
 import threading as _thr
-from core.providers import ResultDownloader
 
-_dl = ResultDownloader(ROOT / "config" / "media_tasks.yaml")
+import httpx as _httpx
+from core.contracts import ContractError as _CE13
+from core.paths import Files as _Files13
+from core.providers.download import results as _results
+
+_wire13: list[str] = []
+_dl_dir = Path(tempfile.mkdtemp(prefix="dlout_"))
 for _case, _url in (("http вместо https", "http://example.com/a.wav"),
                     ("петля", "https://127.0.0.1/a.wav"),
                     ("localhost по имени", "https://localhost/a.wav"),
                     ("метаданные облака", "https://169.254.169.254/latest/meta-data")):
+    _dl13 = _results(ROOT / "config" / "media_tasks.yaml", proxies=dict,
+                     transport=_httpx.MockTransport(lambda r: _wire13.append(str(r.url)) or _httpx.Response(200)))
     try:
-        _dl.check_url(_url)
+        _dl13.fetch(_url, _Files13(_dl_dir), "a.wav", "t13")
         ok(False, f"{_case} должен отбиваться")
-    except TaskCycleError as e:
-        ok(e.code == "DOWNLOAD_FORBIDDEN", f"{_case} → DOWNLOAD_FORBIDDEN ({e.code})")
+    except _CE13 as e:
+        ok(e.code == "DOWNLOAD_FORBIDDEN" and not _wire13, f"{_case} → DOWNLOAD_FORBIDDEN до сети ({e.code} {e.facts})")
 
 # Предел размера считается ПО ХОДУ записи: живой сервер отдаёт больше, чем разрешено.
 _lim_cfg = Path(tempfile.mkdtemp(prefix="dlcfg_")) / "media_tasks.yaml"
-_lim_cfg.write_text(yaml.safe_dump({"download": {"fetch": {
-    "allow_schemes": ["http"], "block_private_hosts": False, "max_bytes": 1000,
-    "timeout_sec": 10}}}), encoding="utf-8")
+_lim_decl = yaml.safe_load((ROOT / "config" / "media_tasks.yaml").read_text(encoding="utf-8"))
+_lim_decl["download"]["fetch"].update({"schemes": ["http"], "block_private": False, "max_bytes": 1000,
+                                       "timeout_sec": 10, "attempts": 1})
+_lim_cfg.write_text(yaml.safe_dump(_lim_decl, allow_unicode=True), encoding="utf-8")
 
 
 class _Big(_http.BaseHTTPRequestHandler):
@@ -742,16 +780,19 @@ _srv_http = _http.HTTPServer(("127.0.0.1", 0), _Big)
 _thr.Thread(target=_srv_http.serve_forever, daemon=True).start()
 _out = Path(tempfile.mkdtemp(prefix="dlout_")) / "big.wav"
 try:
-    ResultDownloader(_lim_cfg).fetch(f"http://127.0.0.1:{_srv_http.server_port}/big.wav", _out)
+    _results(_lim_cfg, proxies=dict).fetch(f"http://127.0.0.1:{_srv_http.server_port}/big.wav",
+                                           _Files13(_out.parent), _out.name, "t13")
     ok(False, "превышение предела должно падать")
-except TaskCycleError as e:
-    ok(e.code == "DOWNLOAD_FORBIDDEN", f"предел размера обрывает загрузку ({e.code})")
-ok(not _out.exists(), "недописанный файл удалён, а не выдан за результат")
+except _CE13 as e:
+    ok(e.code == "DOWNLOAD_TOO_LARGE" and e.facts == {"limit_mb": 0.001},
+       f"предел размера обрывает загрузку своим кодом ({e.code} {e.facts})")
+ok(not _out.exists() and not list(_out.parent.iterdir()),
+   "ни файла, ни остатка: недописанное убрано, а не выдано за результат")
 _srv_http.shutdown()
 
 print("== 14. Ключи провайдеров: лежат в канале, зашифрованы, ИИ недоступны (S23) ==")
-from core.paths import (BUILTIN_SECRET_DIRS, PathEscapeError, SecretAccessError,
-                        configure_secret_dirs, is_secret_path, safe_resolve)
+from core.paths import (BUILTIN_SECRET_DIRS, Files, PathEscapeError, SecretAccessError,
+                        configure_secret_dirs, is_secret_path)
 from core.secrets import ChannelSecrets, fingerprint, redact
 
 _KEY = "sk-СЕКРЕТНЫЙ-КЛЮЧ-1234567890"
@@ -814,7 +855,7 @@ configure_secret_dirs(sorted(BUILTIN_SECRET_DIRS))
 # «Двери нет» и «путь наружу» — РАЗНЫЕ причины, и различает их сам тип исключения. Без этого
 # закрытый каталог пришёл бы как PATH_ESCAPE, и модель искала бы обход там, где двери просто нет.
 try:
-    safe_resolve("ch/.secrets/provider_keys.enc", _ws)
+    Files(_ws).place("ch/.secrets/provider_keys.enc")
     ok(False, "закрытый каталог обязан отказывать")
 except SecretAccessError:
     ok(True, "закрытый каталог → SecretAccessError, а не общий выход за область")
@@ -858,8 +899,12 @@ _krow = {"resource_type": "tts_characters", "provider": "Обл_ключ", "fall
 _cfg_was = _srv.CONFIG_PATH
 try:
     _srv.CONFIG_PATH = _kcfg_dir
-    _eng_k = _Eng(state_manager=_sm)
-    _srv.register_basic_tools(_eng_k, _IDG(), _sm)
+    # Журнал фактов этого сервера — свой, во временном каталоге: проверка «ключ не в журнале» читает то, что он пишет.
+    from core.observability import Journal as _Journal
+    _klog = Path(tempfile.mkdtemp(prefix="klog_")) / "session.md"
+    _sm_k = _SM(_ws, journal=_Journal(_klog, 1 << 20, 1))
+    _eng_k = _Eng(reactions=_REACTIONS, state_manager=_sm_k)
+    _srv.register_basic_tools(_eng_k, _IDG(), _sm_k)
     _kcall = lambda tool, **p: _aio.run(_eng_k.call(tool, p))  # локальный хелпер
 
     _nokey = _kcall("media_generate", table="k", resource_type="tts_characters",
@@ -884,9 +929,8 @@ try:
                         ensure_ascii=False)
     ok(_KEY not in _dump and "sk-" not in _dump,
        "и не появился ни в данных ответа, ни в фактах контракта")
-    _log = (ROOT / "_SESSION_LOG.md")
-    ok(not _log.exists() or _KEY not in _log.read_text(encoding="utf-8"),
-       "и не попал в журнал фактов")
+    ok(_klog.is_file() and _KEY not in _klog.read_text(encoding="utf-8"),
+       f"и не попал в журнал фактов, который этот сервер пишет ({_klog.stat().st_size if _klog.exists() else 'журнала нет'} байт)")
 
     _reject = _kcall("media_generate", table="k", resource_type="tts_characters",
                      input="отказ", scene_id="s2", video_slug="demo")
@@ -921,16 +965,19 @@ ok({r["file"] for r in _refused} == {"weights.bin", "old.ckpt"}
    and all("pickle" in r["reason"] for r in _refused),
    "pickle-веса отбиты с названной причиной: их загрузка выполняет код из файла")
 try:
-    _mcat.check_size(999999)
+    _mcat.check_size(999999, "огромная")
     ok(False, "превышение предела размера должно падать")
 except ProviderError as e:
-    ok(e.code == "LOCAL_MODEL_MISSING" and "max_total_mb" in e.reason,
-       "размер сверх объявленного предела — отказ с указанием, где предел правится")
+    _shown = _eng.refusal(e).error
+    ok(e.code == "MODEL_TOO_LARGE" and e.facts["model"] == "огромная" and "max_total_mb" in _shown.recovery.reason,
+       f"размер сверх объявленного предела — свой код, факты, и клиент видит, где предел правится ({_shown.message})")
 try:
     _mcat.check_repo("https://civitai.example/api/download/123")
     ok(False, "чужой источник должен отбиваться")
 except ProviderError as e:
-    ok("allow_sources" in e.reason, "чужой САЙТ как источник весов не берётся: модель — исполняемое содержимое")
+    _shown = _eng.refusal(e).error
+    ok(e.code == "MODEL_SOURCE_FORBIDDEN" and "civitai" in _shown.message and "allow_sources" in _shown.recovery.reason,
+       f"чужой САЙТ как источник весов не берётся: свой код, источник назван ({_shown.message})")
 
 # Опись поставленного лежит рядом с весами, а конфиг машина не переписывает.
 _cfg_before = CFG.read_text(encoding="utf-8")
@@ -971,69 +1018,169 @@ class _SlowCatalog:
 
     def __init__(self, models_dir, seconds=0.6, fail=None):
         self.models_dir = Path(models_dir)
+        self.config_file = CFG                  # реестр отказов лежит рядом с декларацией, как у сервера
         self.seconds = seconds
         self.fail = fail
         self.install_rules = {}
 
-    def место_под(self, model_id, kind):
-        # Двойник обязан отвечать на весь спрос установщика: здесь судится прозвонка, а не диск,
-        # поэтому место «есть». Без этого метода набор падал бы трейсом на чужой правке.
-        return {"нужно_мб": 0.0, "свободно_мб": 0.0, "хватает": True, "проверено": False}
+    def installed_as(self, model_id, kind):
+        return None                             # здесь судится прозвонка, а не «уже стоит»
 
-    def install(self, model_id, kind, progress=lambda _m: None):
+    def место_под(self, model_id, kind, force=False):
+        # Здесь судится прозвонка, а не диск: места заведомо больше, чем ляжет весов.
+        return {"нужно_мб": 0.002, "свободно_мб": 1e6, "entry": {"id": model_id, "kind": kind}}
+
+    def install_planned(self, место, progress=lambda _m: None, mark=None, held=lambda: None):
+        held()                                  # замок модели взят — как у настоящего каталога
+        if mark:
+            mark()                              # признак работы доходит от установщика до каталога
         _time.sleep(self.seconds)
         if self.fail:
             raise self.fail
         (self.models_dir / "весы.onnx").write_bytes(b"x" * 2048)
-        return {"id": model_id, "kind": kind, "path": "весы.onnx", "mb": 0.002, "refused": []}
+        return {**место["entry"], "path": "весы.onnx", "mb": 0.002, "refused": []}
+
+    def silence_sec(self):
+        return 0.0                              # здесь судится прозвонка, а не тишина загрузчика
+
+    def on_disk(self, место):
+        return self.landed                      # сколько «легло» — задаёт проверка
+
+    landed = 0
 
 
 _idir = Path(tempfile.mkdtemp(prefix="inst_"))
 _inst_ok = ModelInstaller(_SlowCatalog(_idir), heartbeat_sec=0.1, stale_after_sec=5)
 _st = _inst_ok.start("модель-1", "tts")
-ok(_st["phase"] == "running" and _st["install_id"],
-   "установка запущена и вернула идентификатор, а не ждала гигабайты в одном вызове")
 try:
-    _inst_ok.start("модель-1", "tts")
-    ok(False, "вторая установка тех же весов должна отбиваться")
+    _seen_now = _inst_ok.status(_st["task_id"])[0]["status"]
 except ProviderError as e:
-    ok(e.code == "INVALID_ACTION", f"две загрузки одних весов в один каталог не пускаются ({e.code})")
+    _seen_now = e.code
+ok(_seen_now == "processing",
+   f"установка видна прозвонкой сразу после ответа start — файл состояния лёг до ответа ({_seen_now})")
+ok(_st["status"] == "processing" and _st["task_id"] and _st["params"] == {"model_id": "модель-1", "kind": "tts"},
+   "установка запущена и вернула статус задачи с идентификатором, а не ждала гигабайты в одном вызове")
 for _ in range(50):
-    _cur = _inst_ok.status(_st["install_id"])[0]
-    if _cur["phase"] != "running":
+    _cur = _inst_ok.status(_st["task_id"])[0]
+    if _cur["status"] != "processing":
         break
     _time.sleep(0.1)
-ok(_cur["phase"] == "done" and _cur["path"] == "весы.onnx",
-   f"успех виден прозвонкой, с путём результата ({_cur['phase']})")
-ok(_cur["elapsed_sec"] > 0, "видно, сколько заняла установка")
+ok(_cur["status"] == "completed" and _cur["result"]["path"] == "весы.onnx",
+   f"успех виден прозвонкой, с путём результата ({_cur['status']})")
+ok(_cur["progress"]["elapsed_sec"] > 0, "видно, сколько заняла установка")
+ok(_st["task_id"] in _inst_ok._marks, "признак работы каталога доходит до наблюдателя установки (отметка по task_id)")
 
 _inst_bad = ModelInstaller(
     _SlowCatalog(Path(tempfile.mkdtemp(prefix="instf_")), seconds=0.2,
-                 fail=ProviderError("LOCAL_MODEL_MISSING", "источник оборвал соединение",
-                                    reason="повтори — скачанное не выбрасывается")),
+                 fail=ProviderError("LOCAL_MODEL_MISSING", "источник оборвал соединение")),
     heartbeat_sec=0.1, stale_after_sec=5)
-_bad_id = _inst_bad.start("модель-2", "tts")["install_id"]
+_bad_id = _inst_bad.start("модель-2", "tts")["task_id"]
 for _ in range(50):
     _bad_state = _inst_bad.status(_bad_id)[0]
-    if _bad_state["phase"] != "running":
+    if _bad_state["status"] != "processing":
         break
     _time.sleep(0.1)
-ok(_bad_state["phase"] == "failed" and _bad_state["code"] == "LOCAL_MODEL_MISSING"
-   and "оборвал" in _bad_state["error"],
-   f"сбой посреди установки виден кодом и причиной, а не тишиной ({_bad_state['phase']})")
+ok(_bad_state["status"] == "failed" and _bad_state["error"]["code"] == "LOCAL_MODEL_MISSING"
+   and "оборвал" in _bad_state["error"]["message"] and _bad_state["params"]["model_id"] == "модель-2",
+   f"сбой посреди установки виден кодом и причиной, а не тишиной ({_bad_state['status']})")
 
-# Сервер перезапустили посреди загрузки: «идёт» здесь было бы враньём.
-_stale_dir = Path(tempfile.mkdtemp(prefix="insts_"))
-_inst_stale = ModelInstaller(_SlowCatalog(_stale_dir), heartbeat_sec=0.1, stale_after_sec=1)
-_sid = _inst_stale.start("модель-3", "tts")["install_id"]
-_sfile = _inst_stale.state_dir / f"{_sid}.json"
-_time.sleep(0.8)
-_frozen = _json.loads(_sfile.read_text(encoding="utf-8"))
-_frozen.update({"phase": "running", "heartbeat": _time.time() - 999})
-_sfile.write_text(_json.dumps(_frozen), encoding="utf-8")
-_stale_state = _inst_stale.status(_sid)[0]
-ok(_stale_state["phase"] == "stale" and "Повтори" in _stale_state["reason"],
-   f"замершая установка называется прерванной и зовёт повторить ({_stale_state['phase']})")
+_inst_crash = ModelInstaller(
+    _SlowCatalog(Path(tempfile.mkdtemp(prefix="instc_")), seconds=0.2, fail=RuntimeError("сырой-текст-исключения")),
+    heartbeat_sec=0.1, stale_after_sec=5)
+_crash_id = _inst_crash.start("модель-4", "tts")["task_id"]
+for _ in range(50):
+    _crash_state = _inst_crash.status(_crash_id)[0]
+    if _crash_state["status"] != "processing":
+        break
+    _time.sleep(0.1)
+ok(_crash_state["status"] == "failed" and _crash_state["error"]["code"] == "INTERNAL_ERROR"
+   and _crash_state["error"]["facts"].get("event") and "сырой-текст" not in _json.dumps(_crash_state, ensure_ascii=False),
+   f"неожиданное падение — код с номером события, сырой текст исключения клиенту не уходит ({_crash_state['error']})")
+
+import threading as _thr16
+
+
+class _LateTick(_SlowCatalog):
+    """Двойник: тик наблюдателя прочёл «идёт» и держится в счёте, пока итог «failed» не ляжет на диск (не дольше 2 с)."""
+
+    def __init__(self, models_dir):
+        super().__init__(models_dir, seconds=0, fail=ProviderError("LOCAL_MODEL_MISSING", "оборвано"))
+        self.entered, self.state_file = _thr16.Event(), None
+
+    def on_disk(self, место):
+        self.entered.set()
+        for _ in range(40):
+            if self.state_file and '"failed"' in self.state_file.read_text(encoding="utf-8"):
+                break
+            _time.sleep(0.05)
+        return 7
+
+    def install_planned(self, место, progress=lambda _m: None, mark=None, held=lambda: None):
+        held()                                  # замок взят: файл состояния и наблюдатель уже есть
+        self.entered.wait(2)
+        raise self.fail
+
+
+_late = _LateTick(Path(tempfile.mkdtemp(prefix="instl_")))
+_inst_late = ModelInstaller(_late, heartbeat_sec=0.01, stale_after_sec=30)
+_late_id = _inst_late.start("модель-5", "tts")["task_id"]
+_late.state_file = _inst_late.state_dir / f"{_late_id}.json"
+for _ in range(100):
+    _late_state = _inst_late.status(_late_id)[0]
+    if _late_state["status"] != "processing":
+        break
+    _time.sleep(0.05)
+ok(_late_state["status"] == "failed" and _late_state["error"]["code"] == "LOCAL_MODEL_MISSING"
+   and _late_state["progress"]["bytes"] == 7,
+   f"итог отказа не затёрт последним тиком наблюдателя, а байты тика сохранены ({_late_state['status']}, "
+   f"{_late_state['progress']['bytes']})")
+
+# Простой — по признакам работы, а не по тику наблюдателя: живой поток при мёртвой сети — «прервано», а не вечное
+# «идёт». Тик судится с переданным «сейчас», без часов.
+_tick_cat = _SlowCatalog(Path(tempfile.mkdtemp(prefix="insts_")))
+_inst_tick = ModelInstaller(_tick_cat, heartbeat_sec=1, stale_after_sec=100)
+_inst_tick._write({"install_id": "t16", "model_id": "модель-3", "kind": "tts", "phase": "running",
+                   "started": 1000.0, "heartbeat": 1000.0, "bytes": 0})
+_место16 = {"entry": {"id": "модель-3", "kind": "tts"}, "plan": []}
+for _now in range(1010, 1200, 10):                      # поток жив и тикает, байты не растут, загрузчик молчит
+    _inst_tick._tick("t16", _место16, float(_now))
+_dead = _inst_tick._read("t16")
+ok(_dead["heartbeat"] == 1000.0 and _inst_tick._stalled(_dead, now=1101.0) and not _inst_tick._stalled(_dead, now=1099.0),
+   f"сеть мертва, поток жив: тики не двигают «последнюю работу» — за пределом простой, до него идёт ({_dead['heartbeat']})")
+_tick_cat.landed = 4096
+_inst_tick._tick("t16", _место16, 1200.0)
+_grown = _inst_tick._read("t16")
+ok(_grown["heartbeat"] == 1200.0 and _grown["bytes"] == 4096,
+   f"рост байтов плана двигает «последнюю работу» на время тика ({_grown['heartbeat']}, {_grown['bytes']})")
+_inst_tick._marks["t16"] = 1250.0                       # отметка загрузчика: пауза повтора или блок сверки
+_inst_tick._tick("t16", _место16, 1290.0)
+_marked = _inst_tick._read("t16")
+ok(_marked["heartbeat"] == 1250.0 and not _inst_tick._stalled(_marked, now=1340.0),
+   f"законный: долгая пауза или сверка с отметками по ходу — «идёт», хотя байты не растут ({_marked['heartbeat']})")
+_inst_tick._write({"install_id": "t16a", "model_id": "модель-a", "kind": "tts", "phase": "running",
+                   "started": 2000.0, "heartbeat": 2000.0, "bytes": 4096})
+_inst_tick._marks["t16b"] = 2100.0                      # отметка соседней установки другой модели, у t16a отметок нет
+_inst_tick._tick("t16a", _место16, 2150.0)
+_alone = _inst_tick._read("t16a")
+ok(_alone["heartbeat"] == 2000.0 and _inst_tick._stalled(_alone, now=2101.0),
+   f"отметка соседней установки не двигает «последнюю работу» этой: мёртвая сеть — простой ({_alone['heartbeat']})")
+_inst_tick._write({"install_id": "t16c", "model_id": "модель-c", "kind": "tts", "phase": "running",
+                   "started": 3000.0, "heartbeat": 3000.0, "bytes": 4096})
+_tick_cat.landed = 0                                    # остаток снят (отпечаток разошёлся) — байты плана упали
+_inst_tick._tick("t16c", _место16, 3010.0)
+_dropped = _inst_tick._read("t16c")
+_tick_cat.landed = 1024
+_inst_tick._tick("t16c", _место16, 3020.0)
+_regrown = _inst_tick._read("t16c")
+ok(_dropped["bytes"] == 0 and _regrown["heartbeat"] == 3020.0 and _regrown["bytes"] == 1024,
+   f"байты упали и растут заново ниже прежнего пика — это работа, «последняя работа» движется "
+   f"({_dropped['bytes']} → {_regrown['bytes']}, {_regrown['heartbeat']})")
+_stale_state = _inst_tick.status("t16")[0]
+ok(_stale_state["status"] == "failed" and _stale_state["error"]["code"] == "INSTALL_STALLED"
+   and "Повтори" in _stale_state["error"]["recovery"]["reason"],
+   f"замершая установка — отказ кодом простоя и зовёт повторить ({_stale_state['status']}, {_stale_state['error']})")
+ok("докачается с места обрыва, если источник не сменил файл" in _json.dumps(_stale_state, ensure_ascii=False),
+   "статус обещает докачку с условием: остаток постоянен по модели, If-Range с валидатором ответившего сервера (M3c)")
 
 _status_all = _call("media_install_status")
 ok(_status_all.status == "success" and isinstance(_status_all.data["installs"], list),
@@ -1120,6 +1267,9 @@ try:
 except ProviderError as e:
     ok(e.code == "DOWNLOAD_FORBIDDEN" and not _Models.seen_auth,
        f"с ключом ходим только по https — запрос НЕ ушёл ({e.code})")
+    _said_live = _Eng(reactions=_REACTIONS).refusal(e).error.message
+    ok("127.0.0.1" in _said_live and "https" in _said_live,
+       f"клиент видит, какой адрес не пропущен и какая схема разрешена ({_said_live})")
 
 # Разрешаем http только в копии конфига, чтобы проверить сам разбор ответа живым запросом.
 import core.providers.catalog as _catmod
@@ -1172,7 +1322,7 @@ ok(_hw["ram_total_mb"] > 0 and _hw["ram_available_mb"] > 0 and _hw["cpu_count"] 
    f"{_hw['cpu_count']} ядер)")
 ok(_hw["ram_available_mb"] <= _hw["ram_total_mb"],
    "доступно не больше общего — читается MemAvailable, а не выдуманное число")
-ok(_hw["disk_free_mb"] > 0, "свободное место под веса известно")
+ok(_hw["disk_free_mb"] is not None and _hw["disk_free_mb"] > 0, "свободное место под веса известно")
 ok(_hw["gpu"] or any("НЕ проверено" in g for g in _hw["unknown"]),
    "видеокарты нет в ответе — значит сказано, что она НЕ проверена, а не «её нет»")
 ok(all({"name", "driver", "vram_total_mb", "vram_free_mb", "usable", "why"} <= set(c)
@@ -1271,18 +1421,21 @@ ok("catalog" not in _cfg_local,
 ok(_mc.entries() == _mc.inventory(),
    "что знает сервер о локальных моделях = опись поставленного, второго списка нет")
 
-from huggingface_hub import constants as _hfc
-
-ok(_mc.apply_transfer() == "https" and _hfc.HF_HUB_DISABLE_XET,
-   "протокол загрузки весов берётся из декларации: объявлен https → Xet выключен")
-_xet_cfg = _ws.parent / "providers_xet.yaml"
-_xet_data = yaml.safe_load(CFG.read_text(encoding="utf-8"))
-_xet_data["local"]["install"]["transfer"] = "xet"
-_xet_cfg.write_text(yaml.safe_dump(_xet_data, allow_unicode=True), encoding="utf-8")
-ok(ModelCatalog(_xet_cfg, ROOT / "vendor" / "models").apply_transfer() == "xet"
-   and not _hfc.HF_HUB_DISABLE_XET,
-   "поменяли декларацию — поменялся протокол: значение не зашито в код и не берётся из среды")
-_mc.apply_transfer()        # вернуть как объявлено в проекте
+# Протокол загрузки весов — политика загрузчика `local.install.fetch`, а не переключатель клиента HF (`transfer`).
+_fetch_decl = _cfg_local["install"]["fetch"]
+ok(_fetch_decl["schemes"] == ["https"] and "transfer" not in _cfg_local["install"]
+   and _mc.fetcher().policy == _fetch_decl,
+   "веса тянет загрузчик по объявленной политике: только https, хосты точные, переключателя Xet нет")
+_bare_cfg = _ws.parent / "providers_nofetch.yaml"
+_bare_data = yaml.safe_load(CFG.read_text(encoding="utf-8"))
+del _bare_data["local"]["install"]["fetch"]
+_bare_cfg.write_text(yaml.safe_dump(_bare_data, allow_unicode=True), encoding="utf-8")
+try:
+    ModelCatalog(_bare_cfg, ROOT / "vendor" / "models").fetcher()
+    ok(False, "без объявленной политики загрузчик не строится")
+except ProviderError as _e_nofetch:
+    ok(_e_nofetch.code == "SCHEMA_INVALID",
+       f"нет `local.install.fetch` — отказ кодом, а не умолчание в коде ({_e_nofetch.code})")
 
 _inst_tool = _call("media_models", scope="installed")
 ok(_inst_tool.data["hardware"]["ram_available_mb"] > 0,
@@ -1310,7 +1463,7 @@ ok(_cat12.prefer(["onnx/model_fp16.onnx", "onnx/model.onnx"]) == "onnx/model.onn
 ok(str(_cat12.cache_dir).startswith(str(_reg.models_dir)),
    f"загрузчик складывает скачанное внутрь каталога зависимостей проекта ({_cat12.cache_dir})")
 
-_installed12 = {m["id"]: m for m in _cat12.installed() if m["present"]}
+_installed12 = {m["id"]: m for m in _cat12.installed() if m["disk"]["verdict"] == "ready"}
 _bg_model = next((m for m in _installed12.values() if m["kind"] == "bg_removal"), None)
 _up_model = next((m for m in _installed12.values() if m["kind"] == "upscale"), None)
 
@@ -1408,6 +1561,19 @@ class _Resp:
     def text(self):
         return _json.dumps(self._data or {})
 
+    # Потоком — как `httpx.stream`: ответ статуса читается по ходу, с пределом байт.
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return self.content
+
+    def iter_bytes(self, size=0):
+        yield self.content if self._data is None else _json.dumps(self._data).encode()
+
 
 class _Stream:
     def __init__(self, payload): self.status_code, self._payload = 200, payload
@@ -1433,17 +1599,41 @@ def _stand_request(method, url, **kw):
 
 
 def _stand_get(url, **kw):
-    if url.endswith("/status"):
+    # Адреса — точно те, что стенд выдал в ответе задачи: подстрока узнала бы и не-адрес.
+    _seen.setdefault("gets", []).append({"url": url, "headers": kw.get("headers") or {}})
+    if url == "https://queue.fal.run/req1/status":
         return _Resp(200, {"status": "COMPLETED"})
-    if "predictions/pred1" in url:
+    if url == "https://api.replicate.com/v1/predictions/pred1":
         _seen["polls"] += 1
         return _Resp(200, {"status": "processing"} if _seen["polls"] < 2 else
                      {"status": "succeeded", "output": ["https://replicate.delivery/out.png"]})
-    return _Resp(200, {"image": {"url": "https://fal.media/out.png"}})
+    if url == "https://queue.fal.run/req1":
+        return _Resp(200, {"image": {"url": "https://fal.media/out.png"}})
+    if url == "https://api.replicate.com/v1/predictions/huge":
+        return _Resp(200, {"status": "processing", "logs": "x" * 1_100_000})
+    if url == "https://api.replicate.com/v1/predictions/gone":
+        return _Resp(404, {"detail": "prediction not found"})
+    if url == "https://api.replicate.com/v1/predictions/moved":     # переход идёт, только если вызов его просит
+        moved = _Resp(302, headers={"location": "http://127.0.0.1:9/internal"})
+        return _stand_get(moved.headers["location"], **kw) if kw.get("follow_redirects") else moved
+    if url == "http://127.0.0.1:9/internal":
+        return _Resp(200, {"status": "succeeded", "output": ["внутреннее"]})
+    return _Resp(404, {"detail": f"стенд не выдавал адрес {url[:80]}"})
 
 
+def _stand_file(request):
+    """CDN результата поставщика: файл по ссылке из ответа задачи; журнал — хост и заголовок ключа."""
+    _seen.setdefault("files", []).append({"host": request.headers.get("host"), "auth": request.headers.get("authorization")})
+    return _httpx.Response(200, content=_PNG)
+
+
+from core.providers.img.http_image import HttpImageAPI as _HI13
+
+_real_seams13 = (_HI13.__dict__["transport"], _HI13.__dict__["resolve"])
+_HI13.transport = _httpx.MockTransport(_stand_file)
+_HI13.resolve = staticmethod(lambda host, port, *a, **k: [(2, 1, 6, "", ("151.101.1.1", port))])
 _httpx.request, _httpx.get, _httpx.stream = (
-    _stand_request, _stand_get, lambda m, u, **kw: _Stream(_PNG))
+    _stand_request, _stand_get, lambda method, url, **kw: _stand_get(url, **kw))
 try:
     _rows13 = {"resource_type": "upscales", "provider": "Replicate", "fallback_provider": "",
                "daily_limit": 100, "current_usage": 0, "warning_threshold": -1,
@@ -1470,9 +1660,18 @@ try:
     _waited13 = _cycle13.wait(_ad13.poll, _out13.task_id)
     ok(_waited13["outcome"] == "done" and _waited13["attempts"] == 2,
        f"промежуточный статус не выдан за успех — ждали до конца ({_waited13['attempts']} опроса)")
-    _got13 = _ad13.fetch(_waited13["answer"], _ws / "up13.png")
-    ok(_got13.read_bytes() == _PNG,
-       "результат достан по объявленному пути output[0] и скачан общими правилами загрузки")
+    _gets13 = len(_seen["gets"])
+    try:
+        _got13 = _ad13.fetch(_waited13["answer"], _ws / "up13.png")
+    except ProviderError as e:
+        _got13 = e
+    ok(isinstance(_got13, Path) and _got13.read_bytes() == _PNG and len(_seen["gets"]) == _gets13,
+       "результат достан по объявленному пути output[0] и скачан общими правилами загрузки; "
+       f"отдельного адреса результата у Replicate нет — лишних запросов {len(_seen['gets']) - _gets13}"
+       f"{'' if isinstance(_got13, Path) else f', отказ {_got13.code} {_got13.facts}'}")
+    _files13 = _seen.get("files") or [{}]
+    ok(_files13[-1].get("host") == "replicate.delivery" and _files13[-1].get("auth") is None,
+       f"файл результата забран по ссылке поставщика общим загрузчиком и без ключа ({_files13[-1]})")
 
     # Очередь fal: статус говорит лишь «готово», результат лежит отдельным адресом.
     _ad13f = _reg.load("Fal", "upscales")
@@ -1487,6 +1686,86 @@ try:
        "у fal своя форма ключа — и она объявлена, а не зашита")
     ok(_ad13f.fetch(_ad13f.poll(_outf.task_id), _ws / "up13f.png").read_bytes() == _PNG,
        "результат очереди забран вторым адресом (response_url), а не из статуса")
+
+    # Ключ уходит только на объявленный хост: адрес статуса и результата называет сам ответ провайдера.
+    _keyed13 = [g for g in _seen["gets"] if "api.replicate.com" in g["url"] or "queue.fal.run" in g["url"]]
+    ok(_keyed13 and {g["headers"].get("Authorization") for g in _keyed13} == {"Bearer secret-key", "Key k"},
+       f"законный: прозвонка и результат на объявленном хосте идут с ключом ({len(_keyed13)} запросов)")
+    for _case13, _fal13, _foreign13, _host13 in (
+            ("чужой хост", False, "https://evil.example/v1/predictions/p", "evil.example"),
+            ("http вместо https", False, "http://api.replicate.com/v1/predictions/p", "api.replicate.com"),
+            ("объявленный хост как имя пользователя", False, "https://api.replicate.com@evil.example/p", "evil.example"),
+            ("другой порт", False, "https://api.replicate.com:8443/p", "api.replicate.com:8443"),
+            ("объявленный хост как начало чужого", False, "https://api.replicate.com.evil.example/p",
+             "api.replicate.com.evil.example"),
+            ("результат очереди на чужом хосте", True, "https://evil.example/req1", "evil.example")):
+        _seen["gets"].clear()
+        _httpx.request = (lambda u: lambda method, url, **kw: _Resp(201, {
+            "id": "p", "request_id": "req1", "urls": {"get": u},
+            "status_url": "https://queue.fal.run/req1/status", "response_url": u}))(_foreign13)
+        _prov13 = "Fal" if _fal13 else "Replicate"
+        _ad = _reg.load(_prov13, "upscales")
+        _task = _ad.generate(MediaRequest(input="pic/frame.png", params={"model": "m"} if _fal13 else _rows13,
+                                          target=_ws / "k13.png", models_dir=_reg.models_dir,
+                                          source=_ws / "pic" / "frame.png", api_key="secret-key", provider=_prov13))
+        try:
+            _ad.fetch(_ad.poll(_task.task_id), _ws / "k13.png") if _fal13 else _ad.poll(_task.task_id)
+            _e13k = None
+        except ProviderError as e:
+            _e13k = e
+        _leaked13 = [g["url"] for g in _seen["gets"] if "secret-key" in str(g["headers"])
+                     and not g["url"].startswith("https://queue.fal.run/")]
+        ok(_e13k is not None and _e13k.code == "DOWNLOAD_FORBIDDEN" and not _leaked13
+           and _e13k.facts == {"host": _host13, "allowed": "queue.fal.run" if _fal13 else "api.replicate.com"},
+           f"{_case13}: ключ не ушёл ({_leaked13 or 'запросов с ключом нет'}), отказ "
+           f"{_e13k and _e13k.code} {_e13k and _e13k.facts}")
+    _httpx.request = _stand_request
+
+    # Ответ статуса читается по ходу и не больше объявленного предела (download.answer.max_bytes, 1 МБ).
+    _httpx.request = lambda method, url, **kw: _Resp(201, {
+        "id": "h", "urls": {"get": "https://api.replicate.com/v1/predictions/huge"}})
+    _adh = _reg.load("Replicate", "upscales")
+    _taskh = _adh.generate(MediaRequest(input="pic/frame.png", params=_rows13, target=_ws / "h13.png",
+                                        models_dir=_reg.models_dir, source=_ws / "pic" / "frame.png",
+                                        api_key="k", provider="Replicate"))
+    try:
+        _adh.poll(_taskh.task_id)
+        _eh13 = None
+    except ProviderError as e:
+        _eh13 = e
+    ok(_eh13 is not None and _eh13.code == "DOWNLOAD_TOO_LARGE" and _eh13.facts == {"limit_mb": 1.0},
+       f"ответ статуса больше объявленного предела — DOWNLOAD_TOO_LARGE, а не простыня в памяти "
+       f"({_eh13 and (_eh13.code, _eh13.facts)})")
+    _httpx.request = lambda method, url, **kw: _Resp(201, {
+        "id": "g", "urls": {"get": "https://api.replicate.com/v1/predictions/gone"}})
+    _adg = _reg.load("Replicate", "upscales")
+    _taskg = _adg.generate(MediaRequest(input="pic/frame.png", params=_rows13, target=_ws / "g13.png",
+                                        models_dir=_reg.models_dir, source=_ws / "pic" / "frame.png",
+                                        api_key="k", provider="Replicate"))
+    try:
+        _ansg13, _eg13 = _adg.poll(_taskg.task_id), None
+    except ProviderError as e:
+        _ansg13, _eg13 = None, e
+    ok(_eg13 is not None and _eg13.code == "PROVIDER_FAILED" and "404" in _eg13.message,
+       f"отказ на прозвонке — кодом с ответом поставщика, а не тело отказа под видом статуса "
+       f"({_eg13 and (_eg13.code, _eg13.message[:60])}{'' if _eg13 else f', ответ {_ansg13}'})")
+    _httpx.request = lambda method, url, **kw: _Resp(201, {
+        "id": "m", "urls": {"get": "https://api.replicate.com/v1/predictions/moved"}})
+    _adm = _reg.load("Replicate", "upscales")
+    _taskm = _adm.generate(MediaRequest(input="pic/frame.png", params=_rows13, target=_ws / "m13.png",
+                                        models_dir=_reg.models_dir, source=_ws / "pic" / "frame.png",
+                                        api_key="secret-key", provider="Replicate"))
+    _seen["gets"].clear()
+    try:
+        _ansm13, _em13 = _adm.poll(_taskm.task_id), None
+    except ProviderError as e:
+        _ansm13, _em13 = None, e
+    _inner13 = [g["url"] for g in _seen["gets"] if "127.0.0.1" in g["url"]]
+    ok(_em13 is not None and _em13.code == "PROVIDER_FAILED"
+       and _em13.facts == {"host": "api.replicate.com", "status": 302} and not _inner13,
+       f"прозвонка ответила 302 на внутренний адрес — отказ, по переходу с ключом не пошли "
+       f"({_em13 and (_em13.code, _em13.facts)}, запросы туда: {_inner13}{'' if _em13 else f', ответ {_ansm13}'})")
+    _httpx.request = _stand_request
 
     # Повтор: перегрузку повторяем, отказ по ключу — нет (иначе жжём платный лимит).
     _tries = {"n": 0}
@@ -1522,6 +1801,7 @@ try:
            f"отказ по ключу не повторяется — платный лимит не жжём ({_e401.code}, попыток {_calls401['n']})")
 finally:
     _httpx.request, _httpx.get, _httpx.stream = _real["request"], _real["get"], _real["stream"]
+    _HI13.transport, _HI13.resolve = _real_seams13
 
 # Предел встроенной отправки: base64 раздувает файл, и большой кадр так не уедет.
 _big = _ws / "pic" / "big.png"
@@ -1541,6 +1821,26 @@ print("== 14. Что модель умеет: спека параметров и
 from core.providers import ModelSpec
 
 _ms = ModelSpec(_reg)
+
+# Адрес спеки объявлен не https — отказ до сети: ключ в открытый канал не уходит.
+import httpx as _hx14
+import types as _ty14
+
+_ms_http = ModelSpec(_ty14.SimpleNamespace(models_dir=_reg.models_dir, config={"capabilities": {"online": {
+    "Двойник": {"url": "http://spec.example/{model}", "auth": "bearer"}}}}))
+_asked14, _real_get14, _e14 = [], _hx14.get, None
+_hx14.get = lambda *a, **k: _asked14.append(a)
+try:
+    _ms_http.of("Двойник", "модель", api_key="ключ", refresh=True)
+except ProviderError as e:
+    _e14 = e
+finally:
+    _hx14.get = _real_get14
+_said14 = _Eng(reactions=_REACTIONS).refusal(_e14).error.message if _e14 else ""
+ok(_e14 is not None and _e14.code == "DOWNLOAD_FORBIDDEN" and not _asked14,
+   f"адрес спеки не https — отказ до сети, ключ не ушёл ({_e14 and _e14.code}, запросов {len(_asked14)})")
+ok("spec.example" in _said14 and "https" in _said14,
+   f"клиент видит, какой адрес спеки не пропущен и какая схема разрешена ({_said14})")
 
 # Локальная модель описывает себя сама — сетью для этого ходить незачем.
 # Веса вне git: на машине без них проверять нечего, и это ПРОПУСК с причиной, а не провал —
@@ -1764,7 +2064,7 @@ _row17 = {**_row_bg, "provider": "Local_runner"}
 _was17 = _srv.CONFIG_PATH
 try:
     _srv.CONFIG_PATH = _cfg17
-    _eng17 = _Eng(state_manager=_sm)
+    _eng17 = _Eng(reactions=_REACTIONS, state_manager=_sm)
     _srv.register_basic_tools(_eng17, _IDG(), _sm)
 
     def _c17(tool, **params):
@@ -1791,10 +2091,11 @@ try:
         ok(_hx17.post(f"{_base17}/run", json={"kind": "bg_removals"}, timeout=10).status_code == 401,
            "без токена раннер не исполняет ничего")
         _alive17 = _hx17.get(f"{_base17}/health", timeout=10).json()
-        ok(_alive17.get("ok") and "pool" not in _alive17,
-           "живость видна без токена, а содержимое пула — нет")
-        ok("pool" in _hx17.get(f"{_base17}/health", headers={"X-Runner-Token": _tok17},
-                               timeout=10).json(), "с токеном /health показывает, что держится поднятым")
+        ok(_alive17.get("ok") and "pool" not in _alive17 and "models" not in _alive17,
+           "живость видна без токена, а содержимое пула и готовность моделей — нет")
+        _full17 = _hx17.get(f"{_base17}/health", headers={"X-Runner-Token": _tok17}, timeout=10).json()
+        ok("pool" in _full17 and isinstance(_full17.get("models"), list),
+           "с токеном /health показывает, что держится поднятым, и готовность моделей описи")
 
         # Раннер доверяет вызывающему не больше, чем сервер клиенту — даже на своей машине.
         _esc17 = _hx17.post(f"{_base17}/run", headers={"X-Runner-Token": _tok17}, timeout=10,
@@ -1802,6 +2103,23 @@ try:
                                   "target": "../../../tmp/утёк.png", "params": {}})
         ok(_esc17.status_code == 403 and _esc17.json().get("code") == "PATH_ESCAPE",
            f"путь наружу рабочей области раннер не принимает ({_esc17.json().get('code')})")
+        _mesc17 = _hx17.post(f"{_base17}/run", headers={"X-Runner-Token": _tok17}, timeout=30,
+                             json={"kind": "bg_removals", "source": "pic/frame.png", "target": "pic/m.png",
+                                   "params": {"model": "../../../../etc/passwd"}})
+        ok(_mesc17.json().get("code") == "PATH_ESCAPE"
+           and _mesc17.json().get("facts", {}).get("path") == "../../../../etc/passwd",
+           f"имя модели наружу каталога весов — раннер отвечает формой ErrorDetail: код двери и путь фактом "
+           f"({_mesc17.json().get('code')}, {_mesc17.json().get('facts')})")
+        _sec17 = _hx17.post(f"{_base17}/run", headers={"X-Runner-Token": _tok17}, timeout=10,
+                            json={"kind": "bg_removals", "source": "pic/frame.png",
+                                  "target": "ch/.secrets/утёк.png", "params": {}})
+        ok(_sec17.status_code == 403 and _sec17.json().get("code") == "SECRET_ACCESS_DENIED",
+           f"путь в закрытый каталог раннер называет своим кодом, а не «выход за область» ({_sec17.json().get('code')})")
+        _notarget17 = _hx17.post(f"{_base17}/run", headers={"X-Runner-Token": _tok17}, timeout=10,
+                                 json={"kind": "bg_removals", "source": "pic/frame.png", "params": {}})
+        ok(_notarget17.status_code == 400 and _notarget17.json().get("code") == "VALIDATION_ERROR"
+           and {"field": "target", "rule": "required"} in (_notarget17.json().get("errors") or []),
+           f"нет пути результата — ошибка ввода по полю target, а не путь-текст в факте ({_notarget17.json()})")
         _sh17 = _hx17.post(f"{_base17}/run", headers={"X-Runner-Token": _tok17}, timeout=10,
                            json={"kind": "bg_removals", "source": "pic/frame.png",
                                  "target": "pic/assets/img/своё.sh", "params": {}})
@@ -1833,6 +2151,14 @@ try:
                        input="pic/frame.png", scene_id="r2")
         ok(_lost17.status == "error" and _lost17.error.code == "LOCAL_MODEL_MISSING",
            f"причина отказа раннера доезжает своим кодом ({_lost17.error.code if _lost17.error else 'успех!'})")
+        (_ws / "pic" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+            "B1": {**_row17, "model": "../../../../etc/passwd"}}}}), encoding="utf-8")
+        _out17 = _c17("media_generate", table="pic", resource_type="bg_removals",
+                      input="pic/frame.png", scene_id="r2b")
+        ok(_out17.status == "error" and _out17.error.code == "PATH_ESCAPE"
+           and _out17.error.facts.get("path") == "../../../../etc/passwd",
+           f"отказ раннера доезжает до клиента MCP кодом и фактами, а не одним текстом "
+           f"({_out17.error.code if _out17.error else 'успех!'}, {_out17.error.facts if _out17.error else ''})")
         (_ws / "pic" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
             "B1": _row17}}}), encoding="utf-8")
 
@@ -1960,6 +2286,934 @@ if _installed_stt and _have_tts:
     ok((_live_doc.get("text") or "").strip(), "текст распознан, а не пустая строка")
 else:
     print("  ⚠ веса распознавания или озвучки не поставлены — живой прогон пропущен")
+
+# ═══ §19 Загрузка и установка моделей: двойники источника, HTTP и сна ═══
+# Каталог Hugging Face, httpx.request и сон подменены (пауза записывается, а не ждётся), декларация и
+# каталог весов — свои во временном каталоге; подмены снимаются в finally, боевые config/ и vendor/ не тронуты.
+import contextlib as _ctx19
+import hashlib as _hl19
+import httpx as _hx19
+import io as _io19
+import huggingface_hub as _hf19
+import logging as _log19
+import shutil as _sh19
+import socket as _sock19
+import subprocess as _sp19
+import time as _t19
+import types as _ty19
+
+
+def _model_fetch(work: Path, records: list[str]) -> None:
+    import models as cli
+    from core.contracts import ContractError
+    from core.providers.catalog import ModelCatalog
+    from core.providers.img.http_image import HttpImageAPI
+
+    def refused(call) -> str:
+        """Код отказа вызова, пусто — если отказа не было: каталог, загрузчик и дверь отказывают каждый своим кодом."""
+        try:
+            call()
+        except ContractError as e:
+            return e.code
+        return ""
+
+    def answered(call) -> int | str:
+        """Код ответа вызова или имя исключения: падение разбора — провал проверки, а не всего набора."""
+        try:
+            return call().status_code
+        except Exception as e:
+            return type(e).__name__
+
+    remote: dict[tuple[str, str], bytes] = {}
+    calls: list[tuple] = []
+    info: dict[str, _ty19.SimpleNamespace] = {}
+    pauses: list[float] = []
+
+    def sibling(name: str, size: int, sha: str = "", blob: str = ""):
+        """Файл репозитория, как его отдаёт model_info(files_metadata=True): LFS — sha256, иначе id git-блоба."""
+        return _ty19.SimpleNamespace(rfilename=name, size=size, blob_id=blob or None,
+                                     lfs=_ty19.SimpleNamespace(sha256=sha) if sha else None)
+
+    def repo(*siblings, gated=False):
+        return _ty19.SimpleNamespace(gated=gated, safetensors=None, cardData=None, config=None, siblings=list(siblings))
+
+    def git_blob(data: bytes) -> str:
+        """Id git-блоба считает сам git — оракул, независимый от формулы в коде цели."""
+        return _sp19.run(["git", "hash-object", "--stdin"], input=data, capture_output=True,
+                         check=True).stdout.decode().strip()
+
+    lfs_files: set[tuple[str, str]] = set()
+    wire: list[tuple] = []                  # (хост, Range) каждого запроса, ушедшего в сеть, — журнал транспорта
+    cuts: dict[tuple[str, str], int] = {}   # обрыв тела части после стольких байт — на один ответ
+    away: dict[tuple[str, str], str] = {}   # resolve части ведёт не на CDN, а сюда
+    during: dict[tuple[str, str], object] = {}  # вызов посреди отдачи части — пока её загрузка идёт; на один ответ
+
+    def put(repo_id: str, name: str, data: bytes, lfs: bool = True):
+        """Файл источника и его строка model_info: длина и отпечаток сняты с самих байтов, а не с кода цели."""
+        remote[(repo_id, name)] = data
+        if lfs:
+            lfs_files.add((repo_id, name))
+            return sibling(name, len(data), sha=_hl19.sha256(data).hexdigest())
+        return sibling(name, len(data), blob=git_blob(data))
+
+    def model_info(repo_id, revision=None, files_metadata=False, **_kw):
+        calls.append(("model_info", repo_id, revision))
+        return info[repo_id]
+
+    def served(key: tuple[str, str], request) -> _hx19.Response:
+        """Байты части с Range и If-Range, ETag — свой у сервера, а не отпечаток состава (как у моста Xet, шаг 0)."""
+        if key in during:
+            during.pop(key)()
+        data, tag = remote[key], f'"xet-{_hl19.sha1(remote[key]).hexdigest()[:12]}"'
+        asked, start = request.headers.get("range", ""), 0
+        if asked and request.headers.get("if-range") == tag:
+            start = int(asked.split("=")[1].rstrip("-"))
+            if start >= len(data):
+                return _hx19.Response(416, headers={"content-range": f"bytes */{len(data)}"})
+        cut = cuts.pop(key, None)
+
+        def stream():
+            for i in range(start, len(data), 64):
+                if cut is not None and i - start >= cut:
+                    raise _hx19.ReadError("соединение оборвано")
+                yield data[i:i + 64]
+        headers = {"etag": tag, "content-length": str(len(data) - start)}
+        if start:
+            headers["content-range"] = f"bytes {start}-{len(data) - 1}/{len(data)}"
+        return _hx19.Response(206 if start else 200, headers=headers, content=stream())
+
+    def serve(request):
+        """Стенд Hugging Face по HTTP: resolve отдаёт малый файл сам, LFS — переходом на CDN (как настоящий, шаг 0)."""
+        host = request.headers.get("host", "")
+        wire.append((host, request.headers.get("range")))
+        if host == "huggingface.co":
+            repo_id, _, rest = request.url.path.lstrip("/").partition("/resolve/")
+            revision, _, name = rest.partition("/")
+            calls.append(("get", repo_id, name, revision, request.headers.get("range")))
+            if (repo_id, name) not in remote:
+                return _hx19.Response(404)
+            if (repo_id, name) in away:
+                return _hx19.Response(302, headers={"location": away[(repo_id, name)]})
+            if (repo_id, name) in lfs_files:
+                return _hx19.Response(302, headers={"location": f"https://us.aws.cdn.hf.co/{repo_id}/{name}"})
+            return served((repo_id, name), request)
+        owner, repo_name, path = request.url.path.lstrip("/").split("/", 2)
+        return served((f"{owner}/{repo_name}", path), request)
+
+    def downloads(since: int = 0) -> list[tuple]:
+        return [c for c in calls[since:] if c[0] == "get"]
+
+    _hf19.model_info = model_info
+    ModelCatalog.transport = _hx19.MockTransport(serve)
+    ModelCatalog.resolve = staticmethod(lambda host, port, *a, **k: [
+        (_sock19.AF_INET, _sock19.SOCK_STREAM, 6, "", ({"huggingface.co": "18.1.1.1"}.get(host, "13.2.2.2"), port))])
+    _t19.sleep = pauses.append
+
+    models = work / "vendor" / "models"
+    cfg = work / "config" / "providers.yaml"
+    cfg.parent.mkdir(parents=True)
+    retry = {"idempotent_methods": ["GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE"],
+             "retry_after_max_sec": 30, "backoff_max_sec": 60, "backoff_jitter_ratio": 0}
+    cfg.write_text(yaml.safe_dump({"online": {"retry": retry}, "local": {
+        "models_dir": "vendor/models",
+        "hand_placed": "by_presence",
+        "sources": {
+            "tts": {"kind": "piper_index", "repo": "voices/piper", "dest": "tts"},
+            "image": {"kind": "hf_hub", "dest": "img"},
+            "bg_removal": {"kind": "hf_hub", "dest": "bg", "require_formats": [".onnx"]},
+        },
+        "install": {
+            "allow_sources": ["huggingface.co"],
+            "allow_suffixes": [".safetensors", ".onnx", ".json", ".txt"],
+            "deny_suffixes": [".bin", ".ckpt", ".pt"],
+            "max_total_mb": 1,
+            "prefer_files": ["*model.onnx"],
+            "progress": {"heartbeat_sec": 0.05, "stale_after_sec": 300},
+            "fetch": {"schemes": ["https"], "hosts": ["huggingface.co", "us.aws.cdn.hf.co"], "block_private": True,
+                      "max_bytes": 0, "timeout_sec": 30, "redirects": 5, "attempts": 1, "backoff_sec": 1,
+                      "backoff_max_sec": 60, "retry_after_max_sec": 120, "jitter": 0,
+                      "retry_on": [429, 500, 502, 503, 504],
+                      "codes": {"failed": "MODEL_SOURCE_FAILED", "corrupt": "MODEL_CORRUPT"}},
+            "revisions": {"org/bg": "rev-bg", "org/sd": "rev-sd", "voices/piper": "rev-voices",
+                          "org/big": "rev-big", "org/closed": "rev-closed", "org/noonnx": "rev-noonnx",
+                          "org/nodigest": "rev-nodigest", "org/liar": "rev-liar", "org/short": "rev-short",
+                          "org/legacy": "rev-legacy", "org/space": "rev-space", "org/blind": "rev-blind",
+                          "org/moved": "rev-moved", "org/cut": "rev-cut", "org/away": "rev-away",
+                          "org/twice": "rev-twice", "org/held": "rev-held", "org/slow": "rev-slow",
+                          "org/foo": "rev-foo", "other/foo": "rev-other-foo", "third/foo": "rev-third-foo"},
+        },
+    }}, allow_unicode=True), encoding="utf-8")
+    _sh19.copy(ROOT / "config" / "server_reactions.yaml", cfg.parent)   # реестр отказов рядом с декларацией
+    cat = ModelCatalog(cfg, models)
+    graph, prep, voice_graph = b"g" * 300, b"{}" * 5, b"v" * 100
+
+    print("== 19.0. Отпечаток части: потоком, как у независимых hashlib и git hash-object ==")
+    data = "содержимое\0".encode() * 1000
+    (work / "probe.bin").write_bytes(data)
+    ok([ModelCatalog._digest(work / "probe.bin", a) for a in ("sha256", "git-blob-sha1", "md5")]
+       == [_hl19.sha256(data).hexdigest(), git_blob(data), _hl19.md5(data).hexdigest()],
+       "отпечаток файла совпадает с независимым: hashlib по байтам и git hash-object")
+    from core.providers.hardware import probe as hw_probe
+    ok(not models.exists() and hw_probe(models)["disk_free_mb"] is not None,
+       "каталога весов ещё нет — место читается на диске, куда он ляжет, а не «не прочитано»")
+
+    print("== 19. Установка одним графом: граф по предпочтению, описания рядом, pickle — отказ с причиной ==")
+    info["org/bg"] = repo(
+        put("org/bg", "onnx/model.onnx", graph), put("org/bg", "onnx/model_fp16.onnx", b"h" * 150),
+        put("org/bg", "preprocessor_config.json", prep, lfs=False), put("org/bg", "pytorch_model.bin", b"p" * 400))
+    try:
+        bg = cat.install_planned(cat.место_под("org/bg", "bg_removal"))
+    except ContractError as e:                  # отказ — улика проверок ниже, а не обрыв §19
+        bg = {"path": f"отказ {e.code} {e.facts}", "refused": [], "revision": "",
+              "disk": {"verdict": e.code, "checked": "", "why": e.message}}
+    landed = models / "bg/bg/model.onnx"
+    ok(bg["path"] == "bg/bg/model.onnx" and landed.is_file() and landed.read_bytes() == graph,
+       f"граф по предпочтению лёг плоско в каталог вида с именем модели ({bg['path']})")
+    ok((models / "bg/bg/preprocessor_config.json").is_file(), "описание предобработки лежит рядом с графом")
+    ok(not (models / "bg/bg/model_fp16.onnx").exists(), "тот же граф в другой разрядности не тянется")
+    ok(any(r["file"] == "pytorch_model.bin" for r in bg["refused"]), "pickle-веса отказаны с причиной")
+    ok(bg["revision"] == "rev-bg" and ("model_info", "org/bg", "rev-bg") in calls,
+       "список файлов и файлы — из объявленной ревизии")
+    ok(bg["disk"]["verdict"] == "ready" and bg["disk"]["checked"] == "по отпечатку",
+       f"конец установки судит по отпечатку и называет ступень ({bg['disk']['why']})")
+
+    print("== 19a. Установка снимком: вариант fp16 вместо полных весов ==")
+    info["org/sd"] = repo(
+        put("org/sd", "model_index.json", prep, lfs=False), put("org/sd", "unet/diffusion.fp16.safetensors", b"f" * 200),
+        put("org/sd", "unet/diffusion.safetensors", b"F" * 400))
+    sd = cat.install_planned(cat.место_под("org/sd", "image"))
+    pulled = {c[2] for c in downloads() if c[1] == "org/sd"}
+    ok(sd["variant"] == "fp16" and pulled == {"model_index.json", "unet/diffusion.fp16.safetensors"},
+       f"из одних весов в двух разрядностях тянется одна — fp16 ({sorted(pulled)})")
+    ok((models / "img/sd/unet/diffusion.fp16.safetensors").is_file() and sd["path"] == "img/sd",
+       "снимок лёг в каталог вида с именем модели")
+
+    print("== 19b. Голос piper: индекс → файлы голоса → каталог tts ==")
+    remote[("voices/piper", "voices.json")] = _json.dumps({"ru_RU-test-low": {
+        "language": {"code": "ru_RU"}, "quality": "low", "num_speakers": 1,
+        "files": {"ru/test.onnx": {"size_bytes": 100, "md5_digest": _hl19.md5(voice_graph).hexdigest()},
+                  "ru/test.onnx.json": {"size_bytes": 10, "md5_digest": _hl19.md5(prep).hexdigest()}}}}).encode()
+    remote.update({("voices/piper", "ru/test.onnx"): voice_graph, ("voices/piper", "ru/test.onnx.json"): prep})
+    voice = cat.install_planned(cat.место_под("ru_RU-test-low", "tts"))
+    ok(voice["path"] == "tts/test.onnx" and (models / "tts/test.onnx").is_file()
+       and (models / "tts/test.onnx.json").is_file(), "граф голоса и его описание лежат рядом в tts/")
+
+    print("== 19c. Опись: одна запись на имя, переустановка заменяет, а не дублирует ==")
+    cat.install_planned(cat.место_под("org/bg", "bg_removal"))
+    ids = [e["id"] for e in cat.inventory()]
+    ok(ids.count("bg") == 1 and set(ids) == {"bg", "sd", "ru_RU-test-low"}, f"опись без дублей ({ids})")
+    seen = {r["id"]: r["disk"] for r in cat.installed()}
+    ok(all(d["verdict"] == "ready" and d["checked"] == "по длине" for d in seen.values()),
+       f"целиком поставленные модели готовы, и в строке названо, как проверено ({seen})")
+    ok({r["id"]: r for r in cat.installed()}["sd"]["variant"] == "fp16", "вариант весов виден в строке поставленного")
+
+    print("== 19d. Состав: каждая часть с длиной, отпечатком и его алгоритмом, по пути ==")
+    bg_parts = cat.manifest("org/bg", "bg_removal")["parts"]
+    ok([(p["path"], p["algo"], p["digest"]) for p in bg_parts]
+       == [("model.onnx", "sha256", _hl19.sha256(graph).hexdigest()),
+           ("preprocessor_config.json", "git-blob-sha1", git_blob(prep))],
+       f"граф — sha256 из LFS, описание — id git-блоба, части по пути ({bg_parts})")
+    ok(cat.manifest("org/bg", "bg_removal") == cat.manifest("org/bg", "bg_removal"),
+       "тот же ответ источника — тот же состав, включая порядок частей")
+    sd_parts = cat.manifest("org/sd", "image")["parts"]
+    ok([p["source"] for p in sd_parts] == ["model_index.json", "unet/diffusion.fp16.safetensors"]
+       and [p["path"] for p in sd_parts] == [p["source"] for p in sd_parts],
+       "снимок: части по пути репозитория, полные веса рядом с fp16 в состав не входят")
+    mark = len(calls)
+    voice_parts = cat.manifest("ru_RU-test-low", "tts")["parts"]
+    ok(not [c for c in downloads(mark) if c[2] == "voices.json"],
+       "индекс голосов той же ревизии читается с диска — повторный состав не ходит в сеть")
+    ok([(p["path"], p["algo"], p["digest"], p["size"]) for p in voice_parts]
+       == [("test.onnx", "md5", _hl19.md5(voice_graph).hexdigest(), 100),
+           ("test.onnx.json", "md5", _hl19.md5(prep).hexdigest(), 10)],
+       f"голос — md5 и длина из индекса ({voice_parts})")
+    info["org/nodigest"] = repo(sibling("model.onnx", 100))
+    blind = cat.manifest("org/nodigest", "bg_removal")["parts"][0]
+    ok(blind["digest"] is None and blind["algo"] is None,
+       "источник отпечатка не назвал — неизвестен, а не пустая строка")
+    stored = {e["id"]: e for e in cat.inventory()}
+    ok(stored["bg"]["parts"] == bg_parts and stored["sd"]["parts"] == sd_parts and stored["bg"]["dest"] == "bg/bg",
+       "опись хранит тот же состав, что снят с источника")
+
+    print("== 19e. Отказы установщика: каждый — кодом, до загрузки весов ==")
+    info["org/closed"] = repo(gated=True)
+    info["org/big"] = repo(sibling("unet/big.safetensors", 5_000_000))
+    info["org/noonnx"] = repo(sibling("model.safetensors", 100))
+    ok(refused(lambda: cat.место_под("нет-голоса", "tts")) == "MODEL_NOT_IN_CATALOG",
+       "голоса нет в индексе источника — отказ своим кодом, а не «весов нет»")
+    before = len(calls)
+    ok(refused(lambda: cat.install_planned(cat.место_под("org/closed", "image"))) == "MODEL_GATED",
+       "закрытая автором модель — отказ своим кодом")
+    ok(refused(lambda: cat.install_planned(cat.место_под("org/big", "image"))) == "MODEL_TOO_LARGE",
+       "сверх предела размера — отказ своим кодом")
+    ok(refused(lambda: cat.install_planned(cat.место_под("org/noonnx", "bg_removal"))) == "MODEL_FORMAT_MISSING",
+       "нет файла нужного формата — отказ")
+    ok(not downloads(before), "ни один отказ не тянул весов")
+
+    print("== 19f. Вердикт по диску: половина модели — не «установлено», порча той же длины видна только отпечатку ==")
+    (models / "img/sd/unet/diffusion.fp16.safetensors").unlink()
+    half = {r["id"]: r["disk"] for r in cat.installed()}["sd"]
+    ok(half["verdict"] == "incomplete"
+       and [(p["path"], p["job"]) for p in half["plan"]] == [("unet/diffusion.fp16.safetensors", "докачать")],
+       f"1 из 2 частей на диске — не установлено, план «докачать» недостающую ({half['why']})")
+    (models / "bg/bg/model.onnx").write_bytes(b"X" * 300)
+    (models / "img/sd/model_index.json").write_bytes(b"[]" * 5)
+    shallow = {r["id"]: r["disk"] for r in cat.installed()}["bg"]
+    ok(shallow["verdict"] == "ready" and shallow["checked"] == "по длине" and "по длине" in shallow["why"],
+       "порча той же длины по длине не видна — и ответ называет ступень проверки")
+    deep = cat.judge(stored["bg"], deep=True)
+    ok(deep["verdict"] == "corrupt" and deep["checked"] == "по отпечатку"
+       and [(p["path"], p["job"]) for p in deep["plan"]] == [("model.onnx", "заменить")],
+       f"по отпечатку та же часть — «заменить» ({deep['why']})")
+    with (models / "tts/test.onnx.json").open("ab") as f:
+        f.write(b" ")
+    longer = {r["id"]: r["disk"] for r in cat.installed()}["ru_RU-test-low"]
+    ok(longer["verdict"] == "corrupt"
+       and [(p["path"], p["job"]) for p in longer["plan"]] == [("test.onnx.json", "заменить")],
+       "часть длиннее объявленной — «заменить», а не «лежит»")
+    unsized = {"id": "unsized", "dest": "bg/bg", "parts": [ModelCatalog._part("model.onnx", "model.onnx", None, None, None)]}
+    ok(cat.judge(unsized)["verdict"] == "unverified", "источник не назвал длину части — «судить нечем», а не «лежит»")
+
+    print("== 19g. pull: тянет только план разницы и заново, а не «лежит той же ревизии» ==")
+    cli._catalog = lambda: cat
+    mark = len(calls)
+    ok(cli.main(["models.py", "pull"]) == 0, "pull чинит опись целиком и отвечает успехом")
+    fetched = downloads(mark)
+    ok({(c[1], c[2]) for c in fetched} == {("org/bg", "onnx/model.onnx"), ("voices/piper", "ru/test.onnx.json"),
+                                           ("org/sd", "model_index.json"), ("org/sd", "unet/diffusion.fp16.safetensors")},
+       f"тянутся только части плана: недостающая и расходящиеся, каждая своим запросом ({fetched})")
+    ok(fetched and all(c[-1] is None for c in fetched),
+       "части плана тянутся с источника целиком — лежащий файл не выдаётся за скачанный (своего остатка нет)")
+    ok(all(r["disk"]["verdict"] == "ready" for r in cat.installed())
+       and (models / "bg/bg/model.onnx").read_bytes() == graph and (models / "img/sd/model_index.json").read_bytes() == prep,
+       "после pull каждая модель цела, испорченные части заменены")
+    mark = len(calls)
+    ok(cli.main(["models.py", "pull", "bg"]) == 0 and not downloads(mark), "целая модель повторно не тянется")
+    empty = ModelCatalog(cfg, work / "empty_models")
+    cli._catalog = lambda: empty
+    ok(cli.main(["models.py", "pull"]) == 1, "пустая опись — отказ, а не тихий успех")
+
+    print("== 19h. Конец установки судит по отпечатку: расхождение — отказ кодом причины, состав остаётся в описи ==")
+    info["org/liar"] = repo(sibling("model.onnx", 300, sha=_hl19.sha256("другое".encode()).hexdigest()))
+    remote[("org/liar", "model.onnx")] = b"l" * 300
+    ok(refused(lambda: cat.install_planned(cat.место_под("org/liar", "bg_removal"))) == "MODEL_CORRUPT",
+       "байты не сошлись с отпечатком источника — MODEL_CORRUPT, а не «поставлено»")
+    info["org/short"] = repo(sibling("model.onnx", 300, sha=_hl19.sha256(b"s" * 300).hexdigest()))
+    remote[("org/short", "model.onnx")] = b"s" * 200
+    ok(refused(lambda: cat.install_planned(cat.место_под("org/short", "bg_removal"))) == "DOWNLOAD_INCOMPLETE",
+       "источник отдал часть короче объявленной — загрузчик называет хост и байты (DOWNLOAD_INCOMPLETE), остаток жив")
+    ok({"liar", "short"} <= {e["id"] for e in cat.inventory()}, "состав записан в опись: pull знает, что чинить")
+    cli._catalog = lambda: cat
+    ok(cli.main(["models.py", "pull"]) == 1
+       and all(r["disk"]["verdict"] == "ready" for r in cat.installed() if r["id"] in ("bg", "sd", "ru_RU-test-low")),
+       "неисправимая модель — pull отвечает отказом, остальные проходят до конца")
+
+    print("== 19i. Запись описи без состава: «судить нечем», pull снимает состав с источника по repo и виду ==")
+    legacy = {"id": "legacy", "kind": "bg_removal", "repo": "org/legacy", "path": "bg/legacy/model.onnx"}
+    cat.inventory_file.write_text(yaml.safe_dump({"models": [*cat.inventory(), legacy]}, allow_unicode=True),
+                                  encoding="utf-8")
+    old = {r["id"]: r["disk"] for r in cat.installed()}["legacy"]
+    ok(old["verdict"] == "unverified" and "pull legacy" in old["why"], f"старая запись — «судить нечем» и рецепт ({old})")
+    info["org/legacy"] = repo(put("org/legacy", "model.onnx", b"L" * 120))
+    got = cat.restore(legacy)
+    ok(got["disk"]["verdict"] == "ready" and got["disk"]["checked"] == "по отпечатку"
+       and {e["id"]: e for e in cat.inventory()}["legacy"]["parts"] == got["parts"],
+       "состав снят с источника, диск сверен по отпечатку, опись дополнена составом")
+
+    print("== 19r. Части — одним загрузчиком: обрыв докачивается, рост виден по остатку, чужой хост — ни запроса ==")
+    from core.providers.installer import ModelInstaller as Watcher
+
+    info["org/cut"] = repo(put("org/cut", "model.onnx", b"c" * 1000))
+    cuts[("org/cut", "model.onnx")] = 384
+    first = cat.место_под("org/cut", "bg_removal")
+    ok(refused(lambda: cat.install_planned(first)) == "DOWNLOAD_INCOMPLETE",
+       "обрыв посреди части — отказ кодом загрузчика, а не «поставлено»")
+    part_file = models / "bg/cut/model.onnx.bg_removal-cut.part"
+    ok(part_file.is_file() and part_file.stat().st_size == 384 and cat.on_disk(first) == 384,
+       f"остаток владельца модели — ровно принятые байты, и счёт плана видит их ({cat.on_disk(first)})")
+    watcher = Watcher(cat)
+    watcher._write({"install_id": "w19r", "model_id": "org/cut", "kind": "bg_removal", "phase": "running",
+                    "started": 0, "heartbeat": 0, "bytes": 0})
+    once = iter([False, True])
+    watcher._watch("w19r", first, _ty19.SimpleNamespace(wait=lambda _t: next(once)))
+    ok(watcher._read("w19r")["bytes"] == 384, "наблюдение установки растёт по остатку части, а не по кэшу загрузчика")
+    w0 = len(wire)
+    second = cat.место_под("org/cut", "bg_removal")
+    second_marks: list = []
+    ok(refused(lambda: cat.install_planned(second, mark=lambda: second_marks.append(1))) == ""
+       and (models / "bg/cut/model.onnx").read_bytes() == b"c" * 1000,
+       "повторная установка докачала часть — файл совпал с источником")
+    ok(len(second_marks) == 14,
+       f"признаки работы по ходу: 2 перехода + 10 кусков по 64 байта + блок сверки загрузчика + блок суда ({len(second_marks)})")
+    ok([r for h, r in wire[w0:] if h == "us.aws.cdn.hf.co"] == ["bytes=384-"] and not part_file.exists()
+       and cat.on_disk(second) == 1000,
+       f"на CDN ушёл Range от длины остатка, остаток встал под имя, счёт — вся часть ({wire[w0:]})")
+    forced = cat.место_под("org/cut", "bg_removal", force=True)
+    ok(forced["plan"] and cat.on_disk(forced) == 0,
+       f"часть, лежавшая до загрузки, не считается легшей в этот раз ({cat.on_disk(forced)})")
+    marks: list = []
+    ok(cat.judge(second["entry"], deep=True, mark=lambda: marks.append(1))["verdict"] == "ready" and marks,
+       f"суд по отпечатку отмечает работу по ходу чтения, а не одной отметкой до ({len(marks)} отметок)")
+    ok(cat.silence_sec() == 60.0 and refused(lambda: Watcher(cat, stale_after_sec=60)) == "SCHEMA_INVALID"
+       and refused(lambda: Watcher(cat, stale_after_sec=61)) == "",
+       f"простой не короче тишины загрузчика: 60 с (2 × timeout 30) — отказ кодом, 61 с — строится "
+       f"({cat.silence_sec()})")
+    info["org/away"] = repo(put("org/away", "model.onnx", b"a" * 100))
+    away[("org/away", "model.onnx")] = "https://evil.example/org/away/model.onnx"
+    w0 = len(wire)
+    ok(refused(lambda: cat.install_planned(cat.место_под("org/away", "bg_removal"))) == "DOWNLOAD_FORBIDDEN"
+       and "evil.example" not in [h for h, _ in wire[w0:]],
+       f"resolve ведёт на необъявленный хост — DOWNLOAD_FORBIDDEN, к нему ни запроса ({wire[w0:]})")
+
+    print("== 19j. Вызов провайдера: повтор только объявленного, пауза — по слову провайдера ==")
+
+    class Resp:
+        def __init__(self, status, headers=None):
+            self.status_code, self.headers, self.text = status, headers or {}, "ответ провайдера"
+
+        def json(self):
+            raise ValueError("не JSON")
+
+    def answers(*queue):
+        """Подменяет httpx.request очередью ответов (исключение — бросается); возвращает список ушедших методов."""
+        queue = list(queue)
+        sent: list[str] = []
+
+        def fake(method, url, **_kw):
+            sent.append(method)
+            answer = queue.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+        _hx19.request = fake
+        return sent
+
+    api = HttpImageAPI(AdapterRegistry(cfg, work))
+    url = "https://p.invalid/run"
+    req = MediaRequest(input="x", params={"retry_count": 1}, target=work / "o.png", models_dir=models,
+                       api_key="k", provider="p")
+    sent = answers(Resp(200))
+    ok(api._request({"retry_on": [503]}, "POST", url, req).status_code == 200 and len(sent) == 1,
+       "успех с первой попытки — один запрос")
+    sent = answers(Resp(400), Resp(200))
+    ok(refused(lambda: api._request({"retry_on": [503]}, "POST", url, req)) == "PROVIDER_FAILED"
+       and len(sent) == 1, "код вне объявленных к повтору — отказ сразу")
+    pauses.clear()
+    sent = answers(Resp(503, {"Retry-After": "2"}), Resp(200))
+    ok(api._request({"retry_on": [503]}, "POST", url, req).status_code == 200 and len(sent) == 2
+       and pauses == [2.0], f"перегрузка повторяется с паузой, названной провайдером ({pauses})")
+    detail_body = {"code": "PATH_ESCAPE", "message": "m", "facts": {"path": "../x"},
+                   "errors": [{"field": "target", "rule": "required"}]}
+    answer = _ty19.SimpleNamespace(json=lambda: detail_body)
+    api._decl_cache = {"Local_runner": {"error_detail": True}}
+    named = api._named_refusal(answer)
+    ok(named is not None and named.code == "PATH_ESCAPE" and named.facts == {"path": "../x"}
+       and named.errors == [{"field": "target", "rule": "required"}],
+       f"ответ формой сервера (ErrorDetail) переходит в отказ с кодом, фактами и ошибками ввода ({named and named.facts})")
+    api._decl_cache = {"Fal": {}}
+    ok(api._named_refusal(answer) is None,
+       "адресат, не объявленный отвечающим формой сервера, кодом сервера не говорит — даже если в теле код")
+    api._decl_cache = {}
+
+    print("== 19k. Retry-After: секунды или HTTP-дата, потолок; нечитаемое — своя пауза и запись в журнал ==")
+    own = MediaRequest(input="x", params={"retry_count": 1, "retry_delay": 1}, target=work / "o.png",
+                       models_dir=models, api_key="k", provider="p")
+    pauses.clear()
+    answers(Resp(503, {"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"}), Resp(200))
+    got = answered(lambda: api._request({"retry_on": [503]}, "POST", url, own))
+    ok(got == 200 and pauses == [1.0], f"HTTP-дата в прошлом — без падения разбора, пауза своя ({got}, {pauses})")
+    pauses.clear()
+    answers(Resp(503, {"Retry-After": "Fri, 01 Jan 2100 00:00:00 GMT"}), Resp(200))
+    got = answered(lambda: api._request({"retry_on": [503]}, "POST", url, own))
+    ok(got == 200 and pauses == [30.0],
+       f"HTTP-дата далеко впереди — пауза не больше объявленного потолка ({got}, {pauses})")
+    pauses.clear()
+    answers(Resp(503, {"Retry-After": "скоро"}), Resp(200))
+    got = answered(lambda: api._request({"retry_on": [503]}, "POST", url, own))
+    ok(got == 200 and pauses == [1.0] and any("Retry-After" in r for r in records),
+       f"нечитаемый срок — своя пауза и запись в журнал ({got}, {pauses}, {records})")
+    pauses.clear()
+    jittered = HttpImageAPI(api.registry, rng=_ty19.SimpleNamespace(random=lambda: 0.5))
+    api.registry.need = lambda *p, kind=None: {**retry, "backoff_jitter_ratio": 0.1}[p[-1]]
+    answers(Resp(503, {"Retry-After": "2"}), Resp(200))
+    jittered._request({"retry_on": [503]}, "POST", url, req)
+    del api.registry.need
+    ok([round(p, 6) for p in pauses] == [2.1], f"разброс паузы — от переданного генератора ({pauses})")
+
+    print("== 19l. Неидемпотентный запрос не повторяется после ошибки, при которой провайдер мог его получить ==")
+    sent = answers(_hx19.ReadTimeout("ответ не пришёл"), Resp(200))
+    ok(refused(lambda: api._request({"retry_on": [503]}, "POST", url, req)) == "PROVIDER_TIMEOUT"
+       and sent == ["POST"], f"POST после таймаута чтения — один запрос и код ({sent})")
+    sent = answers(_hx19.ConnectError("порт закрыт"), Resp(200))
+    ok(api._request({"retry_on": [503]}, "POST", url, req).status_code == 200
+       and sent == ["POST", "POST"], f"POST после ошибки соединения — запрос не ушёл, повтор ({sent})")
+    sent = answers(_hx19.ReadTimeout("ответ не пришёл"), Resp(200))
+    ok(api._request({"retry_on": [503]}, "GET", url, req).status_code == 200
+       and sent == ["GET", "GET"], f"GET после таймаута чтения — идемпотентен, повтор ({sent})")
+    bare = work / "bare" / "providers.yaml"
+    bare.parent.mkdir()
+    bare.write_text(yaml.safe_dump({"local": {"models_dir": "vendor/models"}}), encoding="utf-8")
+    sent = answers(Resp(200))
+    ok(refused(lambda: HttpImageAPI(AdapterRegistry(bare, work))._request(
+        {"retry_on": [503]}, "POST", url, req)) == "SCHEMA_INVALID" and sent == [],
+       "нет объявления повторов — отказ декларации до запроса, умолчания в коде нет")
+
+    print("== 19m. Готовность к подъёму: состав по длине, отказ кодом причины, руками положенное — по политике ==")
+    reg = AdapterRegistry(cfg, work)
+    got = reg.ready("bg")
+    ok(got["path"] == models / "bg/bg/model.onnx" and got["checked"] == "по длине",
+       f"поставленная модель — путь её весов и названная ступень ({got['why']})")
+    ok(refused(lambda: reg.ready("short")) == "MODEL_INCOMPLETE", "часть короче объявленной — MODEL_INCOMPLETE до подъёма")
+    old_rows = [*cat.inventory(), {"id": "old", "kind": "bg_removal", "repo": "org/old", "path": "bg/old/model.onnx"}]
+    cat.inventory_file.write_text(yaml.safe_dump({"models": old_rows}, allow_unicode=True), encoding="utf-8")
+    ok(refused(lambda: reg.ready("old")) == "MODEL_UNVERIFIED", "запись описи без состава — MODEL_UNVERIFIED, а не «лежит»")
+    ok(refused(lambda: reg.ready("нет-такой")) == "LOCAL_MODEL_MISSING", "ни записи, ни файла — LOCAL_MODEL_MISSING")
+    (models / "руками.onnx").write_bytes(b"r" * 10)
+    hand = reg.ready("руками.onnx")
+    ok(hand["path"] == models / "руками.onnx" and hand["checked"] == "по наличию (состав не объявлен)",
+       f"руками положенное по политике by_presence — пускается, ступень названа ({hand['checked']})")
+    base = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    for policy, code, what in (("refuse", "MODEL_UNVERIFIED", "политика refuse — отказ"),
+                               ("maybe", "SCHEMA_INVALID", "чужое значение — отказ декларации"),
+                               (None, "SCHEMA_INVALID", "ключа нет — отказ декларации, умолчания в коде нет")):
+        variant = work / f"hand_{policy}" / "providers.yaml"
+        variant.parent.mkdir()
+        local = {k: v for k, v in base["local"].items() if k != "hand_placed"} | ({"hand_placed": policy} if policy else {})
+        variant.write_text(yaml.safe_dump({**base, "local": local}, allow_unicode=True), encoding="utf-8")
+        ok(refused(lambda: AdapterRegistry(variant, work).ready("руками.onnx")) == code, f"руками положенное: {what}")
+    engine = _Eng(reactions=_REACTIONS)
+
+    def delivered(call) -> str:
+        """Что клиент увидит в message отказа — путь доставки сервера (Engine.refusal с реестром), а не поле исключения."""
+        try:
+            call()
+        except ProviderError as e:
+            return engine.refusal(e).error.message
+        return ""
+
+    said = delivered(lambda: AdapterRegistry(work / "hand_maybe" / "providers.yaml", work).ready("руками.onnx"))
+    ok(all(v in said for v in AdapterRegistry.HAND_PLACED), f"клиент видит допустимые значения из таблицы ({said})")
+    said = delivered(lambda: reg.ready("short"))
+    ok("докачать model.onnx" in said and "pull short" in said, f"клиент видит план и команду для этой модели ({said})")
+    said = delivered(lambda: reg.ready("нет-такой"))
+    ok("'нет-такой'" in said and "(ожидались в нет-такой)" in said and str(models) not in said,
+       f"клиент видит модель и где ждали веса — путь от корня весов, без места сервера ({said})")
+    from core.providers.img.onnx_runtime import OnnxImage
+    (models / "битый.onnx").write_bytes(b"not an onnx graph")
+    said = delivered(lambda: OnnxImage(reg).session(models / "битый.onnx"))
+    ok("'битый.onnx'" in said and "не поднимаются" in said and "ONNXRuntimeError" not in said and "protobuf" not in said.lower(),
+       f"граф лежит, но не поднимается — MODEL_UNLOADABLE, сырой текст библиотеки клиенту не уходит ({said})")
+    said = delivered(lambda: AdapterRegistry(work / "hand_refuse" / "providers.yaml", work).ready("руками.onnx"))
+    ok("руками.onnx" in said and "by_presence" in said, f"клиент видит, как пустить руками положенное ({said})")
+    from core.contracts import ContractError
+    try:
+        reg.ready("../../etc/passwd")
+        escaped = None
+    except ContractError as e:
+        escaped = engine.refusal(e).error
+    ok(escaped is not None and escaped.code == "PATH_ESCAPE" and escaped.facts.get("path") == "../../etc/passwd"
+       and str(models) not in escaped.message,
+       f"имя модели наружу — отказ двери PATH_ESCAPE, путь от корня, без места сервера "
+       f"({escaped and (escaped.code, escaped.facts, escaped.message)})")
+
+    print("== 19n. /health раннера: готовность каждой модели описи по длине — без отпечатка и сети ==")
+    from core.runner.service import RunnerService
+    svc = RunnerService(cfg, work, work / "ws", token="t")
+    body = _json.loads(_aio.run(svc.health(_ty19.SimpleNamespace(headers={"Authorization": "t"}))).text)
+    # Ожидание — из построения: части liar загрузчик отверг по отпечатку до того, как они встали под имя; short короче;
+    # cut докачан с места обрыва; у away переход на чужой хост — частей нет; old без состава.
+    expected = {"bg": "ready", "sd": "ready", "ru_RU-test-low": "ready", "legacy": "ready", "cut": "ready",
+                "liar": "incomplete", "short": "incomplete", "away": "incomplete", "old": "unverified"}
+    ok({m["id"]: m["verdict"] for m in body["models"]} == expected,
+       f"/health называет готовность каждой модели описи ({[(m['id'], m['verdict']) for m in body['models']]})")
+    ok(all(m["checked"] == "по длине" for m in body["models"] if m["verdict"] != "unverified"),
+       "/health судит только по длине и называет ступень — отпечатка на каждый вызов нет")
+    bare_body = _json.loads(_aio.run(svc.health(_ty19.SimpleNamespace(headers={}))).text)
+    ok("models" not in bare_body, "без токена готовность моделей не видна — только живость")
+
+    print("== 19o. Место по плану: нужно — сумма частей плана, неизвестное — отказ кодом, качают тот же снимок ==")
+    import core.providers.hardware as hw_mod
+    from core.providers.installer import ModelInstaller
+
+    def outcome(call) -> str:
+        """Код отказа или имя исключения: падение — провал этой проверки, а не всего §19."""
+        try:
+            call()
+        except ProviderError as e:
+            return e.code
+        except Exception as e:
+            return type(e).__name__
+        return ""
+
+    info["org/space"] = repo(put("org/space", "model.onnx", b"s" * 400_000), put("org/space", "config.json", prep, lfs=False))
+    space = cat.место_под("org/space", "bg_removal")
+    ok(space["нужно_мб"] == 0.4 and [p["path"] for p in space["plan"]] == ["config.json", "model.onnx"],
+       f"нужно — сумма частей плана ({space['нужно_мб']} МБ, {[p['path'] for p in space['plan']]})")
+    whole = cat.место_под("org/bg", "bg_removal")
+    ok(whole["нужно_мб"] == 0 and whole["plan"] == [], "поставленная целиком — качать нечего, нужно 0")
+    mark = len(calls)
+    cat.install_planned(cat.место_под("org/sd", "image"))
+    ok(not downloads(mark), "переустановка целой модели снимком не тянет ничего — пустой план не значит «весь репозиторий»")
+    info["org/blind"] = repo(sibling("model.onnx", None, sha=_hl19.sha256(b"b").hexdigest()))
+    ok(outcome(lambda: cat.место_под("org/blind", "bg_removal")) == "MODEL_SIZE_UNKNOWN",
+       "длина части плана не названа — MODEL_SIZE_UNKNOWN, а не «хватает»")
+    said = delivered(lambda: cat.место_под("org/blind", "bg_removal"))
+    ok("model.onnx" in said and "org/blind" in said, f"клиент видит модель и часть без длины ({said})")
+    real_probe = hw_mod.probe
+    try:
+        hw_mod.probe = lambda *a, **k: {**real_probe(*a, **k), "disk_free_mb": None}
+        ok(outcome(lambda: cat.место_под("org/space", "bg_removal")) == "DISK_SPACE_UNKNOWN",
+           "место не прочитано — DISK_SPACE_UNKNOWN, а не «нет места» и не «хватает»")
+        said = delivered(lambda: cat.место_под("org/space", "bg_removal"))
+        ok("не прочитано" in said, f"клиент видит, что место не прочитано ({said})")
+        hw_mod.probe = lambda *a, **k: {**real_probe(*a, **k), "disk_free_mb": 0}
+        mark = len(calls)
+        ok(outcome(lambda: ModelInstaller(cat).start("org/space", "bg_removal")) == "MODEL_NO_DISK_SPACE"
+           and not downloads(mark),
+           "места меньше плана — каталог отказывает MODEL_NO_DISK_SPACE до потока и до первого запроса весов")
+        said = delivered(lambda: cat.место_под("org/space", "bg_removal"))
+        ok("0.4 МБ" in said and "свободно 0 МБ" in said and "org/space" in said,
+           f"клиент видит модель и оба числа — нужное и свободное ({said})")
+        cli._catalog = lambda: cat
+        printed = _io19.StringIO()
+        with _ctx19.redirect_stdout(printed):
+            code = cli.main(["models.py", "install", "org/space", "--kind", "bg_removal"])
+        ok(code == 2 and "MODEL_NO_DISK_SPACE" in printed.getvalue(),
+           f"CLI при нехватке места — отказ тем же кодом каталога, а не загрузка ({code})")
+    finally:
+        hw_mod.probe = real_probe
+    mark = len(calls)
+    info["org/moved"] = repo(put("org/moved", "model.onnx", b"m" * 300))
+    space = cat.место_под("org/moved", "bg_removal")
+    info["org/moved"] = repo(put("org/moved", "model.onnx", b"m" * 300), put("org/moved", "config.json", prep, lfs=False))
+    got = outcome(lambda: cat.install_planned(space))
+    asked = [c for c in calls[mark:] if c[0] == "model_info"]
+    ok(got == "" and asked == [("model_info", "org/moved", "rev-moved")]
+       and {c[2] for c in downloads(mark)} == {"model.onnx"},
+       f"место судили и качают по одному снимку: источник спрошен раз, план места = план загрузки ({asked}, {got})")
+    mark = len(calls)
+    ok(cli.main(["models.py", "install", "org/space", "--kind", "bg_removal"]) == 0
+       and [c for c in calls[mark:] if c[0] == "model_info"] == [("model_info", "org/space", "rev-space")],
+       "CLI ставит по тому же снимку, по которому проверил место")
+    real_usage = _sh19.disk_usage
+
+    def unreadable(path):
+        raise OSError(13, "нет доступа")
+    _sh19.disk_usage = unreadable
+    try:
+        blind_hw = real_probe(models)
+    finally:
+        _sh19.disk_usage = real_usage
+    ok(blind_hw["disk_free_mb"] is None and any("свободное место" in u for u in blind_hw["unknown"]),
+       f"probe: место не прочитано — None и строка «не знаем», а не 0 ({blind_hw['disk_free_mb']})")
+
+    print("== 19p. Повторная установка поставленной — «уже стоит» сразу: без задачи, сети и чтения весов (MF-17) ==")
+    import threading
+    _sh19.copytree(ROOT / "config", cfg.parent, dirs_exist_ok=True,
+                   ignore=lambda d, names: {"providers.yaml"} if Path(d) == ROOT / "config" else set())
+    shas, asked = {"org/float": "c1"}, []
+
+    class FakeApi:
+        def repo_info(self, repo_id, repo_type="model"):
+            asked.append(repo_id)
+            return _ty19.SimpleNamespace(sha=shas[repo_id])
+
+    def finished(tool, answer):
+        """Итог ответа установки: исход без задачи — как есть; задача — прозвоном до конца (ожидание событием с потолком)."""
+        if answer.status != "success" or answer.data.get("task_id") is None:
+            return answer.data if answer.status == "success" else {"status": "failed", "result": None}
+        pause = threading.Event()
+        for _ in range(100):
+            state = tool("media_install_status", install_id=answer.data["task_id"]).data["installs"][0]
+            if state["status"] != "processing":
+                return state
+            pause.wait(0.05)
+        return state
+
+    was, real_api, real_digest = _srv.CONFIG_PATH, _hf19.HfApi, ModelCatalog.__dict__["_digest"]
+    tool_eng = _Eng(reactions=_REACTIONS, state_manager=_sm)
+    try:
+        _srv.CONFIG_PATH = cfg.parent
+        _hf19.HfApi = FakeApi
+        _srv.register_basic_tools(tool_eng, _IDG(), _sm)
+
+        def tool(name, **params):
+            return _aio.run(tool_eng.call(name, params))
+
+        installs = models / "installs"
+        before_files, mark, read = set(installs.glob("*.json")) if installs.is_dir() else set(), len(calls), []
+        ModelCatalog._digest = staticmethod(lambda path, algo: read.append(path) or real_digest.__func__(path, algo))
+        same = tool("media_model_install", model_id="org/bg", kind="bg_removal", confirm=True)
+        ModelCatalog._digest = real_digest
+        ok(same.status == "success" and same.data["task_id"] is None and same.data["status"] == "completed"
+           and same.data["result"]["outcome"] == "already_installed"
+           and same.data["result"]["checked"] == "по длине, ревизия закреплена",
+           f"поставленная модель — исход «уже стоит» сразу, задача не заводится ({same.data if same.status == 'success' else same.error})")
+        ok(not calls[mark:] and not read and (set(installs.glob("*.json")) if installs.is_dir() else set()) == before_files
+           and any(f.type == "CreationSkipped" for f in same.facts),
+           f"ни источника, ни чтения весов, ни файла задачи — только исход ({calls[mark:]}, {len(read)} чтений)")
+
+        mark = len(calls)
+        again = tool("media_model_install", model_id="org/bg", kind="bg_removal", confirm=True, force=True)
+        state = finished(tool, again)
+        ok(again.data["status"] == "processing" and state["status"] == "completed"
+           and state["result"]["outcome"] == "reinstalled" and downloads(mark),
+           f"явный force — задача и перекачка, исход «перекачано» ({state.get('result')})")
+
+        (models / "img/sd/unet/diffusion.fp16.safetensors").unlink()
+        half = tool("media_model_install", model_id="org/sd", kind="image", confirm=True)
+        state = finished(tool, half)
+        ok(half.data["status"] == "processing" and state["result"]["outcome"] == "installed",
+           "половина модели на диске — не «уже стоит», а обычная установка")
+
+        info["org/float"] = repo(put("org/float", "model.onnx", b"F" * 200))
+        cat.install_planned(cat.место_под("org/float", "bg_removal"))
+        asked.clear()
+        floating = tool("media_model_install", model_id="org/float", kind="bg_removal", confirm=True)
+        ok(floating.data["task_id"] is None and asked == ["org/float"]
+           and floating.data["result"]["checked"] == "по длине, ревизия сверена с источником",
+           f"плавающая ревизия — один запрос коммита, и ответ называет поход в сеть ({asked}, {floating.data.get('result')})")
+        shas["org/float"] = "c2"
+        moved = tool("media_model_install", model_id="org/float", kind="bg_removal", confirm=True)
+        state = finished(tool, moved)
+        ok(moved.data["status"] == "processing" and state["status"] == "completed",
+           "у источника новый коммит — не «уже стоит», а установка новой ревизии")
+
+        cli._catalog = lambda: cat
+        mark = len(calls)
+        ok(cli.main(["models.py", "install", "org/bg", "--kind", "bg_removal"]) == 0 and not calls[mark:],
+           "CLI: поставленная модель — «уже стоит», загрузчик не зван")
+    finally:
+        _srv.CONFIG_PATH, _hf19.HfApi = was, real_api
+        ModelCatalog._digest = real_digest
+
+    print("== 19s. Модель ставит одна установка на все процессы: замок по владельцу остатков; опись и малый файл "
+          "источника — под своими замками ==")
+    from core.paths import Files
+
+    def busy(lock) -> bool:
+        """Замок держит кто-то другой — проба ОС без ожидания (отказ замка слоя — подкласс TimeoutError)."""
+        try:
+            with lock.acquire(timeout=0):
+                return False
+        except TimeoutError:
+            return True
+
+    installs = models / "installs"
+
+    def tasks() -> list:
+        return sorted(installs.glob("*.json")) if installs.is_dir() else []
+
+    info["org/twice"] = repo(put("org/twice", "model.onnx", b"t" * 500))
+    twice = cat.место_под("org/twice", "bg_removal")
+    seen: dict = {"tasks": tasks()}
+
+    def second_start() -> None:
+        try:
+            ModelInstaller(cat).start("org/twice", "bg_removal")
+        except ProviderError as e:
+            seen["error"] = engine.refusal(e).error
+        seen["after"] = tasks()
+
+    during[("org/twice", "model.onnx")] = second_start
+    try:
+        first = cat.install_planned(twice)
+    except Exception as e:                      # две установки в один остаток: порча байтов или чужой publish снял его
+        first = {"disk": {"verdict": getattr(e, "code", type(e).__name__)}}
+    error = seen.get("error")
+    ok(error is not None and error.code == "MODEL_INSTALL_BUSY" and seen["after"] == seen["tasks"],
+       f"вторая установка той же модели, пока первая пишет её часть, — отказ из start, файла задачи нет ({error})")
+    ok(error is not None and "twice" in error.message and error.recovery.suggested_tool == "media_install_status",
+       f"клиент видит, какая модель уже ставится, и чем прозвонить идущую ({error})")
+    ok(first["disk"]["verdict"] == "ready" and (models / "bg/twice/model.onnx").read_bytes() == b"t" * 500,
+       f"первая установка отказом второй не задета — часть совпала с источником ({first['disk']['verdict']})")
+
+    info["org/held"] = repo(put("org/held", "model.onnx", b"h" * 300))
+    held_space = cat.место_под("org/held", "bg_removal")
+    owner = ModelCatalog.owner(held_space["entry"])
+    remnant = Files(models).remnant(ModelCatalog.landing(held_space["entry"], held_space["plan"][0]), owner)
+    remnant.parent.mkdir(parents=True, exist_ok=True)
+    remnant.write_bytes(b"h" * 100)
+    before = (remnant.read_bytes(), remnant.stat().st_ino)
+    holder = _sp19.Popen(
+        [sys.executable, "-c", "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
+         "from core.paths import Files; lock = Files(Path(sys.argv[2])).lock(sys.argv[3]); lock.acquire(); "
+         "print('держу', flush=True); sys.stdin.read()", str(ROOT), str(models), owner],
+        stdin=_sp19.PIPE, stdout=_sp19.PIPE, text=True)
+    try:
+        ok(holder.stdout.readline().strip() == "держу", "другой процесс взял замок модели дверью слоя файлов")
+        mark = len(calls)
+        ok(outcome(lambda: cat.install_planned(held_space)) == "MODEL_INSTALL_BUSY"
+           and (remnant.read_bytes(), remnant.stat().st_ino) == before and not downloads(mark),
+           "замок держит другой процесс — отказ до первой записи: остаток не тронут, к источнику ни запроса")
+        cli._catalog = lambda: cat
+        printed = _io19.StringIO()
+        with _ctx19.redirect_stdout(printed):
+            code = cli.main(["models.py", "install", "org/held", "--kind", "bg_removal"])
+        ok(code == 2 and "MODEL_INSTALL_BUSY" in printed.getvalue(),
+           f"CLI ставит тем же путём и упирается в тот же замок — отказ кодом, а не вторая загрузка ({code})")
+    finally:
+        holder.stdin.close()
+        holder.wait()
+    ok(outcome(lambda: cat.install_planned(held_space)) == "" and not remnant.exists()
+       and (models / "bg/held/model.onnx").read_bytes() == b"h" * 300,
+       "держатель вышел — его замок сняло ядро, установка прошла")
+
+    info["org/slow"] = repo(put("org/slow", "model.onnx", b"w" * 400))
+    slow, at_fetch, finished = ModelInstaller(cat), {}, threading.Event()
+    real_write = slow._write
+
+    def write(state: dict) -> None:
+        real_write(state)
+        if state.get("phase") != "running":
+            finished.set()
+
+    slow._write = write
+    during[("org/slow", "model.onnx")] = lambda: at_fetch.update(
+        status=[s["status"] for s in slow.status() if s["params"]["model_id"] == "org/slow"],
+        landed=(models / "bg/slow/model.onnx").exists())
+    begun_task = slow.start("org/slow", "bg_removal")
+    finished.wait()
+    ok(begun_task["status"] == "processing" and at_fetch == {"status": ["processing"], "landed": False},
+       f"настоящий каталог: пока источник отдаёт часть, установка уже видна прозвонкой, а части под именем нет — "
+       f"ответ start не ждал загрузки ({at_fetch})")
+
+    real_inventory, probed = cat.inventory, []
+    cat.inventory = lambda: probed.append(busy(Files(cat.inventory_file.parent).lock(cat.inventory_file.name))) \
+        or real_inventory()
+    try:
+        cat._remember(twice["entry"])
+    finally:
+        del cat.inventory
+    ok(probed == [True], f"опись читается и пишется под своим замком: проба во время чтения — занято ({probed})")
+
+    cache = Files(cat.cache_dir)
+    index_rel = f"voices/piper/{cat.revision('voices/piper')}/voices.json"
+    cache.place(index_rel).unlink(missing_ok=True)
+    small: list = []
+    during[("voices/piper", "voices.json")] = lambda: small.append(busy(cache.lock(index_rel)))
+    voices = cat._piper_index(cat.source("tts"))
+    ok(small == [True] and "ru_RU-test-low" in voices,
+       f"малый файл источника качается под замком файла: остаток владельца source один на писателя ({small})")
+
+    Files(installs).note("w.json", "чужой", {"etag": "x"})
+    try:
+        listed = [s["task_id"] for s in ModelInstaller(cat).status()]
+    except Exception as e:
+        listed = [type(e).__name__]
+    ok(listed and all((installs / f"{i}.json").is_file() for i in listed),
+       f"заметка остатка (*.part.json) в каталоге задач — не задача: список не падает и её не выдаёт ({listed})")
+
+    print("== 19t. Ревизию источник не назвал — отказ кодом причины, а не «адрес не пропущен» ==")
+    from huggingface_hub.errors import GatedRepoError, HfHubHTTPError, RepositoryNotFoundError
+
+    asked_rev: list = []
+    req = _hx19.Request("GET", "https://huggingface.co/api/models/org/x")
+    raises = {"org/rev-gated": GatedRepoError("закрыто", response=_hx19.Response(401, request=req)),
+              "org/rev-none": RepositoryNotFoundError("нет", response=_hx19.Response(404, request=req)),
+              "org/rev-busy": HfHubHTTPError("перегрузка", response=_hx19.Response(503, request=req)),
+              "org/rev-net": _hx19.ConnectError("сеть", request=req),
+              "org/rev-odd": ValueError("чужое")}
+
+    class RevApi:
+        def repo_info(self, repo_id, repo_type="model"):
+            asked_rev.append(repo_id)
+            raise raises[repo_id]
+
+    real_api, real_endpoint = _hf19.HfApi, _hf19.constants.ENDPOINT
+    _hf19.HfApi = RevApi
+    try:
+        got = {repo: outcome(lambda: cat.revision(repo)) for repo in raises}
+        said = {repo: delivered(lambda: cat.revision(repo)) for repo in ("org/rev-none", "org/rev-busy", "org/rev-net")}
+        pinned = cat.revision("org/bg")
+        _hf19.constants.ENDPOINT = "https://hf-mirror.example"          # как HF_ENDPOINT зеркала
+        mirrored = delivered(lambda: cat.revision("org/rev-net"))
+    finally:
+        _hf19.HfApi, _hf19.constants.ENDPOINT = real_api, real_endpoint
+    ok("hf-mirror.example" in mirrored and "huggingface.co" not in mirrored,
+       f"источник — зеркало: отказ ревизии называет хост зеркала, а не huggingface.co ({mirrored})")
+    ok(got == {"org/rev-gated": "MODEL_GATED", "org/rev-none": "MODEL_NOT_IN_CATALOG",
+               "org/rev-busy": "MODEL_REVISION_UNKNOWN", "org/rev-net": "MODEL_REVISION_UNKNOWN", "org/rev-odd": "ValueError"},
+       f"код на причину: закрыто, нет, перегрузка, сеть — свои; чужое исключение не переименовано ({got})")
+    ok("huggingface.co" in said["org/rev-none"] and "503" in said["org/rev-busy"] and "ConnectError" in said["org/rev-net"],
+       f"клиент видит источник и ответ: код HTTP или имя сбоя сети ({said})")
+    ok(pinned == "rev-bg" and "org/bg" not in asked_rev, "закреплённая ревизия источник не спрашивает")
+
+    print("== 19u. Имя того же вида занято другим репозиторием — отказ до записи, первая модель не тронута ==")
+    info["org/foo"] = repo(put("org/foo", "model.onnx", b"1" * 200))
+    info["other/foo"] = repo(put("other/foo", "model.onnx", b"2" * 200))
+    info["third/foo"] = repo(put("third/foo", "model.safetensors", b"3" * 200))
+    cat.install_planned(cat.место_под("org/foo", "bg_removal"))
+    weights = models / "bg/foo/model.onnx"
+    before_foo = (weights.read_bytes(), weights.stat().st_ino)
+    mark = len(calls)
+    ok(outcome(lambda: cat.место_под("other/foo", "bg_removal")) == "MODEL_NAME_TAKEN" and not downloads(mark)
+       and (weights.read_bytes(), weights.stat().st_ino) == before_foo
+       and [r.get("repo") for r in cat.inventory() if r.get("id") == "foo"] == ["org/foo"],
+       "второй репозиторий с тем же именем того же вида — отказ до загрузки: веса и строка описи первого не тронуты")
+    said = delivered(lambda: cat.место_под("other/foo", "bg_removal"))
+    ok("'foo'" in said and "org/foo" in said, f"клиент видит, какое имя и кем занято ({said})")
+    mark = len(calls)
+    ok(outcome(lambda: cat.install_planned(cat.место_под("other/foo", "bg_removal", force=True))) == "MODEL_NAME_TAKEN"
+       and not downloads(mark) and (weights.read_bytes(), weights.stat().st_ino) == before_foo,
+       "force чужого репозитория — тоже отказ: force перекачивает ту же модель, а не затирает чужую")
+    ok(outcome(lambda: cat.install_planned(cat.место_под("org/foo", "bg_removal", force=True))) == "",
+       "тот же репозиторий — переустановка с force идёт: имя занято им самим")
+    ok(outcome(lambda: cat.место_под("third/foo", "image")) == "",
+       "то же имя другого вида — свой каталог и своя строка описи, отказа нет")
+
+    print("== 19v. Каталог, установка и прозвонка моделей идут вне цикла событий — по декларации resources.yaml ==")
+    import tools.media as media_tools
+
+    ran_in: dict = {}
+    loop_thread = threading.get_ident()             # `_aio.run` крутит цикл событий в этом же потоке
+    real_probe_tool, real_start, real_status = media_tools.probe, ModelInstaller.start, ModelInstaller.status
+
+    def where(name, fn):
+        def wrapped(*a, **k):
+            ran_in[name] = threading.get_ident()
+            return fn(*a, **k)
+        return wrapped
+
+    was_cfg = _srv.CONFIG_PATH
+    declared = _Eng(reactions=_REACTIONS, state_manager=_sm, resources=_srv._load_yaml(cfg.parent / "resources.yaml"))
+    try:
+        _srv.CONFIG_PATH = cfg.parent
+        _srv.register_basic_tools(declared, _IDG(), _sm)
+        media_tools.probe = where("media_models", real_probe_tool)
+        ModelInstaller.start = where("media_model_install", real_start)
+        ModelInstaller.status = where("media_install_status", real_status)
+        for name, params in (("media_models", {"scope": "installed"}),
+                             ("media_model_install", {"model_id": "org/bg", "kind": "bg_removal", "confirm": True}),
+                             ("media_install_status", {})):
+            _aio.run(declared.call(name, params))
+    finally:
+        _srv.CONFIG_PATH = was_cfg
+        media_tools.probe, ModelInstaller.start, ModelInstaller.status = real_probe_tool, real_start, real_status
+    ok(set(ran_in) == {"media_models", "media_model_install", "media_install_status"}
+       and loop_thread not in ran_in.values(),
+       f"снимок железа, запуск установки и прозвонка — не в потоке цикла событий ({ran_in}, цикл {loop_thread})")
+
+
+from core.providers.catalog import ModelCatalog as _MC19
+
+_real19 = (_hf19.model_info, _t19.sleep, _hx19.request, _MC19.__dict__["transport"], _MC19.__dict__["resolve"])
+_work19 = Path(tempfile.mkdtemp(prefix="model_fetch_"))
+_rec19: list[str] = []
+_catch19 = _log19.Handler()
+_catch19.emit = lambda r: _rec19.append(r.getMessage())
+_hlog19 = _log19.getLogger("core.providers.download")            # разбор Retry-After — общий, у загрузчика
+_hlog19.addHandler(_catch19)
+sys.path.insert(0, str(ROOT / "scripts"))
+try:
+    _model_fetch(_work19, _rec19)
+except Exception as _e19:  # обрыв §19 — провал с причиной, а не трасса: проверки до обрыва уже засчитаны
+    ok(False, f"§19 оборвался: {type(_e19).__name__}: {_e19}")
+finally:
+    _hf19.model_info, _t19.sleep, _hx19.request, _MC19.transport, _MC19.resolve = _real19
+    _hlog19.removeHandler(_catch19)
+    sys.path.remove(str(ROOT / "scripts"))
+    _sh19.rmtree(_work19, ignore_errors=True)
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

@@ -16,8 +16,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from core.contracts import ContractError                          # noqa: E402
 from core.providers.catalog import ModelCatalog, OnlineCatalog    # noqa: E402
-from core.providers.resolver import ProviderError                 # noqa: E402
+from core.reactions import cli_text                               # noqa: E402
 
 CFG = ROOT / "config" / "providers.yaml"
 
@@ -82,7 +83,8 @@ def cmd_hardware(args) -> int:
     if hw["container_limit_mb"]:
         print(f"  лимит контейнера: {hw['container_limit_mb']} МБ")
     print(f"  ядра:          {hw['cpu_count']}")
-    print(f"  диск:          {hw['disk_free_mb']} МБ свободно под веса")
+    free = "не прочитано (см. НЕ ЗНАЕМ)" if hw["disk_free_mb"] is None else f"{hw['disk_free_mb']} МБ свободно под веса"
+    print(f"  диск:          {free}")
     for card in hw["gpu"]:
         vram = (f"{card['vram_free_mb']} МБ свободно из {card['vram_total_mb']}"
                 if card["vram_total_mb"] else "объём памяти драйвер не сообщает")
@@ -99,69 +101,64 @@ def cmd_installed(args) -> int:
     if not rows:
         print("Ничего не поставлено. Посмотреть доступное: python scripts/models.py local --kind tts")
         return 0
-    print(f"{'модель':<40}{'вид':<8}{'на диске':<12}путь")
+    print(f"{'модель':<40}{'вид':<8}{'на диске':<14}путь")
     for r in rows:
-        print(f"  {str(r['id']):<38}{str(r['kind'] or ''):<8}"
-              f"{('да, ' + str(r['mb']) + ' МБ') if r['present'] else 'НЕТ':<12}{r['path']}")
+        disk = r["disk"]
+        state = f"да, {r['mb']} МБ" if disk["verdict"] == "ready" else disk["verdict"].upper()
+        print(f"  {str(r['id']):<38}{str(r['kind'] or ''):<8}{state:<14}{r['path']}")
+        print(f"      {disk['why']}")
     return 0
 
 
 def cmd_pull(args) -> int:
-    """Восстановить веса по описи: сама опись переезжает с машиной, гигабайты — нет."""
+    """Восстановить веса по описи планом разницы: сама опись переезжает с машиной, гигабайты — нет."""
     cat = _catalog()
     declared = [e for e in cat.inventory() if not args.id or e.get("id") in args.id]
     if not declared:
         print("Опись пуста — ставить нечего. Посмотри доступное: "
               "python scripts/models.py local --kind tts")
         return 1
+    failed = 0
     for entry in declared:
-        state = next((r for r in cat.installed() if r["id"] == entry["id"]), {})
-        if state.get("present") and not args.force:
-            print(f"  = {entry['id']} уже на диске ({state['mb']} МБ)")
-            continue
         print(f"→ {entry['id']} ({entry.get('repo')})")
-        got = cat.install_declared(entry, progress=lambda m: print(f"  {m}"))
-        print(f"  ✓ {got['path']} — {round(got['mb'])} МБ")
-    return 0
-
-
-def _хватит_места(cat, model_id: str, kind: str) -> bool:
-    """Влезет ли модель на диск и в память. Вердикт считает тот же оценщик, что и список.
-
-    Проверка стоит ЗДЕСЬ, а не только в списке: список смотрят глазами и мимо него ставят по
-    имени. Место кончается уже при скачивании, и тогда на диске остаётся половина весов.
-    Ряда в каталоге нет (сеть молчит, имя своё) — «не проверено», и это не повод отказывать.
-    """
-    from core.providers.hardware import probe
-
-    ряд = next((r for r in cat.available(kind, limit=0) if r["id"] == model_id), None)
-    нужно = float((ряд or {}).get("mb") or 0)
-    if not нужно:
-        print("  размер модели не известен — проверить, влезет ли, нечем")
-        return True
-    свободно = probe(cat.models_dir)["disk_free_mb"]
-    if свободно < нужно:
-        print(f"  НЕ ХВАТАЕТ МЕСТА: нужно {нужно:.0f} МБ, свободно {свободно} МБ")
-        return False
-    вердикт = (cat.with_fit([ряд])[0].get("fit") or {})
-    if вердикт.get("verdict") == "no":
-        print(f"  веса влезут ({нужно:.0f} МБ при {свободно} МБ), но расчёт — нет: "
-              f"нужно {вердикт.get('need_mb', 0)} МБ на {вердикт.get('device', '?')}, "
-              f"доступно {вердикт.get('available_mb', 0)} МБ")
-    return True
+        try:
+            got = cat.restore(entry, force=args.force, progress=lambda m: print(f"  {m}"))
+        except ContractError as e:                  # отказ каталога, загрузчика или двери — у каждого свой код
+            failed += 1
+            print("  " + cli_text(e, CFG.parent / "server_reactions.yaml").replace("\n", "\n  "))
+            continue
+        done = f"скачано частей: {len(got['fetched'])}" if got["fetched"] else "на месте"
+        print(f"  ✓ {got['path']} — {done}; {got['disk']['why']}")
+    return 1 if failed else 0
 
 
 def cmd_install(args) -> int:
     cat = _catalog()
-    if not _хватит_места(cat, args.id, args.kind):
-        return 1
-    entry = cat.install(args.id, args.kind, progress=lambda m: print(f"  {m}"))
+    already = None if args.force else cat.installed_as(args.id, args.kind)
+    if already:
+        print(f"= {args.id} уже стоит: ревизия {already['revision']}, {already['checked']} — "
+              f"{already['path']}. Перекачать: --force.")
+        return 0
+    место = cat.место_под(args.id, args.kind, force=args.force)
+    _предупредить_о_расчёте(cat, место)
+    entry = cat.install_planned(место, progress=lambda m: print(f"  {m}"))
     print(f"✓ {entry['id']} — {round(entry['mb'])} МБ, {entry['path']}")
     for skip in entry.get("refused") or []:
         print(f"  ⚠ пропущено: {skip['file']} — {skip['reason']}")
-    print(f"  Записано в опись {cat.inventory_file.relative_to(ROOT)}. "
+    inventory = cat.inventory_file
+    print(f"  Записано в опись {inventory.relative_to(ROOT) if inventory.is_relative_to(ROOT) else inventory}. "
           "Чтобы канал этим исполнял — поставь имя модели в столбец model листа провайдеров.")
     return 0
+
+
+def _предупредить_о_расчёте(cat, место: dict) -> None:
+    """Веса влезут (нехватку места уже отказал `место_под`), а расчёт — может и нет: это предупреждение, а не отказ,
+    диск и память — разные вопросы. Судится по снимку `место_под`, тому же, по которому модель потом ставят."""
+    вердикт = (cat.with_fit([место["entry"]])[0].get("fit") or {})
+    if вердикт.get("verdict") == "no":
+        print(f"  веса влезут ({место['нужно_мб']:.0f} МБ при {место['свободно_мб']:.0f} МБ), но расчёт — нет: "
+              f"нужно {вердикт.get('need_mb', 0)} МБ на {вердикт.get('device', '?')}, "
+              f"доступно {вердикт.get('available_mb', 0)} МБ")
 
 
 def _kinds() -> str:
@@ -202,13 +199,15 @@ def main(argv: list[str]) -> int:
     p = sub.add_parser("install", help="поставить модель по имени")
     p.add_argument("id")
     p.add_argument("--kind", required=True, help=kinds)
+    p.add_argument("--force", action="store_true",
+                   help="перекачать все части, даже если модель уже стоит той же ревизией (починка весов)")
     p.set_defaults(func=cmd_install)
 
     args = ap.parse_args(argv[1:])
     try:
         return args.func(args)
-    except ProviderError as e:
-        print(f"✗ {e.code}: {e.message}\n  {e.reason}")
+    except ContractError as e:
+        print(cli_text(e, CFG.parent / "server_reactions.yaml"))
         return 2
 
 

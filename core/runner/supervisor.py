@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
+from core.paths import Files
 from core.providers.resolver import ProviderError
 
 TOKEN_ENV = "MCP_RUNNER_TOKEN"
@@ -72,13 +73,9 @@ class RunnerSupervisor:
             return {}
 
     def _write(self, state: dict) -> None:
-        self.state_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.state_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
         # Токен лежит здесь: сервер перезапускается, а раннер живёт дальше, и без записи новый
-        # сервер не смог бы с ним говорить. Права — только владельцу, как у ключа.
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, self.state_file)
+        # сервер не смог бы с ним говорить. Права — только владельцу, как у ключа: с первого байта.
+        Files(self.state_file.parent).replace(self.state_file.name, json.dumps(state, ensure_ascii=False), mode=0o600)
 
     def token(self) -> str:
         """Токен живого раннера. Нет раннера — нет токена, и это не «пустая строка на удачу»."""

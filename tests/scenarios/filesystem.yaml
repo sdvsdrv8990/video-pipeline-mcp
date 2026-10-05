@@ -39,7 +39,8 @@
         ok: true
         facts: [DirectoryTree]
         data:
-          вложенная/: {глубже.txt: {size: 3}}
+          tree.вложенная/: {глубже.txt: {size: 3}}
+          unreadable: []
 
 - scenario: fs_move_and_rename_keep_registry_in_sync
   why: переезд файла, о котором знает диск, но не знает реестр, делает адресацию по ID ложью

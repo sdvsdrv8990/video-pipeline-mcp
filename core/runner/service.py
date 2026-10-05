@@ -9,15 +9,21 @@
 """
 
 import asyncio
+import logging
 import secrets
 import time
+import uuid
 from pathlib import Path
 
 from aiohttp import web
 
-from core.paths import PathEscapeError, SecretAccessError, safe_resolve
-from core.providers import AdapterRegistry, MediaRequest, ProviderError
+from core.contracts import ContractError
+from core.paths import Files, PathRefused
+from core.providers import AdapterRegistry, MediaRequest
+from core.reactions import Reactions
 from core.write_policy import WritePolicy, WritePolicyError
+
+log = logging.getLogger(__name__)
 
 
 class RunnerService:
@@ -26,6 +32,7 @@ class RunnerService:
     def __init__(self, config_file: str | Path, project_root: str | Path,
                  workspace: str | Path, token: str = ""):
         self.registry = AdapterRegistry(config_file, project_root)
+        self.reactions = Reactions(Path(config_file).parent / "server_reactions.yaml")
         self.write_policy = WritePolicy(Path(config_file).parent)
         self.workspace = Path(workspace).resolve()
         self.token = token
@@ -65,11 +72,6 @@ class RunnerService:
         got = request.headers.get(self.token_header, "")
         return bool(self.token) and secrets.compare_digest(got, self.token)
 
-    @staticmethod
-    def _refuse(code: str, message: str, reason: str = "", status: int = 400) -> web.Response:
-        """Отказ — кодом реестра реакций, а не текстом: сервер передаст его клиенту как есть."""
-        return web.json_response({"code": code, "message": message, "reason": reason}, status=status)
-
     # ═══ Здоровье ═══
 
     async def health(self, request: web.Request) -> web.Response:
@@ -86,46 +88,37 @@ class RunnerService:
             "workspace": str(self.workspace),
             "pool": self.registry.pool.stats(),
             "engines": self.rules.get("by_resource") or {},
+            # Готовность каждой модели описи по составу на диске — только по длине: без отпечатка и сети.
+            "models": self.registry.readiness(),
         })
 
     # ═══ Исполнение ═══
 
     async def run(self, request: web.Request) -> web.Response:
         if not self.authorized(request):
-            return self._refuse(
-                "AUTH_FAILED", "Раннер не принял токен.",
-                f"Токен выдаёт тот, кто поднял раннер, и присылает его заголовком "
-                f"{self.token_header}. На петле сидит не только сервер — без токена раннер "
-                "исполнял бы что угодно по просьбе любого процесса пользователя.", status=401)
+            return self._answer("AUTH_FAILED", 401, facts={"header": self.token_header})
         try:
             body = await request.json()
         except Exception:  # тело не разобрать
-            return self._refuse("VALIDATION_ERROR", "Тело запроса не разобрать как JSON.",
-                                "Раннер ждёт {kind, input, source, target, params}.")
+            return self._answer("VALIDATION_ERROR", 400, errors=[{"field": "body", "rule": "json"}])
         if not isinstance(body, dict):
-            return self._refuse("VALIDATION_ERROR", "Тело запроса — не объект.", "")
+            return self._answer("VALIDATION_ERROR", 400, errors=[{"field": "body", "rule": "object"}])
 
         kind = str(body.get("kind") or "")
         provider = self.engine_for(kind)
         if not provider:
-            return self._refuse(
-                "PROVIDER_NOT_CONFIGURED", f"Раннер не знает, чем исполнять '{kind}'.",
-                "Объяви вид ресурса в config/providers.yaml → local.runner.by_resource. "
-                f"Сейчас объявлены: {', '.join(sorted(self.rules.get('by_resource') or {})) or '(никто)'}.")
+            return self._answer("PROVIDER_NOT_CONFIGURED", 400, facts={
+                "kind": kind, "declared": ", ".join(sorted(self.rules.get("by_resource") or {}))})
 
         try:
             target = self._place(str(body.get("target") or ""))
             source = self._locate(str(body.get("source") or ""))
-        except (PathEscapeError, SecretAccessError) as e:
-            return self._refuse("PATH_ESCAPE", f"Путь вне рабочей области раннера: {e}",
-                                "Раннер разрешает пути своим containment — присланному пути "
-                                "он не верит, как и сервер не верит клиенту.", status=403)
-        except WritePolicyError as e:
-            return self._refuse(e.code, e.message, e.reason, status=403)
+        except (PathRefused, WritePolicyError) as e:  # дверь пути и политика записи — своим кодом: секрет ≠ выход
+            return self._answer(e.code, 403, facts=e.facts, errors=e.errors, message=e.message)
+        except ContractError as e:
+            return self._answer(e.code, 400, facts=e.facts, errors=e.errors, message=e.message)
         except FileNotFoundError as e:
-            return self._refuse("FILE_NOT_FOUND", f"Исходного файла нет: {e}",
-                                "Раннер и сервер видят РАЗНУЮ рабочую область — проверь "
-                                "монтирование workspace.", status=404)
+            return self._answer("FILE_NOT_FOUND", 404, facts={"path": str(e)})
 
         params = body.get("params")
         media = MediaRequest(
@@ -137,15 +130,14 @@ class RunnerService:
             # Инференс блокирует секунды и минуты. В отдельном потоке — чтобы `/health` отвечал,
             # пока идёт расчёт: иначе «занят» было бы неотличимо от «умер».
             outcome = await asyncio.to_thread(adapter.generate, media)
-        except ProviderError as e:
-            self.last_error = f"{e.code}: {e.message}"
-            return self._refuse(e.code, e.message, e.reason, status=502)
-        except Exception as e:  # чужой код инференса
-            self.last_error = f"LOCAL_INFERENCE_FAILED: {e}"
-            return self._refuse(
-                "LOCAL_INFERENCE_FAILED", f"Расчёт оборвался: {e}",
-                "Это упал раннер, а не сервер — в том и смысл отдельного процесса. Подробности "
-                "в его журнале; media_runner(action='status') покажет, жив ли он.", status=502)
+        except ContractError as e:  # отказ ядра (поставщик, дверь пути) — своим кодом, а не «расчёт оборвался»
+            self.last_error = e.code
+            return self._answer(e.code, 502, facts=e.facts, errors=e.errors, message=e.message)
+        except Exception as e:  # чужой код инференса: причина с трассой — в журнал раннера, клиенту — номер события
+            event = uuid.uuid4().hex[:8]
+            log.error("раннер: расчёт %s оборвался, событие %s", provider, event, exc_info=e)
+            self.last_error = f"LOCAL_INFERENCE_FAILED (событие {event})"
+            return self._answer("LOCAL_INFERENCE_FAILED", 502, facts={"provider": provider, "event": event})
 
         self.calls += 1
         return web.json_response({
@@ -154,14 +146,20 @@ class RunnerService:
             "engine": provider, "task_id": outcome.task_id,
         })
 
+    def _answer(self, code: str, status: int, *, facts: dict | None = None, errors: list[dict] | None = None,
+                message: str = "") -> web.Response:
+        """Отказ телом ErrorDetail — тем же сборщиком реестра, что и ответ MCP; HTTP-статус — у места."""
+        detail = self.reactions.get_error(code, message, facts=facts, errors=errors)
+        return web.json_response(detail.model_dump(), status=status)
+
     # ═══ Пути ═══
 
     def _place(self, rel: str) -> Path:
         """Куда писать. Тип файла — тот же allowlist, что у сервера, а не «раз просят»."""
         if not rel:
-            raise PathEscapeError("не указан путь результата")
+            raise ContractError("VALIDATION_ERROR", errors=[{"field": "target", "rule": "required"}])
         self.write_policy.check(rel)
-        target = safe_resolve(rel, self.workspace)
+        target = Files(self.workspace).place(rel)
         target.parent.mkdir(parents=True, exist_ok=True)
         return target
 
@@ -169,7 +167,7 @@ class RunnerService:
         """Откуда читать. Пусто — законно: озвучка и картинка создают из текста, а не из файла."""
         if not rel:
             return None
-        source = safe_resolve(rel, self.workspace)
+        source = Files(self.workspace).place(rel)
         if not source.is_file():
             raise FileNotFoundError(rel)
         return source

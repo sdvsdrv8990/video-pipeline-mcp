@@ -1,6 +1,6 @@
 """tools/filesystem — группа инструментов файловой системы.
 
-Зовёт: ToolContext, FsSearcher, is_secret_path, as_untrusted.
+Зовёт: ToolContext, Files.walk, FsSearcher, as_untrusted.
 Зовут: server.
 
 Обёртка тонкая: containment путей, поиск и перевод ошибок делают соседние слои, здесь разбор
@@ -8,25 +8,27 @@
 меняются отдельным решением, а не попутно с правкой обёртки.
 """
 
+import posixpath
 import re
-import shutil
 from pathlib import Path
 
 import yaml
 
-from core.contracts import Fact, ToolResult, as_untrusted
+from core.contracts import ContractError, Fact, ToolResult, as_untrusted
 from core.engine import Engine
 from core.ids import LinkError
-from core.paths import is_secret_path
-from core.search.fs_searcher import FsSearcher, FsSearchError, FsSearchTask
+from core.paths import Files, PathRefused
+from core.search.fs_searcher import FsSearcher, FsSearchTask
+from core.write_policy import WritePolicyError
 from tools._context import ANNOTATIONS_MODIFY, ANNOTATIONS_READONLY, ToolContext
 
 
 def register(engine: Engine, ctx: ToolContext) -> None:
     """Регистрация группы filesystem в движке."""
 
-    # Поиск получает реестр (личность файлов) и таксономию (раскладка из объявлений).
-    fs_searcher = FsSearcher(ctx.workspace_path, registry=ctx.link_registry, taxonomy=ctx.taxonomy)
+    # Поиск получает реестр (личность файлов), таксономию (раскладка из объявлений) и предел чтения содержимого.
+    fs_searcher = FsSearcher(ctx.workspace_path, registry=ctx.link_registry, taxonomy=ctx.taxonomy,
+                             read_bytes=ctx.read_limit)
 
     # Общий хвост описаний создающих инструментов: сервер сам объявляет владельца.
     OWNER = (" Владельца сервер определяет ПО КАТАЛОГУ и всегда возвращает (owner_id + chain). "
@@ -37,48 +39,43 @@ def register(engine: Engine, ctx: ToolContext) -> None:
              "(reused=true), второго не заводится.")
 
     async def fs_get_directory_tree(path: str = ".") -> "ToolResult":
-        """Получение дерева каталогов."""
-        try:
-            target = ctx.resolve(path)
-        except ValueError as _pe:
-            return ctx.err_path(_pe, f"Path escapes workspace: {path}")
-        if not target.exists():
+        """Дерево каталога обходом слоя: каталог/ → вложенное, файл → size, остаток записи → size + remnant, ссылка на
+        каталог → link (внутрь не идём); что прочитать не удалось — полем `unreadable`, а не молчаливой дырой в дереве."""
+        walk = Files(ctx.workspace_path).walk(path)
+        if not walk.start.exists():
             return ctx.err("PATH_NOT_FOUND", f"Path not found: {path}")
-        def build_tree(p: Path) -> dict:
-            tree = {}
-            for item in sorted(p.iterdir()):
-                # Обход идёт по диску мимо резолвера — закрытый каталог отсекаем здесь же,
-                # иначе он был бы «невидим для чтения, но виден в списке».
-                if is_secret_path(item.name):
-                    continue
-                if item.is_dir():
-                    tree[item.name + "/"] = build_tree(item)
-                else:
-                    tree[item.name] = {"size": item.stat().st_size}
-            return tree
-        return ToolResult(status="success", data=build_tree(target), facts=[Fact(type="DirectoryTree", data={"path": path})])
+        tree: dict = {}
+        nodes = {walk.path: tree}
+        for entry in walk:
+            node, name = nodes[posixpath.dirname(entry.path)], posixpath.basename(entry.path)
+            if entry.kind == "dir":
+                node[name + "/"] = nodes[entry.path] = {}
+            elif entry.kind == "link":
+                node[name] = {"link": True}
+            else:
+                node[name] = {"size": entry.real.stat().st_size} | ({"remnant": True} if entry.kind == "remnant" else {})
+        return ToolResult(status="success", data={"tree": tree, "unreadable": walk.unreadable},
+                          facts=[Fact(type="DirectoryTree", data={"path": path, "unreadable": len(walk.unreadable)})])
 
     async def fs_read_file(path: str) -> "ToolResult":
-        """Чтение файла."""
-        try:
-            target = ctx.resolve(path)
-        except ValueError as _pe:
-            return ctx.err_path(_pe, f"Path escapes workspace: {path}")
+        """Чтение файла: не больше `file_limits.read_bytes` байт. Больше — голова файла, поля truncated, limit,
+        file_bytes и факт FileTruncated; каталог и не-UTF-8 — отказ кодом."""
+        target = ctx.resolve(path)
         if not target.exists():
             return ctx.err("FILE_NOT_FOUND", f"File not found: {path}")
-        content = target.read_text(encoding="utf-8")
+        limit = ctx.read_limit
+        read = Files(ctx.workspace_path).read(target, limit)
+        content = read.text
         # Содержимое рабочей области — чужой текст. Отдаём в конверте провенанса, чтобы
         # инструкция внутри файла не выглядела инструкцией сервера.
         envelope = as_untrusted(content, f"workspace:{path}", ctx.injection_flagger)
-        return ToolResult(status="success",
-                          data={"content": envelope.model_dump(), "size": len(content)},
-                          facts=[Fact(type="FileRead", data={"path": path, "size": len(content),
-                                                             "flags": envelope.flags})])
-
-    def _check_write(path: str, content=None) -> None:
-        """Одна дверь для решения «можно ли писать» — тип файла И его содержимое."""
-        ctx.write_policy.check(path)
-        ctx.write_policy.check_content(path, content)
+        data = {"content": envelope.model_dump(), "size": len(content)}
+        facts = [Fact(type="FileRead", data={"path": path, "size": len(content), "flags": envelope.flags})]
+        if read.truncated:
+            cut = {"limit": limit, "file_bytes": read.file_bytes}
+            data |= {"truncated": True, **cut}
+            facts.append(Fact(type="FileTruncated", data={"path": path, **cut}))
+        return ToolResult(status="success", data=data, facts=facts)
 
     def _owner_of(path: str) -> dict:
         """Владелец файла по ВМЕСТИМОСТИ: ближайший зарегистрированный предок пути.
@@ -86,13 +83,28 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         Файл, созданный вручную, собственного ID не получает, но перестаёт быть безымянным:
         сервер сообщает, чьей сущности он принадлежит и какова цепочка владельцев.
         """
-        try:
-            plan = ctx.chain_resolver.resolve(str(Path(path).parent))
-        except ValueError:
-            return {"owner_id": "", "chain": "", "owner_type": "", "owner_path": ""}
+        plan = ctx.chain_resolver.resolve(str(Path(path).parent))
         nearest = plan["chain"][-1] if plan["chain"] else {}
         return {"owner_id": plan["owner_id"], "chain": plan["chain_id"],
                 "owner_type": nearest.get("type", ""), "owner_path": nearest.get("path", "")}
+
+    def _id_plan(path: str) -> dict:
+        """Цепочка для собственного ID файла; незарегистрированные предки на диске — отказ, предков не выдумываем."""
+        plan = ctx.chain_resolver.resolve(str(Path(path).parent))
+        blocking = [u["path"] for u in plan["unresolved"] if u["exists"]]
+        if blocking:
+            raise LinkError("CHAIN_UNRESOLVED",
+                            f"Каталоги-предки существуют, но не зарегистрированы: {', '.join(blocking)}",
+                            "Усынови их через structure_create(adopt=true) или создай файл без ID "
+                            "(assign_id=false) — сервер не выдумывает предков.", "structure_resolve")
+        return plan
+
+    def _id_refused(path: str, assign_id: bool):
+        """Отказ в собственном ID — ДО записи: отказавший вызов не оставляет файла на диске."""
+        if not assign_id or ctx.link_registry.find_by_path(path):
+            return None
+        ok, refused = ctx.safe(lambda: _id_plan(path))
+        return None if ok else refused
 
     def _assign_id(path: str) -> dict:
         """Выдать файлу СОБСТВЕННЫЙ ID по запросу (директива владельца).
@@ -104,13 +116,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         existing = ctx.link_registry.find_by_path(path)
         if existing:
             return {"id": existing["id"], "reused": True, "file_class": ctx.taxonomy.file_class(path)}
-        plan = ctx.chain_resolver.resolve(str(Path(path).parent))
-        blocking = [u["path"] for u in plan["unresolved"] if u["exists"]]
-        if blocking:
-            raise LinkError("CHAIN_UNRESOLVED",
-                            f"Каталоги-предки существуют, но не зарегистрированы: {', '.join(blocking)}",
-                            "Усынови их через structure_create(adopt=true) или создай файл без ID "
-                            "(assign_id=false) — сервер не выдумывает предков.", "structure_resolve")
+        plan = _id_plan(path)
         file_class = ctx.taxonomy.file_class(path)
         eid = ctx.id_generator.generate_simple(ctx.taxonomy.file_prefix(path))
         ctx.link_registry.register({
@@ -133,57 +139,48 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                           facts=[Fact(type=fact_type, data={"path": path, "size": size, **entity})])
 
     async def fs_create_file(path: str, content: str = "", assign_id: bool = False) -> "ToolResult":
-        """Создание файла: владелец по вместимости всегда, собственный ID — по запросу."""
-        try:
-            target = ctx.resolve(path)
-        except ValueError as _pe:
-            return ctx.err_path(_pe, f"Path escapes workspace: {path}")
-        ok_type, denied = ctx.safe(lambda: _check_write(path, content))
-        if not ok_type:
-            return denied
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        """Создание файла, которого нет: занятый путь — отказ FILE_EXISTS, чужой файл не затирается (перезапись —
+        fs_write_file). Владелец по вместимости всегда, собственный ID — по запросу."""
+        target = ctx.resolve(path)
+        refused = _id_refused(path, assign_id)
+        if refused:
+            return refused
+        ok, created = ctx.safe(lambda: Files(ctx.workspace_path).create(target, content, policy=ctx.write_policy))
+        if not ok:
+            return created
+        if not created:
+            raise ContractError("FILE_EXISTS", facts={"path": Files(ctx.workspace_path).name(path)})
         return _created_result(path, len(content), assign_id, "FileCreated")
 
     async def fs_write_file(path: str, content: str, assign_id: bool = False) -> "ToolResult":
         """Полная перезапись файла (владелец всегда, собственный ID — по запросу)."""
-        try:
-            target = ctx.resolve(path)
-        except ValueError as _pe:
-            return ctx.err_path(_pe, f"Path escapes workspace: {path}")
-        ok_type, denied = ctx.safe(lambda: _check_write(path, content))
-        if not ok_type:
-            return denied
-        target.parent.mkdir(parents=True, exist_ok=True)
+        target = ctx.resolve(path)
+        refused = _id_refused(path, assign_id)
+        if refused:
+            return refused
         old_size = target.stat().st_size if target.exists() else 0
-        target.write_text(content, encoding="utf-8")
+        ok, denied = ctx.safe(lambda: Files(ctx.workspace_path).replace(target, content, policy=ctx.write_policy))
+        if not ok:
+            return denied
         res = _created_result(path, len(content), assign_id, "FileWritten")
         if res.status == "success":
             res.data["old_size"] = old_size
         return res
 
     async def fs_move(source: str, destination: str) -> "ToolResult":
-        """Перемещение файла или каталога (реестр переезжает вместе с диском)."""
-        try:
-            src, dst = ctx.resolve(source), ctx.resolve(destination)
-        except ValueError as _pe:
-            return ctx.err_path(_pe, "Path escapes workspace")
-        if not src.exists():
+        """Перемещение файла или каталога без затирания (реестр переезжает вместе с диском)."""
+        files = Files(ctx.workspace_path)
+        src, dst = files.named(source), files.named(destination)  # дверь судит оба пути до всего остального
+        if not src.exists(follow_symlinks=False):
             return ctx.err("FILE_NOT_FOUND", f"Source not found: {source}")
-        if dst.exists():
-            return ctx.err("FILE_EXISTS", f"Destination exists: {destination}")
-        # Перенос не должен становиться лазейкой — создать data.txt и переехать в run.sh
-        # значит обойти allowlist. Тип цели проверяется так же, как при создании.
-        if src.is_file():
-            ok_type, denied = ctx.safe(lambda: _check_write(destination))
-            if not ok_type:
-                return denied
         # Адрес цели считается ДО переноса — ИИ видит, куда сущность попадёт.
         ok, plan = ctx.safe(lambda: ctx.chain_resolver.resolve(str(Path(destination).parent)))
         if not ok:
             return plan
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        src.rename(dst)
+        # Занятое назначение — FILE_EXISTS самим переносом; тип нового имени судит политика двери (data.txt → run.sh).
+        ok, denied = ctx.safe(lambda: files.move(src, dst, policy=ctx.write_policy))
+        if not ok:
+            return denied
         moved = ctx.link_registry.migrate_subtree(source, destination)
         facts = [Fact(type="FileMoved", data={"source": source, "destination": destination})]
         facts += [Fact(type="EntityRegistered", data=m) for m in moved]
@@ -193,27 +190,16 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "entities_moved": moved}, facts=facts)
 
     async def fs_rename(path: str, new_name: str) -> "ToolResult":
-        """Переименование файла или каталога."""
-        try:
-            src = ctx.resolve(path)
-        except ValueError as _pe:
-            return ctx.err_path(_pe, f"Path escapes workspace: {path}")
-        if not src.exists():
+        """Переименование файла или каталога без затирания."""
+        files = Files(ctx.workspace_path)
+        src, dst = files.named(path), files.named(str(Path(path).parent / new_name))  # дверь судит оба пути первой
+        if not src.exists(follow_symlinks=False):
             return ctx.err("FILE_NOT_FOUND", f"Not found: {path}")
-        dst = src.parent / new_name
-        try:
-            dst = ctx.resolve(str(dst.relative_to(ctx.workspace_path)))
-        except ValueError as _pe:
-            return ctx.err_path(_pe, f"New name escapes workspace: {new_name}")
-        if dst.exists():
-            return ctx.err("FILE_EXISTS", f"Name exists: {new_name}")
-        # Та же лазейка через переименование (notes.md → notes.sh).
-        if src.is_file():
-            ok_type, denied = ctx.safe(lambda: _check_write(new_name))
-            if not ok_type:
-                return denied
-        src.rename(dst)
-        new_path = str(dst.relative_to(ctx.workspace_path))
+        # Та же лазейка через переименование (notes.md → notes.sh) закрыта политикой двери переноса.
+        ok, moved_to = ctx.safe(lambda: files.move(src, dst, policy=ctx.write_policy))
+        if not ok:
+            return moved_to
+        new_path = files.name(moved_to)
         moved = ctx.link_registry.migrate_subtree(path, new_path)
         facts = [Fact(type="FileRenamed", data={"old": path, "new": new_name})]
         facts += [Fact(type="EntityRegistered", data=m) for m in moved]
@@ -222,24 +208,20 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                           facts=facts)
 
     async def fs_delete(path: str, force: bool = False) -> "ToolResult":
-        """Удаление файла или каталога."""
-        try:
-            target = ctx.resolve(path)
-        except ValueError as _pe:
-            return ctx.err_path(_pe, f"Path escapes workspace: {path}")
-        if not target.exists():
+        """Удаление файла, каталога или ссылки — самой ссылки, а не того, на что она указывает."""
+        files = Files(ctx.workspace_path)
+        target = files.named(path)
+        if not target.exists(follow_symlinks=False):
             return ctx.err("FILE_NOT_FOUND", f"Not found: {path}")
         # Удаление необратимо → подтверждение обязательно ВСЕГДА, а не только для непустых
         # каталогов. Инъекция в файле не должна оборачиваться тихой потерей данных.
         if not force:
-            kind = "каталог" if target.is_dir() else "файл"
-            n = len(list(target.iterdir())) if target.is_dir() else 1
+            tree = target.is_dir() and not target.is_symlink()
+            kind = "ссылка" if target.is_symlink() else "каталог" if tree else "файл"
+            n = len(list(target.iterdir())) if tree else 1
             return ctx.err("CONFIRM_REQUIRED",
                            f"Удаление требует подтверждения: {kind} {path} ({n} объект(ов))")
-        if target.is_dir():
-            shutil.rmtree(target)
-        else:
-            target.unlink()
+        files.remove(path)
         # Реестр не должен переживать диск: снятые записи возвращаются клиенту явно.
         dropped = ctx.link_registry.forget_subtree(path)
         return ToolResult(status="success",
@@ -257,94 +239,78 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                               modified_after: str = "", modified_before: str = "",
                               limit: int = 100) -> "ToolResult":
         """Умный поиск по файловой системе с фильтрами по типу сущности, ID, имени."""
-        try:
-            task = FsSearchTask(
-                id="quick_search",
-                root=directory,
-                entity_types=[entity_type] if entity_type else [],
-                id_pattern=id_pattern,
-                name_pattern=name_pattern,
-                extensions=[extension] if extension else [],
-                content_keywords=[keyword] if keyword else [],
-                owner_id=owner_id,
-                chain_prefix=chain_prefix,
-                size_min=size_min,
-                size_max=size_max,
-                modified_after=modified_after,
-                modified_before=modified_before,
-                limit=limit,
-            )
-            results = fs_searcher.search(task)
-            return ToolResult(status="success", data={
-                "results": [{"path": r.path, "name": r.name, "size": r.size,
-                             "entity_type": r.entity_type, "entity_id": r.entity_id,
-                             "owner_id": r.owner_id, "chain": r.chain}
-                            for r in results],
-                "count": len(results),
-                # Нечитаемое НЕ прячем: иначе неполный ответ выглядит полным.
-                "unreadable": task.unreadable,
-            }, facts=[Fact(type="FsSearch", data={"directory": directory, "count": len(results),
-                                                  "unreadable": len(task.unreadable)})])
-        except FsSearchError as e:
-            return ctx.err(e.code, e.message, e.reason, e.suggested_tool)
-        except Exception as e:
-            return ctx.err("INTERNAL_ERROR", f"Ошибка поиска: {e}")
+        task = FsSearchTask(
+            id="quick_search",
+            root=directory,
+            entity_types=[entity_type] if entity_type else [],
+            id_pattern=id_pattern,
+            name_pattern=name_pattern,
+            extensions=[extension] if extension else [],
+            content_keywords=[keyword] if keyword else [],
+            owner_id=owner_id,
+            chain_prefix=chain_prefix,
+            size_min=size_min,
+            size_max=size_max,
+            modified_after=modified_after,
+            modified_before=modified_before,
+            limit=limit,
+        )
+        results = fs_searcher.search(task)
+        return ToolResult(status="success", data={
+            "results": [{"path": r.path, "name": r.name, "size": r.size,
+                         "entity_type": r.entity_type, "entity_id": r.entity_id,
+                         "owner_id": r.owner_id, "chain": r.chain}
+                        for r in results],
+            "count": len(results),
+            # Нечитаемое НЕ прячем: иначе неполный ответ выглядит полным.
+            "unreadable": task.unreadable,
+        }, facts=[Fact(type="FsSearch", data={"directory": directory, "count": len(results),
+                                              "unreadable": len(task.unreadable)})])
 
     async def fs_search_yaml(yaml_query: str) -> "ToolResult":
         """Умный поиск по YAML-запросу (очередь, многопоточность)."""
-        try:
-            task = fs_searcher.load_query(yaml_query)
-            results = fs_searcher.search(task)
-            return ToolResult(status="success", data={
-                "results": [{"path": r.path, "name": r.name, "size": r.size,
-                             "modified": r.modified, "entity_type": r.entity_type,
-                             "entity_id": r.entity_id, "parent_path": r.parent_path,
-                             "owner_id": r.owner_id, "chain": r.chain}
-                            for r in results],
-                "count": len(results),
-                "query_name": task.id,
-                "unreadable": task.unreadable,
-            }, facts=[Fact(type="FsSearchYaml", data={"count": len(results),
-                                                      "unreadable": len(task.unreadable)})])
-        except FsSearchError as e:
-            return ctx.err(e.code, e.message, e.reason, e.suggested_tool)
-        except Exception as e:
-            return ctx.err("INTERNAL_ERROR", f"Ошибка поиска: {e}")
+        task = fs_searcher.load_query(yaml_query)
+        results = fs_searcher.search(task)
+        return ToolResult(status="success", data={
+            "results": [{"path": r.path, "name": r.name, "size": r.size,
+                         "modified": r.modified, "entity_type": r.entity_type,
+                         "entity_id": r.entity_id, "parent_path": r.parent_path,
+                         "owner_id": r.owner_id, "chain": r.chain}
+                        for r in results],
+            "count": len(results),
+            "query_name": task.id,
+            "unreadable": task.unreadable,
+        }, facts=[Fact(type="FsSearchYaml", data={"count": len(results),
+                                                  "unreadable": len(task.unreadable)})])
 
     async def fs_search_multi(queries: list[dict]) -> "ToolResult":
         """Многозадачный поиск (параллельно по нескольким запросам)."""
-        try:
-            tasks = []
-            for i, q in enumerate(queries):
-                task = FsSearchTask(
-                    id=f"task_{i}",
-                    root=q.get("root", ""),
-                    entity_types=q.get("entity_types", []),
-                    id_pattern=q.get("id_pattern", ""),
-                    name_pattern=q.get("name_pattern", ""),
-                    extensions=q.get("extensions", []),
-                    content_keywords=q.get("content_keywords", []),
-                    owner_id=q.get("owner_id", ""),
-                    chain_prefix=q.get("chain_prefix", ""),
-                    limit=q.get("limit", 100),
-                )
-                tasks.append(task)
-            result = fs_searcher.search_parallel(tasks)
-            return ToolResult(status="success", data={
-                "results": {k: [{"path": r.path, "name": r.name, "entity_type": r.entity_type}
-                                for r in v] for k, v in result["results"].items()},
-                "errors": result["errors"],
-                "total_tasks": len(tasks),
-            }, facts=[Fact(type="FsSearchMulti", data={"tasks": len(tasks)})])
-        except Exception as e:
-            return ctx.err("INTERNAL_ERROR", f"Ошибка поиска: {e}")
+        tasks = []
+        for i, q in enumerate(queries):
+            task = FsSearchTask(
+                id=f"task_{i}",
+                root=q.get("root", ""),
+                entity_types=q.get("entity_types", []),
+                id_pattern=q.get("id_pattern", ""),
+                name_pattern=q.get("name_pattern", ""),
+                extensions=q.get("extensions", []),
+                content_keywords=q.get("content_keywords", []),
+                owner_id=q.get("owner_id", ""),
+                chain_prefix=q.get("chain_prefix", ""),
+                limit=q.get("limit", 100),
+            )
+            tasks.append(task)
+        result = fs_searcher.search_parallel(tasks)
+        return ToolResult(status="success", data={
+            "results": {k: [{"path": r.path, "name": r.name, "entity_type": r.entity_type}
+                            for r in v] for k, v in result["results"].items()},
+            "errors": result["errors"],
+            "total_tasks": len(tasks),
+        }, facts=[Fact(type="FsSearchMulti", data={"tasks": len(tasks)})])
 
     async def fs_create_python_script(path: str, description: str = "", assign_id: bool = False) -> "ToolResult":
         """Создание Python-скрипта с каркасом."""
-        try:
-            target = ctx.resolve(path)
-        except ValueError as _pe:
-            return ctx.err_path(_pe, f"Path escapes workspace: {path}")
+        target = ctx.resolve(path)
         if not path.endswith(".py"):
             return ctx.err("INVALID_EXTENSION", f"Not a Python file: {path}")
         desc = description or target.stem
@@ -355,12 +321,16 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         # его досрочно, поэтому в текст уезжает очищенное значение, а не сырое.
         safe_desc = re.sub(r'[\"\\\n\r]', " ", desc).strip()
         skeleton = tpl.read_text(encoding="utf-8").replace("{{DESCRIPTION}}", safe_desc)
-        # description приходит от ИИ и попадает В файл — путь пишущий, значит через ту же дверь.
-        ok_type, denied = ctx.safe(lambda: _check_write(path, skeleton))
-        if not ok_type:
-            return denied
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(skeleton, encoding="utf-8")
+        refused = _id_refused(path, assign_id)
+        if refused:
+            return refused
+        # description приходит от ИИ и попадает В файл — путь пишущий, значит через ту же дверь с политикой.
+        ok, created = ctx.safe(lambda: Files(ctx.workspace_path).create(target, skeleton, policy=ctx.write_policy))
+        if not ok:
+            return created
+        # «Новый» скрипт: каркас поверх существующего стёр бы чужой код — занятый путь отказывает.
+        if not created:
+            raise ContractError("FILE_EXISTS", facts={"path": Files(ctx.workspace_path).name(path)})
         return _created_result(path, len(skeleton), assign_id, "FileCreated")
 
     async def fs_create_project_structure(template: str = "", fragments: list[dict] | None = None) -> "ToolResult":
@@ -386,15 +356,16 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                     created.append({"name": name, "type": "directory"})
                 else:
                     try:
-                        _check_write(name, frag.get("content", ""))
-                    except Exception as e:
-                        skipped.append({"reason": getattr(e, "code", "FILE_TYPE_FORBIDDEN"), "name": name})
+                        made = Files(ctx.workspace_path).create(p, frag.get("content", ""), policy=ctx.write_policy)
+                    except WritePolicyError as e:
+                        skipped.append({"reason": e.code, "name": name, **e.facts})
                         continue
-                    p.parent.mkdir(parents=True, exist_ok=True)
-                    p.write_text(frag.get("content", ""), encoding="utf-8")
+                    if not made:
+                        skipped.append({"reason": "FILE_EXISTS", "name": name})  # правку на месте не затираем
+                        continue
                     created.append({"name": name, "type": "file"})
-            except ValueError:
-                skipped.append({"reason": "path escape", "name": name})
+            except PathRefused as refused:
+                skipped.append({"reason": refused.code, "name": name})
         # Создано ноль при непустом списке — это отказ, а не успех с примечанием: клиент читает
         # `status` и считает структуру созданной, а туда же молча уходит и ЗАПРЕТ записи.
         if skipped and not created:

@@ -36,11 +36,8 @@ class OnnxImage:
                     reason="Поставь зависимости группы local (onnxruntime) в окружение сервера.") from e
             try:
                 return ort.InferenceSession(str(model_path), providers=providers)
-            except Exception as e:  # битый или чужой граф
-                raise ProviderError(
-                    "LOCAL_MODEL_MISSING", f"Граф модели не читается: {e}",
-                    reason="Файл есть, но onnxruntime его не поднимает — перекачай модель: "
-                           "media_model_install по тому же имени.") from e
+            except Exception as e:  # битый или чужой граф; причина — по цепочке `from e` в журнал, не клиенту
+                raise ProviderError("MODEL_UNLOADABLE", facts={"model": Path(model_path).name}) from e
 
         size = model_path.stat().st_size if model_path.is_file() else 0
         return self.registry.pool.get(f"onnx|{model_path}|{','.join(providers)}", load,

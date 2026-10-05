@@ -188,12 +188,12 @@ attackers_outbound:
                           # destructiveHint снят ОСОЗНАННО (у Claude AI Web это калитка авторизации)
   - id: atk_exfil_via_param
     ref: OUT6
-    surface: fs_move/write (путь несёт данные), _SESSION_LOG.md (Fact.data), search query
-    technique: упаковать приватное в аргумент/имя/лог
-    expect: приватное не пишется в _SESSION_LOG.md/ответ; редакция
-    mitigation: не логировать сырой Fact.data; провенанс
+    surface: fs_write/read (содержимое), fs_smart_search (запрос) → журнал фактов сервера (Fact.data)
+    technique: упаковать приватное в содержимое файла и в поисковый запрос
+    expect: содержимое и запрос не пишутся в журнал фактов; значения под ключами-секретами маскируются; путь в своей рабочей области — данные клиента (решение владельца 2026-10-05)
+    mitigation: Fact.data без содержимого; санитизатор маскирует ключи-секреты; журнал — под объявленным корнем вне кода
     extends: config_change
-    status: implemented   # S24: приватное в _SESSION_LOG.md не утекает (проверено роем)
+    status: implemented   # S24: журнал фактов своего сервера непустой, содержимого и запроса в нём нет (проверено роем)
   - id: atk_error_leak
     ref: OUT7
     surface: _map_error провайдеров (D23), стектрейсы, ErrorDetail.message

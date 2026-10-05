@@ -105,7 +105,6 @@ class Firewall:
                 reason=f"IP {request.ip} заблокирован",
             )
 
-        # 2. Проверка rate limit
         rate_result = self.rate_limiter.check(request.ip, request.timestamp)
         if self.enabled["rate_limit"] and not rate_result.allowed:
             # Бан НЕ с первого превышения. Мягкий 429 до порога ban_after,

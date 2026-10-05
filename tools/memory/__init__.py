@@ -1,6 +1,6 @@
 """tools/memory — память проекта: чтение и дописывание записей.
 
-Зовёт: ToolContext, Engine.
+Зовёт: ToolContext, Engine, Files.
 Зовут: server.
 
 Обёртка тонкая: containment путей и перевод ошибок делают соседние слои.
@@ -10,6 +10,7 @@ import re
 
 from core.contracts import Fact, ToolResult
 from core.engine import Engine
+from core.paths import Files
 from tools._context import ANNOTATIONS_MODIFY, ANNOTATIONS_READONLY, ToolContext
 
 
@@ -22,13 +23,11 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         Возвращает: заголовок, записи (с полями), количество, существующие ID.
         Позволяет ИИ понять структуру ДО вставки.
         """
-        try:
-            target = ctx.resolve(path)
-        except ValueError as _pe:
-            return ctx.err_path(_pe, f"Path escapes workspace: {path}")
+        target = ctx.resolve(path)
         if not target.exists():
             return ToolResult(status="success", data={"path": path, "exists": False, "entries": [], "ids": []})
-        content = target.read_text(encoding="utf-8")
+        # Записи и ID разбираются по файлу целиком: больше предела — отказ, а не разбор половины.
+        content = Files(ctx.workspace_path).read(target, ctx.read_limit, whole=True).text
         # Парсим записи: ## [дата] Заголовок
         entries = []
         ids_found = []
@@ -63,11 +62,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         Вставляет новую запись в правильное место по дате (хронологически).
         Валидирует структуру: обязательные поля, ссылки на ID,的影响 на соседние записи.
         """
-        try:
-            target = ctx.resolve(path)
-        except ValueError as _pe:
-            return ctx.err_path(_pe, f"Path escapes workspace: {path}")
-        target.parent.mkdir(parents=True, exist_ok=True)
+        target = ctx.resolve(path)
         # Формируем запись
         entry = f"\n## [{entry_date}] Решение: {title}\n"
         if context:
@@ -82,8 +77,9 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             entry += f"- **Результат:** {result}\n"
         else:
             entry += "- **Результат:** [ожидается]\n"
-        # Читаем существующий контент
-        old_content = target.read_text(encoding="utf-8") if target.exists() else ""
+        # Читаем существующий контент целиком: вставка в половину файла потеряла бы хвост
+        files = Files(ctx.workspace_path)
+        old_content = files.read(target, ctx.read_limit, whole=True).text if target.exists() else ""
         # Ищем позицию для вставки (по дате)
         insert_pos = len(old_content)
         if after_date:
@@ -104,7 +100,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 insert_pos = last_entry.start()
         # Вставляем
         new_content = old_content[:insert_pos] + entry + old_content[insert_pos:]
-        target.write_text(new_content, encoding="utf-8")
+        # Путь назвал клиент — тип, размер и содержимое судит политика двери, как у fs_write_file.
+        ok, denied = ctx.safe(lambda: files.replace(target, new_content, policy=ctx.write_policy))
+        if not ok:
+            return denied
         # Собираем ID из записи
         ids_in_entry = re.findall(r'\b([A-Z]+_[0-9a-f]{32})\b', entry)
         return ToolResult(status="success", data={
@@ -116,7 +115,6 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "path": path, "date": entry_date, "title": title,
             "ids": ids_in_entry, "position": insert_pos})])
 
-    # ═══ ПАМЯТЬ ПРОЕКТА (project_memory.md) ═══
     memory_tools = [
         ("memory_read", "Память: прочитать", "Чтение памяти проекта с парсингом структуры: записи, поля, существующие ID",
          {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к project_memory.md"}}, "required": ["path"]},

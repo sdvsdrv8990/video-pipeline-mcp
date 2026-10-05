@@ -33,21 +33,6 @@ class Trail:
         self._written = 0
         self._broken = False
 
-    @classmethod
-    def from_declaration(cls, declaration: dict | None, root: Path) -> "Trail":
-        """Собрать по `config/observability.yaml`. Нет объявления — след выключен."""
-        cfg = (declaration or {}).get("trail") or {}
-        if not cfg.get("enabled", False):
-            return cls(None)
-        missing = [k for k in ("dir", "keep_files", "max_bytes", "record_args") if k not in cfg]
-        if missing:
-            # Дописать недостающее значением из кода — значит завести вторую половину правды.
-            # Неполное объявление гасит след ГРОМКО: молча подставленный предел хуже отсутствия.
-            print(f"⚠️  [trail] объявление неполно ({', '.join(missing)}) — след не пишется")
-            return cls(None)
-        return cls(root / str(cfg["dir"]), keep_files=cfg["keep_files"],
-                   max_bytes=cfg["max_bytes"], record_args=cfg["record_args"])
-
     @property
     def enabled(self) -> bool:
         return self.directory is not None and not self._broken

@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from core.paths import safe_resolve
+from core.paths import Files
 from core.contracts import ContractError
 
 # Ссылка в формуле: необязательный лист (`META!` / `'Мой лист'!`), затем ячейка или
@@ -46,8 +46,8 @@ class ExcelEngine:
     # ═══ Служебное ═══
 
     def _resolve(self, path: str) -> Path:
-        """safe-join внутри workspace. ValueError → обёртка маппит в PATH_ESCAPE."""
-        return safe_resolve(path, self.workspace)
+        """Дверь рабочей области: отказ уходит клиенту своим кодом и фактом `path`."""
+        return Files(self.workspace).place(path)
 
     def _load(self, path: str, must_exist: bool = True):
         """Открыть книгу. WORKBOOK_NOT_FOUND если нет (и must_exist)."""
@@ -92,9 +92,9 @@ class ExcelEngine:
         if p.exists():
             raise ExcelError("FILE_EXISTS", f"Файл или каталог уже существует: {path}",
                              reason="Удали существующий файл или используй другое имя.")
-        p.parent.mkdir(parents=True, exist_ok=True)
         wb = openpyxl.Workbook()
-        wb.active.title = sheet
+        self._title(wb.active, sheet)
+        p.parent.mkdir(parents=True, exist_ok=True)
         wb.save(p)
         return {"path": path, "sheet": sheet}
 
@@ -103,7 +103,7 @@ class ExcelEngine:
         if sheet in wb.sheetnames:
             raise ExcelError("SHEET_EXISTS", f"Лист уже существует: {sheet}",
                              reason="Используй другое имя или excel_rename_sheet.")
-        wb.create_sheet(title=sheet)
+        self._title(wb.create_sheet(), sheet)
         self._save(wb, path)
         return {"path": path, "sheet": sheet, "sheets": wb.sheetnames}
 
@@ -113,7 +113,7 @@ class ExcelEngine:
         if new_name in wb.sheetnames:
             raise ExcelError("SHEET_EXISTS", f"Лист уже существует: {new_name}",
                              reason="Выбери свободное имя.")
-        ws.title = new_name
+        self._title(ws, new_name)
         self._save(wb, path)
         return {"path": path, "renamed": {sheet: new_name}, "sheets": wb.sheetnames}
 
@@ -143,17 +143,18 @@ class ExcelEngine:
         if new_name in wb.sheetnames:
             raise ExcelError("SHEET_EXISTS", f"Лист уже существует: {new_name}",
                              reason="Выбери свободное имя.")
-        source = wb[sheet]
-        copy = wb.copy_worksheet(source)
-        try:
-            # Имя листа валидирует сама openpyxl (запрещённые символы). Голый ValueError доезжал
-            # до клиента как INTERNAL_ERROR «зови человека» — при том что чинит это он сам, и
-            # рецепт объявлен в реестре под SHEET_COPY_ERROR. Книга не сохранена, диск не тронут.
-            copy.title = new_name
-        except ValueError as e:
-            raise ExcelError("SHEET_COPY_ERROR", f"Ошибка копирования листа: {e}") from e
+        self._title(wb.copy_worksheet(wb[sheet]), new_name)
         self._save(wb, path)
         return {"path": path, "copied": sheet, "to": new_name, "sheets": wb.sheetnames}
+
+    @staticmethod
+    def _title(ws, name: str):
+        """Имя листа судит книга; её отказ — SHEET_NAME_INVALID без присланного имени (причина — в цепочке)."""
+        try:
+            ws.title = name
+        except ValueError as e:
+            raise ExcelError("SHEET_NAME_INVALID", "Имя листа не принято книгой: пустое или с запрещённым символом.") from e
+        return ws
 
     # ═══ АНАЛИЗ СТРУКТУРЫ ═══
 

@@ -1,6 +1,6 @@
 """tools/montage — сборка видео: сцена из книги становится проверенным файлом.
 
-Зовёт: ToolContext, SceneBook, FfmpegEngine, RenderLedger.
+Зовёт: ToolContext, SceneBook, FfmpegEngine, RenderLedger, Files.
 Зовут: server.
 
 Группа отделена от медиа по предмету: там генерация ассетов — кто и чем рисует, здесь монтаж —
@@ -13,6 +13,7 @@ from pathlib import Path
 from core.contracts import Fact, ToolResult
 from core.engine import Engine
 from core.montage import RenderLedger, SceneBook, SceneScript, SceneTemplate
+from core.paths import Files
 from core.providers.ffmpeg import FfmpegEngine
 from tools._context import ANNOTATIONS_MODIFY, ToolContext
 
@@ -108,16 +109,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         ok, target = ctx.safe(lambda: ctx.resolve(relative))
         if not ok:
             return target
-        def _allowed() -> None:
-            # Та же дверь, что у любого файла: политика проверяет и тип, и содержимое.
-            ctx.write_policy.check(relative)
-            ctx.write_policy.check_content(relative, text)
-
-        ok, denied = ctx.safe(_allowed)
+        # Та же дверь, что у любого файла: политика судит тип, размер и содержимое до первого байта.
+        ok, denied = ctx.safe(lambda: Files(ctx.workspace_path).replace(target, text, policy=ctx.write_policy))
         if not ok:
             return denied
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
         return ToolResult(status="success", data={
             "table": table, "scene_id": scene_id, "file_path": relative,
             "bytes": len(text.encode("utf-8")), "variants_enabled": book.variants_state(

@@ -14,7 +14,7 @@ from pathlib import Path
 import yaml
 
 from core.ids.taxonomy import Taxonomy
-from core.paths import safe_resolve
+from core.paths import Files, PathRefused
 from core.write_policy import WritePolicy, WritePolicyError
 from core.contracts import ContractError
 
@@ -63,14 +63,16 @@ class TemplateEngine:
         self._cache[node_type] = body
         return body
 
-    def _forbidden(self, name: str, content) -> str:
-        """Причина отказа по allowlist записи (пусто = можно): тип файла И его содержимое."""
+    def _create(self, files: Files, path: Path, data, skip: dict, skipped: list) -> bool:
+        """Файл узла через дверь с политикой; не создан — строка `skipped` {reason: код, name, …факты}, а не «создан»
+        (занятый — FILE_EXISTS: правку проекта не затираем)."""
         try:
-            self.policy.check(name)
-            self.policy.check_content(name, content)
+            if files.create(path, data, policy=self.policy):
+                return True
+            skipped.append({**skip, "reason": "FILE_EXISTS"})
         except WritePolicyError as e:
-            return e.message
-        return ""
+            skipped.append({**skip, "reason": e.code, **e.facts})
+        return False
 
     @staticmethod
     def _valid_name(name: str) -> bool:
@@ -119,7 +121,7 @@ class TemplateEngine:
         `parent_path` — контейнер относительно workspace; пусто → корневой контейнер типа.
         `children` = {тип: [имена]}: названные разворачиваются, остальные отложены.
         Возвращает дерево (node_id, path, created/skipped/tables_pending/deferred_children,
-        children рекурсивно); TemplateError и ValueError маппятся обёрткой в ErrorDetail.
+        children рекурсивно); TemplateError и отказ двери пути (PathRefused) клиент получает своим кодом.
         """
         body = self._load(node_type)
         if not self._valid_name(name):
@@ -134,8 +136,8 @@ class TemplateEngine:
         if base and not base.endswith("/"):
             base += "/"
         node_rel = f"{base}{name}".strip("/")
-        # Жёсткая проверка пути узла (нарушение → ValueError → PATH_ESCAPE у обёртки).
-        node_dir = safe_resolve(node_rel, self.ws)
+        files = Files(self.ws)
+        node_dir = files.place(node_rel)  # отказ двери уходит клиенту своим кодом
         node_dir.mkdir(parents=True, exist_ok=True)
 
         node_id = self.ids.generate_simple(self.taxonomy.prefix(node_type))
@@ -150,8 +152,8 @@ class TemplateEngine:
                 skipped.append({"kind": "folder", "reason": "no name"})
                 continue
             try:
-                d = safe_resolve(f"{node_rel}/{fname}", self.ws)
-            except ValueError:
+                d = files.place(f"{node_rel}/{fname}")
+            except PathRefused:
                 skipped.append({"kind": "folder", "name": fname, "reason": "path escape"})
                 continue
             d.mkdir(parents=True, exist_ok=True)
@@ -174,8 +176,8 @@ class TemplateEngine:
                 })
                 continue
             try:
-                f = safe_resolve(f"{node_rel}/{fname}", self.ws)
-            except ValueError:
+                f = files.place(f"{node_rel}/{fname}")
+            except PathRefused:
                 skipped.append({"kind": "file", "name": fname, "reason": "path escape"})
                 continue
             if fr.get("kind") == "config":
@@ -183,8 +185,8 @@ class TemplateEngine:
                 rel_src = str(fr.get("source", fname))
                 try:
                     # Источник — только внутри config/, иначе шаблон вычерпает .env наружу.
-                    src = safe_resolve(rel_src, self.config_dir)
-                except ValueError:
+                    src = Files(self.config_dir).place(rel_src)
+                except PathRefused:
                     skipped.append({"kind": "config", "name": fname, "reason": "source escape",
                                     "source": rel_src})
                     continue
@@ -193,26 +195,11 @@ class TemplateEngine:
                                     "source": rel_src})
                     continue
                 text = src.read_text(encoding="utf-8")
-                denied = self._forbidden(fname, text)
-                if denied:
-                    skipped.append({"kind": "config", "name": fname, "reason": "forbidden",
-                                    "detail": denied})
-                    continue
-                f.parent.mkdir(parents=True, exist_ok=True)
-                if not f.exists():   # уже правленную копию не затираем
-                    f.write_text(text, encoding="utf-8")
-                created.append({"kind": "config", "path": f"{node_rel}/{fname}",
-                                "source": rel_src})
+                if self._create(files, f, text, {"kind": "config", "name": fname, "source": rel_src}, skipped):
+                    created.append({"kind": "config", "path": f"{node_rel}/{fname}", "source": rel_src})
                 continue
-            content = fr.get("content", "")
-            denied = self._forbidden(fname, content)
-            if denied:
-                skipped.append({"kind": "file", "name": fname, "reason": "forbidden", "detail": denied})
-                continue
-            f.parent.mkdir(parents=True, exist_ok=True)
-            if not f.exists():
-                f.write_text(content, encoding="utf-8")
-            created.append({"kind": "file", "path": f"{node_rel}/{fname}"})
+            if self._create(files, f, fr.get("content", ""), {"kind": "file", "name": fname}, skipped):
+                created.append({"kind": "file", "path": f"{node_rel}/{fname}"})
 
         result = {
             "node_id": node_id,

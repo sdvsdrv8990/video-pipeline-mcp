@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from core.contracts import ContractError
 from core.declaration import Declaration
 from core.engine import Engine
-from core.observability import Trail, wire
+from core.observability import Logs, wire
 from core.firewall import Firewall, FirewallRequest, FirewallDecision
 from core.transport import Transport
 from core.reactions import Reactions
@@ -54,6 +54,9 @@ WORKSPACE_PATH = Path(os.environ.get("MCP_WORKSPACE") or (BASE_PATH / "workspace
 # обязан идти по БОЕВОМУ конфигу, но со своим порогом частоты — иначе сторонний клиент, честно
 # долбящий 30 сценариев подряд, банит сам себя, и «несоответствие спеке» оказывается блокировкой.
 CONFIG_PATH = Path(os.environ.get("MCP_CONFIG") or (BASE_PATH / "config")).resolve()
+# Корень журналов переопределяется средой по той же причине: тестовый сервер рядом с боевым пишет свой след и журнал
+# фактов, а не дописывает журнал владельца. Нет переменной — каталог журналов пользователя этой ОС (observability.yaml).
+LOGS_OVERRIDE = os.environ.get("MCP_LOGS")
 
 # Спека транспорта MCP требует валидировать Origin на ВСЕХ соединениях. Пустой список
 # больше не значит «не проверять»: браузер прикладывает Origin к любому кросс-доменному запросу,
@@ -134,18 +137,19 @@ def create_server() -> tuple[Engine, Transport, Firewall]:
 
     firewall = Firewall(firewall_config)
     id_generator = IDGenerator()
-    state_manager = StateManager(WORKSPACE_PATH)
+    # Журналы под одним объявленным корнем: след вызовов (без него отказ в живой сессии не оставляет условий, по которым
+    # его повторяют) и журнал фактов — его state_manager пишет по фактам, которые ему передаёт движок.
+    logs = Logs.from_declaration(_load_yaml(CONFIG_PATH / "observability.yaml"), LOGS_OVERRIDE)
+    print(f"📓 Журналы: {logs.root}")
+    state_manager = StateManager(WORKSPACE_PATH, journal=logs.session)
 
-    # state_manager передаётся в engine для логирования facts в _SESSION_LOG.
     # Объявление ресурсов: какие вызовы уходят с цикла событий. Не загрузили — тяжёлое снова
     # морозит сервер целиком, поэтому отсутствие файла не молчит, а видно в консоли.
     resources = _load_yaml(CONFIG_PATH / "resources.yaml")
     if not resources:
         print("⚠ config/resources.yaml не прочитан — тяжёлые вызовы идут в цикле событий")
-    # След вызовов: без него отказ в живой сессии не оставляет условий, по которым его повторяют.
-    trail = Trail.from_declaration(_load_yaml(CONFIG_PATH / "observability.yaml"), BASE_PATH)
     engine = Engine(reactions=reactions, state_manager=state_manager, resources=resources,
-                    trail=trail)
+                    trail=logs.trail)
 
     # Создаём workspace если нет
     WORKSPACE_PATH.mkdir(parents=True, exist_ok=True)

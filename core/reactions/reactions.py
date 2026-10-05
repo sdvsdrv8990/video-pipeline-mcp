@@ -11,10 +11,14 @@
 известный: класс, текст и рецепт всё равно приезжают из реестра, а не из кода.
 """
 
+import logging
+import string
 from pathlib import Path
 
 from core.contracts import ContractError, ErrorDetail, Recovery
 from core.declaration import Declaration
+
+log = logging.getLogger(__name__)
 
 
 class Reactions:
@@ -47,46 +51,26 @@ class Reactions:
             config_path, ContractError, "реакций сервера",
             "Заведи config/server_reactions.yaml — коды отказов и рецепты объявлены там.").data
 
-    def get_error(self, code: str, raw_message: str = "", raw_response: dict | None = None) -> ErrorDetail:
-        """Получение ErrorDetail по коду ошибки.
-
-        Args:
-            code: Код ошибки (из server_reactions.yaml)
-            raw_message: Полный текст ошибки
-            raw_response: Оригинальный ответ API
-
-        Returns:
-            ErrorDetail с recovery
-        """
-        if code in self.reactions:
-            reaction = self.reactions[code]
-            recovery_data = reaction.get("recovery", {})
-
-            return ErrorDetail(
-                code=code,
-                reaction_class=reaction.get("class", "unknown"),
-                message=raw_message or reaction.get("message_template", ""),
-                recovery=Recovery(
-                    suggested_tool=recovery_data.get("suggested_tool"),
-                    suggested_params=recovery_data.get("suggested_params"),
-                    reason=recovery_data.get("reason", "")
-                ),
-                raw_response=raw_response
-            )
-
-        # Неизвестная ошибка → DEFAULT (единообразно с обычной веткой: класс/шаблон/recovery из реестра).
-        default = self.reactions.get("DEFAULT", {})
-        default_recovery = default.get("recovery", {})
+    def get_error(self, code: str, raw_message: str = "", raw_response: dict | None = None,
+                  facts: dict | None = None, errors: list[dict] | None = None) -> ErrorDetail:
+        """Отказ по коду в форме ответа — единственная сборка на сервере. Класс, текст и подсказка — из реестра, факты
+        подставляются в текст и подсказку и едут полем; `raw_message` места — переходный, он стоит поверх шаблона.
+        Неизвестный код идёт записью DEFAULT под кодом UNKNOWN_ERROR."""
+        known = code in self.reactions
+        name, entry = (code, self.reactions[code]) if known else ("UNKNOWN_ERROR", self.reactions.get("DEFAULT", {}))
+        recovery, facts = entry.get("recovery", {}), dict(facts or {})
         return ErrorDetail(
-            code="UNKNOWN_ERROR",
-            reaction_class=default.get("class", "unknown"),
-            message=raw_message or default.get("message_template", "Непредвиденная ошибка."),
+            code=name,
+            reaction_class=entry.get("class", "unknown"),
+            message=raw_message or _filled(entry.get("message_template", ""), facts, name),
             recovery=Recovery(
-                suggested_tool=default_recovery.get("suggested_tool"),
-                suggested_params=default_recovery.get("suggested_params"),
-                reason=default_recovery.get("reason", "Обратитесь к администратору")
+                suggested_tool=recovery.get("suggested_tool"),
+                suggested_params=recovery.get("suggested_params"),
+                reason=_filled(recovery.get("reason", ""), facts, name),
             ),
-            raw_response=raw_response
+            facts=facts,
+            errors=list(errors or []),
+            raw_response=raw_response,
         )
 
     def get_reaction(self, code: str) -> dict | None:
@@ -99,3 +83,18 @@ class Reactions:
             Словарь реакции или None
         """
         return self.reactions.get(code)
+
+
+def _filled(text: str, facts: dict, code: str) -> str:
+    """Шаблон реестра с фактами отказа. Факта, которого шаблон ждёт, нет — разрыв реестра и места сборки: владелец
+    видит его в журнале с кодом и именами, клиент — «—» на месте пропуска, а не фигурные скобки."""
+    missing = sorted({f for _, f, _, _ in string.Formatter().parse(text) if f} - set(facts))
+    if missing:
+        log.error("шаблон реакции %s ждёт фактов, которых отказ не принёс: %s", code, ", ".join(missing))
+    return text.format_map({**dict.fromkeys(missing, "—"), **facts})
+
+
+def cli_text(exc: ContractError, registry: str | Path) -> str:
+    """Отказ для терминала — той же сборкой, что ответ сервера: код, текст и подсказка реестра с фактами отказа."""
+    detail = Reactions(registry).get_error(exc.code, exc.message, facts=exc.facts, errors=exc.errors)
+    return f"✗ {detail.code}: {detail.message}\n  {detail.recovery.reason}"

@@ -260,12 +260,15 @@ def atk_weaponized_destruct(c: Ctx):
 
 
 def atk_exfil_via_param(c: Ctx):
+    # Путь в своей рабочей области — данные клиента (решение владельца); приватное — содержимое и запрос поиска.
     secret = "ЛИЧНОЕ-РОЯ-98765"
-    c.call("fs_write_file", {"path": f"утечка/{secret}.md", "content": secret})
-    c.call("fs_read_file", {"path": f"утечка/{secret}.md"})
-    log = c.srv.workspace / "_SESSION_LOG.md"
-    in_log = secret in log.read_text(encoding="utf-8") if log.exists() else False
-    return not in_log, f"приватное в _SESSION_LOG.md: {'ЕСТЬ' if in_log else 'нет'}"
+    c.call("fs_write_file", {"path": "утечка/заметка.md", "content": secret})
+    c.call("fs_read_file", {"path": "утечка/заметка.md"})
+    c.call("fs_smart_search", {"directory": "утечка", "keyword": secret})
+    log = c.srv.journals.session.path
+    text = log.read_text(encoding="utf-8") if log.is_file() else ""
+    return "FileWritten" in text and secret not in text, \
+        f"журнал фактов сервера: {'есть' if text else 'НЕТ'}, приватное в нём: {'ЕСТЬ' if secret in text else 'нет'}"
 
 
 def atk_error_leak(c: Ctx):

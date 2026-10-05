@@ -47,7 +47,6 @@ class IPBlocklist:
 
         blocked = self._blocked[ip]
 
-        # Проверяем не истёк ли бан
         if blocked.expires_at and time.time() > blocked.expires_at:
             # Бан истёк → удаляем
             del self._blocked[ip]

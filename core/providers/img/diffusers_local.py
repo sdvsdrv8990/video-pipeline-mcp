@@ -70,11 +70,8 @@ class DiffusersLocalIMG:
                 pipe = AutoPipelineForText2Image.from_pretrained(
                     str(model_path), local_files_only=True, safety_checker=None, **load,
                     **({"torch_dtype": dtype} if dtype else {}))
-            except Exception as e:  # битые/неполные веса
-                raise ProviderError(
-                    "LOCAL_MODEL_MISSING", f"Веса модели не поднимаются: {e}",
-                    reason="Каталог есть, но модель из него не читается — перекачай: "
-                           "python scripts/models.py pull.") from e
+            except Exception as e:  # битые/неполные веса; причина — по цепочке `from e` в журнал, не клиенту
+                raise ProviderError("MODEL_UNLOADABLE", facts={"model": Path(model_path).name}) from e
             if where["device"] != "cpu" and "device_map" not in load:
                 # Перенос и выгрузка исключают друг друга: у выгруженного пайплайна `.to()`
                 # ругается сама библиотека. Поэтому здесь ровно одна ветка из трёх.
@@ -126,7 +123,7 @@ class DiffusersLocalIMG:
         where = self._where(params)
         place = placement(self._gpu_rules, (self.registry.config.get("local") or {}).get("fit") or {},
                           entry, where)
-        pipe = self._pipeline(self.registry.require_model(params.get("model"), must_be_dir=True),
+        pipe = self._pipeline(self.registry.ready(params.get("model"), must_be_dir=True)["path"],
                               self._load_kwargs(params, entry), where, place)
         request.target.parent.mkdir(parents=True, exist_ok=True)
         try:

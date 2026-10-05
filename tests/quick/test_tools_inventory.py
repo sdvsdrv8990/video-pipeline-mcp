@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-import server
+from tests.harness.inprocess import create_server
 
 GOLDEN = Path(__file__).parent / "tools_inventory.golden.json"
 
@@ -34,7 +34,7 @@ def ok(cond, msg):
 
 def snapshot() -> dict:
     """Инвентарь живого сервера: имя → контракт, видимый клиенту в tools/list."""
-    engine, _transport, _firewall = server.create_server()
+    engine, _transport, _firewall = create_server()
     return {
         name: {
             "group": tool.group,

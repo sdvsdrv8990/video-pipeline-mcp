@@ -110,7 +110,7 @@ class WhisperLocalSTT:
         # Опись хранит путь к ФАЙЛУ весов, а `from_pretrained` нужен каталог с конфигом и
         # токенайзером рядом. Различаем по диску, а не по имени модели.
         name = request.params.get("model")
-        ref = self.registry.require_model(name)
+        ref = self.registry.ready(name)["path"]
         entry = self.registry.model_entry(name) or {}
         pipe = self._pipe(ref if ref.is_dir() else ref.parent, where,
                           str(entry.get("revision") or "main"))

@@ -1,7 +1,8 @@
-"""tests/cache_overflow/test_cache_overflow.py — нагрузка кеша массовым созданием файлов.
+"""tests/cache_overflow/test_cache_overflow.py — нагрузка кеша массовой записью файлов.
 
-Массовое создание идёт через живой движок: сервер продолжает отвечать, кеш чистится, а
-легитимные вызовы после нагрузки работают. Пишет в рабочую область — файлы настоящие.
+Массовая запись идёт через живой движок: сервер продолжает отвечать, кеш чистится, а
+легитимные вызовы после нагрузки работают. Пишет в рабочую область — файлы настоящие и переживают
+прогон, поэтому запись (fs_write_file), а не создание: создание по занятому пути отказывает FILE_EXISTS.
 """
 
 import asyncio
@@ -11,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from server import create_server
+from tests.harness.inprocess import create_server
 
 results = []
 
@@ -28,8 +29,8 @@ async def test_normal_operation():
     engine, transport, firewall = create_server()
 
     # Базовые вызовы
-    r1 = await engine.call("fs_create_file", {"path": "test_cache.txt", "content": "cache test"})
-    check("fs_create_file работает", r1.status == "success")
+    r1 = await engine.call("fs_write_file", {"path": "test_cache.txt", "content": "cache test"})
+    check("fs_write_file работает", r1.status == "success")
 
     r2 = await engine.call("fs_read_file", {"path": "test_cache.txt"})
     check("fs_read_file работает", r2.status == "success")
@@ -43,16 +44,15 @@ async def test_massive_file_creation():
 
     created = 0
     for i in range(50):
-        r = await engine.call("fs_create_file", {
+        r = await engine.call("fs_write_file", {
             "path": f"mass/test_{i:03d}.txt",
             "content": f"payload {i}" * 100
         })
         if r.status == "success":
             created += 1
 
-    check(f"Создано файлов: {created}/50", created == 50, f"created={created}")
+    check(f"Записано файлов: {created}/50", created == 50, f"created={created}")
 
-    # Проверяем что чтение работает после нагрузки
     r = await engine.call("fs_read_file", {"path": "mass/test_000.txt"})
     check("Чтение после нагрузки работает", r.status == "success")
 

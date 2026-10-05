@@ -74,7 +74,6 @@ async def main():
     r = await call("table_set", table=T, sheet="META", row_id="VID_1", column="status", value="bogus")
     check("ENUM_VIOLATION on set", r.status=="error" and r.error.code=="ENUM_VIOLATION")
 
-    # ── set (queue) → execute → снапшот обновился ──
     r = await call("table_set", table=T, sheet="META", row_id="VID_1", column="status", value="ready")
     check("set queued", r.status=="success" and r.data["queued"]["action"]=="set")
     # до execute снапшот НЕ изменён
@@ -85,7 +84,6 @@ async def main():
     r = await call("table_get_row", table=T, sheet="META", row_id="VID_1")
     check("snapshot updated after execute", r.data["row"]["status"]=="ready")
 
-    # ── append (server ID) → execute ──
     r = await call("table_append", table=T, sheet="META", data={"title":"Act2","status":"draft"}, id_prefix="VID")
     new_id = r.data["row_id"]
     check("append server id VID_", r.status=="success" and new_id.startswith("VID_"))
@@ -163,7 +161,6 @@ async def main():
     check("update: ни одно поле не применилось частично",
           r.data["row"]["title"]=="через очередь" and r.data["row"]["status"]=="published")
 
-    # ── push_to_queue with read action → INVALID_ACTION ──
     r = await call("json_push_to_queue", table=T, action={"action":"get_row","sheet":"META","row_id":"VID_1"})
     check("INVALID_ACTION for read", r.status=="error" and r.error.code=="INVALID_ACTION")
 
@@ -198,6 +195,25 @@ async def main():
     check("validate_formulas ok", r.status=="success" and r.data["ok"] is True)
     r = await call("excel_add_sheet", path="videos/v1/nope.xlsx", sheet="X")
     check("WORKBOOK_NOT_FOUND", r.status=="error" and r.error.code=="WORKBOOK_NOT_FOUND")
+
+    # Имя листа судит книга: отказ — чинимый код без присланного имени и текста openpyxl, диск не тронут.
+    import openpyxl
+    _book, _bad = "videos/v1/video_data.xlsx", "BAD/NAME"
+    _sheets = openpyxl.load_workbook(ws / _book).sheetnames
+    for _tool, _p in (("excel_create_workbook", {"path": "videos/v1/badname.xlsx", "sheet": _bad}),
+                      ("excel_add_sheet", {"path": _book, "sheet": _bad}),
+                      ("excel_rename_sheet", {"path": _book, "sheet": "PERFORMANCE", "new_name": _bad}),
+                      ("excel_copy_sheet", {"path": _book, "sheet": "META", "new_name": _bad})):
+        r = await call(_tool, **_p)
+        _said = " ".join(filter(None, [r.error.message, r.error.recovery.reason if r.error.recovery else ""])) if r.error else ""
+        check(f"{_tool}: негодное имя листа — SHEET_NAME_INVALID без имени и текста openpyxl ({_said[:60]!r})",
+              r.status == "error" and r.error.code == "SHEET_NAME_INVALID" and _bad not in _said
+              and "Invalid character" not in _said)
+    check("отказ имени: книги нет, листы прежние", not (ws / "videos/v1/badname.xlsx").exists()
+          and openpyxl.load_workbook(ws / _book).sheetnames == _sheets)
+    r = await call("excel_rename_sheet", path=_book, sheet="PERFORMANCE", new_name="PERF")
+    check("годное имя листа принимается тем же путём", r.status == "success" and "PERF" in r.data["sheets"])
+    r = await call("excel_rename_sheet", path=_book, sheet="PERF", new_name="PERFORMANCE")
 
     # ── Деструктив над столбцом не ломает формулы молча ──
     P = "videos/v1/deps.xlsx"

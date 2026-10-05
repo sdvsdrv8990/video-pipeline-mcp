@@ -92,9 +92,10 @@ def trail_says(srv, tool: str = "", level: str = "", code: str = "") -> dict:
     Принимается только запись СВОЕГО сервера — с момента его старта. Окно по часам не годится:
     файлы следа переживают прогон, и на замере выключенный след зеленел на записи прошлого прогона.
     """
-    directory = Path(__file__).resolve().parents[2] / "logs" / "trail"
+    directory = srv.journals.trail.directory  # след своего сервера — под его корнем журналов, как его строит сервер
     fresh = float(getattr(srv, "started", 0.0)) or time.time()
-    files = sorted(directory.glob("trail-*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
+    files = sorted(directory.glob("trail-*.jsonl"), key=lambda f: f.stat().st_mtime,
+                   reverse=True) if directory else []
     for path in files[:3]:
         rows = [r for r in path.read_text(encoding="utf-8", errors="replace").splitlines() if r.strip()]
         for row in reversed(rows):

@@ -13,7 +13,7 @@ from pydantic import BaseModel
 KNOWN_FACT_TYPES = {
     "DirectoryTree", "Echo", "FileCreated", "FileRead",
     "FileWritten", "FileMoved", "FileRenamed", "FileDeleted",
-    "FileSearch", "StructureCreated", "FileAppended", "FragmentsSkipped",
+    "FileSearch", "StructureCreated", "FileAppended", "FragmentsSkipped", "FileTruncated",
     # Режимы создания: сервер объясняет выбор и отчитывается о нём
     "CreationSkipped", "TemplatesCustomized",
     # Уникальность (A7.2): число, неполнота входов и сигнал в петлю решений
@@ -29,7 +29,6 @@ KNOWN_FACT_TYPES = {
     "SearchCompleted", "QuickSearch", "MultiSearch",
     "FsSearch", "FsSearchYaml", "FsSearchMulti",
     "RenderCompleted", "SnapshotRead", "TableRead",
-    # Таблицы: данные (Категория 3)
     "ColumnRead", "RowRead", "RowSet", "RowUpdated", "RowsFound", "RowAppended", "RowDeleted",
     "DependentsFound",
     "QueuePushed", "QueueExecuted", "QueueCleared", "QueueRead",

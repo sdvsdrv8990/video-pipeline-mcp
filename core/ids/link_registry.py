@@ -8,11 +8,11 @@
 """
 
 import json
-import threading
 from pathlib import Path
 
 from core.state.state_manager import _atomic_write_json  # единый атомарный писатель
 from core.contracts import ContractError
+from core.paths import Files
 
 REGISTRY_FILE = "_id_registry.json"
 
@@ -33,7 +33,8 @@ class LinkRegistry:
     def __init__(self, workspace_path, identity=None):
         self.ws = Path(workspace_path)
         self.path = self.ws / REGISTRY_FILE
-        self._lock = threading.Lock()
+        # Реестр пишут сервер и `server.py --re-adopt` — замок ОС, а не потоковый: он исключает и потоки, и процессы.
+        self._lock = Files(self.ws).lock(REGISTRY_FILE)
         # Личность инстанса. None → подпись не ставится и не проверяется (локальные
         # прогоны и тесты); в бою её выдаёт build_context, и тогда чужие записи отклоняются.
         self.identity = identity

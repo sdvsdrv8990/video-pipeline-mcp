@@ -12,14 +12,22 @@ import tempfile
 import shutil
 from pathlib import Path
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from core.search.fs_searcher import FsSearcher, FsSearchTask, FsSearchError
 from core.ids import LinkRegistry, Taxonomy
+from core.contracts import ContractError
+from core.engine import Engine
+from core.reactions import Reactions
 
 TPL_DIR = Path(__file__).resolve().parents[2] / "config" / "templates" / "workspace"
-from core.search.query_planner import QueryPlanner, QueryPlan, SearchError
+# Предел чтения содержимого — из объявления, как у сервера, а не числом в тесте.
+READ_BYTES = yaml.safe_load((TPL_DIR.parents[1] / "firewall.yaml").read_text(encoding="utf-8"))["file_limits"]["read_bytes"]
+from core.search.query_planner import QueryPlanner, QueryPlan
 
+_ENGINE = Engine(reactions=Reactions(Path(__file__).resolve().parents[2] / "config" / "server_reactions.yaml"))
 _checks = 0
 _fails = []
 
@@ -32,6 +40,15 @@ def check(label, cond, detail=""):
     else:
         print(f"  ✗ {label}  {detail}")
         _fails.append(label)
+
+
+def refused(call) -> str:
+    """Код отказа, который увидит клиент (путь доставки Engine.refusal), или пусто — отказа не было."""
+    try:
+        call()
+    except ContractError as e:
+        return _ENGINE.refusal(e).error.code
+    return ""
 
 
 def _mkworkspace():
@@ -50,7 +67,7 @@ def _mkworkspace():
 def main():
     ws = _mkworkspace()
     try:
-        fs = FsSearcher(ws)
+        fs = FsSearcher(ws, read_bytes=READ_BYTES)
 
         print("== FsSearcher: happy-path поиск ==")
         r_txt = fs.search(FsSearchTask(id="t", root="", extensions=[".txt"]))
@@ -94,7 +111,7 @@ def main():
         (ws / vpath / "read.json").write_text("{}")
         reg_ws = LinkRegistry(ws)
         reg_ws.register({"id": vid_id, "type": "video", "name": "v", "path": vpath, "parent_ids": []})
-        fs_reg = FsSearcher(ws, registry=reg_ws, taxonomy=Taxonomy(TPL_DIR))
+        fs_reg = FsSearcher(ws, registry=reg_ws, taxonomy=Taxonomy(TPL_DIR), read_bytes=READ_BYTES)
         hits = fs_reg.search(FsSearchTask(id="t", root="", id_pattern=vid_id))
         check("поиск по РЕАЛЬНОМУ ID находит файлы сущности (раньше 0)", len(hits) == 2, f"got {len(hits)}")
         check("имя файла больше ни при чём — найдены оба файла видео",
@@ -109,7 +126,7 @@ def main():
                          "path": "niches/gaming", "parent_ids": []})
         reg_ws.register({"id": "NET_" + "c" * 32, "type": "network", "name": "n1",
                          "path": "niches/gaming/networks/n1", "parent_ids": ["NICHE_" + "b" * 32]})
-        fs_reg2 = FsSearcher(ws, registry=reg_ws, taxonomy=Taxonomy(TPL_DIR))
+        fs_reg2 = FsSearcher(ws, registry=reg_ws, taxonomy=Taxonomy(TPL_DIR), read_bytes=READ_BYTES)
         in_net = fs_reg2.search(FsSearchTask(id="t", root="", chain_prefix="NICHE_" + "b" * 32 + "/NET_" + "c" * 32))
         check("chain_prefix отбирает поддерево сетки", len(in_net) == 2, f"got {len(in_net)}")
         check("chain_prefix чужой сетки → пусто",
@@ -118,15 +135,11 @@ def main():
               in_net[0].chain.startswith("NICHE_" + "b" * 32 + "/NET_"), in_net[0].chain)
         check("тип сущности выводится из таксономии", hits[0].entity_type == "video", hits[0].entity_type)
         check("без таксономии тип не выдумывается",
-              FsSearcher(ws).search(FsSearchTask(id="t", root="docs"))[0].entity_type == "unknown")
+              FsSearcher(ws, read_bytes=READ_BYTES).search(FsSearchTask(id="t", root="docs"))[0].entity_type == "unknown")
 
         print("== FsSearcher: adversarial D36 (path traversal) ==")
         def esc(root):
-            try:
-                fs.search(FsSearchTask(id="t", root=root, content_keywords=["root"]))
-                return False
-            except FsSearchError as e:
-                return getattr(e, "code", "") == "PATH_ESCAPE"
+            return refused(lambda: fs.search(FsSearchTask(id="t", root=root, content_keywords=["root"]))) == "PATH_ESCAPE"
         check("root='/etc' → PATH_ESCAPE", esc("/etc"))
         check("root='../../../../etc' → PATH_ESCAPE", esc("../../../../etc"))
         check("root='docs/../../..' → PATH_ESCAPE", esc("docs/../../.."))
@@ -153,8 +166,8 @@ def main():
             else:
                 check("нечитаемый файл не попал в результаты",
                       all(h.name != "закрытый.txt" for h in _hits), [h.name for h in _hits])
-                check("нечитаемый файл ПОИМЕНОВАН в потерях, а не исчез",
-                      any("закрытый.txt" in u for u in _task.unreadable), _task.unreadable)
+                check("нечитаемый файл ПОИМЕНОВАН в потерях фактами (путь от корня, код ОС), а не исчез",
+                      _task.unreadable == [{"path": "docs/закрытый.txt", "reason": "EACCES"}], _task.unreadable)
         finally:
             _locked.chmod(0o644)
             _locked.unlink()
@@ -170,12 +183,8 @@ def main():
                                         "reads": [{"table": "t1", "sheet": "META", "columns": ["a"]}]})
         check("load_query_from_dict → QueryPlan с reads", isinstance(plan, QueryPlan) and len(plan.reads) == 1)
         check("ReadTask поля распарсились", plan.reads[0].table == "t1" and plan.reads[0].sheet == "META")
-        try:
-            qp.load_query("/etc/passwd")
-            check("QueryPlanner.load_query('/etc/passwd') → PATH_ESCAPE", False, "не бросил")
-        except SearchError as e:
-            check("QueryPlanner.load_query('/etc/passwd') → PATH_ESCAPE",
-                  getattr(e, "code", "") == "PATH_ESCAPE")
+        check("QueryPlanner.load_query('/etc/passwd') → PATH_ESCAPE",
+              refused(lambda: qp.load_query("/etc/passwd")) == "PATH_ESCAPE")
 
         print("== QueryPlanner: фильтры и сортировка в СВОЕЙ зоне (F55, слепая зона 3) ==")
         # Фильтрацию и сортировку проверяет ХОЗЯИН зоны: регрессия на разнотипных значениях
@@ -253,7 +262,7 @@ def main():
               [r["_row_id"] for r in got] == ["R3", "R2", "R1"], [r["_row_id"] for r in got])
 
         print("== FsSearcher: _detect_entity_type — все уровни иерархии ==")
-        fs_tx = FsSearcher(ws, taxonomy=Taxonomy(TPL_DIR))
+        fs_tx = FsSearcher(ws, taxonomy=Taxonomy(TPL_DIR), read_bytes=READ_BYTES)
         def det(rel):
             return fs_tx._detect_entity_type(ws / rel / "x.yaml")
         check("тип уровня: ниша", det("niches/gaming") == "niche", det("niches/gaming"))

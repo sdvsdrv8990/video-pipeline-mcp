@@ -46,11 +46,17 @@ dependencies = [
     # Утилиты
     "pyyaml>=6.0",
     "jsonschema>=4.0",
+    # Требования PEP 508 среды расчёта судит наш менеджер пакетов (core/packages) — импорт, а не транзитив.
+    "packaging>=24.0",
     # numpy и huggingface_hub импортируются НАШИМ кодом (onnx-провайдеры, каталог/установщик
     # моделей), а приезжали транзитивно через onnxruntime/diffusers. Транзитив — не объявление:
     # уносишь донора — базовый путь ломается на чистой машине.
     "numpy>=2.4",
     "huggingface_hub>=1.16",
+    # Замок ОС между процессами (core/paths, FS-09): импорт нашего кода, а приезжал транзитивно через huggingface_hub.
+    "filelock>=3.32",
+    # Корень журналов по ОС (core/observability/logs, FS-17): импорт нашего кода, а приезжал транзитивно.
+    "platformdirs>=4.11",
     # Подпись артефактов и ключ инстанса (core/integrity): без неё подпись молча отключается.
     "cryptography>=42.0",
     # NB: cloudflared — бинарь, НЕ pip-пакет (ставится install.sh).
@@ -155,7 +161,7 @@ Repository = "https://github.com/sdvsdrv8990/video-pipeline-mcp"
 # установки (они и так приходят с сервером), а для снятия: убрав такую строку из `dependencies`,
 # ломаешь не только сервер, и узнать об этом надо ДО, а не по красному гейту. Обе стороны держит
 # `tests/quick/test_dependencies.py`: незаявленное заимствование и заявленное, которого уже нет.
-borrowed_by_tests = ["aiohttp", "httpx", "huggingface-hub", "jsonschema", "openpyxl", "pillow", "pyyaml"]
+borrowed_by_tests = ["aiohttp", "httpx", "huggingface-hub", "jsonschema", "openpyxl", "pillow", "platformdirs", "pyyaml"]
 # Модуль, который даёт дистрибутив, — ОБЪЯВЛЕНИЕМ. Связать `import piper` с `piper-tts` можно
 # только через установленный пакет, а необязательная группа (модели, ускоритель) не стоит ни
 # здесь, ни в CI: там ставится ровно `.[dev]`. Без этой строки «не проверено» превращалось в

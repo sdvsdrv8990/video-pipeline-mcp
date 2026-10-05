@@ -6,10 +6,17 @@
 """
 
 import asyncio
+import inspect
+import logging
+import uuid
 from typing import Callable, Awaitable
 from dataclasses import dataclass
 
-from core.contracts import ToolResult, ErrorDetail, Recovery
+import jsonschema
+
+from core.contracts import ContractError, ToolResult, ErrorDetail, Recovery
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -101,15 +108,15 @@ class Engine:
         async with limit:
             return await asyncio.to_thread(lambda: asyncio.run(_run()))
 
-    def _error(self, code: str, message: str, recovery: "Recovery") -> ToolResult:
-        """Сборка ошибки: через реестр реакций, если он подключён.
-
-        Реестр даёт единый message_template/recovery по коду. Если кода нет
-        в реестре или реестр не задан — используем переданный fallback.
-        """
+    def _error(self, code: str, message: str, recovery: "Recovery", facts: dict | None = None,
+               errors: list[dict] | None = None) -> ToolResult:
+        """Сборка ошибки через реестр реакций (`Reactions.get_error`): текст и подсказка по коду, факты подставлены.
+        Кода нет в реестре или реестр не задан — переданный `recovery` (запасной путь вне контракта)."""
         if self.reactions is not None and self.reactions.get_reaction(code) is not None:
-            return ToolResult(status="error", error=self.reactions.get_error(code, raw_message=message))
-        return ToolResult(status="error", error=ErrorDetail(code=code, message=message, recovery=recovery))
+            return ToolResult(status="error", error=self.reactions.get_error(
+                code, raw_message=message, facts=facts, errors=errors))
+        return ToolResult(status="error", error=ErrorDetail(code=code, message=message, recovery=recovery,
+                                                            facts=facts or {}, errors=errors or []))
 
     def register(
         self,
@@ -166,10 +173,18 @@ class Engine:
         error = self._validate(tool, params)
         if error is not None:
             return error
+        mismatch = _unbindable(tool.handler, params)
+        if mismatch:
+            # Вина клиента — только привязка параметров, и называются имена, а не значения; TypeError из тела — падение.
+            return self._error(
+                "VALIDATION_ERROR",
+                f"Неверные параметры: {mismatch}",
+                Recovery(suggested_tool="tools/list", reason="Сверь параметры со схемой инструмента"),
+            )
 
         try:
             result = await self._invoke(tool, params)
-            # Логируем facts в _SESSION_LOG (если state_manager подключён).
+            # Факты — в журнал фактов под корнем журналов (Logs.session), если state_manager подключён.
             if self._state_manager and isinstance(result, ToolResult) and result.facts:
                 for fact in result.facts:
                     try:
@@ -180,50 +195,34 @@ class Engine:
                         if not self._log_broken:
                             self._log_broken = True
                             print(f"⚠️  [journal] запись факта не удалась ({e!r}) — "
-                                  f"_SESSION_LOG неполон; дальше молчим, чтобы не залить консоль")
+                                  f"журнал фактов неполон; дальше молчим, чтобы не залить консоль")
             return result
-        except TypeError as e:
-            # Лишние/неизвестные params → VALIDATION_ERROR (клиентская ошибка),
-            # а не INTERNAL_ERROR (серверная). Claude должен исправить params и повторить.
-            return self._error(
-                "VALIDATION_ERROR",
-                f"Неверные параметры: {e}",
-                Recovery(suggested_tool="tools/list", reason="Сверь параметры со схемой инструмента"),
-            )
         except Exception as e:
+            refused = self.refusal(e, name)
+            if refused is not None:
+                return refused
+            # Клиенту — общий текст с номером события, владельцу — причина с трассировкой: текст исключения несёт пути.
+            event = self._incident(name, e)
             return self._error(
                 "INTERNAL_ERROR",
-                str(e),
+                f"Инструмент {name} упал, событие {event}: причина в журнале сервера",
                 Recovery(reason="Внутренняя ошибка сервера"),
             )
 
     def _validate(self, tool: ToolDefinition, params: dict) -> ToolResult | None:
-        """Проверка params по JSON Schema инструмента.
-
-        Возвращает ToolResult(error) при несоответствии, иначе None.
-        Использует jsonschema, если доступен; при его отсутствии —
-        облегчённая проверка required/типа object, чтобы не падать.
-        """
-        schema = tool.input_schema or {}
+        """Проверка params по JSON Schema инструмента: отказ называет место и правило схемы, а не присланное значение
+        (текст jsonschema его цитирует). Возвращает ToolResult(error) при несоответствии, иначе None."""
         try:
-            import jsonschema
-            try:
-                jsonschema.validate(instance=params, schema=schema)
-            except jsonschema.ValidationError as e:
-                return self._error(
-                    "VALIDATION_ERROR",
-                    f"Параметры не прошли валидацию схемы: {e.message}",
-                    Recovery(suggested_tool="tools/list", reason="Исправь параметры по input_schema инструмента"),
-                )
-        except ImportError:
-            # Fallback без зависимости: проверяем обязательные поля.
-            missing = [k for k in schema.get("required", []) if k not in params]
-            if missing:
-                return self._error(
-                    "VALIDATION_ERROR",
-                    f"Отсутствуют обязательные параметры: {', '.join(missing)}",
-                    Recovery(suggested_tool="tools/list", reason="Добавь обязательные параметры"),
-                )
+            jsonschema.validate(instance=params, schema=tool.input_schema or {})
+        except jsonschema.ValidationError as e:
+            where = ".".join(map(str, e.absolute_path)) or "параметры"
+            rule = f"{e.validator}: {e.validator_value}"
+            return self._error(
+                "VALIDATION_ERROR",
+                f"Параметры не прошли валидацию схемы: {where} — правило «{rule}»",
+                Recovery(suggested_tool="tools/list", reason="Исправь параметры по input_schema инструмента"),
+                errors=[{"field": where, "rule": rule}],
+            )
         return None
 
     def list_tools(self) -> list[dict]:
@@ -296,3 +295,36 @@ class Engine:
             True если инструмент зарегистрирован
         """
         return name in self.tools
+
+    def refusal(self, exc: BaseException, name: str = "") -> ToolResult | None:
+        """Единственный перевод исключения в отказ: объявленное ядром (`ContractError`, и отказы двери пути тоже) —
+        своим кодом, текст и подсказка из реестра с фактами; чужое — None (падение решает граница). Отказ ожидаем: его
+        чужая причина (`raise … from e`) — в журнал строкой без трассировки."""
+        if not isinstance(exc, ContractError):
+            return None
+        if exc.__cause__ is not None and not isinstance(exc.__cause__, ContractError):
+            log.info("инструмент %s: отказ %s, причина: %s: %s", name, exc.code, type(exc.__cause__).__name__,
+                     exc.__cause__)
+        return self._error(exc.code, exc.message, Recovery(reason=exc.reason, suggested_tool=exc.suggested_tool),
+                           facts=exc.facts, errors=exc.errors)
+
+    def _incident(self, name: str, exc: BaseException) -> str:
+        """Причина — в журнал сервера с трассировкой; номер события связывает ответ клиенту с записью."""
+        event = uuid.uuid4().hex[:8]
+        log.error("инструмент %s, событие %s", name, event, exc_info=exc, extra={"event": event})
+        return event
+
+
+def _unbindable(handler: Callable[..., Awaitable[ToolResult]], params: dict) -> str:
+    """Чем параметры не ложатся на сигнатуру обработчика — только имена, без значений; пусто — ложатся."""
+    signature = inspect.signature(handler)
+    try:
+        signature.bind(**params)
+    except TypeError:
+        declared = signature.parameters.values()
+        extra = [] if any(p.kind is p.VAR_KEYWORD for p in declared) else sorted(set(params) - set(signature.parameters))
+        missing = [p.name for p in declared if p.default is p.empty and p.name not in params
+                   and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)]
+        named = [f"лишние: {', '.join(extra)}"] * bool(extra) + [f"нет обязательных: {', '.join(missing)}"] * bool(missing)
+        return "; ".join(named) or "параметры не ложатся на сигнатуру"
+    return ""

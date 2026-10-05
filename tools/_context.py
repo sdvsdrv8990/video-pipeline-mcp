@@ -1,6 +1,6 @@
 """tools/_context.py — общие зависимости тонких обёрток инструментов.
 
-Зовёт: Engine, TableEngine, ExcelEngine, StateManager, WritePolicy, safe_resolve, ErrorDetail.
+Зовёт: Engine, TableEngine, ExcelEngine, StateManager, WritePolicy, Files.
 Зовут: server, excel, filesystem, media, memory, montage, search, structure, tables, uniqueness.
 
 Логики продукта здесь нет: контекст раздаёт зависимости и переводит исключения ядра в контракт
@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core.advice import Advice
-from core.contracts import ContractError, ErrorDetail, Recovery, ToolResult
+from core.contracts import ContractError, Recovery, ToolResult
 from core.declaration import Declaration
 from core.firewall.rules.injection_detector import InjectionDetector
 from core.engine import Engine, TemplateEngine, TemplateResolver
@@ -21,7 +21,7 @@ from core.excel import ExcelEngine
 from core.ids import ChainResolver, IDGenerator, LinkRegistry, Taxonomy
 from core.integrity import InstanceIdentity
 from core.write_policy import WritePolicy
-from core.paths import PathEscapeError, SecretAccessError, configure_secret_dirs, safe_resolve
+from core.paths import Files, configure_secret_dirs
 from core.secrets import ChannelSecrets
 from core.state import StateManager
 from core.tables import TableEngine
@@ -56,8 +56,8 @@ class ToolContext:
     config_path: Path
 
     def resolve(self, path: str) -> Path:
-        """Путь с containment внутри workspace/ (единая точка — core/paths)."""
-        return safe_resolve(path, self.workspace_path)
+        """Путь внутри рабочей области — через дверь слоя (core/paths): отказ — код и факт `path`."""
+        return Files(self.workspace_path).place(path)
 
     @property
     def template_resolver(self) -> TemplateResolver:
@@ -79,6 +79,11 @@ class ToolContext:
     def write_policy(self) -> WritePolicy:
         """Какие типы файлов сервер вправе материализовать (список в firewall.yaml)."""
         return WritePolicy(self.config_path)
+
+    @property
+    def read_limit(self) -> int:
+        """Сколько байт файла читать в ответ (FS-12): `firewall.yaml → file_limits.read_bytes`, без запасного числа."""
+        return _firewall(self.config_path).need("file_limits", "read_bytes", kind=int)
 
     @property
     def injection_flagger(self) -> InjectionDetector:
@@ -105,46 +110,22 @@ class ToolContext:
         Для кода из реестра class/message_template/recovery берутся из server_reactions.yaml
         (raw message сохраняет специфику). reason/suggested_tool — fallback лишь для кодов вне реестра.
         """
-        if self.engine.reactions is not None and self.engine.reactions.get_reaction(code) is not None:
-            return ToolResult(status="error", error=self.engine.reactions.get_error(code, raw_message=message))
-        return ToolResult(status="error", error=ErrorDetail(
-            code=code, message=message,
-            recovery=Recovery(reason=reason, suggested_tool=suggested_tool)))
-
-    def err_path(self, exc: Exception, message: str) -> ToolResult:
-        """Отказ по пути. Закрытый каталог и выход за рабочую область — РАЗНЫЕ причины, и
-        клиент должен видеть, какая именно: иначе модель ищет обход там, где двери просто нет."""
-        if isinstance(exc, SecretAccessError):
-            return self.err(
-                "SECRET_ACCESS_DENIED", "Каталог секретов закрыт для инструментов.",
-                "Ключи канала не читаются и не пишутся инструментами по построению. "
-                "Вносит их владелец вручную: python scripts/set_provider_key.py.")
-        return self.err("PATH_ESCAPE", message)
+        return self.engine._error(code, message, Recovery(reason=reason, suggested_tool=suggested_tool))
 
     def safe(self, call: Callable[[], Any]) -> tuple[bool, Any]:
-        """Выполнить sync-вызов ядра, смаппив исключения в ToolResult.
+        """Выполнить sync-вызов ядра; объявленное исключение — готовый отказ (перевод один — `Engine.refusal`),
+        чужое летит дальше, на границу исполнения.
 
         Returns (ok, value_or_error_result): при ok=False во втором элементе —
         готовый ошибочный ToolResult, иначе — результат ядра.
         """
         try:
             return True, call()
-        except SecretAccessError:
-            # Не «нет прав на этот вызов», а «этой двери нет» — иначе модель будет искать обход.
-            return False, self.err(
-                "SECRET_ACCESS_DENIED", "Каталог секретов закрыт для инструментов.",
-                "Ключи канала не читаются и не пишутся инструментами по построению. "
-                "Вносит их владелец вручную: python scripts/set_provider_key.py.")
-        except PathEscapeError:
-            return False, self.err("PATH_ESCAPE", "Путь выходит за пределы workspace/.",
-                                   "Используй путь ВНУТРИ workspace, без '..' и абсолютных путей.")
-        except ContractError as e:
-            # Ловим БАЗУ, а не перечень зон: перечень — второй список, обязанный совпадать с
-            # иерархией, и новая зона молча приезжала бы клиенту как INTERNAL_ERROR.
-            return False, self.err(e.code, e.message, e.reason, e.suggested_tool)
-        except ValueError as e:
-            # Не-путёвый ValueError из глубины core — честно INTERNAL_ERROR, не мислейбл PATH_ESCAPE.
-            return False, self.err("INTERNAL_ERROR", f"Внутренняя ошибка: {e}")
+        except Exception as e:
+            refused = self.engine.refusal(e)
+            if refused is None:
+                raise
+            return False, refused
 
 
 def build_context(engine: Engine, id_generator: IDGenerator, state_manager: StateManager,

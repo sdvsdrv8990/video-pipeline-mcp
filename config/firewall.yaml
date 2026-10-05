@@ -114,6 +114,16 @@ write_allowlist:
     - { name: "Windows batch",           contains: "@echo off" }
     - { name: "PowerShell-загрузчик",    contains: "invoke-webrequest" }
 
+# ═══ ПРЕДЕЛЫ ФАЙЛОВ ПО ПУТИ КЛИЕНТА ═══
+# Проверяются ДО действия. Ключа нет — отказ объявления, а не запасное число в коде.
+file_limits:
+  # Сколько байт файла читать в ответ. Больше — fs_read_file отдаёт голову с truncated, память (нужна целиком)
+  # отказывает FILE_TOO_LARGE, поиск по содержимому называет файл в unreadable.
+  read_bytes: 1048576
+  # Сколько байт записать одним действием; больше — FILE_TOO_LARGE, файл на диске не тронут. 1 МБ — столько же
+  # пускает в тело запроса транспорт (aiohttp client_max_size по умолчанию).
+  write_bytes: 1048576
+
 # ═══ ЛОГИРОВАНИЕ ═══
 logging:
   log_suspicious: true

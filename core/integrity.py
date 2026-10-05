@@ -8,10 +8,11 @@
 
 import hashlib
 import json
-import os
 import stat
 from pathlib import Path
 from typing import Any
+
+from core.paths import Files
 
 try:  # Подпись — опциональная зависимость: без неё честно объявляем себя недоступной.
     from cryptography.hazmat.primitives import serialization
@@ -62,17 +63,13 @@ class InstanceIdentity:
         """Выпустить ключ подписи при первом старте. False — подпись недоступна (нет библиотеки)."""
         if not SIGNING_AVAILABLE:
             return False
-        if self.key_path.exists():
-            self._private = serialization.load_pem_private_key(
-                self.key_path.read_bytes(), password=None)
-            return True
-        key = Ed25519PrivateKey.generate()
-        self.key_path.write_bytes(key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption()))
-        os.chmod(self.key_path, SECRET_MODE)
-        self._private = key
+        if not self.key_path.exists():  # проба — чтобы не выпускать ключ на каждом старте; гонку держит create
+            Files(self.key_path.parent).create(self.key_path.name, Ed25519PrivateKey.generate().private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption()), mode=SECRET_MODE)
+        # Ключ — тот, что лёг на диск: в гонке двух процессов он у обоих один, ключ проигравшего не живёт в памяти.
+        self._private = serialization.load_pem_private_key(self.key_path.read_bytes(), password=None)
         return True
 
     @property

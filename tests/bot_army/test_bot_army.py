@@ -57,12 +57,10 @@ def test_ban_after_violations():
         res = fw.check(FirewallRequest(ip=ip, method="ping", params={}, timestamp=2000.0 + i))
         check(f"Запрос {i+1}: проходит", res.decision.value == "allow")
 
-    # 3-й запрос — rate_limit (нарушение 1)
     res = fw.check(FirewallRequest(ip=ip, method="ping", params={}, timestamp=2000.0 + 2))
     check("Запрос 3: rate_limit (нарушение 1)", res.decision.value == "rate_limit",
           f"decision={res.decision.value}")
 
-    # 4-й запрос — rate_limit (нарушение 2)
     res = fw.check(FirewallRequest(ip=ip, method="ping", params={}, timestamp=2000.0 + 3))
     check("Запрос 4: rate_limit (нарушение 2)", res.decision.value == "rate_limit")
 

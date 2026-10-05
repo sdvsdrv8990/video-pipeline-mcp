@@ -24,6 +24,12 @@ classes:
     offload: true
     max_concurrent: 1     # карта одна: вторая задача на ней даёт CUDA OOM, а не очередь
     retry_after_sec: 60
+  network:                # ожидание ответа источника моделей (huggingface.co) и снимок железа (nvidia-smi до 10 с)
+    offload: true
+    max_concurrent: 2     # клиент зовёт инструменты по одному; два места — список рядом с запуском установки
+    # media_models со списком и описаниями — до ~60 запросов (список, model_info и README на строку при limit 20),
+    # ответ huggingface.co 0,46–1,37 с (замер 2026-10-05) — около 30 с на вызов; раньше место не освободится.
+    retry_after_sec: 30
 
 tools:
   # ── Монтаж: рендер через внешний бинарь и сборка сцены ──
@@ -51,3 +57,8 @@ tools:
   # ── Медиа: подъём моделей на карте ──
   media_generate: gpu
   media_runner: gpu
+
+  # ── Медиа: каталог и установка моделей — сеть источника и снимок железа ──
+  media_models: network
+  media_model_install: network
+  media_install_status: cpu_heavy   # сети нет: обход каталога задач с чтением файлов состояния
