@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """scripts/guards/reproduce.py — след отказа становится объявленным сценарием.
 
-Паспорт: будит чтение, гейт поставки · читает tests/.journal, tests/scenarios · шагов не
-  расписывает · не подписывает.
-Зовёт: _stamp.
-Зовут: vpm-delivery-gate и гейт поставки.
+Читает logs/trail, tests/.journal, tests/scenarios.
+Зовёт: invariants (непокрытые коды отказа).
+Зовут: tests/quick/test_trail.py; запускается руками.
 
 Отказ, случившийся один раз, воспроизводят по тому, что от него осталось. След сервера и журнал
 харнесса пишут ОДНУ форму записи, поэтому оба читаются здесь одним кодом.
@@ -436,41 +435,7 @@ def _exempt_facts(root: Path = ROOT) -> set[str]:
             if isinstance(item, dict) and item.get("observes") == "нечего"}
 
 
-def resolve_stamp(key: str, root: Path = ROOT) -> int:
-    """Подпись → её запись: род, роль, намерение, ожидание, факт, HEAD и команда повтора.
-
-    Строка вывода, попавшая в другую сессию, сама по себе не говорит, улика это или отказ; ответ
-    берётся из записи, а не восстанавливается дознанием заново.
-    """
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import _stamp
-    found = _stamp.find(key, root)
-    if not found:
-        print(f"⟦vpm {key}⟧ записи нет: либо ключ из чужого дерева, либо журнал подписей вычищен "
-              f"({'/'.join(_stamp.JOURNAL)}/stamps-*.jsonl)")
-        return 1
-    for stamp in found:
-        print(f"⟦vpm {stamp['key']} {stamp['role']}⟧ {stamp['what']}")
-        print(f"  род: {stamp['kind']} · намерение: {stamp.get('intent') or '—'}")
-        print(f"  ждали: {stamp.get('expected') or '—'}")
-        print(f"  факт:  {stamp.get('actual') or '—'}")
-        print(f"  дерево: HEAD={stamp.get('head') or 'нет git'}"
-              f"{' (грязное)' if stamp.get('dirty') else ''} · время: {stamp.get('ts', 0):.0f}")
-        if stamp.get("cmd"):
-            print(f"  повторить: {stamp['cmd']}")
-        print(f"  запись: {stamp.get('where') or '—'}")
-    if len(found) > 1:
-        print(f"\nключ короткий, совпадений {len(found)} — различай их по времени и HEAD")
-    return 0
-
-
 def main() -> int:
-    try:                                       # след: без отметки механизм выглядит пылящимся
-        sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
-        import _trace
-        _trace.mark("reproduce.py")
-    except Exception:  # след не важнее самой работы
-        pass
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--record", help="файл записи; по умолчанию самый свежий из следа и журнала")
     ap.add_argument("--tool", help="воспроизводить отказ этого инструмента")
@@ -483,11 +448,7 @@ def main() -> int:
     ap.add_argument("--write", help="дописать объявление в этот файл вместо вывода в stdout")
     ap.add_argument("--exemptions", action="store_true",
                     help="вердикт по послаблениям: что из объявленных исключений опроверг живой прогон")
-    ap.add_argument("--stamp", help="ключ подписи: чем был тот вывод, по какому намерению, чем повторить")
     a = ap.parse_args()
-
-    if a.stamp:
-        return resolve_stamp(a.stamp)
 
     record = latest(a.record)
     entries = _entries(record)

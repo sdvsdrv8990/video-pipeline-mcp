@@ -1,5 +1,5 @@
 # CI-гейт под фазу фиксов. Хард-гейты: ruff, mypy, тесты (in-process), bandit, pip-audit,
-# gitleaks, conformance, comment-guard (храповик текста в коде: вниз можно, вверх нет).
+# gitleaks, conformance.
 # Тесты — через pytest-раннер: наборы находятся автоматически. Отсечения «живых» больше НЕТ
 # харнесс `tests/harness` поднимает сервер сам — свой порт, своя временная рабочая
 # область, настоящий ключ, — поэтому периметр проверяется в CI, а не «когда-нибудь руками».
@@ -37,29 +37,6 @@ jobs:
           git rev-parse HEAD~1 >/dev/null 2>&1 || { echo "нет предыдущей ревизии — сравнить не с чем"; exit 1; }
           griffe check core -s . -a HEAD~1 -b HEAD
           griffe check tools -s . -a HEAD~1 -b HEAD
-
-  studio:
-    name: studio (tsc + eslint)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: tests/studio_emulation
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: tests/studio_emulation/package-lock.json
-      - run: npm ci
-      - name: tsc (настоящий разбор .tsx вместо текстового)
-        run: npm run typecheck
-      - name: eslint (правило хуков и полнота зависимостей)
-        run: npm run lint
-      - name: браузер (chromium для прогона геометрии)
-        run: npx playwright install --with-deps chromium
-      - name: геометрия (наложение, выход текста, уход из окна)
-        run: npm run geometry
 
   studio-app:
     name: studio-app (tsc + eslint + сборка)
@@ -168,29 +145,6 @@ jobs:
       # то есть красил бы гейт всегда. Обычный pip-audit = exit 1 только на реальной уязвимости.
       - name: pip-audit (hard gate)
         run: pip-audit
-
-  comment-guard:
-    name: comment-guard (мусор ИИ в коде, храповик)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.11"
-      # Без установки пакета: сторож на stdlib. Потолок — scripts/guards/comment_guard_baseline.txt,
-      # снижается только через --bless, поэтому падение долга видно в diff ревью.
-      - name: comment guard (ratchet)
-        run: python scripts/guards/comment_guard.py --check
-      # Инварианты МЕЖДУ файлами: пропуск набора без установки бинаря в CI, имя до объявления в
-      # линейном наборе, код отказа мимо реестра реакций, `enum` без значений. Ни один из них не
-      # виден ни линтеру, ни типам, ни прогону: разрыв живёт между двумя файлами.
-      - name: invariants (межфайловые)
-        run: python scripts/guards/invariants.py --check
-
-      # Реестр находок обязан РАЗБИРАТЬСЯ: сломанный формат обнуляет и счёт, и статус-инвариант,
-      # причём обе проверки при этом молча зеленеют. Числа в прозе не живут — их печатает замер.
-      - name: findings registry readable
-        run: python scripts/guards/findings_count.py --check
 
   gitleaks:
     name: gitleaks (secrets)

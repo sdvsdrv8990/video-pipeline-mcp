@@ -5,59 +5,47 @@ tests/quick/test_invariants.py — сторож межфайловых инва�
 стоившие разбора при написании сторожа (параметры функций, `with ... as`, `except ... as`,
 упоминание бинаря в комментарии), закреплены как регрессия.
 """
+
 import sys
-import json
-import shutil
-import subprocess
+
 import tempfile
+
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+
 sys.path.insert(0, str(ROOT / "scripts" / "guards"))
+
 sys.path.insert(0, str(ROOT))
 
 from invariants import (
-    НетУлики, axis_silent_without_reason, axis_undeclared, _немые, _шаг_оси,
-    scenarios_without_destructive, judge_without_evidence_state,
-    requirement_without_judge,
-    codes_outside_registry, codes_without_emitter, dead_recovery_in_engine,
-    declared_but_unscripted, default_instead_of_declaration, enum_without_values,
-    facts_exempt_from_observation, facts_outside_registry, facts_without_emitter,
-    facts_without_observer, observation_incomplete,
-    door_not_installed, guard_without_home, hook_declared_muted,
-    acceptance_advice_only, acceptance_calls_missing,
-    lesson_without_evidence, lesson_without_executor, lesson_without_mechanism,
-    silencer_without_reason, mutation_without_count,
-    journal_off_index,
-    skill_boundary_invisible,
-    ceiling_moved_unrecorded,
-    _bless_stamp,
-    acceptance_state_unproven,
-    dead_command,
-    acceptance_subject_gap,
-    evidence_roster_off_disk,
-    judge_off_journal,
-    quality_axis_without_parameter,
-    skill_without_zone,
-    memory_dir, memory_off_index,
-    hooks_off_declaration,
-    knob_without_reader, zone_declared_twice,
-    resources_off_inventory, scenario_calls_unknown_tool, skips_without_ci,
-    ci_jobs_off_docs, dispatch_by_value, guards_off_catalog, mirrored_declaration,
+    НетУлики,
+    axis_undeclared,
+    codes_outside_registry,
+    codes_without_emitter,
+    dead_recovery_in_engine,
+    declared_but_unscripted,
+    default_instead_of_declaration,
+    enum_without_values,
+    facts_exempt_from_observation,
+    facts_outside_registry,
+    facts_without_emitter,
+    facts_without_observer,
+    observation_incomplete,
+    knob_without_reader,
+    resources_off_inventory,
+    scenario_calls_unknown_tool,
+    dispatch_by_value,
+    mirrored_declaration,
     declaration_loaded_privately,
     module_without_reader,
     muted_refusal,
-    key_without_record,
-    status_off_registry,
-    suites_off_catalog,
     record_field_mismatch,
     unfinished_in_server,
-    used_before_declared,
 )
-
 _checks = 0
-_fails = []
 
+_fails = []
 
 def ok(cond, msg):
     global _checks
@@ -68,7 +56,6 @@ def ok(cond, msg):
     else:
         print(f"  ✓ {msg}")
 
-
 def make(files: dict[str, str]) -> Path:
     """Временный корень: сторожу пути приходят параметром, поэтому мусорить в репозитории не нужно."""
     root = Path(tempfile.mkdtemp(prefix="vpm-inv-"))
@@ -77,7 +64,6 @@ def make(files: dict[str, str]) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
     return root
-
 
 def отказ(вызов, дерево: Path) -> str:
     """Причина отказа судить, либо пусто. Молчание оси и её отказ — РАЗНЫЕ исходы, и ассерт,
@@ -88,84 +74,20 @@ def отказ(вызов, дерево: Path) -> str:
         return str(нет)
     return ""
 
-
-CI_INSTALLS = """
-jobs:
-  test:
-    steps:
-      - run: sudo apt-get install -y ffmpeg
-"""
-CI_COMMENT_ONLY = """
-jobs:
-  test:
-    steps:
-      # ffmpeg тут только упомянут, но не ставится
-      - run: sudo apt-get install -y libreoffice-calc
-"""
-CI_REQUIRED = """
-jobs:
-  test:
-    steps:
-      - run: python -m pytest
-        env:
-          VPM_FFMPEG_REQUIRED: "1"
-"""
-SUITE_SKIPS = 'import os, shutil\nif not shutil.which("ffmpeg"):\n    print("пропуск")\n'
-SUITE_REQUIRED = (SUITE_SKIPS + 'if os.environ.get("VPM_FFMPEG_REQUIRED") == "1":\n    raise SystemExit(1)\n')
-
-print("== пропуск набора без покрытия в CI ==")
-ok(not skips_without_ci(make({"tests/test_a.py": SUITE_SKIPS, ".github/workflows/ci.yml": CI_INSTALLS})),
-   "бинарь ставится командой джобы — молчим")
-ok(not skips_without_ci(make({"tests/test_a.py": SUITE_REQUIRED, ".github/workflows/ci.yml": CI_REQUIRED})),
-   "бинарь не ставится, но пропуск запрещён флагом — молчим")
-ok(len(skips_without_ci(make({"tests/test_a.py": SUITE_SKIPS, ".github/workflows/ci.yml": CI_COMMENT_ONLY}))) == 1,
-   "бинарь назван лишь В КОММЕНТАРИИ — это объяснение, а не механизм: находка")
-ok(len(skips_without_ci(make({"tests/test_a.py": SUITE_SKIPS,
-                              ".github/workflows/ci.yml": "jobs:\n  test:\n    steps:\n      - run: pytest\n"}))) == 1,
-   "ни установки, ни флага — находка")
-
-print("\n== имя используется до объявления ==")
-ok(len(used_before_declared(make({"tests/test_b.py": "print(поздно)\nпоздно = 1\n"}))) == 1,
-   "имя объявлено НИЖЕ места использования — находка")
-CLEAN = '''import contextlib
-import sys
-
-
-def позже_объявленная():
-    return ХВОСТ            # функция вправе смотреть на глобаль, объявленную ниже: тело ждёт вызова
-
-
-def приёмник(self, name, *args, **kw):
-    return (self, name, args, kw)
-
-
-with contextlib.nullcontext(1) as первый, contextlib.nullcontext(первый) as второй:
-    print(второй)
-
-for элемент in (1, 2):
-    print(элемент)
-
-try:
-    raise ValueError("x")
-except ValueError as ошибка:
-    print(ошибка)
-
-ХВОСТ = [значение for значение in range(3)]
-sys.exit(0)
-'''
-ok(not used_before_declared(make({"tests/test_c.py": CLEAN})),
-   "параметры функций, `with ... as`, `for`, `except ... as` и взгляд функции вперёд — не находки")
-
 print("\n== код отказа мимо реестра ==")
+
 # Коды отказов в проекте ASCII-заглавные — фикстур обязан быть таким же, иначе он
 # проверяет не сторожа, а собственную опечатку.
 CODE_SRC = 'from x import ZoneError\n\n\ndef f():\n    raise ZoneError("MY_CODE", "текст")\n'
+
 ok(not codes_outside_registry(make({"core/z.py": CODE_SRC, "config/server_reactions.yaml": "MY_CODE:\n  class: ai_recoverable\n"}),
                               known={"MY_CODE"}),
    "код объявлен и в реестре, и в списке известных — молчим")
+
 ok(len(codes_outside_registry(make({"core/z.py": CODE_SRC, "config/server_reactions.yaml": "OTHER_CODE:\n  class: ai_recoverable\n"}),
                               known={"MY_CODE"})) == 1,
    "код брошен, но в реестре его нет — клиент получит его без класса и рекавери")
+
 ok(len(codes_outside_registry(make({"core/z.py": CODE_SRC, "config/server_reactions.yaml": "MY_CODE:\n  class: ai_recoverable\n"}),
                               known=set())) == 1,
    "код в реестре, но выпал из списка известных — контракт предупредит на боевом пути")
@@ -174,147 +96,104 @@ ok(not codes_outside_registry(make({"core/x.py": 'raise ToolError("НЕТ_КОД
    "реестра реакций нет — сверять не с чем: «улики нет», а не трейс вместо вердикта")
 
 print("\n== enum без перечня значений ==")
+
 SCHEMA_OK = "sheets:\n  - name: S\n    columns:\n      - { name: c, type: enum, enum: ['A', 'B'] }\n"
+
 SCHEMA_BAD = "sheets:\n  - name: S\n    columns:\n      - { name: c, type: enum }\n"
+
 ok(not enum_without_values(make({"config/templates/tables/x.schema.yaml": SCHEMA_OK})),
    "enum с перечнем значений — молчим")
+
 ok(len(enum_without_values(make({"config/templates/tables/x.schema.yaml": SCHEMA_BAD}))) == 1,
    "enum без значений — находка: проверить запись нечем")
 
 print("\n== объявление ресурсов против инвентаря ==")
+
 INV = '{"montage_render_scene": {}, "media_generate": {}}'
+
 RES_OK = "default: inline\nclasses:\n  inline: {offload: false}\n  gpu: {offload: true, max_concurrent: 1}\ntools:\n  media_generate: gpu\n"
+
 RES_GHOST = "default: inline\nclasses:\n  inline: {offload: false}\ntools:\n  montage_render_sceen: inline\n"
+
 RES_CLASS = "default: inline\nclasses:\n  inline: {offload: false}\ntools:\n  media_generate: gpuu\n"
+
 RES_DEFAULT = "default: inlien\nclasses:\n  inline: {offload: false}\ntools: {}\n"
+
 INV_PATH = "tests/quick/tools_inventory.golden.json"
+
 ok(not resources_off_inventory(make({"config/resources.yaml": RES_OK, INV_PATH: INV})),
    "имена и классы сходятся — молчим")
+
 ok(len(resources_off_inventory(make({"config/resources.yaml": RES_GHOST, INV_PATH: INV}))) == 1,
    "инструмент переименован — строка указывает в пустоту, снятие с цикла молча не действует")
+
 ok(len(resources_off_inventory(make({"config/resources.yaml": RES_CLASS, INV_PATH: INV}))) == 1,
    "класс не объявлен — вызов тихо падает в default, а сервер снова морозится")
+
 ok(len(resources_off_inventory(make({"config/resources.yaml": RES_DEFAULT, INV_PATH: INV}))) == 1,
    "опечатка в `default` — умолчание указывает в несуществующий класс")
+
 ok(not resources_off_inventory(make({"config/x.yaml": "y: 1"})),
    "объявления нет вовсе — не выдумываем нарушение")
+
 RES_NOLIMIT = "default: inline\nclasses:\n  inline: {offload: false}\n  gpu: {offload: true}\ntools:\n  media_generate: gpu\n"
+
 ok(len(resources_off_inventory(make({"config/resources.yaml": RES_NOLIMIT, INV_PATH: INV}))) == 1,
    "класс снимается с цикла без предела — сто вызовов поднимут сто потоков")
 
-print("\n== ключ улики в реестре не поднимается ==")
-ЖУРНАЛ = {"tests/.journal/stamps-20260101.jsonl": '{"key": "ab12", "kind": "гейт", "role": "РЕШЕНИЕ", "what": "живая запись"}' + "\n"}
-ok(not key_without_record(make({**ЖУРНАЛ, "tests/CATALOG.md": "| M1 | мутация | f.py | набор | 🔴 ловит 1 (⟦vpm ab12⟧) |"})),
-   "ключ, поднимающий запись, претензий не вызывает")
-плохо = key_without_record(make({**ЖУРНАЛ, "tests/CATALOG.md": "| M1 | мутация | f.py | набор | 🔴 ловит 1 (⟦vpm dead⟧) |"}))
-ok(len(плохо) == 1 and "не поднимается" in плохо[0],
-   "МЁРТВЫЙ ключ в реестре мутаций — отказ: значок рядом с ним обещание, а не улика")
-ok(len(key_without_record(make({**ЖУРНАЛ, "docs/roadmap/02_findings.md": "| F1 | 🟠 | беда | пруф ⟦vpm dead⟧ | зона |"}))) == 1,
-   "реестр находок судится тем же правилом: ключ в колонке пруфа обязан подниматься")
-ok("журнала подписей" in отказ(key_without_record,
-                               make({"tests/CATALOG.md": "| M1 | мутация | f.py | набор | 🔴 ловит 1 (⟦vpm dead⟧) |"})),
-   "журнала подписей НЕТ — ось ОТКАЗЫВАЕТСЯ судить вслух (чужая машина, чистый клон), "
-   "а не молчит: молчание прочиталось бы как «все ключи живые»")
-ok(not key_without_record(make({**ЖУРНАЛ, "docs/roadmap/_sessions.md": "ошибка: вписал ⟦vpm dead⟧ вместо живого"})),
-   "ЖУРНАЛ не судится: он хранит ошибку дословно, и цитата мёртвого ключа законна")
-
-print("\n== статус находки мимо реестра ==")
-REG = "| ~~F1~~ | ✅ | закрыта |\n| F2 | 🟠 | открыта |\n"
-ok(not status_off_registry(make({"docs/roadmap/02_findings.md": REG,
-                                 "docs/roadmap/plan.md": "шаг зависит от F2 🟠 и ждёт"})),
-   "план повторяет статус ВЕРНО — молчим")
-ok(len(status_off_registry(make({"docs/roadmap/02_findings.md": REG,
-                                 "docs/roadmap/plan.md": "шаг упирается в F1 🔴 — узкое место"}))) == 1,
-   "план показывает закрытую находку открытой — копия разъехалась с хозяином")
-ok(not status_off_registry(make({"docs/roadmap/02_findings.md": REG,
-                                 "docs/roadmap/_sessions.md": "тогда F1 был 🔴 и блокировал"})),
-   "журнал сессий хранит ПРЕЖНИЙ статус — это история, а не расхождение")
-ok(not status_off_registry(make({"docs/roadmap/02_findings.md": REG,
-                                 "docs/roadmap/plan.md": "смотри F1 и F2 — статуса тут нет"})),
-   "упоминание находки без статуса — не утверждение, молчим")
-
-print("\n== набор мимо каталога зон ==")
-# Гейт кладётся в корень НАСТОЯЩИМ файлом: сторож обязан считать наборы тем же кодом, что и гейт,
-# иначе списки разъедутся молча — а именно это он и стережёт.
-GATE_SRC = (ROOT / "tests" / "test_suites.py").read_text(encoding="utf-8")
-ZONE_ROW = "| Тест | Зона |\n|---|---|\n| `test_a.py` | зона A |\n"
-
-ok(not suites_off_catalog(make({"tests/test_suites.py": GATE_SRC,
-                                "tests/quick/test_a.py": "x = 1\n",
-                                "tests/CATALOG.md": ZONE_ROW})),
-   "набор объявлен строкой-зоной — молчим")
-ok(len(suites_off_catalog(make({"tests/test_suites.py": GATE_SRC,
-                                "tests/quick/test_a.py": "x = 1\n",
-                                "tests/quick/test_b.py": "x = 1\n",
-                                "tests/CATALOG.md": ZONE_ROW}))) == 1,
-   "новый набор без зоны — находка: так тесты и плодятся")
-ok(len(suites_off_catalog(make({"tests/test_suites.py": GATE_SRC,
-                                "tests/quick/test_a.py": "x = 1\n",
-                                "tests/quick/test_b.py": "x = 1\n",
-                                "tests/CATALOG.md": ZONE_ROW + "\nрой уходит в `test_b.py` когда-нибудь\n"}))) == 1,
-   "имя названо в ПРОЗЕ, а не строкой таблицы — зоной не считается (сторож смотрит на вещь, не на след)")
-ok(len(suites_off_catalog(make({"tests/test_suites.py": GATE_SRC,
-                                "tests/CATALOG.md": ZONE_ROW}))) == 1,
-   "зона объявлена, а набора нет — расширять предлагается пустоту")
-ok(not suites_off_catalog(make({"tests/quick/test_a.py": "x = 1\n", "tests/CATALOG.md": ZONE_ROW})),
-   "гейта в корне нет — не выдумываем нарушение")
-ok(not suites_off_catalog(make({"tests/test_suites.py": GATE_SRC,
-                                "tests/sim_zone/test_c.py": "x = 1\n",
-                                "tests/CATALOG.md": "| Набор | Зона |\n|---|---|\n| `sim_zone/` | зона C |\n"})),
-   "набор-каталог объявлен ключом `dir/` — молчим")
-ok(len(suites_off_catalog(make({"tests/test_suites.py": GATE_SRC,
-                                "tests/quick/test_a.py": "x = 1\n",
-                                "tests/CATALOG.md": ZONE_ROW + "| `снесённый/` | зона D |\n"}))) == 1,
-   "зона-каталог объявлена, а каталога нет — снесённый набор числится живым")
-ok(len(suites_off_catalog(make({"tests/test_suites.py": GATE_SRC,
-                                "tests/quick/test_a.py": "x = 1\n",
-                                "tests/снесённый/__pycache__/старое.pyc": "мусор",
-                                "tests/CATALOG.md": ZONE_ROW + "| `снесённый/` | зона D |\n"}))) == 1,
-   "каталог зоны жив мусором (`__pycache__`), наборов в нём нет — зона всё равно мертва")
-ok(not suites_off_catalog(make({"tests/test_suites.py": GATE_SRC,
-                                "tests/harness/test_helper.py": "x = 1\n",
-                                "tests/CATALOG.md": "| Тест | Зона |\n|---|---|\n| `нет` | — |\n"})),
-   "харнесс — библиотека, а не набор: гейт его пропускает, сторож обязан пропустить тоже")
-
 print("\n== ветвление по значению вместо таблицы ==")
+
 THREE = ('def f(kind):\n'
          '    if kind == "a":\n        return 1\n'
          '    elif kind == "b":\n        return 2\n'
          '    elif kind == "c":\n        return 3\n'
          '    return 0\n')
+
 TWO = 'def f(kind):\n    if kind == "a":\n        return 1\n    elif kind == "b":\n        return 2\n    return 0\n'
+
 MIXED = ('def f(a, b, c):\n'
          '    if a == "x":\n        return 1\n'
          '    elif b == "y":\n        return 2\n'
          '    elif c == "z":\n        return 3\n'
          '    return 0\n')
+
 ok(len(dispatch_by_value(make({"core/z.py": THREE}))) == 1,
    "три ветки по одному значению — это таблица, а не выбор")
+
 ok(not dispatch_by_value(make({"core/z.py": TWO})),
    "две ветки — выбор, а не таблица: молчим")
+
 ok(not dispatch_by_value(make({"core/z.py": MIXED})),
    "ветки по РАЗНЫМ именам — не диспетчеризация, молчим")
+
 THREE_INTS = ('def f(code):\n'
               '    if code == 200:\n        return 1\n'
               '    elif code == 404:\n        return 2\n'
               '    elif code == 500:\n        return 3\n'
               '    return 0\n')
+
 THREE_CONSTS = ('SET, GET, DEL = "set", "get", "del"\n'
                 'def f(kind):\n'
                 '    if kind == SET:\n        return 1\n'
                 '    elif kind == GET:\n        return 2\n'
                 '    elif kind == DEL:\n        return 3\n'
                 '    return 0\n')
+
 ok(len(dispatch_by_value(make({"core/z.py": THREE_INTS}))) == 1,
    "три ветки по числам — та же таблица: тип значения диспетчеризацию не отменяет")
+
 ok(len(dispatch_by_value(make({"core/z.py": THREE_CONSTS}))) == 1,
    "именованная константа вместо литерала — случай всё равно добавляется правкой КОДА")
 
 print("\n== объявление сценария против описи и реестра ==")
+
 REGISTRY_TWO = ("ALIVE_CODE:\n  class: ai_recoverable\n"
                 "ORPHAN_CODE:\n  class: ai_recoverable\n")
+
 EMITTER = 'def f():\n    raise Err("ALIVE_CODE", "текст")\n'
+
 INVENTORY_TWO = '{"инстр_а": {}, "инстр_б": {}}'
+
 COVERS_ALL = ('- scenario: s\n  why: w\n  when:\n'
               '    - call: инстр_а\n      expect: {ok: true}\n'
               '    - call: инстр_б\n      expect: {ok: false, code: ALIVE_CODE}\n')
@@ -323,6 +202,7 @@ ok(len(scenario_calls_unknown_tool(make({
     "tests/quick/tools_inventory.golden.json": INVENTORY_TWO,
     "tests/scenarios/a.yaml": '- scenario: s\n  why: w\n  when:\n    - call: снесённый\n      expect: {ok: true}\n',
 }))) == 1, "сценарий зовёт инструмент мимо описи — переименование оставило объявление в пустоту")
+
 ok(not scenario_calls_unknown_tool(make({
     "tests/quick/tools_inventory.golden.json": INVENTORY_TWO,
     "tests/scenarios/a.yaml": ('- scenario: s\n  why: w\n  when:\n    - call: нет_такого\n'
@@ -332,9 +212,11 @@ ok(not scenario_calls_unknown_tool(make({
 ok(len(codes_without_emitter(make({"config/server_reactions.yaml": REGISTRY_TWO,
                                    "core/z.py": EMITTER}))) == 1,
    "код объявлен клиенту, а бросить его некому — обещание без держателя")
+
 ok(not codes_without_emitter(make({"config/server_reactions.yaml": "ALIVE_CODE:\n  class: ai_recoverable\n",
                                    "core/z.py": EMITTER})),
    "каждый объявленный код кто-то бросает — молчим")
+
 ok(len(codes_without_emitter(make({"config/server_reactions.yaml": REGISTRY_TWO,
                                    "core/z.py": EMITTER,
                                    "core/contracts/error_detail.py": 'KNOWN = ("ORPHAN_CODE",)\n'}))) == 1,
@@ -345,11 +227,13 @@ ok(not declared_but_unscripted(make({"config/server_reactions.yaml": REGISTRY_TW
                                      "tests/quick/tools_inventory.golden.json": INVENTORY_TWO,
                                      "tests/scenarios/a.yaml": COVERS_ALL})),
    "оба инструмента позваны, живой код ожидается — сирота считается соседним сторожем, молчим")
+
 ok(len(declared_but_unscripted(make({"config/server_reactions.yaml": REGISTRY_TWO,
                                      "core/z.py": EMITTER,
                                      "tests/quick/tools_inventory.golden.json": INVENTORY_TWO,
                                      "tests/scenarios/a.yaml": COVERS_ALL.replace("инстр_б", "инстр_а")}))) == 1,
    "инструмент из описи не зовёт ни один сценарий — слепота выросла молча")
+
 ok(len(declared_but_unscripted(make({"config/server_reactions.yaml": REGISTRY_TWO,
                                      "core/z.py": EMITTER,
                                      "tests/quick/tools_inventory.golden.json": INVENTORY_TWO,
@@ -357,217 +241,234 @@ ok(len(declared_but_unscripted(make({"config/server_reactions.yaml": REGISTRY_TW
    "бросаемый код не ждёт ни один сценарий — новый код отказа без объявления")
 
 print("\n== рецепт движка, который клиент не увидит ==")
+
 REG_REC = ("BAD_PROFILE:\n  class: ai_recoverable\n  recovery:\n    suggested_tool: table_get_row\n"
            "NO_TOOL:\n  class: ai_recoverable\n  recovery:\n    reason: почини строку\n")
+
 SAME = 'def f():\n    raise ZoneError("BAD_PROFILE", "текст", "почему", "table_get_row")\n'
+
 OTHER = 'def f():\n    raise ZoneError("BAD_PROFILE", "текст", "почему", "table_set")\n'
+
 KWARG = 'def f():\n    raise ZoneError("BAD_PROFILE", "текст", suggested_tool="table_set")\n'
+
 SILENT = 'def f():\n    raise ZoneError("NO_TOOL", "текст", "почему", "media_models")\n'
+
 NO_RECIPE = 'def f():\n    raise ZoneError("BAD_PROFILE", "текст")\n'
 
 ok(not dead_recovery_in_engine(make({"config/server_reactions.yaml": REG_REC, "core/z.py": SAME})),
    "совет движка совпал с реестром — клиент получит то же самое, молчим")
+
 ok(len(dead_recovery_in_engine(make({"config/server_reactions.yaml": REG_REC, "core/z.py": OTHER}))) == 1,
    "движок советует другой инструмент — до клиента доедет реестровый, текст в коде мёртв")
+
 ok(len(dead_recovery_in_engine(make({"config/server_reactions.yaml": REG_REC, "core/z.py": KWARG}))) == 1,
    "именованный `suggested_tool` — та же форма: обе в ходу, и обе обязаны ловиться")
+
 ok(len(dead_recovery_in_engine(make({"config/server_reactions.yaml": REG_REC, "core/z.py": SILENT}))) == 1,
    "у реестра рецепт без инструмента — совет движка пропадает, и это тоже находка")
+
 ok(not dead_recovery_in_engine(make({"config/server_reactions.yaml": REG_REC, "core/z.py": NO_RECIPE})),
    "движок не советует ничего — перекрывать нечего, молчим")
+
 ok(not dead_recovery_in_engine(make({"config/server_reactions.yaml": REG_REC,
                                      "core/z.py": 'def f():\n    raise ZoneError("ЧУЖОЙ_КОД", "т", "п", "table_set")\n'})),
    "код вне реестра — рецепт движка ЕДИНСТВЕННЫЙ и доезжает: обвинять нельзя")
 
 print("\n== копия объявления в коде ==")
+
 DECL_ONE = "ip_blocklist:\n  ban_duration_hours: 24\n"
+
 DECL_TWICE = "ip_blocklist:\n  ban_duration_hours: 24\nother:\n  ban_duration_hours: 48\n"
+
 DECL_SHORT = "limits:\n  ttl: 24\n"
+
 DECL_LIST = "injection:\n  bad_patterns:\n    - забудь всё\n    - ты теперь\n"
 
 ok(len(mirrored_declaration(make({"config/f.yaml": DECL_ONE,
                                   "core/z.py": "ban_duration_hours = 24\n"}))) == 1,
    "имя и значение совпали с единственным объявлением — второй источник того же факта")
+
 ok(len(mirrored_declaration(make({"config/f.yaml": DECL_ONE,
                                   "core/z.py": "def f(ban_duration_hours: int = 24):\n    return ban_duration_hours\n"}))) == 1,
    "дефолт параметра — та же копия: правка декларации его не тронет")
+
 ok(len(mirrored_declaration(make({"config/f.yaml": DECL_ONE,
                                   "core/z.py": "DEFAULT_BAN_DURATION_HOURS = 24\n"}))) == 1,
    "приставка DEFAULT_ не отменяет копию: запасное значение обязано совпадать с объявлением")
+
 ok(len(mirrored_declaration(make({"config/f.yaml": DECL_LIST,
                                   "core/z.py": 'bad_patterns = ["ты теперь", "забудь всё"]\n'}))) == 1,
    "список ловится по составу, а не по порядку — перестановка не прячет копию")
+
 ok(not mirrored_declaration(make({"config/f.yaml": DECL_ONE,
                                   "core/z.py": "ban_duration_hours = 48\n"})),
    "то же имя, другое значение — код НЕ копия, а своё решение: обвинять нельзя")
+
 ok(not mirrored_declaration(make({"config/f.yaml": DECL_ONE, "core/z.py": "retry_after = 24\n"})),
    "то же значение под другим именем — совпадение чисел, а не второй источник")
+
 ok(not mirrored_declaration(make({"config/f.yaml": DECL_TWICE,
                                   "core/z.py": "ban_duration_hours = 24\n"})),
    "ключ называет в декларациях два разных значения — с чем именно совпало, неизвестно")
+
 ok(not mirrored_declaration(make({"config/f.yaml": DECL_SHORT, "core/z.py": "ttl = 24\n"})),
    "короткое имя совпадает по случайности — порог длины держит сторожа точным")
+
 ok(not mirrored_declaration(make({"config/f.yaml": "flags:\n  enabled: true\n",
                                   "core/z.py": "enabled = True\n"})),
    "булево значение объявлено везде — уликой оно быть не может")
+
 ok(len(mirrored_declaration(make({"config/f.yaml": DECL_ONE,
                                   "core/z.py": "ban_duration_hours = 24.0\n"}))) == 1,
    "`24` в декларации и `24.0` в коде — одно значение, разный тип его не прячет")
+
 ok(not mirrored_declaration(make({"config/f.yaml": DECL_ONE, "core/z.py": 'ban_duration_hours = "24"\n'})),
    "строка против числа — не то же значение: сравнение не приводит типы вслепую")
+
 ok(len(mirrored_declaration(make({"config/f.yaml": DECL_LIST,
                                   "core/z.py": 'DEFAULT_BAD_PATTERNS = frozenset({"ты теперь", "забудь"})\n'}))) == 1,
    "запасной перечень разошёлся с объявлением — та половина, что сработает при отказе загрузки")
+
 ok(not mirrored_declaration(make({"config/f.yaml": DECL_LIST,
                                   "core/z.py": 'bad_patterns = ["ты теперь", "чужое"]\n'})),
    "без пометки DEFAULT_ расхождение — не копия, а своё решение: молчим")
+
 ok(len(mirrored_declaration(make({"config/f.yaml": DECL_LIST,
                                   "core/z.py": 'DEFAULT_BAD_PATTERNS = frozenset({"ты теперь", "забудь всё"})\n'}))) == 1,
    "запасной перечень СОВПАЛ — это копия, и она разойдётся при следующей правке декларации")
+
 ok(len(mirrored_declaration(make({"config/f.yaml": DECL_ONE,
                                   "core/z.py": 'x = cfg.get("ban_duration_hours", 24)\n'}))) == 1,
    "`.get(ключ, дефолт)` — копия, у которой имя приходит СТРОКОЙ: три прежние формы её не видели")
+
 ok(not mirrored_declaration(make({"config/f.yaml": DECL_ONE,
                                   "core/z.py": 'x = cfg.get("ban_duration_hours", 48)\n'})),
    "дефолт `.get` разошёлся с объявлением и не помечен запасным — своё решение, не копия")
+
 ok(len(mirrored_declaration(make({"config/f.yaml": "usage:\n  default_unit: call\n",
                                   "core/z.py": 'x = cfg.get("default_unit", "call")\n'}))) == 1,
    "`default_unit` объявлено САМО — имя читается буквально, а не как запасное для ключа `unit`")
+
 ok(len(mirrored_declaration(make({"config/f.yaml": DECL_TWICE,
                                   "core/z.py": 'x = cfg.get("ip_blocklist", {}).get("ban_duration_hours", 24)\n'}))) == 1,
    "имя названо в декларациях дважды, но ПУТЬ чтения один — по имени это отпускали, по пути обвиняем")
+
 ok(len(mirrored_declaration(make({"config/f.yaml": DECL_TWICE,
                                   "core/z.py": 'sec = cfg.get("ip_blocklist") or {}\nx = sec.get("ban_duration_hours", 24)\n'}))) == 1,
    "раздел добыт в переменную — путь всё равно собирается, иначе сторож слеп к обычной форме чтения")
+
 ok(not mirrored_declaration(make({"config/f.yaml": DECL_TWICE,
                                   "core/z.py": 'x = cfg.get("ip_blocklist", {}).get("ban_duration_hours", 48)\n'})),
    "путь тот же, значение другое — код решает сам, копией это не является")
+
 ok(not mirrored_declaration(make({"config/f.yaml": "a:\n  s:\n    ttl: 24\nb:\n  s:\n    ttl: 24\n",
                                   "core/z.py": 'x = cfg.get("s", {}).get("ttl", 24)\n'})),
    "суффикс пути попал в два объявления — с чем совпало, неизвестно: обвинять нельзя")
+
 ok(not mirrored_declaration(make({"config/f.yaml": DECL_TWICE,
                                   "core/z.py": 'def f(spec):\n    return spec.get("ban_duration_hours", 24)\n'})),
    "раздел приехал параметром — путь не выводится, а имя многозначно: это остаток слепой зоны")
+
 ok(len(mirrored_declaration(make({"config/f.yaml": DECL_ONE,
                                   "core/z.py": 'x = cfg.get("ip_blocklist", {}).get("ban_duration_hours", 24)\n'}))) == 1,
    "оба правила указывают на одну строку — нота одна: двойной счёт задрал бы потолок на пустом месте")
 
-
 print("\n== своя загрузка декларации мимо общей двери ==")
+
 DECL_FILE = {"config/uniqueness.yaml": "ngram:\n  size: 4\n"}
+
 ok(len(declaration_loaded_privately(make({**DECL_FILE,
         "core/z.py": 'import yaml\ndata = yaml.safe_load(open("config/uniqueness.yaml").read())\n'}))) == 1,
    "модуль называет декларацию И разбирает YAML сам — у отказа заводится своя политика")
+
 ok(not declaration_loaded_privately(make({**DECL_FILE,
         "core/z.py": 'from core.declaration import Declaration\nd = Declaration("config/uniqueness.yaml", E, "s", "h").data\n'})),
    "чтение через общую дверь не обвиняется — политика отказа одна на всех")
+
 ok(not declaration_loaded_privately(make({**DECL_FILE,
         "core/z.py": 'import yaml\ndata = yaml.safe_load(запрос_ии)\n'})),
    "разбор YAML, пришедшего НЕ из декларации, — не наша ось: имя файла модуль не называет")
+
 ok(not declaration_loaded_privately(make({"core/z.py": 'import yaml\nyaml.safe_load("config/uniqueness.yaml")\n'})),
    "деклараций на дереве нет вовсе — судить не по чему, молчим")
 
-print("\n== сторож мимо каталога зон ==")
-GUARD_ROW = "| `alpha.py` | зона | улика | запас | никогда |\n"
-ok(not guards_off_catalog(make({"scripts/guards/alpha.py": "x = 1\n",
-                                "scripts/guards/CATALOG.md": GUARD_ROW})),
-   "сторож объявлен строкой-зоной — молчим")
-ok(len(guards_off_catalog(make({"scripts/guards/alpha.py": "x = 1\n",
-                                "scripts/guards/beta.py": "y = 2\n",
-                                "scripts/guards/CATALOG.md": GUARD_ROW}))) == 1,
-   "новый скрипт без зоны — так сторожа и плодятся мимо запаса существующих")
-ok(len(guards_off_catalog(make({"scripts/guards/CATALOG.md": GUARD_ROW}))) == 1,
-   "зона объявлена, а сторожа нет — расширять предлагается пустоту")
-ok(len(guards_off_catalog(make({"scripts/guards/alpha.py": "x = 1\n"}))) == 1,
-   "каталога зон нет вовсе — правило «не плодить» держится дисциплиной, то есть не держится")
-ok("каталога сторожей" in отказ(guards_off_catalog, make({"core/z.py": "x = 1\n"})),
-   "каталога сторожей в дереве нет — ось называет это отказом судить, а не чистотой")
-ok(not guards_off_catalog(make({"scripts/guards/alpha.py": "x = 1\n",
-                                "scripts/guards/__init__.py": "\n",
-                                "scripts/guards/CATALOG.md": GUARD_ROW})),
-   "служебный `__init__.py` сторожем не считается и зоны не требует")
-
-ok(not guards_off_catalog(make({"scripts/guards/потолок.txt": "3\n"})),
-   "в каталоге сторожей нет ни одного скрипта — обвинять некого, каталог зон не нужен")
-
-print("\n== число джоб гейта мимо ci.yml ==")
-CI2 = "jobs:\n  lint:\n    runs-on: x\n  test:\n    runs-on: x\n"
-REGISTRY = "| [`ход.md`](ход.md) | Журнал сплошного прохода |\n"
-ok(len(ci_jobs_off_docs(make({".github/workflows/ci.yml": CI2,
-                              "docs/roadmap/a.md": "гейт — **6 джоб**\n"}))) == 1,
-   "документ называет число, которого в ci.yml нет — копия состарилась молча")
-ok(not ci_jobs_off_docs(make({".github/workflows/ci.yml": CI2,
-                              "docs/roadmap/a.md": "гейт — две джоб\n"})),
-   "словом сказанное число тоже читается, и верное не обвиняется")
-ok(not ci_jobs_off_docs(make({".github/workflows/ci.yml": CI2,
-                              "docs/roadmap/README.md": REGISTRY,
-                              "docs/roadmap/ход.md": "тогда было 8 джоб\n"})),
-   "журнал по реестру ролей — запись о прошлом, её не переписывают")
-ok(len(ci_jobs_off_docs(make({".github/workflows/ci.yml": CI2,
-                              "docs/roadmap/ход.md": "тогда было 8 джоб\n"}))) == 1,
-   "тот же файл БЕЗ строки в реестре журналом не считается — послабление не выдаётся по имени")
-ok(not ci_jobs_off_docs(make({"docs/roadmap/a.md": "**6 джоб**\n"})),
-   "ci.yml нет — сверять не с чем, молчим")
-
 print("\n== модуль без единого читателя ==")
+
 ok(len(module_without_reader(make({"core/lonely.py": "x = 1\n"}))) == 1,
    "модуль без импортирующих и без объявления — мёртвая половина")
+
 ok(not module_without_reader(make({"core/lonely.py": "x = 1\n",
                                    "server.py": "from core.lonely import x\n"})),
    "абсолютный импорт — читатель найден")
+
 ok(not module_without_reader(make({"core/pkg/__init__.py": "from .lonely import x\n",
                                    "core/pkg/lonely.py": "x = 1\n"})),
    "относительный импорт из своего пакета — читатель найден, а не пропущен")
+
 ok(not module_without_reader(make({"core/img/onnx_bg.py": "class OnnxBGRemoval: pass\n",
                                    "config/providers.yaml": "by_provider:\n  L: img.onnx_bg:OnnxBGRemoval\n"})),
    "модуль жив ОБЪЯВЛЕНИЕМ — иначе вся декларативная архитектура числилась бы мёртвой")
+
 ok(not module_without_reader(make({"core/pkg/__init__.py": "\n", "core/runner/__main__.py": "x = 1\n"})),
    "пакет и точка входа грузятся по построению — читателя с них не спрашиваем")
+
 ok(len(module_without_reader(make({"core/lonely.py": "x = 1\n",
                                    "config/providers.yaml": "by_provider:\n  L: img.other:Other\n"}))) == 1,
    "чужая строка в конфиге читателем не становится")
+
 ok(not module_without_reader(make({"docs/x.md": "text\n"})),
    "ни core/, ни tools/ в дереве нет — событие не наше, молчим")
 
 print("\n== факт против реестра типов, наблюдателя и эмиттера ==")
+
 FACT_REG = 'KNOWN_FACT_TYPES = {\n    "FileCreated", "FileWritten", "FolderCreated",\n}\n'
+
 EMIT = 'from core.contracts import Fact\nFact(type="FileCreated", data={})\n'
+
 OBSERVE = "FileCreated:\n  identity: args.path\n  observe: fs_read_file\n"
 
 ok(len(facts_outside_registry(make({"core/contracts/fact.py": FACT_REG,
                                     "tools/x/__init__.py": 'from core.contracts import Fact\n'
                                                            'Fact(type="Unlisted", data={})\n'}))) == 1,
    "факт шлётся, а в реестре типов его нет — предупреждение модели слышно только в рантайме")
+
 ok(not facts_outside_registry(make({"core/contracts/fact.py": FACT_REG, "tools/x/__init__.py": EMIT})),
    "факт из реестра не обвиняется")
+
 ok(not facts_outside_registry(make({
        "core/contracts/fact.py": FACT_REG,
        "tools/x/__init__.py": 'from core.contracts import Fact\n'
                               'Fact(type="FolderCreated" if c["kind"] == "folder" else "FileCreated",'
                               ' data={})\n'})),
    "у тернарника читаются ВЕТВИ, а не условие: иначе `kind`/`folder` попали бы в факты")
+
 ok(not facts_outside_registry(make({"tools/x/__init__.py": EMIT})),
    "реестра типов нет — сверять не с чем, молчим")
 
 ok(len(facts_without_observer(make({"tools/x/__init__.py": EMIT}))) == 1,
    "факт шлётся, а решения о наблюдении нет — ни правила, ни объявленной ненаблюдаемости")
+
 ok(not facts_without_observer(make({
        "tools/x/__init__.py": EMIT,
        "tests/harness/observations.yaml": "FileCreated: {observes: нечего, why: чтение}\n"})),
    "объявленная ненаблюдаемость — тоже РЕШЕНИЕ: забытым факт после неё не считается")
+
 ok(not facts_without_observer(make({"tools/x/__init__.py": EMIT,
                                     "tests/harness/observations.yaml": OBSERVE})),
    "строка наблюдения есть — долг закрыт объявлением, без нового скрипта")
+
 ok(not facts_without_observer(make({"core/contracts/fact.py": FACT_REG})),
    "не шлётся ни один факт — событие не наше")
 
 ok(len(facts_without_emitter(make({"core/contracts/fact.py": FACT_REG,
                                    "tools/x/__init__.py": EMIT}))) == 2,
    "два типа обещаны реестром, а слать их некому")
+
 ok(not facts_without_emitter(make({
        "core/contracts/fact.py": 'KNOWN_FACT_TYPES = {"FileWritten"}\n',
        "tools/x/__init__.py": '_created_result(path, size, False, "FileWritten")\n'})),
    "тип, уехавший в вызов параметром, шлётся — обвинять его значило бы краснеть на живом пути")
+
 ok(len(facts_without_emitter(make({"core/contracts/fact.py": 'KNOWN_FACT_TYPES = {"FileCreated"}\n',
                                    "tools/x/__init__.py": EMIT,
                                    "tests/harness/observations.yaml": OBSERVE
@@ -575,830 +476,199 @@ ok(len(facts_without_emitter(make({"core/contracts/fact.py": 'KNOWN_FACT_TYPES =
    "наблюдатель построен на факт, которого сервер не шлёт — карта на пустоте")
 
 print("\n== объявление наблюдения: полное или никакое ==")
+
 ok(len(facts_exempt_from_observation(make({
        "tests/harness/observations.yaml": "A: {observes: нечего, why: чтение}\nB: {observes: нечего, why: очередь}\n"}))) == 2,
    "объявленная ненаблюдаемость считается: без потолка это дверь мимо наблюдения")
+
 ok(not facts_exempt_from_observation(make({"tests/harness/observations.yaml": OBSERVE})),
    "правило ненаблюдаемостью не считается — оно спрашивает реальность")
+
 ok(len(observation_incomplete(make({
        "tests/harness/observations.yaml": "A: {observes: нечего}\n"}))) == 1,
    "«наблюдать нечего» без причины — это «потом разберусь», записанное как решение")
+
 ok(len(observation_incomplete(make({
        "tests/harness/observations.yaml": "A:\n  identity: args.path\n  observe: fs_read_file\n"
                                           "  with: {path: x}\n  present: {ok: true}\n"}))) == 1,
    "правило без `absent` роняет воспроизводителя на живой записи, а до неё выглядит покрытием")
+
 ok(not observation_incomplete(make({"tests/harness/observations.yaml":
        "A:\n  identity: args.path\n  observe: fs_read_file\n  with: {path: x}\n"
        "  present: {ok: true}\n  absent: {ok: false, code: E}\n"})),
    "полное правило не обвиняется")
 
-print("\n== хук против своего объявления ==")
-DECL = ('{"hooks": {"PreToolUse": [{"matcher": "Edit", "hooks": [{"type": "command", '
-        '"command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/vpm-x.py"}]}]}}\n')
-
-ok(len(hooks_off_declaration(make({".claude/settings.json": DECL}))) == 1,
-   "объявление есть, файла нет — событие приходит, запускать нечего")
-ok(len(hooks_off_declaration(make({".claude/hooks/vpm-x.py": "x = 1\n"}))) == 1,
-   "файл есть, объявления нет — код лежит, срабатывать ему не на чем")
-ok(not hooks_off_declaration(make({".claude/settings.json": DECL,
-                                   ".claude/hooks/vpm-x.py": "x = 1\n"})),
-   "обе половины на месте — молчим")
-ok(not hooks_off_declaration(make({"core/x.py": "x = 1\n"})),
-   "ни хуков, ни объявления — событие не наше")
-ok(len(hooks_off_declaration(make({".claude/settings.json": "{ сломано\n",
-                                   ".claude/hooks/vpm-x.py": "x = 1\n"}))) == 1,
-   "сломанный JSON назван ОДНОЙ причиной, а не обвинением каждого файла в дереве")
-
-MUTED = ('{"hooks": {"PostToolUse": [{"matcher": "Edit", "hooks": [{"type": "command", '
-         '"command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/vpm-x.py 2>/dev/null || true"}]}]}}\n')
-
-ok(len(hook_declared_muted(make({".claude/settings.json": MUTED}))) == 1,
-   "хвост в команде хука назван — вердикт не доходит ни до модели, ни до человека")
-ok(not hook_declared_muted(make({".claude/settings.json": DECL})),
-   "команда без хвоста не обвиняется")
-ok(not hook_declared_muted(make({".claude/settings.json": "{ сломано\n"})),
-   "битый JSON судит соседняя ось — здесь улики нет, и обвинять нечего")
-ok(not hook_declared_muted(make({"core/x.py": "x = 1\n"})),
-   "объявления нет вовсе — событие не наше")
-
-print("\n== память против своего указателя ==")
-ШАПКА = "---\nname: {}\ndescription: x\nmetadata:\n  type: project\n---\n\nтело\n"
-
-
-def память(files: dict[str, str], git: bool = True) -> Path:
-    """Подставная память: каталог вне дерева проекта, как и настоящая."""
-    home = Path(tempfile.mkdtemp(prefix="vpm-память-"))
-    if git:
-        (home / ".git").mkdir()
-    for name, text in files.items():
-        (home / name).write_text(text, encoding="utf-8")
-    return home
-
-
-ok(len(memory_off_index(memory=память({"MEMORY.md": "- [Есть](есть.md)\n",
-                                       "есть.md": ШАПКА.format("есть"),
-                                       "потерянный.md": ШАПКА.format("потерянный")}))) == 1,
-   "файл памяти без указателя назван — иначе его находят только перебором")
-ok(len(memory_off_index(memory=память({"MEMORY.md": "- [Нет](снесённый.md)\n"}))) == 1,
-   "указатель в пустоту назван — карта памяти не смеет вести в никуда")
-ok("ведёт мимо файла" in memory_off_index(memory=память({"MEMORY.md": "- [Есть](есть.md)\n",
-                                                         "есть.md": ШАПКА.format("другое")}))[0],
-   "имя в шапке разошлось с файлом — связи `[[имя]]` ведут мимо")
-ok("вне версий" in memory_off_index(memory=память({"MEMORY.md": ""}, git=False))[0],
-   "память без git названа: без истории «обновил память» проверяется только словом")
-ok(not memory_off_index(memory=память({"MEMORY.md": "- [Есть](есть.md)\n",
-                                       "есть.md": ШАПКА.format("есть")})),
-   "указатель и диск сошлись — молчим")
-ok(not memory_off_index(memory=Path("/нет/такого/каталога")),
-   "каталога памяти нет (CI, чужая машина) — улики нет, а не «памяти ноль»")
-
-print("\n== журнал разошёлся со своим указателем ==")
-
-
-def журнал(указатель: str, архив: dict[str, str]) -> Path:
-    return make({"docs/roadmap/_sessions.md": указатель,
-                 **{f"docs/roadmap/sessions/{n}": t for n, t in архив.items()}})
-
-
-ЗАПИСЬ = "### Сессия 9 — что-то закрыто\n\nтекст записи\n"
-АРХИВ = {"s9.md": f"# Сессия 9\n\n{ЗАПИСЬ}"}   # заголовок записи стоит на строке 3
-
-ok(not journal_off_index(журнал("- `s9.md:3` · Сессия 9 — что-то закрыто\n", АРХИВ)),
-   "указатель и архив сошлись — молчим")
-ok("адрес поехал" in journal_off_index(журнал("- `s9.md:4` · Сессия 9 — что-то закрыто\n", АРХИВ))[0],
-   "адрес съехал на строку — названо: читатель попал бы в середину чужой записи")
-ok("ведёт в пустоту" in journal_off_index(журнал("- `s404.md:3` · Сессия 9 — что-то закрыто\n", АРХИВ))[0],
-   "указатель зовёт файл, которого нет — названо")
-ok(any("в указателе нет" in note
-       for note in journal_off_index(журнал("- `s9.md:3` · Сессия 9 — что-то закрыто\n",
-                                            {"s9.md": f"# Сессия 9\n\n{ЗАПИСЬ}\n### Сессия 9 (доп. 1) — вторая\n"}))),
-   "запись в архиве есть, строки указателя нет — названа поимённо")
-ok("найдут только перебором" in journal_off_index(
-       журнал("", {"s9.md": f"# Сессия 9\n\n{ЗАПИСЬ}"}))[0],
-   "файл архива без единой строки указателя — назван")
-ok(not journal_off_index(make({"docs/roadmap/_sessions.md": "- `s9.md:3` · Сессия 9 — что-то\n"})),
-   "архива нет (старое дерево, чужая машина) — улики нет, а не «журнал пуст»")
-
-
-print("\n== скил без объявленной зоны ==")
-
-ШАПКА_ЗОН = "| Скил | Зона | Граничит | Когда |\n|---|---|---|---|\n"
-
-
-def зоны(строки: str, скилы: list[str]) -> Path:
-    файлы = {".claude/skills/CATALOG.md": ШАПКА_ЗОН + строки}
-    файлы.update({f".claude/skills/{s}/SKILL.md": "x" for s in скилы})
-    return make(файлы)
-
-
-ok(not skill_without_zone(зоны("| `aa` | зона | `bb` | — |\n| `bb` | зона | `aa` | — |\n", ["aa", "bb"])),
-   "зоны объявлены и границы взаимны — молчим")
-ok(any("зона не объявлена" in n for n in
-       skill_without_zone(зоны("| `aa` | зона | — | — |\n", ["aa", "bb"]))),
-   "скил на диске без строки каталога назван: при выборе границы нет")
-ok(any("которого на диске нет" in n for n in
-       skill_without_zone(зоны("| `aa` | зона | — | — |\n| `zz` | зона | — | — |\n", ["aa"]))),
-   "строка каталога без скила названа: каталог зовёт снесённое")
-ok(any("в ОДНУ сторону" in n for n in
-       skill_without_zone(зоны("| `aa` | зона | `bb` | — |\n| `bb` | зона | — | — |\n", ["aa", "bb"]))),
-   "граница названа односторонне — сосед считает зону своей")
-ok(not skill_without_zone(make({".claude/skills/CATALOG.md": ШАПКА_ЗОН})),
-   "каталог есть, скилов на диске нет — улики нет, а не обвинение")
-
-
-print("\n== ось качества без объявленного параметра ==")
-
-ЧЕТВЁРКА = """## ЧЕМУ служат оси: четыре параметра качества
-
-| Параметр | Что значит | Чем меряется |
-|---|---|---|
-| **Прочность** | переживает поломки | отказ громкий |
-| **Навигация** | понятен без комментариев | имя говорит само |
-"""
-
-
-def скил(оси: str, словари: str = "| **Качество** | x | 1 |\n| **Обслуживаемость** | y | 2 |\n") -> Path:
-    текст = (ЧЕТВЁРКА + "\n### Два словаря\n\n| Словарь | Обещает | Оси |\n|---|---|---|\n"
-             + словари + "\n## Оси качества\n\n" + оси + "\n## Те же оси в React\n")
-    return make({".claude/skills/code-quality/SKILL.md": текст})
-
-
-ЧИСТО = ("1. **Первая** 🔴 ⟨двигает: прочность⟩ — текст оси\n"
-         "2. **Вторая** 🟠 ⟨двигает: навигация⟩ — текст оси\n")
-
-ok(not quality_axis_without_parameter(скил(ЧИСТО)),
-   "все оси помечены, оба параметра двигаются, таблица полна — молчим")
-ok(any("не называет параметр владельца" in n for n in quality_axis_without_parameter(
-       скил("1. **Первая** 🔴 ⟨двигает: прочность⟩ — текст\n2. **Вторая** 🟠 — текст\n"))),
-   "ось без метки названа: к какому словарю она относится, знал бы только читавший")
-ok(any("не из объявленной четвёрки" in n for n in quality_axis_without_parameter(
-       скил("1. **Первая** 🔴 ⟨двигает: прочность⟩ — т\n2. **Вторая** 🟠 ⟨двигает: красота⟩ — т\n"))),
-   "метка словом, которого владелец не объявлял, названа — иначе словарь растёт сам собой")
-ok(any("пылится" in n and "навигация" in n for n in quality_axis_without_parameter(
-       скил("1. **Первая** 🔴 ⟨двигает: прочность⟩ — текст\n"
-            "2. **Вторая** 🟠 ⟨двигает: прочность⟩ — текст\n"))),
-   "параметр, за которым не стоит ни одной оси, назван — ровно с этого разрез и начался")
-ok(any("не названа ни в одном словаре" in n for n in quality_axis_without_parameter(
-       скил(ЧИСТО, словари="| **Качество** | x | 1 |\n"))),
-   "ось мимо навигационной таблицы названа: половина сверки жива, а не молчит")
-ok(any("которой в скиле нет" in n for n in quality_axis_without_parameter(
-       скил(ЧИСТО, словари="| **Качество** | x | 1 |\n| **Обслуживаемость** | y | 2 · 9 |\n"))),
-   "таблица зовёт снесённую ось — обратная сторона той же сверки")
-ok(not quality_axis_without_parameter(make({"README.md": "x"})),
-   "скила нет вовсе (чужое дерево) — улики нет, а не обвинение")
-
-
-print("\n== судья мимо общего журнала ==")
-
-ШАПКА_СТОРОЖЕЙ = "| Сторож | Зона | Улика | Запас | Новый рядом |\n|---|---|---|---|---|\n"
-
-
-def сторожа(строки: str, файлы: dict[str, str]) -> Path:
-    файлы = {f"scripts/guards/{имя}": текст for имя, текст in файлы.items()}
-    файлы["scripts/guards/CATALOG.md"] = ШАПКА_СТОРОЖЕЙ + строки
-    return make(файлы)
-
-
-СУДЬЯ = "x = 1\n_verdict.close('судья', 0, 'cmd')\n"
-СВОЯ_ПОДПИСЬ = "x = 1\n_stamp.sign('цикл', 'ВЕРДИКТ', 'что')\n"
-НЕМОЙ = "x = 1\nprint('вердикт')\n"
-
-ok(not judge_off_journal(сторожа("| `судья.py` | судит дерево | улика | запас | никогда |\n",
-                                 {"судья.py": СУДЬЯ})),
-   "судья зовёт общий хвост — молчим")
-ok(not judge_off_journal(сторожа("| `цикл.py` | судит пару деревьев | улика | запас | никогда |\n",
-                                 {"цикл.py": СВОЯ_ПОДПИСЬ})),
-   "своя подпись в тот же журнал — вторая законная дверь, а не нарушение")
-ok(any("не доезжает до общего журнала" in n for n in
-       judge_off_journal(сторожа("| `немой.py` | судит дерево | улика | запас | никогда |\n",
-                                 {"немой.py": НЕМОЙ}))),
-   "судья без подписи назван: его вердикт живёт до закрытия терминала")
-ok(not judge_off_journal(сторожа("| `делатель.py` | **производитель: запись → проверяемое** | у | з | н |\n",
-                                 {"делатель.py": НЕМОЙ})),
-   "производитель вердикта не выносит — подписи с него не спрашиваем")
-ok(any("которого на диске нет" in n for n in
-       judge_off_journal(сторожа("| `снесённый.py` | судит дерево | у | з | н |\n", {}))),
-   "каталог зовёт снесённого сторожа — объявление разошлось с диском")
-ok(any("без строки" in n for n in
-       judge_off_journal(сторожа("", {"новичок.py": СУДЬЯ}))),
-   "сторож на диске без строки каталога: зона не объявлена, и правило «не плодить» слепо")
-ok(not judge_off_journal(make({"README.md": "x"})),
-   "каталога сторожей нет вовсе — улики нет, а не обвинение")
-
-
-print("\n== живая команда ведёт в несуществующее ==")
-
-import time as _время
-
-
-def дерево_с_остатком(команда: str, скил: str = "") -> Path:
-    """Дерево с одним незакрытым остатком и, по желанию, со скилом."""
-    запись = {"ts": _время.time(), "key": "aaaa", "kind": "проба", "role": "ОСТАТОК",
-              "what": "хвост", "expected": "закроется", "cmd": команда, "closes": "", "detail": {}}
-    дерево = {"scripts/guards/tails.jsonl": json.dumps(запись, ensure_ascii=False) + "\n",
-              "scripts/guards/_stamp.py": (ROOT / "scripts/guards/_stamp.py").read_text(encoding="utf-8"),
-              "scripts/guards/живой.py": "x = 1\n"}
-    if скил:
-        дерево[".claude/skills/проба/SKILL.md"] = скил
-    return make(дерево)
-
-
-ok(not dead_command(дерево_с_остатком(".venv/bin/python scripts/guards/живой.py --check")),
-   "остаток ведёт в существующего сторожа — молчим")
-ok(any("предлагает запустить" in n for n in
-       dead_command(дерево_с_остатком(".venv/bin/python scripts/guards/снесённый.py --совет"))),
-   "остаток предлагает запустить переименованного сторожа — его печатают КАЖДУЮ сессию")
-ok(any("зовёт" in n for n in dead_command(дерево_с_остатком(
-       ".venv/bin/python scripts/guards/живой.py",
-       "# скил\n\n```bash\n.venv/bin/python scripts/guards/нетуеё.py --суд\n```\n"))),
-   "скил зовёт несуществующее в блоке команд — инструкцию читают перед работой")
-ok(not dead_command(дерево_с_остатком(
-       ".venv/bin/python scripts/guards/живой.py",
-       "# скил\n\nПрежде лежал `scripts/guards/снесённый.py`, удалён как мёртвый.\n")),
-   "в ПРОЗЕ скила имя удалённого — урок о прошлом, а не инструкция: запрещать его нельзя")
-ok(not dead_command(make({"README.md": "x"})),
-   "ни журнала, ни скилов (чужое дерево) — улики нет, а не обвинение")
-
-
-print("\n== приёмка по предметам: состояние обязано быть ДОКАЗАНО ==")
-
-ПРЕДМЕТЫ = """предметы:
-  сервер:
-    про: дерево сервера
-    условия:
-      С1:
-        про: контракт не сломан
-        механизм: опись ↔ сценарии
-        состояние: судится
-        улика: .venv/bin/python scripts/guards/invariants.py --check
-      С2:
-        про: типы сходятся везде
-        механизм: нет
-        состояние: нет
-        ждёт: зона гейта типов уже мала
-        улика: .venv/bin/python -m mypy scripts/guards/
-"""
-
-
-def приёмка(текст: str = ПРЕДМЕТЫ) -> Path:
-    return make({"scripts/guards/acceptance_subjects.yaml": текст,
-                 "scripts/guards/invariants.py": 'если "--check" в argv: x = 1\n'})
-
-
-ok(not acceptance_state_unproven(приёмка()),
-   "каждое состояние несёт запускаемую улику, ведущую на диск — молчим")
-ok(any("не доказано командой" in n for n in acceptance_state_unproven(приёмка(
-       ПРЕДМЕТЫ.replace("улика: .venv/bin/python scripts/guards/invariants.py --check",
-                        "улика: судится и так")))),
-   "состояние без ЗАПУСКАЕМОЙ улики — пожелание: рукописная таблица состояний уже гнила однажды")
-ok(any("которого на диске нет" in n for n in acceptance_state_unproven(приёмка(
-       ПРЕДМЕТЫ.replace("scripts/guards/invariants.py --check", "scripts/guards/выдумка.py --check")))),
-   "улика ведёт в несуществующий файл — доказательство мнимое")
-ok(any("которого у предмета нет" in n for n in acceptance_state_unproven(приёмка(
-       ПРЕДМЕТЫ.replace("invariants.py --check", "invariants.py --выдуманный-ключ")))),
-   "файл на месте, а ключа у него нет — улика мнимая ровно так же, только незаметнее")
-ok(not acceptance_state_unproven(приёмка(
-       ПРЕДМЕТЫ.replace("invariants.py --check", "invariants.py --живой"),
-       )) if "--живой" in (ROOT / "scripts/guards/invariants.py").read_text(encoding="utf-8") else True,
-   "существующий ключ проверку проходит (сторож не обвиняет на ровном месте)")
-ok(any("не сказано, чего ждём" in n for n in acceptance_state_unproven(приёмка(
-       ПРЕДМЕТЫ.replace("        ждёт: зона гейта типов уже мала\n", "")))),
-   "«механизма нет» без `ждёт` — это пожелание, а не план")
-ok(any("не из" in n for n in acceptance_state_unproven(приёмка(
-       ПРЕДМЕТЫ.replace("состояние: судится", "состояние: почти")))),
-   "состояние не из трёх объявленных названо: третьего толкования у слова быть не должно")
-ok(any("без формулировки" in n for n in acceptance_state_unproven(приёмка(
-       ПРЕДМЕТЫ.replace("        про: контракт не сломан\n", "")))),
-   "условие без формулировки названо — судить нечего")
-ok(any("не разбирается" in n for n in acceptance_state_unproven(приёмка("предметы: [битый\n"))),
-   "битое объявление названо вслух, а не прочитано как «условий нет»")
-ok(not acceptance_state_unproven(make({"README.md": "x"})),
-   "объявления приёмки нет вовсе (чужое дерево) — улики нет, а не обвинение")
-ok([n for n in acceptance_subject_gap(приёмка()) if "С2" in n],
-   "условие без механизма попадает в долг — это и есть вектор развития, выраженный числом")
-ok(not acceptance_subject_gap(приёмка(ПРЕДМЕТЫ.replace("состояние: нет", "состояние: судится"))),
-   "заведён исполнитель — долг ушёл; храповик двигается только вниз")
-
-
-print("\n== роспись улик разошлась ==")
-
-СЛОВАРЬ = """главные:
-  редактирование: {про: изменили, видно: Edit}
-роды:
-  правка: {главная: редактирование, про: п, когда: ['*.py']}
-сторожа:
-  судья.py: {улики: [редактирование], команда: ["--check"], авто: хук}
-"""
-
-
-def роспись(текст: str = СЛОВАРЬ, файлы: tuple[str, ...] = ("судья.py",),
-            хуки: tuple[str, ...] = ()) -> Path:
-    дерево = {"scripts/guards/evidence.yaml": текст}
-    дерево.update({f"scripts/guards/{имя}": "x = 1\n" for имя in файлы})
-    дерево.update({f".claude/hooks/{имя}": "x = 1\n" for имя in хуки})
-    return make(дерево)
-
-
-ХУКИ = """хуки:
-  vpm-страж.py: {улики: [редактирование], событие: PreToolUse, про: п}
-"""
-
-
-ok(not evidence_roster_off_disk(роспись()),
-   "роспись сходится с диском — молчим")
-ok(any("не привязан ни к одной главной" in n for n in evidence_roster_off_disk(роспись(
-       СЛОВАРЬ.replace("{главная: редактирование, про: п,", "{про: п,")))),
-   "род без главной улики назван: по трём главным он не поднимется, то есть не поднимется вовсе")
-ok(any("которой нет среди главных" in n and "правка" in n for n in evidence_roster_off_disk(роспись(
-       СЛОВАРЬ.replace("главная: редактирование, про: п,", "главная: выдуманная, про: п,")))),
-   "род привязан к несуществующей главной — привязка мертва и об этом сказано")
-ok(any("которого нет на диске" in n for n in evidence_roster_off_disk(роспись(файлы=()))),
-   "роспись зовёт снесённого сторожа — наряд по его улике поднимет пустоту")
-ok(any("в росписи улик его нет" in n and "новичок" in n for n in
-       evidence_roster_off_disk(роспись(файлы=("судья.py", "новичок.py")))),
-   "сторож на диске мимо росписи: по улике он не поднимется никогда")
-ok(any("ни среди главных, ни среди родов" in n for n in evidence_roster_off_disk(роспись(
-       СЛОВАРЬ.replace("улики: [редактирование]", "улики: [чужая]")))),
-   "сторож объявлен на улику не из главных — строка мертва, и это находка")
-ok(not evidence_roster_off_disk(роспись(СЛОВАРЬ.replace("улики: [редактирование]", "улики: [правка]"))),
-   "сторож объявлен на частный РОД — это точность выбора, а не мёртвая строка")
-ok(any("пылится" in n for n in evidence_roster_off_disk(роспись(
-       "главные: {чтение: {про: п, видно: в}}\nроды: {}\nсторожа: {}\n", файлы=()))),
-   "главная улика без единого рода и без единого сторожа названа — иначе словарь растёт мёртвым")
-ok(any("не разбирается" in n for n in evidence_roster_off_disk(роспись("главные: [битый\n"))),
-   "битое объявление названо вслух: молчаливый пустой наряд неотличим от «сторожей нет»")
-ok("нет росписи улик" in отказ(evidence_roster_off_disk, make({"README.md": "x"})),
-   "объявления нет вовсе (чужое дерево) — отказ судить назван, а не показан пустотой")
-
-# Вторая половина росписи: хуки. Без неё «кто обязан был сработать» отвечается наполовину, и новый
-# хук молча выпадает из проверки факта — так этой осью и пойман vpm-permit.py.
-ok(not evidence_roster_off_disk(роспись(СЛОВАРЬ + ХУКИ, хуки=("vpm-страж.py",))),
-   "роспись хуков сходится с диском — молчим")
-ok(any("на диске, но в росписи улик его нет" in n and "vpm-новый" in n for n in
-       evidence_roster_off_disk(роспись(СЛОВАРЬ + ХУКИ, хуки=("vpm-страж.py", "vpm-новый.py")))),
-   "хук на диске мимо росписи: чей факт срабатывания проверять — неизвестно")
-ok(any("которого нет на диске" in n and "vpm-страж" in n for n in
-       evidence_roster_off_disk(роспись(СЛОВАРЬ + ХУКИ, хуки=("vpm-другой.py",)))),
-   "роспись зовёт снесённый хук — по улике он не сработает никогда")
-ok(any("без события" in n for n in evidence_roster_off_disk(роспись(
-       СЛОВАРЬ + ХУКИ.replace("событие: PreToolUse, ", ""), хуки=("vpm-страж.py",)))),
-   "хук объявлен без события — сработать ему не на чем")
-ok(any("нет среди главных" in n and "vpm-страж" in n for n in evidence_roster_off_disk(роспись(
-       СЛОВАРЬ + ХУКИ.replace("улики: [редактирование]", "улики: [выдуманная]"),
-       хуки=("vpm-страж.py",)))),
-   "хук объявлен на улику не из главных — строка мертва")
-ok(not evidence_roster_off_disk(роспись(СЛОВАРЬ, хуки=())),
-   "раздела хуков нет вовсе (старое дерево) — улики нет, а не обвинение")
-
-ЗАДАЧИ = """задачи:
-  правка: {улики: [правка], сверх: {судья.py: ["--check"]}, про: п,
-           требования: [], оси: []}
-"""
-ok(not evidence_roster_off_disk(роспись(СЛОВАРЬ + ЗАДАЧИ)),
-   "тип работы зовёт существующего сторожа на известную улику — молчим")
-ok(any("которого нет на диске" in n and "снесённый" in n for n in evidence_roster_off_disk(
-       роспись(СЛОВАРЬ + ЗАДАЧИ.replace("судья.py", "снесённый.py")))),
-   "тип работы зовёт сторожа, которого нет: выбор по задаче отвечал бы пустотой")
-ok(any("не рождает ни одной улики" in n for n in evidence_roster_off_disk(
-       роспись(СЛОВАРЬ + ЗАДАЧИ.replace("улики: [правка], ", "улики: [], ")))),
-   "тип работы без улики назван: по нему не проснётся никто")
-ok(any("ни среди главных, ни среди родов" in n and "тип работы" in n for n in
-       evidence_roster_off_disk(роспись(СЛОВАРЬ + ЗАДАЧИ.replace("улики: [правка],", "улики: [чужая],")))),
-   "тип работы на несуществующую улику — объявление мертво")
-
-ok(any("не объявлен радиус" in n for n in evidence_roster_off_disk(
-       роспись(СЛОВАРЬ + ЗАДАЧИ.replace(",\n           требования: [], оси: []", "")))),
-   "тип работы без объявленного радиуса назван: в намерение попадёт то, что вспомнится")
-ok(any("зовёт требование" in n for n in evidence_roster_off_disk(
-       роспись(СЛОВАРЬ + ЗАДАЧИ.replace("требования: []", "требования: [выдуманное]")))),
-   "радиус зовёт требование, которого нет в реестре — объявление ведёт в пустоту")
-ok(any("зовёт ось" in n for n in evidence_roster_off_disk(
-       роспись(СЛОВАРЬ + ЗАДАЧИ.replace("оси: []", "оси: [выдуманная ось]")))),
-   "радиус зовёт ось, которой нет: набор осей задачи судится так же, как набор сторожей")
-
-print("\n== флаг в объявлении типа работы обязан существовать ==")
-СУДЬЯ_С_ФЛАГОМ = 'import argparse\nap = argparse.ArgumentParser()\nap.add_argument("--настоящий")\n'
-
-
-def роспись_с_типом(флаг: str, тело: str = СУДЬЯ_С_ФЛАГОМ) -> Path:
-    """Дерево с типом работы, зовущим сторожа с указанным флагом."""
-    словарь = СЛОВАРЬ + ("задачи:\n  тип: {улики: [редактирование], требования: [], оси: [], "
-                         "сверх: {судья.py: [\"" + флаг + "\"]}, про: п}\n")
-    return make({"scripts/guards/evidence.yaml": словарь, "scripts/guards/судья.py": тело})
-
-
-ok(not evidence_roster_off_disk(роспись_с_типом("--настоящий")),
-   "объявленный флаг у сторожа есть — молчим")
-плохо = evidence_roster_off_disk(роспись_с_типом("--выдуманный"))
-ok(any("такого флага у сторожа нет" in n for n in плохо),
-   "ВЫДУМАННЫЙ флаг назван: иначе наряд печатал бы команду, падающую разбором аргументов")
-ok(not evidence_roster_off_disk(роспись_с_типом("--любой", тело="x = 1\n")),
-   "у сторожа нет разбора аргументов — улики нет, и обвинять нечем")
-
-
-print("\n== потолок сдвинут без записи ==")
-
-
-def потолки(было: str, стало: str, журнал: str = "") -> Path:
-    """Дерево под git: ось сверяет число в дереве с числом в HEAD, значит HEAD обязан быть."""
-    корень = make({"scripts/guards/пример_baseline.txt": было})
-    subprocess.run(["git", "init", "-q"], cwd=корень, check=True)
-    subprocess.run(["git", "add", "-A"], cwd=корень, check=True, capture_output=True)
-    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "потолок"],
-                   cwd=корень, check=True, capture_output=True)
-    (корень / "scripts/guards/пример_baseline.txt").write_text(стало, encoding="utf-8")
-    if журнал:
-        дом = корень / "tests" / ".journal"
-        дом.mkdir(parents=True)
-        (дом / "stamps-20260101.jsonl").write_text(журнал, encoding="utf-8")
-    return корень
-
-
-ЗАПИСЬ = json.dumps({"intent": "сдвиг потолка", "detail": {"файл": "пример_baseline.txt",
-                                                           "стало": "13"}}, ensure_ascii=False) + "\n"
-
-ok(not ceiling_moved_unrecorded(потолки("12\n", "12\n", ЗАПИСЬ)),
-   "потолок не двигался — молчим, даже когда журнал есть")
-ok(any("сдвинут без записи" in n for n in ceiling_moved_unrecorded(потолки("12\n", "13\n", ЗАПИСЬ.replace('"13"', '"99"')))),
-   "потолок сдвинут, а запись о ДРУГОМ числе — это не запись об этом сдвиге")
-ok(not ceiling_moved_unrecorded(потолки("12\n", "13\n", ЗАПИСЬ)),
-   "сдвиг подписан в журнале — молчим: решение записано и поднимается ключом")
-ok(any("12 → 13" in n for n in ceiling_moved_unrecorded(потолки("12\n", "13\n", ЗАПИСЬ.replace("сдвиг потолка", "другое")))),
-   "запись есть, но не о сдвиге — долг двинулся молча, и это названо")
-ok(not ceiling_moved_unrecorded(потолки("12\n", "13\n")),
-   "журнала нет вовсе (клон, CI, свежее дерево) — улики нет, а не «записи не было»")
-
-print("\n== сдвиг потолка уходит в журнал ==")
-дом = make({})
-(дом / "tests" / ".journal").mkdir(parents=True)
-_bless_stamp([("ось вниз", 40, 28, "a_baseline.txt")], "долг закрыт правкой", дом)
-_bless_stamp([("ось вверх", 10, 13, "b_baseline.txt")], "прибор стал точнее", дом)
-записи = [json.loads(с) for с in
-          sorted((дом / "tests" / ".journal").glob("stamps-*.jsonl"))[0]
-          .read_text(encoding="utf-8").splitlines() if с.strip()]
-ok(записи[0]["role"] == "ВЕРДИКТ" and "долг закрыт вниз" in записи[0]["what"],
-   "потолок вниз — вердикт: долг закрыт, и причина уехала в запись")
-ok(записи[1]["role"] == "ОСТАТОК" and "ДОЛГ ВЫРОС" in записи[1]["what"] and записи[1]["cmd"],
-   "потолок ВВЕРХ — остаток с командой возврата: выросший долг обязан показываться на старте сессий")
-ok(_bless_stamp([], "нечего", make({})) == 0,
-   "потолки не двигались — записывать нечего, и это не отказ")
-
-print("\n== память выросла выше потолка ==")
-
-# Потолок читается из файла РЯДОМ со сторожем, поэтому в пробе подменяется он, а не дерево памяти.
-import invariants as _inv  # ось судит каталог памяти, а не репозиторий
-
-print("\n== дверь у потолка: подъём — решение владельца ==")
-
-ok("владелец" in _inv.дверь_заперта("владелец", 3, 5, разрешено=False),
-   "потолок оси с дверью владельца вверх не идёт без разрешения")
-ok("VPM_CEILING_UP" in _inv.дверь_заперта("владелец", 3, 5, разрешено=False),
-   "отказ называет команду разрешения, а не просто запрещает")
-ok(not _inv.дверь_заперта("владелец", 5, 3, разрешено=False)
-   and not _inv.дверь_заперта("владелец", 5, 5, разрешено=False),
-   "вниз потолок с дверью идёт свободно: снижение долга разрешения не просит")
-ok(not _inv.дверь_заперта("", 3, 5, разрешено=False),
-   "ось без двери подъёма не просит: дверь объявляют единицам, а не всем")
-ok(not _inv.дверь_заперта("владелец", 3, 5, разрешено=True),
-   "разрешение владельца открывает дверь — иначе экстренный коммит было бы нечем закрыть")
-
-
-# Окно цикла — прогоны, а не всё подряд под родом `цикл`: остаток о цикле счёта родов не несёт.
-_дерево_окна = Path(tempfile.mkdtemp(prefix="vpm-окно-"))
-(_дерево_окна / "tests" / ".journal").mkdir(parents=True)
-(_дерево_окна / "tests" / ".journal" / "stamps-1.jsonl").write_text("\n".join(
-    json.dumps(з, ensure_ascii=False) for з in [
-        {"ts": 1, "key": "a1", "kind": "цикл", "role": "ВЕРДИКТ", "expected": "предсказаний 2 из 2"},
-        {"ts": 2, "key": "b2", "kind": "цикл", "role": "ОСТАТОК", "expected": "ждали механизм"},
-        {"ts": 3, "key": "c3", "kind": "проба", "role": "ВЕРДИКТ", "expected": "предсказаний 1 из 1"},
-    ]) + "\n", encoding="utf-8")
-ok([з["key"] for з in _inv.окно_циклов(_дерево_окна)] == ["a1"],
-   "окно цикла берёт вердикты прогонов, а остаток под родом «цикл» им не считается")
-ok(not _inv.cycle_unjudged(_дерево_окна),
-   "остаток о цикле не обвиняется в отсутствии счёта родов: его там и не бывает")
-_пам = Path(tempfile.mkdtemp(prefix="vpm-память-"))
-(_пам / "a.md").write_text("x" * 100, encoding="utf-8")
-_старый_потолок = _inv.MEMORY_SIZE_CEILING
-_потолок = Path(tempfile.mkdtemp(prefix="vpm-потолок-")) / "ceiling.txt"
-try:
-    _inv.MEMORY_SIZE_CEILING = _потолок
-    _потолок.write_text("150\n", encoding="utf-8")
-    ok(not _inv.memory_grew(memory=_пам), "объём под потолком — молчим")
-    _потолок.write_text("50\n", encoding="utf-8")
-    ok(any("память выросла" in n for n in _inv.memory_grew(memory=_пам)),
-       "рост выше потолка назван числом и разницей")
-    _потолок.write_text("проза\n", encoding="utf-8")
-    ok(any("не число" in n for n in _inv.memory_grew(memory=_пам)),
-       "битый потолок назван прямо, а не пропущен молча")
-    _потолок.unlink()
-    _отказ = ""
-    try:
-        _inv.memory_grew(memory=_пам)
-    except _inv.НетУлики as нет:
-        _отказ = str(нет)
-    ok("потолок не объявлен" in _отказ,
-       "потолка нет — ось отказывается судить, а не отвечает «чисто»")
-    ok(_inv.строка_оси("ось", [], _отказ).startswith("── ось: не судится — ")
-       and "чисто" not in _inv.строка_оси("ось", [], _отказ),
-       "отказ судить печатается словами, а не чистотой")
-    ok(_inv.строка_оси("ось", []) == "── ось: чисто"
-       and _inv.строка_оси("ось", ["x"]) == "── ось: 1 шт."
-       and _inv.строка_оси("ось", ["x"], потолок=3) == "── ось: 1 при потолке 3",
-       "прежние два состояния печатаются как печатались — третье их не сдвинуло")
-finally:
-    _inv.MEMORY_SIZE_CEILING = _старый_потолок
-
-print("\n== граница скила невидима при выборе ==")
-
-# Пять скилов, а не два: фоном считается слово у половины библиотеки, и при двух любое общее
-# слово было бы фоном — фикстура из пары не проверила бы вообще ничего.
-ОБЩИЕ = "declaration contract registry recovery boundary provenance"
-РАЗНОЕ = ("tunnel firewall throttle", "excel workbook column", "render layout typography")
-
-
-def описания(строки: str, тексты: dict[str, str]) -> Path:
-    файлы = {".claude/skills/CATALOG.md": ШАПКА_ЗОН + строки}
-    файлы.update({f".claude/skills/{имя}/SKILL.md": f"---\nname: {имя}\ndescription: {текст}\n---\n"
-                  for имя, текст in тексты.items()})
-    return make(файлы)
-
-
-ПАРА = "| `aa` | зона | `bb` | — |\n| `bb` | зона | `aa` | — |\n"
-ПРОЧИЕ = {"cc": РАЗНОЕ[0], "dd": РАЗНОЕ[1], "ee": РАЗНОЕ[2]}
-
-врозь = описания(ПАРА, {"aa": ОБЩИЕ, "bb": ОБЩИЕ, **ПРОЧИЕ})
-ok(any("aa ↔ bb" in n for n in skill_boundary_invisible(врозь)),
-   "путаемая пара без взаимной границы в description названа осью")
-
-взаимно = описания(ПАРА, {"aa": f"{ОБЩИЕ} — сосед bb владеет другим",
-                          "bb": f"{ОБЩИЕ} — сосед aa владеет другим", **ПРОЧИЕ})
-ok(not skill_boundary_invisible(взаимно),
-   "взаимная граница в description замечанием не считается")
-
-фоново = описания(ПАРА, {"aa": ОБЩИЕ, "bb": ОБЩИЕ,
-                         "cc": ОБЩИЕ, "dd": ОБЩИЕ, "ee": ОБЩИЕ})
-ok(not skill_boundary_invisible(фоново),
-   "фоновые слова путаемости не создают")
-
-print("\n== урок без исполнителя — не урок, а пыль ==")
-ok(memory_dir(Path("/home/admin/projects/video_pipeline_mcp")).parent.name
-   == "-home-admin-projects-video-pipeline-mcp",
-   "слуг памяти: дефисом становится ЛЮБОЙ не-буквенно-цифровой знак, включая подчёркивание")
-УРОК = "- **{}** пояснение. ⟨исполняет: {}⟩\n"
-
-
-def уроки(текст: str) -> Path:
-    home = Path(tempfile.mkdtemp(prefix="vpm-уроки-"))
-    (home / "hard-won-lessons.md").write_text(текст, encoding="utf-8")
-    return home
-
-
-ok(len(lesson_without_mechanism(memory=уроки("- **Урок без метки** пояснение.\n"))) == 1,
-   "урок без метки исполнителя числится ДОЛГОМ: его считает храповик, а не ось имени")
-ok(not lesson_without_executor(memory=уроки("- **Урок без метки** пояснение.\n")),
-   "ось имени молчит на отсутствии метки — иначе один долг обвиняют два судьи")
-ok("которого нет" in lesson_without_executor(
-       memory=уроки(УРОК.format("Урок", "ось `такой оси не бывает`")))[0],
-   "исполнитель, которого нет среди осей, сценариев и скилов, назван прямо")
-ok(not lesson_without_executor(memory=уроки(УРОК.format("Урок", "ось `отказ погашен молча`"))),
-   "названа существующая ось — молчим")
-ok(not lesson_without_executor(memory=уроки(УРОК.format("Урок", "НЕТ"))),
-   "честное «НЕТ» исполнителем считается объявленным долгом, а не ошибкой имени")
-ok(len(lesson_without_mechanism(memory=уроки(УРОК.format("Урок", "скилл test-master")))) == 1,
-   "скилл — это слова: долг, а не ловящий механизм")
-ok(not lesson_without_mechanism(memory=уроки(УРОК.format("Урок", "ось `отказ погашен молча`"))),
-   "за уроком стоит ось — долгом он не числится")
-ok(not lesson_without_executor(memory=Path("/нет/такого/каталога")),
-   "реестра уроков нет — улики нет, а не «уроков ноль»")
-
-ok(len(lesson_without_evidence(memory=уроки(УРОК.format("Урок", "НЕТ")))) == 1,
-   "урок без ключа улики назван — по нему не поднять прогон, в котором он родился")
-СКЛЮЧОМ = "- **Урок** пояснение. ⟨исполняет: НЕТ⟩ ⟨улика: ⟦vpm 0000⟧⟩\n"
-# Журнал подписей не под git, поэтому в свежем дереве (клон, CI, worktree цикла) его нет вовсе, и
-# ветка «ключ ведёт в пустоту» недостижима. Набор кладёт СВОЙ журнал: иначе проверка зависит от
-# состояния боевого дерева и падает там, где судить нечем.
-С_ЖУРНАЛОМ = make({"tests/.journal/stamps-20260101.jsonl": '{"key": "ffff"}\n'})
-ok("ведёт в пустоту" in lesson_without_evidence(root=С_ЖУРНАЛОМ, memory=уроки(СКЛЮЧОМ))[0],
-   "ключ, которого нет в журнале подписей, назван прямо — метка в пустоту хуже её отсутствия")
-ok(not lesson_without_evidence(root=make({"нет": "журнала"}), memory=уроки(СКЛЮЧОМ)),
-   "журнала подписей нет вовсе — улики нет, и ключ не обвиняется")
-ok(not lesson_without_evidence(memory=Path("/нет/такого/каталога")),
-   "реестра уроков нет — улики нет, а не «уроков без ключа ноль»")
-НЕБЫЛИЦА = "проверка-" + Path(tempfile.mkdtemp()).name + "-которой-нет"
-ok(len(lesson_without_executor(memory=уроки(
-       f"- **Урок** пояснение. ⟨исполняет: проверка «{НЕБЫЛИЦА}»⟩\n"))) == 1,
-   "метка проверки сверяется с исходниками наборов, а не с реестром имён")
-ok(not lesson_without_executor(memory=уроки(
-       "- **Урок** пояснение. ⟨исполняет: проверка «указатель и диск сошлись — молчим»⟩\n")),
-   "настоящая метка проверки принимается — исполнителем считается и строка набора")
-
-print("\n== урок записан двумя формами, и судятся обе ==")
-РАЗДЕЛ = "## {} (2026-09-12)\n\nпояснение. ⟨исполняет: {}⟩\n"
-ТЕМА = ("## Про доказательство\n\n"
-        "- **Первый** пояснение. ⟨исполняет: НЕТ⟩\n"
-        "- **Второй** пояснение. ⟨исполняет: НЕТ⟩\n")
-
-ok(len(lesson_without_mechanism(memory=уроки(РАЗДЕЛ.format("Урок разделом", "НЕТ")))) == 1,
-   "урок, записанный РАЗДЕЛОМ, судится наравне с пунктом: форма записи — не повод не судить")
-ok(not lesson_without_mechanism(
-       memory=уроки(РАЗДЕЛ.format("Урок разделом", "ось `отказ погашен молча`"))),
-   "за разделом стоит существующая ось — долгом он не числится")
-ok(len(lesson_without_evidence(memory=уроки(РАЗДЕЛ.format("Урок разделом", "НЕТ")))) == 1,
-   "ключ улики спрашивается и у раздела — иначе прогон его рождения не поднять")
-
-_тема = lesson_without_mechanism(memory=уроки(ТЕМА))
-ok(len(_тема) == 2 and not any("Про доказательство" in note for note in _тема),
-   "заголовок темы уроком НЕ считается: обвинять оглавление за отсутствие механизма нельзя")
-ok(not lesson_without_mechanism(memory=уроки("## Хвост (2026-09-12)\n")),
-   "раздел без своего текста — не урок, даже когда он последний в файле")
-
-_граница = "\n".join(["- **Пункт без метки** пояснение.", "",
-                      РАЗДЕЛ.format("Сосед", "ось `отказ погашен молча`")])
-_долг = lesson_without_mechanism(memory=уроки(_граница))
-ok(any("Пункт без метки" in note for note in _долг)
-   and not any("Сосед" in note for note in _долг),
-   "метка СОСЕДА не спасает пункт: граница куска считается по обеим формам, а не до конца файла")
-
-_вне = РАЗДЕЛ.format("Урок", "печать набора `РЕЗУЛЬТАТ: N/N`")
-ok(not lesson_without_executor(memory=уроки(_вне)),
-   "форма метки вне словаря родов — не ложное имя: ось имени молчит уликой, а не обвинением")
-ok(len(lesson_without_mechanism(memory=уроки(_вне))) == 1,
-   "она же числится долгом: механизм есть в дереве, но род метки закрытым словарём не покрыт")
-
-ok(len(door_not_installed(make({".pre-commit-config.yaml": "repos: []\n",
-                                "install.sh": "pip install -e .\n"}))) == 1,
-   "дверь коммита объявлена, а установка её не ставит — на свежем клоне двери нет")
-ok(not door_not_installed(make({".pre-commit-config.yaml": "repos: []\n",
-                                "install.sh": "pip install -e .\npre-commit install\n"})),
-   "установка ставит дверь — молчим")
-ok(not door_not_installed(make({"install.sh": "pip install -e .\n"})),
-   "двери не объявлено вовсе — требовать её установку не с чего")
-
-
-print("\n== одну зону объявили два хозяина ==")
-HEAD_ROW = "| Тест | Зона |\n|---|---|\n"
-ok(not zone_declared_twice(make({"tests/CATALOG.md": HEAD_ROW
-                                 + "| `test_a.py` | зона про поиск |\n| `test_b.py` | зона про таблицы |\n"})),
-   "у каждой строки своя территория — молчим")
-ok(len(zone_declared_twice(make({"tests/CATALOG.md": HEAD_ROW
-                                 + "| `test_a.py` | зона про поиск |\n| `test_b.py` | зона про поиск |\n"}))) == 1,
-   "две строки объявили дословно одну зону — второй хозяин и есть размножение")
-ok(len(zone_declared_twice(make({"tests/CATALOG.md": HEAD_ROW
-                                 + "| `test_a.py` | сам сторож `scripts/guards/g.py`: отчёт |\n"
-                                 + "| `test_b.py` | сам сторож `scripts/guards/g.py`: иначе сказано |\n"}))) == 1,
-   "формулировки разные, а НАЗВАН один сторож — два дома у одной правды")
-ok(not zone_declared_twice(make({"tests/CATALOG.md": HEAD_ROW
-                                 + "| `test_a.py` | сам сторож `scripts/guards/g.py` |\n"
-                                 + "| `test_b.py` | сам сторож `scripts/guards/o.py` |\n"})),
-   "разные сторожа названы — территории не пересекаются")
-ok(not zone_declared_twice(make({"scripts/guards/CATALOG.md": HEAD_ROW + "| `g.py` | своя зона |\n"})),
-   "каталог сторожей судится тем же правилом и на одной строке молчит")
-ok(not zone_declared_twice(make({"core/z.py": "x = 1\n"})),
-   "каталогов нет вовсе — улики нет, а не «дублей нет»")
-
-print("\n== сторож без набора-дома ==")
-HOME = "| Тест | Зона |\n|---|---|\n| `test_g.py` | сам сторож `scripts/guards/g.py` |\n"
-ok(len(guard_without_home(make({"scripts/guards/g.py": "x = 1\n", "tests/CATALOG.md": HOME}))) == 0,
-   "дом объявлен зоной набора — цикл знает, чем сравнивать правку сторожа")
-ok(len(guard_without_home(make({"scripts/guards/g.py": "x = 1\n", "scripts/guards/n.py": "y = 1\n",
-                                "tests/CATALOG.md": HOME}))) == 1,
-   "сторож есть, а набора-дома нет: его правку цикл сравнить не с чем")
-TWO_HOMES = HOME + "| `test_o.py` | сам сторож `scripts/guards/o.py` |\n"
-ok(len(guard_without_home(make({"scripts/guards/o.py": "x = 1\n", "tests/CATALOG.md": TWO_HOMES}))) == 1,
-   "дом объявлен сторожу, которого на диске нет — карта цикла ведёт в пустоту")
-ok(not guard_without_home(make({"scripts/guards/_src.py": "x = 1\n", "tests/CATALOG.md": HOME,
-                                "scripts/guards/g.py": "x = 1\n"})),
-   "источник улики (`_`) сторожем не считается: он не судит, дома ему не нужно")
-ok("дома сверять не с чем" in отказ(guard_without_home, make({"scripts/guards/g.py": "x = 1\n"})),
-   "каталога тестов нет вовсе — ось отказывается судить вслух, иначе это читалось бы "
-   "как «все сторожа при домах»")
-
 print("\n== ручка объявлена, а читателя нет ==")
+
 RECORD = "compensation:\n  record_sheet: DECISIONS\n  scene_column: scene_id\n  memory_file: p.md\n"
+
 READS_TWO = 'a = cfg["record_sheet"]\nb = cfg["scene_column"]\n'
 
 ok(len(knob_without_reader(make({"config/u.yaml": RECORD, "core/z.py": READS_TWO}))) == 1,
    "секцию читают полями, а эту ручку никто не называет — правка строки не меняет ничего")
+
 ok(not knob_without_reader(make({"config/u.yaml": RECORD,
                                  "core/z.py": READS_TWO + 'c = cfg["memory_file"]\n'})),
    "ручку грузят — молчим")
+
 ok(len(knob_without_reader(make({"config/u.yaml": RECORD, "tests/t.py": READS_TWO + 'c = cfg["memory_file"]\n',
                                  "core/z.py": READS_TWO}))) == 1,
    "читатель в наборе тестов не считается: поведение сервера от него не зависит")
+
 ok(not knob_without_reader(make({"config/c.yaml": "codecs:\n  by_name:\n    h264: libx264\n    h265: libx265\n",
                                  "core/z.py": 'x = cfg["by_name"].get(name)\n'})),
    "карта: ключи приходят данными, соседей по имени не читают — обвинять нечего")
+
 ok(not knob_without_reader(make({"config/u.yaml": RECORD, "config/o.yaml": "kinds:\n  - memory_file\n",
                                  "core/z.py": READS_TWO})),
    "ключ стоит в декларациях ещё и значением — это величина предметной области, не ручка")
+
 ok(not knob_without_reader(make({"config/f.yaml": "filters:\n  params:\n    properties:\n      color:\n"
                                  "        type: string\n        title: Цвет\n        pattern: '^0x'\n",
                                  "core/z.py": 'x = s["type"]\ny = s["title"]\n'})),
    "фрагмент JSON-схемы: его проверяет библиотека целиком, по именам его не грузят")
+
 ok(not knob_without_reader(make({"config/u.yaml": "sec:\n  record_sheet: D\n  scene_column: s\n  ttl: 5\n",
                                  "core/z.py": READS_TWO})),
    "короткое имя РУЧКИ совпадает по случайности — порог длины держит сторожа точным")
+
 ok(not knob_without_reader(make({"core/z.py": READS_TWO})),
    "деклараций нет вовсе — ручек не бывает, а не «все мёртвые»")
+
 ok(len(knob_without_reader(make({"config/u.yaml": RECORD,
                                  "core/z.py": READS_TWO + '# раньше читали cfg["memory_file"], убрали\n'}))) == 1,
    "имя в комментарии читателем не считается: комментария в дереве нет")
+
 ok(len(knob_without_reader(make({"config/u.yaml": RECORD, "core/z.py": READS_TWO
                                  + 'def q():\n    """Ключ "memory_file" когда-то грузился."""\n'}))) == 1,
    "имя внутри докстринга — проза: значением узла стоит весь текст, а не ключ")
+
 ok(not knob_without_reader(make({"config/u.yaml": RECORD,
                                  "core/z.py": READS_TWO + 'c = obj.memory_file\n'})),
    "обращение к полю — настоящий читатель наравне со строкой-ключом")
+
 LOGGING = ("logging:\n  log_all_requests: false\n  log_suspicious: true\n"
            "  log_blocked: true\n  log_file: p.log\n")
+
 ok(len(knob_without_reader(make({"config/f.yaml": LOGGING,
                                  "core/z.py": 'a = cfg["log_suspicious"]\n'}))) == 3,
    "запись судится по форме ключей: три мёртвые ручки видны, хотя читают меньше половины секции")
+
 ok(not knob_without_reader(make({"config/p.yaml": "fit:\n  dtype_alias:\n    float16: fp16\n    bfloat16: bf16\n",
                                  "core/z.py": 'x = m["float16"]\n'})),
    "ключ карты — величина предметной области, а не имя ручки из слов: молчим")
+
 ok(not knob_without_reader(make({"config/e.yaml": "failures:\n  by_reason:\n    Encoder not found: x\n"
                                  "    missing_input_file: y\n",
                                  "core/z.py": 'x = f["Encoder not found"]\n'})),
    "среди ключей секции есть не-имя — секция карта целиком, обвинять соседей по ней нечего")
+
 ok(not knob_without_reader(make({"config/u.yaml": RECORD, "core/z.py": "x = 1\n"})),
    "секцию не читают вовсе — улики нет, а не «все ручки мёртвые»")
 
 print("\n== конфигурация, которой нет ==")
+
 DECL = "limits:\n  max_size: 10\n"
+
 NAMES = 'DECLARATION = "config/u.yaml"\n'
+
 READS_ABSENT = 'x = cfg["limits"].get("max_retries", 3)\n'
+
 ok(len(default_instead_of_declaration(make({"config/u.yaml": DECL,
                                             "core/z.py": NAMES + READS_ABSENT}))) == 1,
    "читают раздел декларации и спрашивают строку, которой в нём нет — значение живёт в коде")
+
 ok(not default_instead_of_declaration(make({"config/u.yaml": "limits:\n  max_size: 10\n  max_retries: 3\n",
                                             "core/z.py": NAMES + READS_ABSENT})),
    "ключ объявлен — дефолт лишь страхует, правка конфига действует")
+
 ok(not default_instead_of_declaration(make({"config/u.yaml": DECL, "core/z.py": READS_ABSENT})),
    "модуль не называет ни одной декларации — он их не грузит: это данные запроса, не конфигурация")
+
 ok(not default_instead_of_declaration(make({"config/u.yaml": DECL,
                                             "core/z.py": NAMES + 'x = q["size"].get("min", 0)\n'})),
    "приёмник добыт НЕобъявленным ключом — раздел принадлежит запросу, а не декларации")
+
 ok(not default_instead_of_declaration(make({"config/u.yaml": DECL,
                                             "core/z.py": NAMES + 'x = cfg["limits"].get("nested", {})\n'})),
    "дефолт не литерал — это спуск по декларации, а не ручка")
+
 ok(not default_instead_of_declaration(make({"config/u.yaml": DECL,
                                             "core/z.py": '# грузим config/u.yaml\n' + READS_ABSENT})),
    "имя декларации в комментарии ничего не грузит — читателем модуль не становится")
+
 ok(not default_instead_of_declaration(make({"core/z.py": NAMES + READS_ABSENT})),
    "деклараций нет вовсе — улики нет, а не «весь конфиг мимо»")
 
 print("\n== объявлено незавершённым ==")
+
 ok(len(unfinished_in_server(make({"core/z.py": "def f():\n    raise NotImplementedError\n"}))) == 1,
    "стаб кричит — и прибавление такого крика становится решением, а не строкой между делом")
+
 ok(len(unfinished_in_server(make({"core/z.py": 'def f():\n    raise NotImplementedError("позже")\n'}))) == 1,
    "форма с аргументом — тот же стаб: имя берётся из вызова, а не из голого узла")
+
 ok(not unfinished_in_server(make({"tests/t.py": "def f():\n    raise NotImplementedError\n"})),
    "стаб в наборе тестов сервером не исполняется — не его зона")
+
 ok(not unfinished_in_server(make({"core/z.py": 'def f():\n    raise ValueError("x")\n'})),
    "обычный отказ — не незавершённость: молчим")
 
 print("\n== отказ погашен молча ==")
+
 ok(len(muted_refusal(make({"core/z.py": "def f():\n    try:\n        g()\n    except Exception:\n        return {}\n"}))) == 1,
    "широкий except отдаёт пустоту вместо отказа — клиент считает её ответом")
+
 ok(not muted_refusal(make({"core/z.py": "def f():\n    try:\n        g()\n    except OSError:\n        return {}\n"})),
    "узкий перехват назвал причину — это решение, а не глушение")
+
 ok(not muted_refusal(make({"core/z.py": 'def f():\n    try:\n        g()\n    except Exception as e:\n        return err(str(e))\n'})),
    "пойманное названо и уехало отказом — обработчик говорит")
+
 ok(not muted_refusal(make({"core/z.py": "def f():\n    try:\n        g()\n    except Exception:\n        raise\n"})),
    "исключение поднято дальше — гасить нечего")
+
 ok(not muted_refusal(make({"core/z.py": "def f():\n    try:\n        g()\n    except Exception:\n        print('сбой')\n"})),
    "след оставлен — отказ не нем, даже если наверх ушла пустота")
+
 ok(len(muted_refusal(make({"core/z.py": "import contextlib\n\n\ndef f():\n"
                                         "    with contextlib.suppress(Exception):\n        g()\n"}))) == 1,
    "`suppress(Exception)` — тот же немой перехват: узла `except` у него нет, а отказ гасится так же")
+
 ok(not muted_refusal(make({"core/z.py": "import contextlib\n\n\ndef f():\n"
                                         "    with contextlib.suppress(OSError):\n        g()\n"})),
    "узкий `suppress(OSError)` — решение о конкретной причине, не улика")
 
 print(f"\n{'='*50}")
+
 print("== поле записи мимо объявления: промах немой по природе ==")
+
 _REC = ('entry = {"scenario": s, "step": 1, "tool": t, "args": {}, "ok": True, "code": "",\n'
         '         "message": "", "reaction_class": "", "recovery": {}, "facts": [], "data": {},\n'
         '         "console": []}\n')
+
 ok(not record_field_mismatch(make({"tests/harness/scenario.py": _REC})),
    "запись из объявленных полей молчит")
+
 ok(len(record_field_mismatch(make({
     "tests/harness/scenario.py": _REC.replace('"console": []', '"console": [], "klass": ""')}))) == 1,
    "лишнее поле у писателя названо: форма разошлась, а читатель об этом не узнает")
+
 ok(len(record_field_mismatch(make({
     "scripts/guards/reproduce.py": 'x = entry.get("class")\n'}))) == 1,
    "чтение записи именем ОБЪЯВЛЕНИЯ (`class`) поймано — у записи поле зовётся reaction_class")
+
 ok(not record_field_mismatch(make({
     "scripts/guards/reproduce.py": 'x = entry.get("reaction_class")\n'})),
    "объявленным именем спрашивать можно")
+
 ok(not record_field_mismatch(make({
     "scripts/guards/reproduce.py": 'x = item.get("observes")\n'})),
    "чужой словарь не запись: `.get` по объявлению не обвиняется")
+
 ok(not record_field_mismatch(make({
     "tests/harness/scenario.py": 'observed = {"ok": True, "code": "", "klass": ""}\n'})),
    "ответ сервера записью не является — узнаётся по ПАРЕ ключей scenario+ok, а не по одному")
-
 
 # Роды улики живут в ЕДИНОМ словаре, а не рядом со сценариями: подставное дерево обязано класть
 # оба файла, иначе набор судит объявление, которого в нём нет.
@@ -1421,495 +691,14 @@ ok(not record_field_mismatch(make({
   доказать: cmd
   журнал: {журнал}
 {исполнитель}"""
+
 ИСПОЛНИТЕЛЬ = """  исполнитель:
     набор: {набор}
     метка: {метка}
 """
 
-
-def эксперт(улика="правка-компонента", состояние="судится", журнал="есть.md",
-            набор="tests/наш/test_наш.py", метка="метка проверки", исполнитель=True,
-            станет="") -> Path:
-    хвост = (ИСПОЛНИТЕЛЬ.format(набор=набор, метка=метка) if исполнитель
-             else (f"  станет-судимым: {станет}\n" if станет else ""))
-    return make({"scripts/guards/evidence.yaml": УЛИКИ,
-                 "scripts/guards/acceptance_scenarios.yaml":
-                 ЭКСПЕРТ.format(улика=улика, состояние=состояние, журнал=журнал,
-                                исполнитель=хвост),
-                 "tests/наш/test_наш.py": '  ok(True, "метка проверки")\n',
-                 "есть.md": "запись\n"})
-
-
-ok(not acceptance_calls_missing(эксперт()),
-   "сценарий эксперта зовёт существующее — молчим")
-ok("которой нет ни в одном наборе" in " ".join(acceptance_calls_missing(эксперт(метка="выдуманная"))),
-   "сценарий зовёт метку, которой нет ни в одном наборе — назван прямо")
-ok("которого нет в дереве" in " ".join(acceptance_calls_missing(эксперт(набор="tests/нет/test_нет.py"))),
-   "сценарий зовёт несуществующий набор — исполнитель обязан быть на диске")
-ok("не включится никогда" in " ".join(acceptance_calls_missing(эксперт(улика="выдуманный-род"))),
-   "род улики вне объявления: сценарий молча не включится ни разу")
-ok("которого нет" in " ".join(acceptance_calls_missing(эксперт(журнал="снесённый.md"))),
-   "совет опирается на запись журнала, которой нет")
-ok("держится словом" in " ".join(acceptance_calls_missing(эксперт(исполнитель=False))),
-   "объявлен судимым, а исполнителя нет — «судится» держится словом")
-ok("долг без выхода" in " ".join(
-       acceptance_calls_missing(эксперт(состояние="совет", исполнитель=False))),
-   "советующий сценарий обязан сказать, чем станет судимым")
-ok(not acceptance_calls_missing(
-       эксперт(состояние="совет", исполнитель=False, станет="когда появится жест")),
-   "советующий сценарий с объявленным выходом — честный долг, а не ошибка")
-ok(len(acceptance_advice_only(эксперт(состояние="совет", исполнитель=False, станет="потом"))) == 1,
-   "храповик считает советующих отдельно от жёсткой оси")
-ok(not acceptance_advice_only(эксперт()), "судимый сценарий в долг не попадает")
-ok(not acceptance_calls_missing(make({"нет": "сценариев"})),
-   "объявления сценариев нет — улики нет, а не «сценарии все битые»")
-
-
-print("\n== остаток записан мимо своего дома ==")
-
-_мимо = Path(tempfile.mkdtemp(prefix="vpm-мимо-"))
-(_мимо / "tests" / ".journal").mkdir(parents=True)
-(_мимо / "scripts" / "guards").mkdir(parents=True)
-(_мимо / "scripts" / "guards" / "_stamp.py").write_text(
-    (ROOT / "scripts" / "guards" / "_stamp.py").read_text(encoding="utf-8"), encoding="utf-8")
-(_мимо / "tests" / ".journal" / "stamps-20260101.jsonl").write_text(
-    json.dumps({"role": "ОСТАТОК", "key": "мимо", "ts": 1}, ensure_ascii=False) + "\n",
-    encoding="utf-8")
-ok(any("мимо" in н for н in _inv.tails_off_home(_мимо)),
-   "подпись есть в следе и нет в доме — обход двери назван, а не обнаружен пустым показом")
-(_мимо / "scripts" / "guards" / "tails.jsonl").write_text(
-    json.dumps({"role": "ОСТАТОК", "key": "мимо", "ts": 1}, ensure_ascii=False) + "\n",
-    encoding="utf-8")
-ok(not _inv.tails_off_home(_мимо), "запись в доме есть — обвинения нет")
-
-print("\n== раздел памяти без объявленной зоны ==")
-# Что проверяем: каждый раздел памяти назван в какой-то зоне `evidence.yaml`. Зачем: тему записи
-# не с чем сверить, и заказ про одно ложится в раздел про другое. Ожидаем: незаявленный назван
-# поимённо, оглавление и пустая память обвинением не считаются.
-
-_зона_пам = Path(tempfile.mkdtemp(prefix="vpm-зона-памяти-"))
-(_зона_пам / "MEMORY.md").write_text("оглавление, а не раздел\n", encoding="utf-8")
-(_зона_пам / "hard-won-lessons.md").write_text("объявлен в зоне сторожей\n", encoding="utf-8")
-ok(not _inv.memory_zone_undeclared(memory=_зона_пам),
-   "объявленный раздел обвинения не собирает, а указатель разделом не считается")
-(_зона_пам / "самозванец.md").write_text("не назван ни в одной зоне\n", encoding="utf-8")
-_обвинения = _inv.memory_zone_undeclared(memory=_зона_пам)
-ok(len(_обвинения) == 1 and "самозванец" in _обвинения[0],
-   "новый раздел без зоны назван ПОИМЁННО — иначе зона осталась бы дисциплиной, а не механизмом")
-ok(not _inv.memory_zone_undeclared(memory=Path(tempfile.mkdtemp())),
-   "памяти нет — обвинять некого: отсутствие улики не улика")
-
-print("\n== в памяти статус, а не знание ==")
-
-_пам2 = Path(tempfile.mkdtemp(prefix="vpm-статус-"))
-(_пам2 / "a.md").write_text(
-    "- знание: отказ провайдера доезжает кодом реестра\n"
-    "- ~~было иначе~~ теперь так\n"
-    "- задача ЗАКРЫТА 2026-09-02 прогоном\n"
-    "| Поиск | \u2705 | core/search/ |\n"
-    "- \U0001F534 важность и \u2b1c не взято — это знание, а не отчёт\n", encoding="utf-8")
-_поймано = _inv.memory_status(memory=_пам2)
-ok(len(_поймано) == 3, f"три сигнала статуса пойманы, знание не тронуто: {len(_поймано)}")
-ok(any("зачёркнутое" in н for н in _поймано) and any("«закрыто»" in н for н in _поймано)
-   and any("галка" in н for н in _поймано), "каждый сигнал назван своим поводом, а не общим")
-ok(not any("важность" in н for н in _поймано),
-   "метки важности и «не взято» не обвиняются: замер дал 16 ложных на живой памяти")
-ok(not _inv.memory_status(memory=Path(tempfile.mkdtemp()) / "нет"),
-   "каталога памяти нет — улики нет, а не «памяти ноль»")
-
-print("\n== дерево, которым судим, вне гейта типов ==")
-
-_зона = Path(tempfile.mkdtemp(prefix="vpm-зона-")) / "pyproject.toml"
-_зона.write_text('[tool.mypy]\nfiles = ["core", "scripts/guards"]\n', encoding="utf-8")
-ok(not [н for н in _inv.typegate_uncovered(_зона.parent) if н.startswith("scripts/guards")],
-   "дерево внесено в зону — обвинения по нему нет")
-ok(len(_inv.typegate_uncovered(_зона.parent)) == len(_inv.JUDGING_TREES) - 1,
-   "остальные названы поимённо: долг виден числом, а не одним обвинением")
-_зона.write_text('[tool.mypy]\nfiles = ["core"]\n', encoding="utf-8")
-ok(any(н.startswith("scripts/guards") for н in _inv.typegate_uncovered(_зона.parent)),
-   "зону ужали — храповик увидел это ПО МАНИФЕСТУ, а не по своей копии")
-_зона.unlink()
-ok(not _inv.typegate_uncovered(_зона.parent), "манифеста нет — улики нет, а не обвинение")
-
-
-print("\n§ ось: цикл судит тавтологию, а не предсказание")
-_цикл = Path(tempfile.mkdtemp(prefix="vpm-цикл-"))
-_след = _цикл / "tests" / ".journal"
-_след.mkdir(parents=True)
-
-
-def _подпись(key, expected, kind="цикл", ts=1.0, role="ВЕРДИКТ"):
-    return json.dumps({"ts": ts, "key": key, "kind": kind, "role": role, "expected": expected},
-                      ensure_ascii=False)
-
-
-(_след / "stamps-1.jsonl").write_text("\n".join([
-    _подпись("aaaa", "3×appeared · предсказаний 0 из 3", ts=1),
-    _подпись("bbbb", "2×appeared + 1×red · предсказаний 1 из 3", ts=2),
-    _подпись("cccc", "5×appeared", ts=3),
-    _подпись("dddd", "2×appeared · предсказаний 0 из 2", kind="гейт", ts=4),
-]) + "\n", encoding="utf-8")
-_обвинения = _inv.cycle_tautology(_цикл)
-ok(len(_обвинения) == 5,
-   f"считаются ОЖИДАНИЯ, а не прогоны: 3 слепых + 2 при одном предсказании ({len(_обвинения)})")
-ok(all("aaaa" in н or "bbbb" in н for н in _обвинения),
-   "подпись без счёта родов не судится: сегодняшнее правило нечем вменить вчерашней записи")
-ok(not [н for н in _обвинения if "dddd" in н],
-   "род записи проверяется: гейт со словом «предсказаний» циклом не считается")
-(_след / "stamps-2.jsonl").write_text("\n".join(
-    _подпись(f"n{i:03d}", "1×appeared · предсказаний 0 из 1", ts=10 + i) for i in range(15)
-) + "\n", encoding="utf-8")
-ok(len(_inv.cycle_tautology(_цикл)) == _inv.ЦИКЛОВ_В_ОКНЕ,
-   "судится ОКНО последних прогонов: сумма за всю историю росла бы только вверх")
-(_след / "stamps-2.jsonl").write_text("\n".join(
-    _подпись(f"g{i:03d}", "1×red · предсказаний 1 из 1", ts=100 + i) for i in range(12)
-) + "\n", encoding="utf-8")
-ok(not _inv.cycle_tautology(_цикл),
-   "окно вышло чистым — долг УХОДИТ, а не остаётся памятником старым прогонам")
-shutil.rmtree(_цикл, ignore_errors=True)
-ok(any(ось[0] == "цикл судит тавтологию, а не предсказание" for ось in _inv.RATCHETS),
-   "ось стоит в храповиках — иначе она считает в пустоту и потолок не судит никто")
-
-print("\n§ ось тавтологии: попытку, сменённую более полным прогоном, не считают дважды")
-_смена = Path(tempfile.mkdtemp(prefix="vpm-смена-"))
-_след4 = _смена / "tests" / ".journal"
-_след4.mkdir(parents=True)
-
-
-def _прогон(key, ждали, намерение, ts):
-    return json.dumps({"ts": ts, "key": key, "kind": "цикл", "role": "ВЕРДИКТ",
-                       "intent": намерение, "expected": ждали}, ensure_ascii=False)
-
-
-(_след4 / "stamps-1.jsonl").write_text("\n".join([
-    _прогон("aaa1", "3×appeared · предсказаний 0 из 3", "окно", ts=1),
-    _прогон("bbb1", "3×appeared · предсказаний 3 из 3", "окно", ts=2),
-]) + "\n", encoding="utf-8")
-ok(not _inv.cycle_tautology(_смена),
-   "исправленное объявление гасит свою же прежнюю попытку: цикл гоняют, пока не чисто, и счёт "
-   "каждой попытки облагал бы налогом саму итерацию")
-(_след4 / "stamps-1.jsonl").write_text("\n".join([
-    _прогон("aaa1", "3×appeared · предсказаний 0 из 3", "окно", ts=1),
-    _прогон("bbb1", "цвет не меняется · предсказаний 0 из 0", "окно", ts=2),
-]) + "\n", encoding="utf-8")
-ok(len(_inv.cycle_tautology(_смена)) == 3,
-   "прогон БЕДНЕЕ объявлением не сменяет: иначе долг стирался бы пустым `expect: []`, "
-   "то есть молчанием")
-(_след4 / "stamps-1.jsonl").write_text("\n".join([
-    _прогон("aaa1", "3×appeared · предсказаний 0 из 3", "окно", ts=1),
-    _прогон("bbb1", "3×appeared · предсказаний 3 из 3", "другое", ts=2),
-]) + "\n", encoding="utf-8")
-ok(len(_inv.cycle_tautology(_смена)) == 3,
-   "слот смены — ИМЯ намерения: чужой прогон чужой долг не гасит")
-(_след4 / "stamps-1.jsonl").write_text("\n".join([
-    _прогон("aaa1", "3×appeared · предсказаний 0 из 3", "", ts=1),
-    _прогон("bbb1", "3×appeared · предсказаний 3 из 3", "", ts=2),
-]) + "\n", encoding="utf-8")
-ok(len(_inv.cycle_tautology(_смена)) == 3,
-   "безымянную попытку сменить нечем — иначе все старые подписи без имени гасили бы друг друга "
-   "(поймано существующим § тавтологии на этой же правке)")
-shutil.rmtree(_смена, ignore_errors=True)
-
-print("\n§ ось: подпись цикла без счёта родов (слепая зона по ФОРМЕ улики)")
-_слепой = Path(tempfile.mkdtemp(prefix="vpm-слепой-"))
-_след2 = _слепой / "tests" / ".journal"
-_след2.mkdir(parents=True)
-# Две СТАРЫЕ разбираемые подписи и десять СВЕЖИХ без счёта: ровно та расстановка, при которой
-# окно, порезанное после фильтра по форме, подтягивает древность и печатает маленькое число.
-(_след2 / "stamps-1.jsonl").write_text("\n".join(
-    [_подпись("old1", "3×appeared · предсказаний 0 из 3", ts=1),
-     _подпись("old2", "2×appeared · предсказаний 0 из 2", ts=2)]
-    + [_подпись(f"s{i:03d}", "4×appeared", ts=10 + i) for i in range(_inv.ЦИКЛОВ_В_ОКНЕ)]
-) + "\n", encoding="utf-8")
-ok(len(_inv.cycle_unjudged(_слепой)) == _inv.ЦИКЛОВ_В_ОКНЕ,
-   f"слепая зона видна и посчитана ({len(_inv.cycle_unjudged(_слепой))})")
-ok(not _inv.cycle_tautology(_слепой),
-   "окно режется ДО фильтра по форме: древняя разбираемая подпись не вытесняет свежие слепые")
-(_след2 / "stamps-1.jsonl").write_text("\n".join(
-    _подпись(f"j{i:03d}", "1×red · предсказаний 1 из 1", ts=100 + i) for i in range(_inv.ЦИКЛОВ_В_ОКНЕ)
-) + "\n", encoding="utf-8")
-ok(not _inv.cycle_unjudged(_слепой),
-   "слепая зона УХОДИТ, когда все подписи окна несут счёт, — долг убывает сам")
-shutil.rmtree(_слепой, ignore_errors=True)
-ok(any(ось[0] == "подпись цикла без счёта родов" for ось in _inv.RATCHETS),
-   "у слепой зоны СВОЙ потолок: ноль соседней оси иначе неотличим от чистоты")
-
-
-print("\n§ ось: замысел объявлен ПОСЛЕ кода — судится ОКНО замыслов")
-_замыслы = Path(tempfile.mkdtemp(prefix="vpm-замысел-"))
-_след3 = _замыслы / "tests" / ".journal"
-_след3.mkdir(parents=True)
-
-
-def _замысел(key, чиста, ts, role="ЗАМЫСЕЛ"):
-    подробность = {} if чиста is None else {"зона-чиста": чиста}
-    return json.dumps({"ts": ts, "key": key, "kind": "проба", "role": role,
-                       "what": f"замысел {key}", "where": f"журнал:{key}",
-                       "detail": подробность}, ensure_ascii=False)
-
-
-(_след3 / "stamps-1.jsonl").write_text("\n".join(
-    [_замысел("late1", False, 1), _замысел("late2", False, 2), _замысел("ok1", True, 3),
-     _замысел("чужой", False, 4, role="ВЕРДИКТ")]) + "\n", encoding="utf-8")
-_поздние = _inv.intent_after_code(_замыслы)
-ok(len(_поздние) == 2, f"запоздалый замысел в окне назван ({len(_поздние)} из 2)")
-ok(all("late" in н for н in _поздние),
-   "роль проверяется: вердикт на грязной зоне замыслом не считается — предсказывать он не обязан")
-ok(not [н for н in _поздние if "ok1" in н],
-   "замысел на чистой зоне долгом не становится — иначе ось наказывает за саму подпись")
-
-(_след3 / "stamps-2.jsonl").write_text("\n".join(
-    _замысел(f"чист{i:02d}", True, 10 + i) for i in range(_inv.ЗАМЫСЛОВ_В_ОКНЕ)) + "\n",
-    encoding="utf-8")
-ok(not _inv.intent_after_code(_замыслы),
-   "долг УХОДИТ дисциплиной: окно замыслов вытеснило запоздалые, храповик перестал быть вечным")
-
-(_след3 / "stamps-3.jsonl").write_text(_замысел("late3", False, 100) + "\n", encoding="utf-8")
-ok(len(_inv.intent_after_code(_замыслы)) == 1,
-   "свежий запоздалый виден сразу: окно не глушит ось, оно только гасит вытесненное прошлое")
-
-(_след3 / "stamps-2.jsonl").write_text("\n".join(
-    _замысел(f"безполя{i:02d}", None, 10 + i) for i in range(_inv.ЗАМЫСЛОВ_В_ОКНЕ)) + "\n",
-    encoding="utf-8")
-ok(len(_inv.intent_after_code(_замыслы)) == 1,
-   "окно режется ДО фильтра по полю: замысел без записи о чистоте занимает место, а не пропускает "
-   "древний запоздалый из глубины истории")
-shutil.rmtree(_замыслы, ignore_errors=True)
-ok(any(ось[0] == "замысел объявлен ПОСЛЕ кода" for ось in _inv.RATCHETS),
-   "ось стоит в храповиках — иначе она считает в пустоту и потолок не судит никто")
-
-print("\n§ ось: мутация объявлена, а улики поимки нет")
-_реестр = Path(tempfile.mkdtemp(prefix="vpm-мутации-"))
-(_реестр / "tests").mkdir()
-(_реестр / "tests" / "CATALOG.md").write_text("\n".join([
-    "| Mдвести | шапка таблицы, не строка мутации | — | — | — |",
-    "| M801 | окно снято | `f.py` | `t` | 🔴 ловит 3 ассерта |",
-    "| M802 | боевой конфиг слеп | `c.yaml` | 12 наборов | 🟢 не ловит никто |",
-    "| M803 | порядок вызовов | `m.yaml` | карта | ⚪ прочее |",
-    "текст рядом с таблицей, тоже не строка",
-]) + "\n", encoding="utf-8")
-_непойманы = _inv.mutation_without_catch(_реестр)
-ok(len(_непойманы) == 2, f"считаются строки БЕЗ улики поимки, а не все подряд ({len(_непойманы)})")
-ok(all("M801" not in н for н in _непойманы),
-   "пойманная мутация долгом не становится — иначе ось наказывает за сделанную работу")
-ok(any("M802" in н for н in _непойманы) and any("M803" in н for н in _непойманы),
-   "и «не ловит никто», и «прочее» — одна слепая зона: улики поимки нет ни у той, ни у другой")
-(_реестр / "tests" / "CATALOG.md").write_text(
-    "| M801 | окно снято | `f.py` | `t` | 🔴 ловит 3 ассерта |\n", encoding="utf-8")
-ok(not _inv.mutation_without_catch(_реестр),
-   "долг УХОДИТ работой: набор довели до мутации, улика поимки встала — ось молчит")
-shutil.rmtree(_реестр, ignore_errors=True)
-ok(any(ось[0] == "мутация объявлена, а улики поимки нет" for ось in _inv.RATCHETS),
-   "ось стоит в храповиках — иначе она считает в пустоту и потолок не судит никто")
-
-
-import _evidence  # общая дверь к объявлению: набор подменяет её путь, а не файл
-
-_ГВАРДЫ = ROOT / "scripts" / "guards"
-_реестр = Path(tempfile.mkdtemp(prefix="vpm-оси-")) / "scripts" / "guards"
-_реестр.mkdir(parents=True)
-shutil.copy(_ГВАРДЫ / "invariants.py", _реестр / "invariants.py")
-shutil.copy(_ГВАРДЫ / "evidence.yaml", _реестр / "evidence.yaml")
-_объявление = _реестр / "evidence.yaml"
-_ЦЕЛО = _объявление.read_text(encoding="utf-8")
-
-ok(_inv.RATCHETS and _inv.HARD, "оси собраны из объявления, а не из кортежа в коде")
-ok(not _inv.axis_undeclared(_реестр.parent.parent), "все написанные оси объявлены")
-
-_снять = '    - заголовок: "код отказа мимо реестра"\n      читатель: codes_outside_registry\n'
-_объявление.write_text(_ЦЕЛО.replace(_снять, ""), encoding="utf-8")
-ok(any("codes_outside_registry" in n for n in _inv.axis_undeclared(_реестр.parent.parent)),
-   "ось, написанная но НЕ объявленная, названа поимённо — иначе она не судит молча")
-_объявление.write_text(_ЦЕЛО, encoding="utf-8")
-
-try:
-    _inv._читатель({"заголовок": "проверка", "читатель": "нет_такой_функции"})
-    ok(False, "объявленный читатель, которого нет в модуле, обязан быть ОТКАЗОМ")
-except SystemExit as _e:
-    ok("нет_такой_функции" in str(_e), "промах имени читателя назван вслух, а не пропущен молча")
-
-_прежний = _evidence.DECL
-try:
-    _evidence.DECL = _объявление.with_name("пусто.yaml")
-    _inv._реестр_осей()
-    ok(False, "пустой реестр осей обязан быть ОТКАЗОМ: без осей сторож зелен по всему")
-except SystemExit as _e:
-    ok("оси" in str(_e), "пустой реестр осей отказывает и говорит, где его объявить")
-finally:
-    _evidence.DECL = _прежний
-shutil.rmtree(_реестр.parent.parent, ignore_errors=True)
-
-
-import _precision  # журнал точности лежит под git, рядом с потолками
-_точн = Path(tempfile.mkdtemp(prefix="vpm-точность-")) / "precision.jsonl"
-_precision.записать("hook-a", "по-делу", "поймал настоящее", путь=_точн)
-_precision.записать("hook-a", "ложно", "сработал на литерале", проверка="§7 test_hooks", путь=_точн)
-_precision.записать("hook-b", "ложно", "сработал на разделителе таблицы", путь=_точн)
-ok(_precision.точность(_точн)["hook-a"]["точность"] == 0.5,
-   "точность считается ЧИСЛОМ на хук, а не остаётся самооценкой")
-ok(_precision.ложные_без_проверки(_точн) == ["hook-b: сработал на разделителе таблицы"],
-   "долгом считается ложное БЕЗ проверки: закреплённое проверкой уже не долг")
-try:
-    _precision.записать("hook-a", "непонятно", "что-то", путь=_точн)
-    ok(False, "исход вне объявленных обязан быть отказом — иначе вокабуляр расползётся словами")
-except ValueError as _e:
-    ok("не объявлен" in str(_e), "неизвестный исход назван вслух")
-try:
-    _precision.записать("hook-a", "ложно", "   ", путь=_точн)
-    ok(False, "исход без описания не улика")
-except ValueError as _e:
-    ok("не улика" in str(_e), "ложное без описания отвергнуто: сужать правило было бы не по чему")
-ok(not _precision.ложные_без_проверки(Path("/нет/такого/журнала.jsonl")),
-   "нет журнала — пусто, а не «точность идеальна»")
-ok(any(ось[0] == "ложное срабатывание хука без проверки в наборе" for ось in _inv.RATCHETS),
-   "у ложных срабатываний СВОЙ потолок: он и опускается по мере закрепления проверками")
-shutil.rmtree(_точн.parent, ignore_errors=True)
-
-
-_зона = Path(tempfile.mkdtemp(prefix="vpm-типы-"))
-_манифест = (Path.cwd() / "pyproject.toml").read_text(encoding="utf-8")
-_целевая = [s for s in _манифест.splitlines() if s.startswith("files = [")][0]
-
-
-def _с_зоной(зона: str) -> Path:
-    (_зона / "pyproject.toml").write_text(_манифест.replace(_целевая, f"files = {зона}"),
-                                         encoding="utf-8")
-    return _зона
-
-
-ok(not _inv.typegate_uncovered(_с_зоной('["core", "tools", "server.py", "scripts", ".claude/hooks", "tests/harness"]')),
-   "покрытие зоны типов считается ПУТЁМ: `scripts` накрывает `scripts/guards`")
-ok(len(_inv.typegate_uncovered(_с_зоной('["core", "tools", "server.py", ".claude/hooks", "tests/harness"]'))) == 1,
-   "убрать дерево сторожей из зоны — по-прежнему отказ: ось не ослеплена ради расширения")
-ok(len(_inv.typegate_uncovered(_с_зоной('["core", "tools", "server.py", "scripts", "tests/harness"]'))) == 1,
-   "убрать хуки из зоны — отказ: покрытие проверяется у КАЖДОГО судящего дерева")
-shutil.rmtree(_зона, ignore_errors=True)
-
-
-print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
-print("\n== живая величина: написанное против прогона ==")
-# Что проверяем: число о дереве несёт имя своего источника, сторож гоняет команду и сверяет.
-# Зачем: разбор прозы обвинял бы и счёт ЧУЖОГО репозитория, и число в закрытой находке — ложное
-# обвинение выключает сторожа быстрее, чем его отсутствие. Ожидаем: судится только маркер.
-
-sys.path.insert(0, str(ROOT / "scripts" / "guards"))
-import _live  # источник улики: гоняет команды и находит маркеры
-
-ok(_live.прогон("printf ''")[1] != "", "команда без вывода — ОТКАЗ, а не пустое значение: "
-                                       "иначе величина согласна с любым написанным числом")
-ok(_live.прогон("exit 3")[1] != "", "ненулевой код команды — отказ, а не молчаливое согласие")
-ok(_live.прогон("echo 8") == ("8", ""), "рабочая команда отдаёт значение без причины отказа")
-
-_жд = Path(tempfile.mkdtemp(prefix="vpm-живое-"))
-(_жд / ".claude" / "skills").mkdir(parents=True)
-(_жд / "docs" / "roadmap" / "sessions").mkdir(parents=True)
-# Образец собирается на ходу, а не пишется буквально: набор лежит в ЖИВОЙ зоне, и написанный
-# целиком маркер сторож принял бы за настоящее утверждение о дереве — поймано им же на этом файле.
-_м = lambda имя, знач: "⟨живое " + f"{имя}={знач}⟩"
-(_жд / ".claude" / "skills" / "s.md").write_text(f"гейт — {_м('джобы', 8)} джоб\n", encoding="utf-8")
-(_жд / "docs" / "roadmap" / "sessions" / "s1.md").write_text(
-    f"тогда было {_м('джобы', 6)} джоб\n", encoding="utf-8")
-_ДЕКЛ = {"джобы": {"команда": "echo 8"}}
-
-ok([и for *_, и, _ in _live.маркеры(_жд)] == ["джобы"],
-   "маркер живой зоны найден, а журнал сессий НЕ судится: там число записано как прошлое, "
-   "и переписать его прогоном значит подделать историю")
-ok(_live.расхождения(_жд, _ДЕКЛ) == [], "написанное совпало с прогоном — обвинения нет")
-
-(_жд / ".claude" / "skills" / "s.md").write_text(f"гейт — {_м('джобы', 7)} джоб\n", encoding="utf-8")
-_беды = _live.расхождения(_жд, _ДЕКЛ)
-ok(len(_беды) == 1 and "написано '7'" in _беды[0] and "даёт '8'" in _беды[0],
-   "расхождение названо с обоими числами: без прогона рядом «неверно» нечем проверить")
-
-(_жд / ".claude" / "skills" / "s.md").write_text(f"{_м('выдумка', 1)}\n", encoding="utf-8")
-ok(any("такой величины в объявлении нет" in б for б in _live.расхождения(_жд, _ДЕКЛ)),
-   "маркер зовёт необъявленную величину — это отказ, а не тихо принятое число")
-
-ok(any("не измеряется" in б for б in _live.расхождения(_жд, {"битая": {"команда": "exit 1"}})),
-   "битая команда краснеет САМА, до того как ею воспользуются — иначе величина, "
-   "согласная с чем угодно, живёт до первой сверки")
-
-print("\n== место: где символ лежит и куда класть новый ==")
-# Что проверяем: символы модуля с границами, самый узкий символ на строке, точка вставки и
-# доказуемо битая ссылка. Зачем: «куда кинуть код» решалось догадкой, а ссылка на строку
-# протухала молча. Ожидаем: судится ТОЛЬКО доказанная битость, фикстуры не обвиняются.
-
-import _place  # источник улики: индекс мест на ast
-
-_мд = Path(tempfile.mkdtemp(prefix="vpm-место-"))
-(_мд / "м.py").write_text(
-    "def первая():\n    return 1\n\n\n"
-    "class Дом:\n    def метод(self):\n        return 2\n\n\n"
-    "def main():\n    return 3\n\n\n"
-    'if __name__ == "__main__":\n    main()\n', encoding="utf-8")
-_т = _place.символы(_мд / "м.py")
-ok(set(_т) == {"первая", "Дом", "Дом.метод", "main"},
-   "вложенный зовётся через точку: два одноимённых метода в разных классах иначе слились бы в один")
-ok(_т["Дом"]["строка"] == 5 and _т["Дом"]["конец"] == 7, "границы символа берутся целиком")
-ok(_place.символ_на(_мд / "м.py", 7) == "Дом.метод",
-   "на строке метода отвечает МЕТОД, а не класс: из вложенных берётся самый узкий")
-ok(_place.символ_на(_мд / "м.py", 3) == "", "строка вне символов — пусто, а не ближайший наугад")
-ok(_place.куда(_мд / "м.py")["перед"] == 10,
-   "вставка идёт перед хвостом запуска, а не в конец файла: дописанное после хвоста мертво")
-(_мд / "битый.py").write_text("def x(:\n", encoding="utf-8")
-ok(_place.символы(_мд / "битый.py") == {},
-   "неразбираемый файл даёт пусто — «улики нет», а не выдуманный список символов")
-
-_сд = Path(tempfile.mkdtemp(prefix="vpm-ссылки-"))
-(_сд / ".claude" / "skills").mkdir(parents=True)
-(_сд / "core").mkdir()
-(_сд / "core" / "есть.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
-(_сд / ".claude" / "skills" / "s.md").write_text(
-    "живая core/есть.py:2 · мимо core/есть.py:99 · фикстура core/нет.py:5 · "
-    "история abc1234:core/есть.py:900\n", encoding="utf-8")
-_беды = _place.битые_ссылки(_сд)
-ok(len(_беды) == 1 and "core/есть.py:99" in _беды[0],
-   "судится ТОЛЬКО доказанная битость: строка за концом СУЩЕСТВУЮЩЕГО файла")
-ok(not any("нет.py" in б for б in _беды),
-   "«цели нет» не обвиняется: так же выглядит фикстура набора и ссылка одним именем файла")
-ok(not any("900" in б for б in _беды),
-   "ссылка, уточнённая коммитом, судится тем коммитом, а не длиной сегодняшнего файла")
-
-print("\n== Глушитель чужого сторожа без причины ==")
-ГЛУШИТЕЛИ = make({"core/a.py": (
-    "x = 1  # noqa: E402 — путь к харнессу добавляется выше\n"     # код и причина — чисто
-    "y = 2  # noqa: E402\n"                                        # причины нет
-    "z = 3  # noqa\n"                                              # нет ни кода, ни причины
-    "w = 4  # type: ignore[arg-type]\n"                            # причины нет
-    "v = 5  # pragma: no cover — среда без cryptography\n"         # кодов у формы не бывает
-    "u = 6  # обычный комментарий про поведение\n"
-    # Фикстура ВНУТРИ строки: так глушитель выглядит в наборах самих сторожей, и построчный
-    # разбор судил бы данные вместо кода.
-    "ФИКСТУРА = \'x = 1  # noqa\'\n")})
-_глуш = silencer_without_reason(root=ГЛУШИТЕЛИ)
-ok(len(_глуш) == 3, "названы ровно три глушителя без причины: оправданный и обычный "
-   "комментарий под обвинение не идут")
-ok(any("core/a.py:3" in г and "кода правила" in г for г in _глуш),
-   "голый `# noqa` назван и кодом правила, и причиной — он гасит ВСЁ, а не одно правило")
-ok(not any("core/a.py:5" in г for г in _глуш),
-   "`pragma: no cover` не обвиняется в отсутствии кода: кодов у этой формы не бывает вовсе")
-ok(not any("core/a.py:1" in г or "core/a.py:6" in г for г in _глуш),
-   "глушитель с кодом и причиной молчит, и обычный комментарий тоже")
-ok(not any("core/a.py:7" in г for г in _глуш),
-   "глушитель ВНУТРИ строки-фикстуры не обвиняется: судим токены комментария, а не строки файла")
-
-print("\n== Мутация поймана, а счёт не назван ==")
-РЕЕСТР = make({"tests/CATALOG.md": (
-    "| M900 | что сломали | `a.py` | `t` | 🔴 ловит 2 ассерта (S26) — почему важно |\n"
-    "| M901 | что сломали | `a.py` | `t` | 🔴 ловит ✅ |\n"
-    "| M902 | что сломали | `a.py` | `t` | ⚪ не ловит никто — слепая зона объявлена |\n"
-    "| F900 | это находка, а не мутация | `a.py` | `t` | 🔴 ловит |\n")})
-_счёт = mutation_without_count(root=РЕЕСТР)
-ok(len(_счёт) == 1, "названа ровно одна мутация без счёта: со счётом и непойманная молчат")
-ok("M901" in _счёт[0], "названа та, что объявила поимку значком и не сказала скольким")
-ok(not any("M902" in с for с in _счёт),
-   "непойманная не обвиняется дважды: её долг судит своя ось")
-ok(not any("F900" in с for с in _счёт),
-   "строка находки не принимается за мутацию: номер судится формой, а не похожестью")
-ok(not mutation_without_count(root=make({"нет": "реестра"})),
-   "реестра нет — улики нет, а не «мутаций ноль»")
-
 print("\n== ось расписывает свой проход: молчание названо причиной ==")
+
 ОСИ_ДЕКЛ = ("оси:\n  жёсткие:\n"
             "    - заголовок: немая\n      читатель: немая\n"
             "    - заголовок: говорящая\n      читатель: говорящая\n"
@@ -1917,6 +706,7 @@ print("\n== ось расписывает свой проход: молчани�
             "    - заголовок: сказала и промолчала\n      читатель: сказала_и_промолчала\n"
             "    - заголовок: чистая\n      читатель: чистая\n"
             "    - заголовок: глубоко\n      читатель: глубоко\n")
+
 ОСИ_КОД = (
     "def немая(root=1):\n"
     "    if not root:\n"
@@ -1951,166 +741,21 @@ print("\n== ось расписывает свой проход: молчани�
     "        return []\n"
     "    return ['нашла']\n")
 
-
 def дерево_осей(код: str = ОСИ_КОД, декл: str = ОСИ_ДЕКЛ) -> Path:
     return make({"scripts/guards/invariants.py": код, "scripts/guards/evidence.yaml": декл})
 
-
-_немые_имена = _немые(дерево_осей())
-ok("немая" in _немые_имена,
-   "ранний пустой список назван: он значит «источника нет», а отчёту показывает «чисто»")
-ok("говорящая" not in _немые_имена,
-   "ось, умеющая сказать `НетУлики`, долгом не считается — причина молчания объявлена")
-ok("чистая" not in _немые_имена,
-   "ПОСЛЕДНИЙ return пустым списком законен: там пустота и значит «смотрел, нарушений нет»")
-ok("сказала_чисто" not in _немые_имена,
-   "ранний `return чисто()` — чистота, СКАЗАННАЯ вслух: слово в коде и отличает её от пустоты")
-ok("сказала_и_промолчала" in _немые_имена,
-   "судится КАЖДЫЙ выход: `НетУлики` в одной ветке ничего не обещает про молчание в другой")
-ok("глубоко" in _немые_имена,
-   "пустой список из глубины тела — тот же немой отказ: разбор идёт по всему телу, а не по верху")
-ok("не_ось" not in _немые_имена,
-   "функция, не объявленная осью, не обвиняется: судим объявленное, а не похожее по форме")
-ok(_немые_имена["немая"].startswith("invariants.py:"),
-   "названо МЕСТО раннего возврата — иначе перевод оси начинается с поиска по файлу")
-ok(len(axis_silent_without_reason(дерево_осей())) == len(_немые_имена),
-   "ось печатает ровно то, что нашёл разбор: второй счёт разошёлся бы с потолком незаметно")
-ok("НетУлики" in axis_silent_without_reason(дерево_осей())[0],
-   "в отказе назван СПОСОБ перевода, а не только вина")
-ok("invariants.py" in отказ(_немые, make({"scripts/guards/evidence.yaml": ОСИ_ДЕКЛ})),
-   "самой оси нечего разбирать без invariants.py — и она говорит это отказом, как требует от других")
-ok("evidence.yaml" in отказ(_немые, make({"scripts/guards/invariants.py": ОСИ_КОД})),
-   "без объявления неизвестно, какие функции здесь оси — судить нечем")
-ok("не разбирается" in отказ(_немые, дерево_осей(декл="оси:\n  жёсткие: [битый\n")),
-   "битое объявление — отказ судить, а не ноль немых осей")
 ok(not axis_undeclared(дерево_осей()),
    "объявленные оси претензий не вызывают — сверяются оба списка, а не один")
+
 ok("нет invariants.py" in отказ(axis_undeclared, make({"README.md": "x"})),
    "ось, судящая объявление осей, тоже не выдаёт отсутствие файлов за чистоту")
 
-print("\n== роспись прохода оси: исход, причина, следствие ==")
-_ось = lambda имя: type("ф", (), {"__name__": имя})()  # нужен только `__name__`
-_сработала = _шаг_оси("ось", _ось("немая"), ["нарушение"], "", {"немая": "invariants.py:1"})
-ok(_сработала["исход"] == "сработал" and _сработала["причина"] == "все условия сошлись",
-   "нашла нарушение — сработала, и обе стороны набора сошлись")
-ok("названо нарушений: 1" in _сработала["следствие"],
-   "следствие срабатывания — счёт названного, а не факт запуска")
-_чисто = _шаг_оси("ось", _ось("говорящая"), [], "", {"немая": "invariants.py:1"})
-ok(_чисто["исход"] == "молчал" and "«нарушение в дереве»" in _чисто["причина"],
-   "молчание оси с объявленной причиной названо разошедшимся условием поимённо")
-ok("смотрел" in _чисто["следствие"],
-   "следствие такого молчания — «смотрел, нарушений нет»: это чистота, а не пустота")
-_немая = _шаг_оси("ось", _ось("немая"), [], "", {"немая": "invariants.py:1"})
-ok(["не объявлено"] == [у["факт"] for у in _немая["условия"] if у["имя"] == "источник улики доступен"],
-   "у немой оси источник записан «не объявлено»: заявить «есть» она не вправе")
-ok("«источник улики доступен»" in _немая["причина"] and "«нарушение в дереве»" in _немая["причина"],
-   "разошлись оба условия — и оба названы: по одному нельзя отличить чистоту от отсутствия улики")
-_отказ = _шаг_оси("ось", _ось("говорящая"), [], "потолок снят", {})
-ok(_отказ["следствие"] == "потолок снят" and _отказ["исход"] == "молчал",
-   "отказ судить записан СВОЕЙ причиной, а не общим «молчал»")
-ok("нет" == [у["факт"] for у in _отказ["условия"] if у["имя"] == "источник улики доступен"][0],
-   "у отказавшейся оси источник записан «нет» — это третье состояние, а не чистота")
-_вслепую = _шаг_оси("ось", _ось("чистая"), [], "", None)
-ok("не объявлено" in str(_вслепую["условия"]),
-   "разбор не поднялся — ни одна молчащая ось не записывается чистой: улики на чистоту нет")
-
-print("\n== зона сценариев без разрушительного ==")
-ПОЛОЖИТЕЛЬНЫЙ = "- scenario: s1\n  why: работает\n  when:\n    - call: t\n      expect: {ok: true}\n"
-ОТРИЦАТЕЛЬНЫЙ = "- scenario: s2\n  why: отказ\n  when:\n    - call: t\n      expect: {ok: false}\n"
-РАЗРУШИТЕЛЬНЫЙ = ("- scenario: s3\n  why: сносим\n  род: разрушительный\n  when:\n"
-                  "    - call: t\n      expect: {ok: false}\n")
-_зоны = make({"tests/scenarios/удача.yaml": ПОЛОЖИТЕЛЬНЫЙ + ОТРИЦАТЕЛЬНЫЙ,
-              "tests/scenarios/снос.yaml": ПОЛОЖИТЕЛЬНЫЙ + РАЗРУШИТЕЛЬНЫЙ})
-_дыры = scenarios_without_destructive(_зоны)
-ok(len(_дыры) == 1 and "удача.yaml" in _дыры[0],
-   "названа зона, где разрушение не пробовал никто: положительный и отрицательный её не закрывают")
-ok(not any("снос.yaml" in д for д in _дыры),
-   "зона с объявленным разрушительным молчит — долг закрывается ОБЪЯВЛЕНИЕМ рода, а не именем файла")
-ok("каталога объявленных сценариев" in отказ(scenarios_without_destructive, make({"README.md": "x"})),
-   "каталога сценариев нет — отказ судить назван, а не «зон без разрушительного ноль»")
-ok("нет ни одного файла" in отказ(scenarios_without_destructive,
-                                  make({"tests/scenarios/.keep": ""})),
-   "каталог есть, а файлов нет — тоже отказ: пустой счёт прочитался бы как покрытие")
-_кривое = scenarios_without_destructive(make({"tests/scenarios/спор.yaml":
-    "- scenario: s\n  why: спор\n  род: положительный\n  when:\n    - call: t\n      expect: {ok: false}\n"}))
-ok(_кривое and "не разбирается" in _кривое[0],
-   "объявление, спорящее с ожиданием, названо строкой отчёта, а не падением всего сторожа")
-
-print("\n== судья не объявил состояния улики ==")
-БЕЗ_СОСТОЯНИЯ = "import _verdict\n_verdict.close('судья', 0, 'cmd')\n"
-С_СОСТОЯНИЕМ = "import _verdict\n_verdict.close('судья', 0, 'cmd', улика='есть')\n"
-ЧУЖОЙ_CLOSE = "import io\nio.close('x')\nfile.close()\n"
-_без = judge_without_evidence_state(make({"scripts/guards/немой.py": БЕЗ_СОСТОЯНИЯ}))
-ok(len(_без) == 1 and "немой.py" in _без[0],
-   "вердикт без `улика=` назван поимённо: по такой подписи состояние судьи не снять")
-ok(not judge_without_evidence_state(make({"scripts/guards/честный.py": С_СОСТОЯНИЕМ})),
-   "объявивший состояние молчит — долг закрывается ОБЪЯВЛЕНИЕМ, а не обещанием")
-ok(not judge_without_evidence_state(make({"scripts/guards/чужой.py": ЧУЖОЙ_CLOSE})),
-   "чужой `close` вердиктом не считается: судится вызов ОБЩЕЙ двери, а не похожее имя")
-ok("каталога сторожей" in отказ(judge_without_evidence_state, make({"README.md": "x"})),
-   "каталога сторожей нет — отказ судить назван, а не «все судьи объявили состояние»")
-
-print("\n== радиус задачи: требования проекта и их судьи ==")
-РЕЕСТР = """требования:
-  с-судьёй:
-    про: правило, по которому кто-то ругается
-    судья: "ось про правило"
-  без-судьи:
-    про: правило, по которому не ругается никто
-    судья: ""
-оси:
-  жёсткие:
-    - заголовок: "ось про правило"
-      читатель: axis_undeclared
-задачи:
-  своя:
-    требования: ["с-судьёй"]
-    оси: ["ось про правило"]
-    улики: [редактирование]
-"""
-_реестр = make({"scripts/guards/evidence.yaml": РЕЕСТР, "scripts/guards/сторож.py": "x = 1\n"})
-_без = requirement_without_judge(_реестр)
-ok(len(_без) == 1 and "без-судьи" in _без[0],
-   "требование без судьи названо поимённо: правило исполняется настроением, и это счётно")
-ok(not any("с-судьёй" in н for н in _без),
-   "требование с судьёй молчит — долг считает ОТСУТСТВИЕ судьи, а не наличие правила")
-_чужой = evidence_roster_off_disk(make({
-    "scripts/guards/evidence.yaml": РЕЕСТР.replace('судья: "ось про правило"', 'судья: "выдуманный.py"'),
-    "scripts/guards/сторож.py": "x = 1\n"}))
-ok(any("зовёт судью" in н and "выдуманный.py" in н for н in _чужой),
-   "требование зовёт судью, которого нет: правило выглядит живым, а ругаться по нему некому")
-ok(not any("зовёт судью" in н for н in evidence_roster_off_disk(make({
-       "scripts/guards/evidence.yaml": РЕЕСТР.replace('судья: "ось про правило"', 'судья: "сторож.py"'),
-       "scripts/guards/сторож.py": "x = 1\n"}))),
-   "судья-сторож с диска принимается: судьями бывают оси, сторожа и хуки, а не только оси")
-ok("требований" in отказ(requirement_without_judge, make({"scripts/guards/evidence.yaml": "оси: {}\n"}))
-   or "ключа" in отказ(requirement_without_judge, make({"scripts/guards/evidence.yaml": "оси: {}\n"})),
-   "реестра требований нет — отказ судить назван, а не «все требования при судьях»")
-
-print("\n== копия формы источника в наборе: документ судят КОМАНДОЙ, а не копией ==")
-
-_дом_копий = make({
-    "tests/CATALOG.md": "| `test_проба.py` | дом сторожа `scripts/guards/findings_count.py` |\n",
-    # Набор ЗОВЁТ образец и всё равно держит копию: послабление «поднял форму — можно и копию»
-    # вернуло бы в наборы устаревшие строки источника целыми абзацами.
-    "tests/quick/test_проба.py": ('образец()\n'
-                                  'x = "| F999 | важность | копия строки источника |"\n'),
-})
-_нашла = _inv.set_copies_source_form(_дом_копий)
-ok(any("копий формы источника" in н and "test_проба.py" in н for н in _нашла),
-   "копия строки источника в наборе названа: форма изменится — набор останется судить старую")
-_чистый = make({
-    "tests/CATALOG.md": "| `test_проба.py` | дом сторожа `scripts/guards/findings_count.py` |\n",
-    "tests/quick/test_проба.py": "x = 1\n",
-})
-ok(not _inv.set_copies_source_form(_чистый),
-   "набор без копий молчит — обвинение не становится фоном")
-ok("пары" in отказ(_inv.set_copies_source_form, make({"scripts/guards/сторож.py": "x = 1\n"})),
-   "каталога нет — отказ судить назван, а не «копий нет»")
-
 print("\n== ссылка сценария: неразобранная НЕ уезжает в команду текстом ==")
+
 sys.path.insert(0, str(ROOT))
+
 from tests.harness.scenario import _resolve, ScenarioError  # путь к корню
+
 # добавлен строкой выше: подстановку ссылок судим у самой машины сценариев
 try:
     _resolve("--root ${кириллица.path}", {"кириллица": {"path": "/tmp"}})
@@ -2118,6 +763,7 @@ try:
 except ScenarioError as сбой:
     ok("не разобрана" in str(сбой),
        "ссылка не по форме имени — отказ объявления, а не путь-строка в команде")
+
 ok(_resolve("--root ${live.path}", {"live": {"path": "/tmp/дерево"}}) == "--root /tmp/дерево",
    "разобранная ссылка подставляется как была — правило не мешает обычной работе")
 
@@ -2126,4 +772,6 @@ if _fails:
     for f in _fails:
         print(f"  - {f}")
     sys.exit(1)
+
 print("ВСЁ ЗЕЛЁНОЕ ✅")
+

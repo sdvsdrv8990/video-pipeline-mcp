@@ -1,42 +1,25 @@
-"""scripts/guards/invariants.py — межфайловые инварианты: то, что живёт в двух местах и обязано совпадать.
+"""scripts/guards/invariants.py — межфайловые инварианты контракта сервера: то, что живёт в двух местах
+и обязано совпадать (код отказа и реестр реакций, объявление и его читатель, факт и его наблюдение).
 
-Паспорт: будит редактирование, создание, событие PostToolUse, гейт CI · читает
-  scripts/guards/evidence.yaml, config/server_reactions.yaml, docs/roadmap/02_findings.md · шаги
-  именуются данными, по оси на шаг · подписывает через _verdict.
-Зовёт: _evidence, _live, _permit, _place, _precision, _stamp, _verdict.
-Зовут: vpm-invariants, гейт CI и pre-commit.
-
-Ни линтер, ни проверка типов, ни прогон не видят разрыв МЕЖДУ файлами: пропуск набора и установка
-бинаря в CI, объявление перечисления и его значения, брошенный код отказа и реестр реакций. Каждый
-такой разрыв молчал до чужого прогона.
+Зовёт: _evidence (реестр осей).
+Зовут: гейт CI.
 
 Долг не чинится задним числом: где он есть, ось держит ХРАПОВИК — вниз можно, вверх нет; где долга
 нет, проверка жёсткая.
 """
-
 from __future__ import annotations
-
 import ast
-import importlib.util
 import json
-import builtins
-import io
 import re
-import tokenize
-import subprocess
 import sys
-import tomllib
-from collections.abc import Callable, Set as AbstractSet
+from collections.abc import Set as AbstractSet
 from pathlib import Path
-
 import yaml
+
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import _permit                                    # noqa: E402 — дверь потолка спрашивает человека
-import _verdict                                   # noqa: E402  общий хвост суда
-from findings_count import scan as scan_registry  # noqa: E402  разбор реестра — один на проект
-from what_if import ПОЙМАНА, мутации  # noqa: E402  разбор реестра мутаций — тоже один
+
 
 class НетУлики(Exception):
     """Оси нечего судить: источника улики нет. Третье состояние против пары «чисто / нарушения».
@@ -55,43 +38,50 @@ def строка_оси(title: str, notes: list[str], не_судит: str = "",
     return f"── {title}: {len(notes)} при потолке {потолок}"
 
 
-SUBJECTS_DECL = ("scripts", "guards", "acceptance_subjects.yaml")
-MEMORY_SIZE_CEILING = Path(__file__).with_name("memory_size_ceiling.txt")
 # Две ветки — это выбор, три и больше по одному значению — уже таблица.
 DISPATCH_LIMIT = 3
+
+
 # Диспетчеризацию не отменяет ни тип значения, ни имя вместо литерала: `if code == 404` и
 # `if kind == SET` добавляют случай правкой КОДА ровно так же, как сравнение со строкой.
 DISPATCH_VALUE = (ast.Constant, ast.Name, ast.Attribute)
 
+
 # Пути НЕ зашиты: корень приходит параметром, иначе сторожа нельзя проверить, не насорив в
 # репозитории, — а проверка, требующая мусора, делается редко.
 TABLES = ("config", "templates", "tables")
-TESTS = ("tests",)
-CI = (".github", "workflows", "ci.yml")
+
+
 REGISTRY = ("config", "server_reactions.yaml")
+
+
 CONTRACT = ("core", "contracts", "error_detail.py")
+
+
 RESOURCES = ("config", "resources.yaml")
-ROADMAP = ("docs", "roadmap")
-FINDINGS = ("docs", "roadmap", "02_findings.md")
+
+
 INVENTORY = ("tests", "quick", "tools_inventory.golden.json")
-CATALOG = ("tests", "CATALOG.md")
-GUARDS = ("scripts", "guards")
-GUARDS_CATALOG = ("scripts", "guards", "CATALOG.md")
-GATE = ("tests", "test_suites.py")
+
+
 SCENARIOS = ("tests", "scenarios")
+
+
 ROUTES = ("tests", "routes")
+
+
 FACT_TYPES = ("core", "contracts", "fact.py")
+
+
 OBSERVATIONS = ("tests", "harness", "observations.yaml")
-HOOK_SETTINGS = (".claude", "settings.json")
-HOOKS = (".claude", "hooks")
 
 
 def _at(root: Path, parts: tuple[str, ...]) -> Path:
     return root.joinpath(*parts)
 
+
 # Код отказа бросают либо исключением зоны, либо обёрткой контекста.
 RAISED_CODE = re.compile(r'(?:Error|\berr|_err|err_path)\(\s*\n?\s*"([A-Z][A-Z_0-9]{3,})"')
-WHICH = re.compile(r'shutil\.which\(\s*"([^"]+)"\s*\)')
 
 
 def enum_without_values(root: Path = ROOT) -> list[str]:
@@ -104,164 +94,6 @@ def enum_without_values(root: Path = ROOT) -> list[str]:
                 if column.get("type") == "enum" and not column.get("enum"):
                     notes.append(f"{schema.name}:{sheet['name']}.{column['name']} — "
                                  f"enum без значений: проверить запись нечем")
-    return notes
-
-
-def skips_without_ci(root: Path = ROOT) -> list[str]:
-    """Набор пропускает проверки без бинаря — значит в CI бинарь ставится ИЛИ пропуск запрещён.
-
-    Иначе половина набора в CI не исполняется, а зелёный цвет означает «не проверяли»: замер по
-    трём наборам монтажа дал 166 проверок с бинарём и 60 без него.
-    """
-    ci_file, tests_dir = _at(root, CI), _at(root, TESTS)
-    if not ci_file.exists():
-        return []
-    # Ищем в КОМАНДАХ и переменных джоб, а не в тексте файла: упоминание в комментарии — не
-    # установка, и поиск по сырому тексту принял бы объяснение за механизм.
-    workflow = yaml.safe_load(ci_file.read_text(encoding="utf-8")) or {}
-    commands, env_names = [], set()
-    for job in (workflow.get("jobs") or {}).values():
-        for step in job.get("steps") or []:
-            commands.append(str(step.get("run") or ""))
-            commands.append(str((step.get("with") or {}).get("node-version") and "node" or ""))
-            env_names |= set((step.get("env") or {}))
-        env_names |= set(job.get("env") or {})
-    ci_run = "\n".join(commands)
-    notes = []
-    for suite in sorted(tests_dir.rglob("test_*.py")):
-        text = suite.read_text(encoding="utf-8")
-        required = {name for name in re.findall(r'os\.environ\.get\("([A-Z_]*REQUIRED)"\)', text)
-                    if name in env_names}
-        for binary in sorted(set(WHICH.findall(text))):
-            if binary in ci_run or required:
-                continue
-            notes.append(f"{suite.relative_to(root)} — пропускается без `{binary}`, а в CI он не "
-                         f"ставится и пропуск не запрещён флагом *_REQUIRED")
-    return notes
-
-
-SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda,
-          ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
-
-
-def _blocks(stmt: ast.stmt) -> list[list[ast.stmt]]:
-    """Вложенные блоки оператора: их тела разбираются отдельно и ПОСЛЕ его заголовка."""
-    if isinstance(stmt, (ast.If, ast.For, ast.AsyncFor, ast.While)):
-        return [stmt.body, stmt.orelse]
-    if isinstance(stmt, (ast.With, ast.AsyncWith)):
-        return [stmt.body]
-    if isinstance(stmt, ast.Try):
-        return [stmt.body, stmt.orelse, stmt.finalbody]      # тела `except` — отдельно, с их именем
-    return []
-
-
-def _header(stmt: ast.stmt) -> list[ast.AST]:
-    """Часть оператора, исполняемая ДО его тела: условие, выражение цикла, менеджер контекста."""
-    if isinstance(stmt, ast.If):
-        return [stmt.test]
-    if isinstance(stmt, (ast.For, ast.AsyncFor)):
-        return [stmt.iter]
-    if isinstance(stmt, ast.While):
-        return [stmt.test]
-    if isinstance(stmt, (ast.With, ast.AsyncWith)):
-        return list(stmt.items)
-    if isinstance(stmt, ast.Try):
-        return []
-    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        # Тело функции исполняется при ВЫЗОВЕ, а не здесь: до него дела нет. Исполняются сейчас
-        # только декораторы и значения по умолчанию.
-        return [*stmt.decorator_list, *[d for d in stmt.args.defaults if d is not None],
-                *[d for d in stmt.args.kw_defaults if d is not None]]
-    if isinstance(stmt, ast.ClassDef):
-        return [*stmt.decorator_list, *stmt.bases, *stmt.keywords]
-    return [stmt]
-
-
-def _walk_own_scope(node: ast.AST):
-    """Обход БЕЗ захода в чужие области имён: у функции, класса и генератора свои имена."""
-    for child in ast.iter_child_nodes(node):
-        if isinstance(child, SCOPES):
-            continue
-        yield child
-        yield from _walk_own_scope(child)
-
-
-def _loads(part: ast.AST) -> list[ast.Name]:
-    nodes = [part] if isinstance(part, ast.Name) else []
-    nodes += [n for n in _walk_own_scope(part) if isinstance(n, ast.Name)]
-    return [n for n in nodes if isinstance(n.ctx, ast.Load)]
-
-
-def _bound(part: ast.AST) -> set[str]:
-    """Имена, которые оператор ОБЪЯВЛЯЕТ: присваивания, импорты, имена функций и классов."""
-    names = set()
-    for node in [part, *_walk_own_scope(part)]:
-        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
-            names.add(node.id)
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            names.add(node.name)
-        elif isinstance(node, ast.alias):
-            names.add((node.asname or node.name).split(".")[0])
-        elif isinstance(node, ast.ExceptHandler) and node.name:
-            names.add(node.name)
-    return names
-
-
-def used_before_declared(root: Path = ROOT) -> list[str]:
-    """Имя, объявленное НИЖЕ по набору, ловится только исполнением: набор — линейный скрипт.
-
-    `ruff` молчит (имя определено, просто позже), `mypy` тоже, а если блок лежит в пропускаемой
-    ветке, ошибка доживёт до первого локального прогона — гейт её не увидит.
-    """
-    notes = []
-    for suite in sorted(_at(root, TESTS).rglob("test_*.py")):
-        try:
-            tree = ast.parse(suite.read_text(encoding="utf-8"))
-        except SyntaxError as exc:
-            notes.append(f"{suite.relative_to(root)} — не разбирается: {exc}")
-            continue
-        known = set(dir(builtins)) | {"__file__", "__name__", "__doc__", "__spec__"}
-        # Имена функций и классов известны заранее: тела их не исполняются до вызова.
-        known |= {n.name for n in ast.walk(tree)
-                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
-
-        def flag(name: ast.Name) -> None:
-            note = (f"{suite.relative_to(root)}:{name.lineno} — `{name.id}` используется до "
-                    f"объявления (набор идёт сверху вниз)")
-            if note not in notes:
-                notes.append(note)
-
-        def check(part: ast.AST) -> None:
-            for name in _loads(part):
-                if name.id not in known:
-                    flag(name)
-
-        def visit(block: list[ast.stmt]) -> None:
-            for stmt in block:
-                # `with A() as a, B(a) as b`: второй менеджер видит имя из первого, поэтому
-                # элементы разбираются по очереди, а не все сразу.
-                if isinstance(stmt, (ast.With, ast.AsyncWith)):
-                    for item in stmt.items:
-                        check(item.context_expr)
-                        if item.optional_vars is not None:
-                            known.update(_bound(item.optional_vars))
-                elif isinstance(stmt, (ast.For, ast.AsyncFor)):
-                    check(stmt.iter)
-                    known.update(_bound(stmt.target))
-                else:
-                    for part in _header(stmt):
-                        check(part)
-                for nested in _blocks(stmt):
-                    visit(nested)
-                # `except E as e:` объявляет имя на своё тело — иначе оно выглядит незнакомым.
-                if isinstance(stmt, ast.Try):
-                    for handler in stmt.handlers:
-                        if handler.name:
-                            known.add(handler.name)
-                        visit(handler.body)
-                known.update(_bound(stmt))
-
-        visit(tree.body)
     return notes
 
 
@@ -296,42 +128,6 @@ def codes_outside_registry(root: Path = ROOT,
     return notes
 
 
-# Статус ВПЛОТНУЮ к номеру находки — единственная форма, где смысл однозначен: это поле, а не
-# проза. Разбирать прозу бессмысленно (замер дал от 17 до 370 ложных срабатываний), а поле точно.
-STATUS_NEAR = re.compile(r"(F\d{1,3})\s*(✅|🔴|🟠|🟡|🟢)|(✅|🔴|🟠|🟡|🟢)\s*(F\d{1,3})")
-
-
-def _registry_status(root: Path = ROOT) -> dict[str, str]:
-    """{идентификатор: «закрыт»/«открыт»} по реестру. Разбор берётся у `findings_count`."""
-    registry_file = _at(root, FINDINGS)
-    if not registry_file.exists():
-        return {}
-    rows = scan_registry(registry_file.read_text(encoding="utf-8"))
-    return {ident: "закрыт" if closed else "открыт" for ident, closed in rows.items()}
-
-
-def status_off_registry(root: Path = ROOT) -> list[str]:
-    """Статус находки в плане разошёлся с реестром — хозяин факта один, копии разъезжаются молча.
-
-    Журнал сессий и сам реестр исключены: история обязана хранить прежние статусы, а в реестре
-    ниже канонической строки лежат таблицы переформулировок с тем же номером.
-    """
-    registry = _registry_status(root)
-    if not registry:
-        return []
-    notes = []
-    for path in sorted(_at(root, ROADMAP).glob("*.md")) + [root / "tests" / "CATALOG.md"]:
-        if not path.exists() or path.name in ("02_findings.md", "_sessions.md"):
-            continue
-        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            for m in STATUS_NEAR.finditer(line):
-                ident, mark = m.group(1) or m.group(4), m.group(2) or m.group(3)
-                says = "закрыт" if mark in "✅🟢" else "открыт"
-                if ident in registry and says != registry[ident]:
-                    notes.append(f"{path.name}:{n} — {ident} показан «{says}», в реестре «{registry[ident]}»")
-    return notes
-
-
 def resources_off_inventory(root: Path = ROOT) -> list[str]:
     """Инструмент объявлен тяжёлым, а такого инструмента нет — снятие с цикла молча не действует.
 
@@ -362,43 +158,6 @@ def resources_off_inventory(root: Path = ROOT) -> list[str]:
         if (body or {}).get("offload") and not (body or {}).get("max_concurrent"):
             notes.append(f"config/resources.yaml: класс `{name}` снимается с цикла, но предела "
                          "одновременности не объявлено")
-    return notes
-
-
-
-NUMERAL = {"два": 2, "двух": 2, "три": 3, "трёх": 3, "четыре": 4, "четырёх": 4, "пять": 5,
-           "пяти": 5, "шесть": 6, "шести": 6, "семь": 7, "семи": 7, "восемь": 8, "восьми": 8}
-JOBS_CLAIM = re.compile(r"(\d+|" + "|".join(NUMERAL) + r")\s+джоб", re.I)
-
-
-def ci_jobs_off_docs(root: Path = ROOT) -> list[str]:
-    """Сколько джоб в гейте — сказано в `ci.yml` и повторено в доках; копия стареет молча.
-
-    Журналы исключены, и список их не зашит: роль объявляет реестр `docs/roadmap/README.md`, а
-    запись о ПРОШЛОМ состоянии («тогда джоб было пять») обязана остаться такой, какой была.
-    """
-    ci = _at(root, (".github", "workflows", "ci.yml"))
-    if not ci.exists():
-        return []
-    jobs = (yaml.safe_load(ci.read_text(encoding="utf-8")) or {}).get("jobs") or {}
-    if not jobs:
-        return []
-    registry = _at(root, ROADMAP + ("README.md",))
-    history = set()
-    if registry.exists():
-        for row in registry.read_text(encoding="utf-8").splitlines():
-            if row.startswith("|") and "журнал" in row.lower():
-                history |= set(re.findall(r"\(([\w.]+\.md)\)", row))
-    notes = []
-    for doc in sorted(_at(root, ROADMAP).glob("*.md")) + [root / "README.md"]:
-        if doc.name in history or not doc.exists():
-            continue
-        for line, text in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
-            for raw in JOBS_CLAIM.findall(text):
-                said = int(raw) if raw.isdigit() else NUMERAL[raw.lower()]
-                if said != len(jobs):
-                    notes.append(f"{doc.relative_to(root).as_posix()}:{line} — сказано «{raw} джоб», "
-                                 f"а в ci.yml их {len(jobs)}: {', '.join(jobs)}")
     return notes
 
 
@@ -454,72 +213,6 @@ def module_without_reader(root: Path = ROOT) -> list[str]:
             continue
         notes.append(f"{path.relative_to(root).as_posix()} — модуль без единого читателя: ни импорта, "
                      "ни строки в config/*.yaml. Либо он мёртв и сносится, либо потерял проводку")
-    return notes
-
-
-def _gate_suites(root: Path) -> list[Path] | None:
-    """Список наборов берём у САМОГО гейта, а не заводим второй: разошлись бы молча.
-
-    Модуль грузится по пути, поэтому его `ROOT` считается от переданного корня — сторож
-    проверяется на временном каталоге, не мусоря в репозитории.
-    """
-    gate = _at(root, GATE)
-    if not gate.exists():
-        return None
-    spec = importlib.util.spec_from_file_location(f"_vpm_gate_{abs(hash(str(gate)))}", gate)
-    if spec is None or spec.loader is None:
-        return None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return list(module._discover())
-
-
-def _catalog_zones(root: Path) -> set[str]:
-    """Зона объявлена ПЕРВОЙ ячейкой строки таблицы. Упоминание в прозе зоной не считается:
-    сторож, которого удовлетворяет любое упоминание имени, проверяет след, а не вещь."""
-    path = _at(root, CATALOG)
-    if not path.exists():
-        return set()
-    zones = set()
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.startswith("|"):
-            cell = line.split("|")[1].strip().strip("*").strip("`").strip()
-            if cell:
-                zones.add(cell)
-    return zones
-
-
-SUITE_ZONE = re.compile(r"^(?:[a-z_0-9]+/)?test_[a-z_0-9]+\.py$")
-
-
-def suites_off_catalog(root: Path = ROOT) -> list[str]:
-    """Набор гоняется гейтом, а зоны ответственности в каталоге у него нет — так тесты и плодятся.
-
-    Обратная сторона тоже красная: строка про набор, которого нет, отправляет расширять пустоту.
-    """
-    suites = _gate_suites(root)
-    if suites is None:
-        return []
-    zones = _catalog_zones(root)
-    if not zones:
-        return []
-    notes = []
-    have: set[str] = set()
-    for path in suites:
-        keys = {path.name, f"{path.parent.name}/", f"{path.parent.name}/{path.name}"}
-        have |= keys
-        if not (keys & zones):
-            notes.append(f"{path.relative_to(root)} — набор в гейте без строки-зоны в tests/CATALOG.md: "
-                         "сначала расширь хозяина по его запасу; заводишь свой — объяви зону и запас")
-    for zone in sorted(zones):
-        if SUITE_ZONE.match(zone) and zone not in have:
-            notes.append(f"tests/CATALOG.md: зона `{zone}` объявлена, а набора нет — "
-                         "расширять предлагается несуществующее")
-        # Судим по наборам, а не по каталогу: `git rm` уносит файлы, но каталог остаётся жив
-        # из-за `__pycache__`, и зона по существованию каталога считалась бы живой после сноса.
-        elif zone.endswith("/") and not any(k.startswith(zone) for k in have):
-            notes.append(f"tests/CATALOG.md: зона `{zone}` объявлена, а наборов в ней нет — "
-                         "снесённый набор продолжает числиться живым")
     return notes
 
 
@@ -676,7 +369,6 @@ def declared_but_unscripted(root: Path = ROOT) -> list[str]:
     return notes
 
 
-
 # Факт — третья вещь, которую сервер объявляет клиенту наряду с кодом отказа и инструментом
 # (он доезжает в `structuredContent`), и концов у него три: реестр типов, место эмиссии,
 # наблюдатель харнесса. Каждый разрыв между ними молчит по-своему.
@@ -768,10 +460,6 @@ def _facts_observed(root: Path) -> set[str]:
     причину, по которой спрашивать нечего; забытым факт не считается ни в том, ни в другом случае.
     """
     return {k for k, v in _observations(root).items() if "identity" in v or "observes" in v}
-
-
-def _facts_exempt(root: Path) -> set[str]:
-    return {k for k, v in _observations(root).items() if "observes" in v}
 
 
 def facts_outside_registry(root: Path = ROOT) -> list[str]:
@@ -909,7 +597,6 @@ def dead_recovery_in_engine(root: Path = ROOT) -> list[str]:
     return notes
 
 
-
 # Имя короче этого совпадает с ключом объявления по случайности: `mode`, `type`, `path`.
 MIRROR_NAME = 6
 
@@ -995,6 +682,8 @@ def _same_fact(value: object, declared: object) -> bool:
 # Путь чтения точнее имени: `spec.get("scene_column", …)` называет ключ, который в декларациях
 # не один, — по имени такое судить нельзя, а по пути `compensation.scene_column` можно.
 CONFIG_ROOT_NAMES = ("config", "cfg", "data", "declaration")
+
+
 _NOT_LITERAL = object()
 
 
@@ -1134,12 +823,14 @@ def mirrored_declaration(root: Path = ROOT) -> list[str]:
     return notes
 
 
-
-
 # Имя короче совпадает с чужим по случайности — тот же порог, что у копий объявления.
 KNOB_NAME = 6
+
+
 # Ключи схемы адресуются библиотекой целиком: `properties.color.pattern` никто по имени не грузит.
 SCHEMA_SECTION = ("properties", "params")
+
+
 # Ключ ЗАПИСИ — имя ручки: несколько слов через `_`. Ключ КАРТЫ — величина предметной области
 # (`h264`, `float16`, `Encoder not found`), и по имени её не грузят по устройству.
 KNOB_WORDS = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -1251,100 +942,9 @@ def knob_without_reader(root: Path = ROOT) -> list[str]:
 # Голос обработчика: он поднимает своё, называет пойманное или оставляет след. Ничего из этого —
 # отказ погашен, и наверх уходит пустота, неотличимая от честного «данных нет».
 SPEAKS = ("err", "log", "print", "warn", "trail", "refus")
+
+
 BROAD = {"Exception", "BaseException"}
-
-
-# Глушитель — комментарий, ОТКЛЮЧАЮЩИЙ чужого сторожа. Форм четыре, у каждой своя, и список
-# поимённый: по одному слову «ignore» под обвинение попадала бы любая проза о пропуске.
-ГЛУШИТЕЛЬ = re.compile(
-    r"#\s*(?:(?P<noqa>noqa)(?::\s*(?P<n>[A-Z]+\d+(?:\s*,\s*[A-Z]+\d+)*))?"
-    r"|(?P<ti>type:\s*ignore)(?:\[(?P<t>[\w-]+)\])?"
-    r"|(?P<ns>nosec)(?:\s+(?P<s>[A-Z]\d+))?"
-    r"|(?P<pr>pragma:\s*no\s*cover))(?P<хвост>.*)$")
-# Причина отбивается тире или второй решёткой: без разделителя хвост неотличим от кода правила.
-ПРИЧИНА_ГЛУШИТЕЛЯ = re.compile(r"[—–-]\s*\S|\s#\s*\S")
-
-
-def _дерево_целиком(root: Path) -> list[Path]:
-    """Файлы ВСЕХ объявленных деревьев. `_python_sources` берёт только сервер, а глушитель
-    живёт и у сторожей, и в наборах — там его как раз больше всего."""
-    import _evidence
-    корни = [корень for дерево in _evidence.деревья().values() for корень in дерево.get("корни", [])]
-    файлы: list[Path] = []
-    for имя in корни:
-        цель = root / имя
-        файлы += [цель] if цель.is_file() else list(цель.rglob("*.py"))
-    return [p for p in sorted(set(файлы)) if "__pycache__" not in str(p) and p.exists()]
-
-
-def silencer_without_reason(root: Path = ROOT) -> list[str]:
-    """Глушитель чужого сторожа без причины: строка отключает суд и не говорит, почему.
-
-    Отключение — такое же решение, как любое другое, и цена у него та же: сторож, обязанный
-    покраснеть, молчит. Без причины снять его нельзя — неизвестно, что сломается, а прогон
-    покажет зелёное и там, где суда просто нет.
-
-    Кода правила требуем от `noqa`, `type: ignore` и `nosec`; у `pragma: no cover` кодов не
-    бывает вовсе, и спрашивать их значило бы обвинять форму за то, чего в ней нет.
-    """
-    notes = []
-    for source in _дерево_целиком(root):
-        try:
-            текст = source.read_text(encoding="utf-8")
-            # Только НАСТОЯЩИЕ комментарии: в наборах сторожей глушитель лежит внутри
-            # строки-фикстуры, и построчный разбор судил бы данные вместо кода.
-            комментарии = [(tok.start[0], tok.string) for tok in
-                           tokenize.generate_tokens(io.StringIO(текст).readline)
-                           if tok.type == tokenize.COMMENT]
-        except (OSError, SyntaxError, tokenize.TokenError, IndentationError):
-            continue
-        for n, line in комментарии:
-            m = ГЛУШИТЕЛЬ.search(line)
-            if not m:
-                continue
-            код = m.group("n") or m.group("t") or m.group("s")
-            хвост = (m.group("хвост") or "").strip()
-            нет = []
-            if not код and not m.group("pr"):
-                нет.append("кода правила")
-            if not (len(хвост) > 3 and ПРИЧИНА_ГЛУШИТЕЛЯ.search(" " + хвост)):
-                нет.append("причины")
-            if нет:
-                notes.append(f"{source.relative_to(root)}:{n} — глушитель без {' и без '.join(нет)}: "
-                             f"суд отключён молча")
-    return notes
-
-
-# Строка реестра мутаций: номер и хвост из пяти ячеек. Вердикт — ПОСЛЕДНЯЯ ячейка.
-МУТАЦИЯ_СТРОКА = re.compile(r"^\|\s*(M\d+[a-z]?)\s*\|(.+)$", re.M)
-# Счёт пойманного: «ловит N ассертов». Форма одна — словарь, а не шесть способов сказать то же.
-СЧЁТ_ПОЙМАННОГО = re.compile(r"ловит\s+(\d+)\s+ассерт")
-ПОЙМАНА_ЗНАЧОК = "🔴"
-
-
-def mutation_without_count(root: Path = ROOT) -> list[str]:
-    """Мутация объявлена пойманной, но не сказано СКОЛЬКИМ: набор это точка или набор — неизвестно.
-
-    Значок `🔴` даёт один бит, и `what_if` читает именно его. Но «поймана одним ассертом» и
-    «поймана двенадцатью» — разные утверждения о покрытой зоне: первое неотличимо от случайного
-    попадания, второе описывает поведение. Без счёта цена снятия решения считается по биту,
-    а набор поведения выродиться в точку может незаметно.
-
-    Непойманная мутация сюда не идёт: её долг судит своя ось, и двойное обвинение читалось бы
-    как две беды там, где она одна.
-    """
-    каталог = root / "tests" / "CATALOG.md"
-    if not каталог.exists():
-        return []
-    notes = []
-    for н in МУТАЦИЯ_СТРОКА.finditer(каталог.read_text(encoding="utf-8")):
-        ячейки = [я.strip() for я in н.group(2).split("|")]
-        вердикт = ячейки[-2] if len(ячейки) > 1 and not ячейки[-1] else (ячейки[-1] if ячейки else "")
-        if ПОЙМАНА_ЗНАЧОК not in вердикт or СЧЁТ_ПОЙМАННОГО.search(вердикт):
-            continue
-        notes.append(f"tests/CATALOG.md:{н.group(1)} — поймана, но счёт не назван "
-                     f"(«{вердикт[:48]}»): точка это или набор — неизвестно")
-    return notes
 
 
 def muted_refusal(root: Path = ROOT) -> list[str]:
@@ -1527,1390 +1127,14 @@ def unfinished_in_server(root: Path = ROOT) -> list[str]:
     return notes
 
 
-# Путь хука в объявлении — от корня проекта через подстановку Claude Code, поэтому и сверяется
-# он с деревом, а не с домашним каталогом автора.
-HOOK_PATH = re.compile(r"\$CLAUDE_PROJECT_DIR/(\.claude/hooks/[\w.-]+)")
-
-
-def _declared_hooks(root: Path) -> set[str] | None:
-    """None — объявление не читается: это отдельный исход, а не «объявлено ноль хуков»."""
-    settings = _at(root, HOOK_SETTINGS)
-    if not settings.exists():
-        return set()
-    try:
-        declared = json.loads(settings.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return None
-    return set(HOOK_PATH.findall(json.dumps(declared.get("hooks", {}))))
-
-
-def hooks_off_declaration(root: Path = ROOT) -> list[str]:
-    """Хук объявлен путём, которого нет, — или лежит файлом, которого никто не зовёт.
-
-    Обе половины молчат по-своему: мёртвое объявление не падает, а незаявленный файл просто не
-    запускается — поэтому сверяются обе, и «хука нет» никогда не выглядит как «хук промолчал».
-    """
-    directory = _at(root, HOOKS)
-    settings = _at(root, HOOK_SETTINGS)
-    if not directory.is_dir() and not settings.exists():
-        return []
-    declared = _declared_hooks(root)
-    if declared is None:
-        return [f"{'/'.join(HOOK_SETTINGS)} не разбирается как JSON — не загрузится НИ ОДИН хук, "
-                "и это выглядит как их молчание"]
-    # Имя с подчёркивания — модуль-помощник, а не хук: его никто не зовёт событием, и требовать
-    # ему объявления значит требовать объявить `_stamp.py` сторожем. Та же договорённость по дереву.
-    present = {f"{'/'.join(HOOKS)}/{p.name}" for p in (directory.iterdir() if directory.is_dir() else ())
-               if p.is_file() and not p.name.startswith((".", "_"))}
-    notes = [f"{rel} объявлен в {'/'.join(HOOK_SETTINGS)}, а файла нет — событие приходит, "
-             "запускать нечего, и отказ выглядит как молчание"
-             for rel in sorted(declared - present)]
-    notes += [f"{rel} лежит в дереве, а объявления в {'/'.join(HOOK_SETTINGS)} у него нет — "
-              "код есть, срабатывать ему не на чем"
-              for rel in sorted(present - declared)]
-    return notes
-
-
-LESSONS = "hard-won-lessons.md"
-LESSON = re.compile(r"^- \*\*(.+?)\*\*", re.M)
-LESSON_SECTION = re.compile(r"^## (.+?)\s*$", re.M)
-EXECUTOR = re.compile(r"⟨исполняет:\s*(.+?)⟩")
-EVIDENCE = re.compile(r"⟨улика:\s*⟦vpm\s+([0-9a-f]{4})[^⟧]*⟧⟩")
-SCENARIO_NAME = re.compile(r"^- scenario:\s*(\S+)", re.M)
-# Механизм ловит повтор ошибки сам; скилл и «НЕТ» — это слова, и они считаются ДОЛГОМ.
-MECHANISM = ("ось ", "проверка ", "сценарий ")
-
-
-def _lesson_blocks(memory: Path) -> list[tuple[str, str]]:
-    """(заголовок урока, его СОБСТВЕННЫЙ текст). Разбор один на все три оси — иначе они разойдутся.
-
-    Урок записан двумя формами, и обе законны: пункт `- **…**` и раздел `## …` со своей прозой —
-    именно раздел предписывает порядок записи памяти. Разбор по одной форме судил 23 пункта и был
-    слеп к 18 разделам, то есть потолки долга считались по подмножеству.
-
-    Раздел, тело которого ушло целиком в пункты, — навигация по темам, а не урок: требовать от
-    заголовка «Про доказательство» исполнителя значило бы обвинять оглавление. Границы куска
-    считаются по ОБЕИМ формам вместе: по одной последний пункт темы дотягивался до следующего
-    раздела и метка соседа зачитывалась ему (живой лжи это ещё не дало, но механизм её допускал).
-    """
-    path = memory / LESSONS
-    if not path.exists():
-        return []
-    text = path.read_text(encoding="utf-8")
-    начала = sorted([(m.start(), m.group(1), False) for m in LESSON.finditer(text)]
-                    + [(m.start(), m.group(1), True) for m in LESSON_SECTION.finditer(text)])
-    границы = [начало for начало, _, _ in начала] + [len(text)]
-    куски = []
-    for i, (_, заголовок, раздел) in enumerate(начала):
-        кусок = text[границы[i]:границы[i + 1]]
-        тело = кусок.split("\n", 1)[1] if "\n" in кусок else ""
-        if раздел and not тело.strip():
-            continue
-        куски.append((заголовок, кусок))
-    return куски
-
-
-def _lessons(memory: Path) -> list[tuple[str, str]]:
-    """(заголовок урока, объявленный исполнитель). Урок без метки отдаёт пустого исполнителя."""
-    уроки = []
-    for имя, кусок in _lesson_blocks(memory):
-        метка = EXECUTOR.search(кусок)
-        уроки.append((имя, метка.group(1).strip() if метка else ""))
-    return уроки
-
-
-def _suite_text(root: Path) -> str:
-    """Свод исходников наборов: метки проверок живут строками в них, а не отдельным реестром."""
-    куски = []
-    for путь in sorted((root / "tests").rglob("*.py")):
-        try:
-            куски.append(путь.read_text(encoding="utf-8", errors="replace"))
-        except OSError:
-            continue
-    return "\n".join(куски)
-
-
-def _mechanisms(root: Path) -> set[str]:
-    """Что вообще существует как исполнитель: имена осей, сценариев и скилов."""
-    имена = {имя for имя, _ in HARD} | {строка[0] for строка in RATCHETS}
-    сценарии = _at(root, ("tests", "scenarios"))
-    if сценарии.is_dir():
-        for path in сценарии.glob("*.yaml"):
-            имена |= set(SCENARIO_NAME.findall(path.read_text(encoding="utf-8", errors="replace")))
-    skills = _at(root, (".claude", "skills"))
-    if skills.is_dir():
-        имена |= {p.name for p in skills.iterdir() if (p / "SKILL.md").exists()}
-    return имена
-
-
-def lesson_without_executor(root: Path = ROOT, memory: Path | None = None) -> list[str]:
-    """Урок обязан называть ИСПОЛНИТЕЛЯ, и тот обязан существовать.
-
-    Урок, за которым не стоит механизм, повтор ошибки не ловит: он лежит прозой и пылится. Здесь
-    судится только пара «названо ↔ существует»; долг «механизма нет вовсе» считает храповик рядом.
-    Обвинение за ОТСУТСТВИЕ метки отсюда снято: оно спорило с этой же строкой объявления и
-    удваивало одного судью — храповик печатает «исполнитель не назван» по тому же разбору.
-    """
-    home = memory or memory_dir(root)
-    if not (home / LESSONS).exists():
-        return []
-    известные = _mechanisms(root)
-    notes = []
-    for имя, исполнитель in _lessons(home):
-        if not исполнитель:
-            continue     # метки нет вовсе — это долг, и его считает храповик рядом, а не эта ось
-        if исполнитель.startswith("проверка "):
-            # Метка проверки — не имя из реестра, а строка, которую печатает набор: ищем её ТАМ,
-            # где она живёт, иначе пришлось бы держать второй список из девятисот меток.
-            метка = исполнитель.split("«", 1)[-1].rstrip("»")
-            if метка not in _suite_text(root):
-                notes.append(f"{LESSONS}: урок «{имя[:50]}» зовёт проверку «{метка[:40]}», которой "
-                             f"нет ни в одном наборе")
-            continue
-        if исполнитель.split(" ", 1)[0] not in ("ось", "сценарий", "скилл"):
-            # Форма метки вне закрытого словаря родов: разрешить её имя эта ось не умеет, и молчит
-            # уликой, а не обвинением. Такая метка — долг, и его считает храповик рядом.
-            continue
-        названо = исполнитель.split("`")[1] if "`" in исполнитель else исполнитель.split(" ", 1)[-1]
-        if названо not in известные:
-            notes.append(f"{LESSONS}: урок «{имя[:50]}» зовёт исполнителя `{названо}`, которого "
-                         f"нет ни среди осей, ни среди сценариев, ни среди скилов")
-    return notes
-
-
-def lesson_without_evidence(root: Path = ROOT, memory: Path | None = None) -> list[str]:
-    """Долг: урок без ключа улики — по нему не поднять прогон, в котором он родился.
-
-    Ключ ведёт в запись подписи: намерение, ожидание, факт, HEAD и команда повтора. Журнал подписей
-    не под git, поэтому нет журнала вовсе — «улики нет» и обвинять некого; есть журнал, но ключа в
-    нём нет — это находка: метка ссылается в пустоту, что хуже её отсутствия.
-    """
-    home = memory or memory_dir(root)
-    if not (home / LESSONS).exists():
-        return []
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import _stamp
-    журнал = list(root.joinpath(*_stamp.JOURNAL).glob("stamps-*.jsonl"))
-    notes = []
-    for имя, кусок in _lesson_blocks(home):
-        ключ = EVIDENCE.search(кусок)
-        if not ключ:
-            notes.append(f"{LESSONS}: «{имя[:70]}» — ключа улики нет, прогон не поднять")
-        elif журнал and not _stamp.find(ключ.group(1), root):
-            notes.append(f"{LESSONS}: «{имя[:50]}» ссылается на ключ {ключ.group(1)}, которого нет "
-                         f"в журнале подписей — метка ведёт в пустоту")
-    return notes
-
-
-def lesson_without_mechanism(root: Path = ROOT, memory: Path | None = None) -> list[str]:
-    """Долг: урок, за которым стоят только слова (скилл или «НЕТ»), а не ловящий механизм."""
-    home = memory or memory_dir(root)
-    if not (home / LESSONS).exists():
-        return []
-    return [f"{LESSONS}: «{имя[:70]}» — исполнитель {исполнитель or 'не назван'}"
-            for имя, исполнитель in _lessons(home)
-            if not исполнитель.startswith(MECHANISM)]
-
-
-MEMORY_INDEX = "MEMORY.md"
-# Указатель индекса: `- [Заголовок](файл.md) — крючок`. Берём только адрес.
-MEMORY_LINK = re.compile(r"\]\(([^)]+\.md)\)")
-MEMORY_NAME = re.compile(r"^name:\s*(\S+)\s*$", re.M)
-
-
-def memory_dir(root: Path = ROOT) -> Path:
-    """Слуг памяти из корня. Дефисом становится ЛЮБОЙ не-буквенно-цифровой знак, а не только `/`:
-    правило `/`→`-` промахивалось мимо каталога на любом пути с подчёркиванием, и оба механизма
-    молча судили пустоту (проверено на всех каталогах `~/.claude/projects`)."""
-    return Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(root)) / "memory"
-
-
-def memory_grew(root: Path = ROOT, memory: Path | None = None) -> list[str]:
-    """Память выросла выше потолка. Потолок идёт ТОЛЬКО вниз — и опускают его правкой файла.
-
-    Судится объём в символах, а не число файлов: нарезка на разделы меняет второе, не трогая
-    первого, и счёт по файлам объявлял бы победой перекладывание. Архив не считается — он в
-    сессию не грузится. Нет потолка или каталога — `НетУлики`, а не пустой список: снятие потолка
-    обязано звучать отказом судить, иначе оно неотличимо от чистоты.
-    """
-    home = memory or memory_dir(root)
-    if not home.is_dir():
-        raise НетУлики("каталога памяти нет")
-    if not MEMORY_SIZE_CEILING.exists():
-        raise НетУлики(f"{MEMORY_SIZE_CEILING.name} снят — потолок не объявлен")
-    try:
-        потолок = int(MEMORY_SIZE_CEILING.read_text(encoding="utf-8").strip())
-    except ValueError:
-        return [f"{MEMORY_SIZE_CEILING.name}: потолок не число — храповик не судит ничего"]
-    объём = sum(len(f.read_text(encoding="utf-8", errors="replace")) for f in home.glob("*.md"))
-    if объём <= потолок:
-        return чисто()
-    return [f"память выросла: {объём} символов при потолке {потолок} (+{объём - потолок}) — "
-            f"выжимка вместо накопления, либо опусти потолок осознанно правкой "
-            f"{MEMORY_SIZE_CEILING.name}"]
-
-
-
-# Три сигнала статуса, отобранные разбором КАЖДОЙ находки на живой памяти: зачёркнутое (= «это
-# больше не так»), «ЗАКРЫТА» с датой и галка готовности. Метки важности (🔴 🟠) и «не взято» (⬜)
-# сюда не входят намеренно — они знание, а не отчёт о сделанном, и ловились бы ложно.
-СТАТУС_ЗАЧЁРК = re.compile(r"~~.+?~~")
-СТАТУС_ЗАКРЫТО = re.compile(r"\b(?:ЗАКРЫТ[АЫО]?|СДЕЛАН[АОЫ]|ВЫПОЛНЕН[АОЫ])\b")
-СТАТУС_ДАТА = re.compile(r"20\d\d-\d\d-\d\d")
-СТАТУС_ГАЛКА = re.compile("✅")
-
-
-def memory_status(root: Path = ROOT, memory: Path | None = None) -> list[str]:
-    """Статус в памяти: то, чей хозяин — git, реестр или журнал, а не раздел памяти.
-
-    Статус протухает молча и стоит токенов в каждой сессии: память грузится целиком, а «✅» о
-    подсистеме или «ЗАКРЫТА 2026-09-02» о задаче проверить нечем — на диске они уже есть и там
-    судятся. Каталога нет (CI, чужая машина) — «улики нет», а не «памяти ноль».
-    """
-    home = memory or memory_dir(root)
-    if not home.is_dir():
-        return []
-    notes = []
-    for файл in sorted(home.glob("*.md")):
-        for н, строка in enumerate(файл.read_text(encoding="utf-8").splitlines(), 1):
-            повод = ("зачёркнутое: «больше не так» — это история, её хозяин git"
-                     if СТАТУС_ЗАЧЁРК.search(строка) else
-                     "«закрыто» с датой — хозяин реестр находок и журнал сессий"
-                     if СТАТУС_ЗАКРЫТО.search(строка) and СТАТУС_ДАТА.search(строка) else
-                     "галка готовности — хозяин диск: она протухает молча"
-                     if СТАТУС_ГАЛКА.search(строка) else None)
-            if повод:
-                notes.append(f"{файл.name}:{н} — {повод}: {строка.strip()[:80]}")
-    return notes
-
-
-
-def dead_line_reference(root: Path = ROOT) -> list[str]:
-    """Ссылка ведёт в пустоту: файл есть, а строки в нём нет.
-
-    Жёсткая: доказанная битость доли не имеет. Судится ТОЛЬКО этот исход — «цели нет» так же
-    выглядит у фикстуры набора и у ссылки одним именем файла, и обвинять их значит краснеть на
-    данных. Лечится не подновлением номера, а адресом по СИМВОЛУ: он переживает правку соседа.
-    """
-    if root.resolve() != ROOT.resolve():
-        return []
-    sys.path.insert(0, str(_at(root, ("scripts", "guards"))))
-    import _place
-    return _place.битые_ссылки(root)
-
-
-def live_value_stale(root: Path = ROOT) -> list[str]:
-    """Живая величина разошлась с прогоном: в тексте написано одно, команда даёт другое.
-
-    Жёсткая, а не храповик: у расхождения нет законной доли. Число, у которого объявлен источник,
-    либо совпадает с ним, либо переписывается одной командой — копиться тут нечему.
-
-    ЧУЖОЕ дерево не судится: команды величин описывают НАШ тракт (`ci.yml`, `.claude/skills`), и
-    в подставном дереве сценария их просто нет — обвинение вышло бы про отсутствие чужих файлов,
-    а не про расхождение. То же правило, по которому чужим деревом не судят потолки долга.
-    """
-    if root.resolve() != ROOT.resolve():
-        return []
-    sys.path.insert(0, str(_at(root, ("scripts", "guards"))))
-    import _live
-    return _live.расхождения(root)
-
-
-def memory_zone_undeclared(root: Path = ROOT, memory: Path | None = None) -> list[str]:
-    """Раздел памяти без объявленной зоны: тему записи не с чем сверить.
-
-    Ловится ровно то, ради чего зона заводилась: заказ про доказательства, чья запись легла в
-    раздел про студию. Указатель `MEMORY.md` и архив не судятся — первый не раздел, а оглавление,
-    второй снят с работы осознанно.
-    """
-    home = memory or memory_dir(root)
-    if not home.is_dir():
-        return []
-    sys.path.insert(0, str(_at(root, ("scripts", "guards"))))
-    import _evidence
-    notes = []
-    for файл in sorted(home.glob("*.md")):
-        if файл.name == "MEMORY.md":
-            continue
-        if not _evidence.зона_раздела(файл.stem):
-            notes.append(f"раздел памяти `{файл.stem}` не назван ни в одной зоне "
-                         f"(scripts/guards/evidence.yaml, ключ `зоны`, поле `память`)")
-    return notes
-
-
-def record_zone_guessed(root: Path = ROOT) -> list[str]:
-    """Долг: тему записи пришлось ВЫВОДИТЬ из путей её команды, потому что зона не объявлена.
-
-    Вывод честен ровно настолько, насколько частна команда: у половины хвостов она общая
-    (`invariants.py --check`), и такой хвост уезжает в зону сторожей, чем бы он ни занимался.
-    Объявленная зона снимает догадку целиком, поэтому потолок идёт вниз по мере подписей.
-    """
-    sys.path.insert(0, str(_at(root, ("scripts", "guards"))))
-    import _stamp
-    notes = []
-    for хвост in _stamp.tails(root):
-        if хвост.get("зона названа"):
-            continue
-        выведена = хвост.get("зона") or "не выведена вовсе"
-        notes.append(f"остаток `{хвост.get('key')}` — зона {выведена} выведена из команды, "
-                     f"а не объявлена: {str(хвост.get('what'))[:70]}")
-    return notes
-
-
-def tails_off_home(root: Path = ROOT) -> list[str]:
-    """Остаток записан мимо своего дома: он есть в следе дня, а в `tails.jsonl` его нет.
-
-    След дня игнорируется git и чистится, дом — нет. Запись мимо двери `_stamp.sign` обнаружилась
-    бы иначе только пустым показом через месяц, когда автора записи уже не спросишь.
-    """
-    sys.path.insert(0, str(_at(root, ("scripts", "guards"))))
-    import _stamp
-    дом = root.joinpath(*_stamp.TAILS)
-    свои = set()
-    if дом.exists():
-        for row in дом.read_text(encoding="utf-8", errors="replace").splitlines():
-            try:
-                свои.add(json.loads(row).get("key"))
-            except json.JSONDecodeError:
-                continue
-    notes = []
-    for path in sorted(root.joinpath(*_stamp.JOURNAL).glob("stamps-*.jsonl")):
-        for row in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            try:
-                запись = json.loads(row)
-            except json.JSONDecodeError:
-                continue
-            если_хвост = запись.get("role") == "ОСТАТОК" or запись.get("closes")
-            if если_хвост and запись.get("key") not in свои:
-                notes.append(f"подпись `{запись.get('key')}` ({запись.get('role')}) есть в следе "
-                             f"дня и нет в {'/'.join(_stamp.TAILS)}: остаток не переживёт чистку")
-    return notes
-
-
-ЦИКЛОВ_В_ОКНЕ = 10
-РОДЫ_В_ПОДПИСИ = re.compile(r"предсказаний (\d+) из (\d+)")
-
-
-def окно_журнала(root: Path, отбор: Callable[[dict], bool], размер: int) -> list[dict]:
-    """Последние `размер` записей журнала, отобранных по РОДУ, — общая дверь для осей-окон.
-
-    Окно, а не вся история: сумма за всё время может только расти, и храповик из неё превратился
-    бы в вечный красный, который перестают читать.
-
-    Окно режется ДО разбора формы записи — отбор судит род, а не текст. Резать после — значит
-    подтягивать разбираемую подпись из глубины истории вместо свежей неразбираемой: замер
-    2026-09-06 дал 2 разбираемых на 73 подписи, и ось печатала «3 при потолке 3» по двум
-    записям, не видя 97% журнала.
-    """
-    sys.path.insert(0, str(_at(root, ("scripts", "guards"))))
-    import _stamp
-    отобранные: list[tuple[float, dict]] = []
-    for path in sorted(root.joinpath(*_stamp.JOURNAL).glob("stamps-*.jsonl")):
-        for row in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            try:
-                запись = json.loads(row)
-            except json.JSONDecodeError:
-                continue
-            if отбор(запись):
-                отобранные.append((float(запись.get("ts") or 0), запись))
-    return [з for _, з in sorted(отобранные, key=lambda пара: пара[0])[-размер:]]
-
-
-def окно_циклов(root: Path = ROOT) -> list[dict]:
-    """Последние ПРОГОНЫ цикла — все, а не только те, чью форму мы умеем разобрать.
-
-    Прогон — это вердикт. Остаток и решение род `цикл` носят по теме, а не потому что их гоняли:
-    счёта предсказаний у них нет и быть не может, и обе соседние оси судили бы запись ни о чём.
-    """
-    return окно_журнала(root, lambda з: з.get("kind") == "цикл" and з.get("role") == "ВЕРДИКТ",
-                        ЦИКЛОВ_В_ОКНЕ)
-
-
-def сменённые(окно: list[dict]) -> set[str]:
-    """Ключи попыток, у которых в окне есть ПОЗДНЕЙШИЙ прогон того же намерения не беднее объявлением.
-
-    Цикл гоняют, пока не чисто, — это его собственное правило. Считать каждую попытку значит
-    облагать налогом саму итерацию: исправленное объявление стоило бы дороже, чем брошенное.
-    Смена засчитывается только прогону, объявившему НЕ МЕНЬШЕ ожиданий, иначе долг стирался бы
-    пустым `expect: []`, то есть молчанием.
-
-    Слот смены — ИМЯ намерения: два разных дела под одним именем гасят друг друга, поэтому имя
-    файла намерения берут своё, а не `intent.yaml` на всё подряд.
-    """
-    разобранные = [(з, счёт) for з in окно
-                   if (счёт := РОДЫ_В_ПОДПИСИ.search(str(з.get("expected", ""))))]
-    смена = set()
-    for запись, счёт in разобранные:
-        if not запись.get("intent"):
-            continue                           # безымянную попытку сменить нечем: слота нет
-        сменил = any(поздний.get("intent") == запись.get("intent")
-                     and float(поздний.get("ts") or 0) > float(запись.get("ts") or 0)
-                     and int(его[2]) >= int(счёт[2])
-                     for поздний, его in разобранные)
-        if сменил:
-            смена.add(str(запись.get("key")))
-    return смена
-
-
-РЕЕСТРЫ_КЛЮЧЕЙ = (("tests", "CATALOG.md"), ("docs", "roadmap", "02_findings.md"))
-КЛЮЧ_УЛИКИ = re.compile(r"⟦vpm ([0-9a-f]{4})⟧")
-
-
-def key_without_record(root: Path = ROOT) -> list[str]:
-    """Ключ улики, названный РЕЕСТРОМ, обязан поднимать запись: иначе значок рядом с ним — обещание.
-
-    Судятся только реестры — каталог мутаций и реестр находок: там ключ ЕСТЬ утверждение «улика
-    существует». Журнал сессий не судится НАМЕРЕННО: он хранит сказанное дословно, включая мёртвый
-    ключ, названный примером мёртвого ключа, и ось, запретившая такую цитату, заставила бы стирать
-    память об ошибке.
-
-    Журнала подписей нет (он вне git: чужая машина, чистый клон) — улики нет, а не все ключи разом.
-    """
-    if not list(root.joinpath("tests", ".journal").glob("stamps-*.jsonl")):
-        raise НетУлики("журнала подписей в этом дереве нет — поднять ключи нечем")
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import _stamp
-    notes = []
-    for части in РЕЕСТРЫ_КЛЮЧЕЙ:
-        файл = _at(root, части)
-        if not файл.exists():
-            continue
-        текст = файл.read_text(encoding="utf-8", errors="replace")
-        for ключ in sorted(set(КЛЮЧ_УЛИКИ.findall(текст))):
-            if not _stamp.find(ключ, root):
-                notes.append(f"{'/'.join(части)}: ключ `⟦vpm {ключ}⟧` не поднимается — "
-                             f"значок рядом с ним обещание, а не улика")
-    return notes
-
-
-def cycle_tautology(root: Path = ROOT) -> list[str]:
-    """Ожидания цикла, выводимые из текста собственной правки: прогон их не проверяет."""
-    окно = окно_циклов(root)
-    смена = сменённые(окно)
-    notes = []
-    for запись in окно:
-        ключ, ждали = str(запись.get("key")), str(запись.get("expected", ""))
-        if ключ in смена:
-            continue
-        if (счёт := РОДЫ_В_ПОДПИСИ.search(ждали)):
-            предсказаний, всего = int(счёт[1]), int(счёт[2])
-            notes += [f"⟦vpm {ключ}⟧ ожидание выводилось из самой правки, прогон его не проверял "
-                      f"(предсказаний {предсказаний} из {всего})"] * (всего - предсказаний)
-    return notes
-
-
-def cycle_unjudged(root: Path = ROOT) -> list[str]:
-    """Подписи цикла, по которым род ожидания назвать нечем: соседняя ось их НЕ ВИДИТ.
-
-    Отдельная ось, а не молчание внутри `cycle_tautology`: механизм, считающий только по
-    зарегистрированной форме улики, печатает ноль и там, где формы нет, — а ноль читается как
-    «чисто». Слепая зона обязана иметь собственный потолок, иначе она не убывает.
-    """
-    return [f"⟦vpm {з.get('key')}⟧ подпись цикла без счёта родов "
-            f"(«{з.get('expected', '')}») — ось тавтологии её не судит"
-            for з in окно_циклов(root) if not РОДЫ_В_ПОДПИСИ.search(str(з.get("expected", "")))]
-
-
-def memory_off_index(root: Path = ROOT, memory: Path | None = None) -> list[str]:
-    """Память живёт в двух местах — файлы на диске и указатели в `MEMORY.md`, — и они обязаны сойтись.
-
-    Каталога нет (CI, чужая машина) — «улики нет», а не «памяти ноль»: чужое отсутствие не наша
-    находка. Здесь же судится версионирование: память без git не имеет ни истории, ни отката, и
-    «обновил память» остаётся словом.
-    """
-    home = memory or memory_dir(root)
-    if not home.is_dir():
-        return []
-    notes = []
-    if not (home / ".git").exists():
-        notes.append(f"{home.name}: память вне версий — ни истории, ни отката, ни гейта; "
-                     f"«обновил память» проверяется только словом (`git init` в каталоге памяти)")
-    index = home / MEMORY_INDEX
-    if not index.exists():
-        return notes + [f"{MEMORY_INDEX} отсутствует — указателя на память нет, и каждый файл "
-                        f"придётся открывать наугад"]
-    listed = set(MEMORY_LINK.findall(index.read_text(encoding="utf-8")))
-    # Снятое лежит в `_archive/` намеренно и в указателе не значится — это не расхождение.
-    on_disk = {p.name for p in home.glob("*.md") if p.name != MEMORY_INDEX}
-    notes += [f"{name} лежит в памяти, а указателя в {MEMORY_INDEX} у него нет — файл найдут "
-              f"только перебором" for name in sorted(on_disk - listed)]
-    notes += [f"{MEMORY_INDEX} указывает на `{name}`, которого нет — указатель ведёт в пустоту"
-              for name in sorted(listed - on_disk)]
-    for path in sorted(home.glob("*.md")):
-        if path.name == MEMORY_INDEX:
-            continue
-        found = MEMORY_NAME.search(path.read_text(encoding="utf-8"))
-        if not found:
-            notes.append(f"{path.name}: нет `name:` в шапке — связи `[[имя]]` в него не ведут")
-        elif found.group(1) != path.stem:
-            notes.append(f"{path.name}: шапка зовётся `{found.group(1)}`, а файл — `{path.stem}`; "
-                         f"связь `[[{found.group(1)}]]` ведёт мимо файла")
-    return notes
-
-
-JOURNAL = ("docs", "roadmap", "_sessions.md")
-ARCHIVE = ("docs", "roadmap", "sessions")
-# Строка указателя: `- \`s25.md:30\` · Сессия 25 (доп. 101) — …`
-POINTER = re.compile(r"^- `([\w.]+):(\d+)` · (.+)$", re.M)
-
-
-def journal_off_index(root: Path = ROOT) -> list[str]:
-    """Закрытые записи журнала лежат отдельно, а указатель на них — в `_sessions.md`; они обязаны сойтись.
-
-    Указатель адресует запись СТРОКОЙ (`файл:строка`), поэтому стареет он молча: дописал абзац в
-    архив — и все адреса ниже поехали, а читатель попадёт в середину чужой записи и не заметит.
-    Судится ровно это: файл существует, строка та самая, заголовок совпадает дословно. Архива нет
-    (старое дерево, чужая машина) — «улики нет», а не «журнал пуст».
-    """
-    archive = _at(root, ARCHIVE)
-    journal = _at(root, JOURNAL)
-    if not archive.is_dir() or not journal.exists():
-        return []
-    pointers = POINTER.findall(journal.read_text(encoding="utf-8"))
-    notes = []
-    listed: dict[str, set[str]] = {}
-    for name, line, head in pointers:
-        listed.setdefault(name, set()).add(head)
-        path = archive / name
-        if not path.exists():
-            notes.append(f"указатель зовёт `sessions/{name}`, которого нет — адрес ведёт в пустоту")
-            continue
-        rows = path.read_text(encoding="utf-8").splitlines()
-        n = int(line)
-        if not (1 <= n <= len(rows)) or rows[n - 1] != f"### {head}":
-            было = rows[n - 1][:60] if 1 <= n <= len(rows) else "за концом файла"
-            notes.append(f"указатель ведёт на `{name}:{n}` за записью «{head[:50]}», а там «{было}» "
-                         f"— адрес поехал, и читатель попадёт в середину чужой записи")
-    for path in sorted(archive.glob("*.md")):
-        if path.name not in listed:
-            notes.append(f"sessions/{path.name} лежит в архиве, а строк указателя у него нет — "
-                         f"записи найдут только перебором")
-            continue
-        heads = {row[4:] for row in path.read_text(encoding="utf-8").splitlines()
-                 if row.startswith("### ")}
-        notes += [f"sessions/{path.name}: запись «{head[:60]}» в архиве есть, в указателе нет"
-                  for head in sorted(heads - listed[path.name])]
-    return notes
-
-QUALITY_SKILL = (".claude", "skills", "code-quality", "SKILL.md")
-QUALITY_PARAM = re.compile(r"^\| \*\*([А-Яа-яЁё][^*|]+?)\*\* \|", re.M)
-QUALITY_AXIS = re.compile(r"^(\d+[a-z]?)\. \*\*(.+?)\*\*(.*)$", re.M)
-QUALITY_TAG = re.compile(r"⟨двигает: ([^⟩]+)⟩")
-QUALITY_NONE = "ничего"
-QUALITY_DECL = "## ЧЕМУ служат оси"
-QUALITY_DICTS = "### Два словаря"
-
-
-def quality_axis_without_parameter(root: Path = ROOT) -> list[str]:
-    """Ось качества, не назвавшая параметр владельца, и параметр, которого не двигает ни одна ось.
-
-    Разрез «качество ↔ обслуживаемость» держится меткой у оси, а не памятью читающего. Обратная
-    сторона важнее прямой: параметр, за которым не стоит ни одной оси, пылится молча — ровно то, с
-    чего разрез и начался.
-    """
-    файл = _at(root, QUALITY_SKILL)
-    if not файл.exists():
-        return []
-    текст = файл.read_text(encoding="utf-8")
-    if "## Оси качества" not in текст:
-        return []
-    тело = текст.split("## Оси качества", 1)[1].split("\n## ", 1)[0]
-    # Параметры берутся ТОЛЬКО из таблицы владельца: навигационная таблица словарей ниже устроена
-    # так же, и по всему файлу её строки прочлись бы четвёртым параметром, которого он не объявлял.
-    объявление = текст.split(QUALITY_DECL, 1)[1].split("\n#", 1)[0] if QUALITY_DECL in текст else ""
-    параметры = [имя.strip().lower() for имя in QUALITY_PARAM.findall(объявление)]
-    оси = {ид: QUALITY_TAG.search(хвост) for ид, _, хвост in QUALITY_AXIS.findall(тело)}
-    notes = [f"ось {ид} скила code-quality не называет параметр владельца: к какому словарю она "
-             f"относится, известно только читавшему" for ид, метка in sorted(оси.items())
-             if метка is None]
-    двигают = set()
-    for ид, метка in sorted(оси.items()):
-        if метка is None:
-            continue
-        значение = метка.group(1).strip().lower()
-        совпало = [имя for имя in параметры if имя.startswith(значение)]
-        if значение != QUALITY_NONE and not совпало:
-            notes.append(f"ось {ид}: метка «{значение}» не из объявленной четвёрки параметров "
-                         f"({параметры}) — словарь назван словом, которого нет в декларации")
-        двигают |= set(совпало)
-    notes += [f"параметр «{имя}» объявлен, но его не двигает НИ ОДНА ось: требование владельца "
-              f"записано и пылится" for имя in параметры if имя not in двигают]
-    # Навигационная таблица стоит ВЫШЕ списка осей, поэтому ищется в своём разделе, а не в теле:
-    # взятая из тела, она всегда пуста, и половина сверки молчала бы, выглядя чистой.
-    словари = текст.split(QUALITY_DICTS, 1)[1].split("\n## ", 1)[0] if QUALITY_DICTS in текст else ""
-    названы = set()
-    for строка in словари.splitlines():
-        if строка.startswith("| **") and строка.count("|") >= 4:
-            названы |= set(re.findall(r"\b(\d+[a-z]?)\b", строка.rsplit("|", 2)[1]))
-    notes += [f"ось {ид} не названа ни в одном словаре навигационной таблицы"
-              for ид in sorted(set(оси) - названы) if названы]
-    notes += [f"навигационная таблица зовёт ось {ид}, которой в скиле нет"
-              for ид in sorted(названы - set(оси))]
-    return notes
-
-
-GUARDS_CATALOG = ("scripts", "guards", "CATALOG.md")
-# Имя берётся любым непробельным, а не `[a-z_]+`: кириллическое имя файла здесь законно,
-# и ASCII-шаблон пропускал бы такого сторожа молча.
-GUARD_ROW = re.compile(r"^\| `(\S+\.py)` \|([^|]*)\|", re.M)
-# Дверей в общий журнал две: общий хвост (по умолчанию) и своя подпись у судьи с
-# собственным родом записи (`what_if` пишет род `цикл` с полями отчёта, которых у
-# хвоста нет). Обе ведут в один журнал и один словарь — ось судит именно это.
-GUARD_TAIL = ("_verdict.close", "_stamp.sign")
-
-
-def judge_off_journal(root: Path = ROOT) -> list[str]:
-    """Судья, чей вердикт не уходит в ОБЩИЙ журнал тандема: завтра его нечем поднять.
-
-    Производители (их зона так и объявлена) вердикта не выносят и сюда не попадают — иначе
-    ось требовала бы подписи под тем, что подписывать нечем.
-    """
-    каталог = _at(root, GUARDS_CATALOG)
-    дом = _at(root, ("scripts", "guards"))
-    if not каталог.exists() or not дом.is_dir():
-        return []
-    объявлено = dict(GUARD_ROW.findall(каталог.read_text(encoding="utf-8")))
-    notes = []
-    for имя, зона in sorted(объявлено.items()):
-        файл = дом / имя
-        if not файл.exists():
-            notes.append(f"{'/'.join(GUARDS_CATALOG)} зовёт `{имя}`, которого на диске нет")
-            continue
-        if "производител" in зона.lower():
-            continue
-        текст = файл.read_text(encoding="utf-8")
-        if not any(дверь in текст for дверь in GUARD_TAIL):
-            notes.append(f"{имя}: вердикт не доезжает до общего журнала — ни хвоста "
-                         f"`_verdict.close`, ни своей подписи `_stamp.sign`; завтра его "
-                         f"нечем поднять, и тандем о нём не знает")
-    на_диске = {f.name for f in дом.glob("*.py") if not f.name.startswith("_")}
-    notes += [f"{имя}: сторож на диске без строки в {'/'.join(GUARDS_CATALOG)} — зона не объявлена"
-              for имя in sorted(на_диске - set(объявлено))]
-    return notes
-
-
-EVIDENCE_DECL = ("scripts", "guards", "evidence.yaml")
-
-
-def _флаги_сторожа(путь: Path) -> set[str] | None:
-    """Флаги, объявленные сторожем в своём разборе аргументов; `None` — разбора нет, улики нет.
-
-    Читается `ast`, а не запуском: судить объявление исполнением чужой команды значит исполнять
-    произвольную строку во время суда. Ту же границу держит `_stamp.runnable` — он судит форму.
-    """
-    try:
-        дерево = ast.parse(путь.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, SyntaxError):
-        return None
-    флаги = {арг.value for узел in ast.walk(дерево)
-             if isinstance(узел, ast.Call) and getattr(узел.func, "attr", "") == "add_argument"
-             for арг in узел.args
-             if isinstance(арг, ast.Constant) and isinstance(арг.value, str)
-             and арг.value.startswith("--")}
-    return флаги or None
-
-
-def evidence_roster_off_disk(root: Path = ROOT) -> list[str]:
-    """Роспись улик разошлась с диском: словарь есть, а поднимает он не то и не тех.
-
-    Расхождение здесь выключает РУЧНОЙ режим молча: наряд отвечает пустым набором, и пустота
-    неотличима от «на эту улику никто и не нужен».
-    """
-    объявление = _at(root, EVIDENCE_DECL)
-    дом = _at(root, GUARDS)
-    if not объявление.exists() or not дом.is_dir():
-        raise НетУлики("нет росписи улик или каталога сторожей — сверять словарь не с чем")
-    try:
-        свод = yaml.safe_load(объявление.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as beda:
-        return [f"{'/'.join(EVIDENCE_DECL)} не разбирается ({str(beda)[:60]}) — ручной режим "
-                f"поднимает пустой набор, и это неотличимо от «сторожей на улику нет»"]
-    главные, роды = свод.get("главные") or {}, свод.get("роды") or {}
-    роспись, notes = свод.get("сторожа") or {}, []
-    for имя, род in sorted(роды.items()):
-        главная = (род or {}).get("главная")
-        if not главная:
-            notes.append(f"род улики «{имя}» не привязан ни к одной главной — по трём главным "
-                         f"он не поднимается, то есть не поднимается вовсе")
-        elif главная not in главные:
-            notes.append(f"род улики «{имя}» привязан к «{главная}», которой нет среди главных "
-                         f"{sorted(главные)}")
-    на_диске = {p.name for p in дом.glob("*.py") if not p.name.startswith("_")}
-    notes += [f"роспись зовёт сторожа `{имя}`, которого нет на диске — наряд по его улике "
-              f"поднимет пустоту" for имя in sorted(set(роспись) - на_диске)]
-    notes += [f"{имя} на диске, но в росписи улик его нет: по улике он не поднимется никогда, "
-              f"сколько бы ни судил" for имя in sorted(на_диске - set(роспись))]
-    for имя, дело in sorted(роспись.items()):
-        for улика in (дело or {}).get("улики") or []:
-            if улика not in главные and улика not in роды:
-                notes.append(f"{имя} объявлен на улику «{улика}», которой нет ни среди главных, ни "
-                             f"среди родов: поднять его по ней нечем, и эта строка мертва")
-    for имя in sorted(главные):
-        привязан = any((род or {}).get("главная") == имя for род in роды.values())
-        отзывается = any(имя in ((дело or {}).get("улики") or []) for дело in роспись.values())
-        if not привязан and not отзывается:
-            notes.append(f"главная улика «{имя}» объявлена, но к ней не привязан ни один род и на "
-                         f"неё не отзывается ни один сторож — она пылится")
-    # Вторая половина росписи — хуки. Без неё вопрос «кто ОБЯЗАН был сработать» отвечается
-    # наполовину, и новый хук молча остаётся вне проверки факта срабатывания: так этой осью и
-    # пойман `vpm-permit.py`, заведённый часом раньше.
-    гнездо = _at(root, (".claude", "hooks"))
-    объявленные = свод.get("хуки") or {}
-    if гнездо.is_dir():
-        хуки_на_диске = {f.name for f in гнездо.glob("*.py") if not f.name.startswith("_")}
-        notes += [f"роспись зовёт хук `{имя}`, которого нет на диске — по улике он не сработает "
-                  f"никогда" for имя in sorted(set(объявленные) - хуки_на_диске)]
-        notes += [f"{имя} на диске, но в росписи улик его нет: чей факт срабатывания проверять, "
-                  f"неизвестно" for имя in sorted(хуки_на_диске - set(объявленные))]
-    for имя, дело in sorted(объявленные.items()):
-        if not (дело or {}).get("событие"):
-            notes.append(f"хук `{имя}` объявлен без события — сработать ему не на чем")
-        for улика in (дело or {}).get("улики") or []:
-            if улика not in главные:
-                notes.append(f"хук `{имя}` объявлен на улику «{улика}», которой нет среди главных")
-    # Третья половина: типы работы. Выбор сторожей по задаче — ответ ДО работы, и объявление,
-    # зовущее несуществующего сторожа или неизвестную улику, отвечает пустотой.
-    скилы = _at(root, (".claude", "skills"))
-    for имя, дело in sorted((свод.get("задачи") or {}).items()):
-        улики_задачи = (дело or {}).get("улики") or []
-        if not улики_задачи:
-            notes.append(f"тип работы `{имя}` не рождает ни одной улики — по нему не проснётся никто")
-        for улика in улики_задачи:
-            if улика not in главные and улика not in роды:
-                notes.append(f"тип работы `{имя}` объявлен на улику «{улика}», которой нет "
-                             f"ни среди главных, ни среди родов")
-        for сторож, флаги in ((дело or {}).get("сверх") or {}).items():
-            if сторож not in на_диске:
-                notes.append(f"тип работы `{имя}` зовёт сторожа `{сторож}`, которого нет на диске")
-                continue
-            # Сторож есть, а флаг выдуман — наряд напечатает команду, которая упадёт разбором
-            # аргументов. Пойман замером: фальшивый флаг проходил молча, пока это не судилось.
-            объявлены = _флаги_сторожа(дом / сторож)
-            if объявлены is None:
-                continue                       # разбора аргументов у сторожа нет — улики нет
-            for флаг in [ф for ф in (флаги or []) if str(ф).startswith("--")]:
-                if флаг not in объявлены:
-                    notes.append(f"тип работы `{имя}` зовёт `{сторож} {флаг}`, а такого флага у "
-                                 f"сторожа нет: команда наряда упадёт разбором аргументов")
-        скил = (дело or {}).get("скил")
-        if скил and скилы.is_dir() and not (скилы / скил / "SKILL.md").exists():
-            notes.append(f"тип работы `{имя}` ведёт в скил `{скил}`, которого нет")
-        notes += _радиус_задачи(имя, дело or {}, свод, root)
-    # Четвёртая половина: требования проекта. Тот же класс — объявление зовёт того, кого нет;
-    # отдельной осью это было бы вторым судьёй одного класса, а их и так плодят вместо запаса.
-    судьи = _судьи(root)
-    for ид, дело in sorted((свод.get("требования") or {}).items()):
-        судья = (дело or {}).get("судья")
-        if судья and судья not in судьи:
-            notes.append(f"требование «{ид}» зовёт судью `{судья}`, которого нет ни среди осей, "
-                         f"ни среди сторожей, ни среди хуков — ругаться по правилу некому")
-        дом_правила = (дело or {}).get("дом")
-        if дом_правила and скилы.is_dir() and "." not in дом_правила \
-                and not (скилы / дом_правила / "SKILL.md").exists():
-            notes.append(f"требование «{ид}» живёт в скиле `{дом_правила}`, которого нет")
-    return notes
-
-
-def _судьи(root: Path = ROOT) -> set[str]:
-    """Кто вообще может РУГАТЬСЯ: заголовки осей, сторожа, хуки и загрузчики объявлений.
-
-    Три места, где живёт отказ. Требование, назвавшее судью вне этого набора, указывает в пустоту,
-    и правило остаётся прозой при живом с виду объявлении.
-    """
-    имена = {имя for имя, _ in HARD} | {строка[0] for строка in RATCHETS}
-    for место in (GUARDS, HOOKS, ("tests", "harness")):
-        дом = _at(root, место)
-        if дом.is_dir():
-            имена |= {f.name for f in дом.glob("*.py")}
-    return имена
-
-
-def _радиус_задачи(имя: str, дело: dict, свод: dict, root: Path) -> list[str]:
-    """Радиус типа работы: набор требований И набор осей, а не один список сторожей.
-
-    До объявления радиуса в намерение попадало то, что вспомнилось, и промах вспоминания был
-    невидим: ни требований проекта, ни осей в нём не было вовсе.
-    """
-    оси = {заголовок for заголовок, _ in HARD} | {строка[0] for строка in RATCHETS}
-    требования = свод.get("требования") or {}
-    notes = []
-    if "требования" not in дело or "оси" not in дело:
-        return [f"у типа работы `{имя}` не объявлен радиус (`требования` и `оси`) — "
-                f"в намерение попадёт то, что вспомнится"]
-    notes += [f"тип работы `{имя}` зовёт требование «{ид}», которого в реестре нет"
-              for ид in дело.get("требования") or () if ид not in требования]
-    notes += [f"тип работы `{имя}` зовёт ось «{ось}», которой в реестре осей нет"
-              for ось in дело.get("оси") or () if ось not in оси]
-    return notes
-
-
-СОСТОЯНИЯ = ("судится", "совет", "нет")
-
-
-def _предметы(root: Path = ROOT) -> dict:
-    """Объявление приёмки по предметам. Нет файла — «улики нет», а не пустая карта."""
-    путь = _at(root, SUBJECTS_DECL)
-    if not путь.exists():
-        return {}
-    try:
-        return (yaml.safe_load(путь.read_text(encoding="utf-8")) or {}).get("предметы") or {}
-    except yaml.YAMLError:
-        return {}
-
-
-def acceptance_state_unproven(root: Path = ROOT) -> list[str]:
-    """Состояние приёмки объявлено, но не доказано: улики нет, она мимо диска, «нет» без `ждёт`.
-
-    Рукописная таблица состояний гниёт молча — эта уже расходилась с деревом. Поэтому каждое
-    состояние обязано нести КОМАНДУ, которой доказывается, и команда обязана указывать на то,
-    что на диске есть.
-    """
-    путь = _at(root, SUBJECTS_DECL)
-    if not путь.exists():
-        return []
-    try:
-        yaml.safe_load(путь.read_text(encoding="utf-8"))
-    except yaml.YAMLError as беда:
-        return [f"{'/'.join(SUBJECTS_DECL)} не разбирается ({str(беда)[:60]}) — карта приёмки "
-                f"молчит целиком, и это неотличимо от «условий нет»"]
-    import _stamp                              # локально, как у соседних осей: словарь у сторожей
-    notes = []
-    for предмет, тело in sorted(_предметы(root).items()):
-        for имя, у in sorted((тело or {}).get("условия", {}).items()):
-            у = у or {}
-            адрес = f"{предмет}/{имя}"
-            if not у.get("про"):
-                notes.append(f"{адрес}: условие без формулировки — судить нечего")
-            состояние = у.get("состояние")
-            if состояние not in СОСТОЯНИЯ:
-                notes.append(f"{адрес}: состояние «{состояние}» не из {list(СОСТОЯНИЯ)}")
-            if состояние == "нет" and not у.get("ждёт"):
-                notes.append(f"{адрес}: механизма нет и не сказано, чего ждём — это пожелание, "
-                             f"а не план")
-            улика = str(у.get("улика") or "")
-            if not _stamp.runnable(улика):
-                notes.append(f"{адрес}: состояние не доказано командой — `улика` = {улика!r}")
-                continue
-            # Первое слово — ЗАПУСКАЮЩЕЕ (`.venv/bin/python`, `npm`), а не цель: в CI виртуального
-            # окружения по этому пути нет, и ось краснела бы там на каждой строке.
-            цели = улика.split(maxsplit=1)[1] if " " in улика.strip() else ""
-            предмет = None
-            for кусок in re.findall(r"[\w./-]+", цели):
-                if "/" in кусок and not кусок.startswith("-"):
-                    if not (root / кусок).exists():
-                        notes.append(f"{адрес}: улика ведёт в `{кусок}`, которого на диске нет")
-                    elif предмет is None and кусок.endswith(".py"):
-                        предмет = (root / кусок).read_text(encoding="utf-8", errors="replace")
-            # Флаг проверяется по тексту предмета: файл на месте, а ключа у него нет — улика мнимая
-            # ровно так же, только незаметнее: объявлен `--объявление`, а у предмета есть только `--список`.
-            for флаг in re.findall(r"(?<!\S)--[\w-]+", цели):
-                if предмет is not None and флаг not in предмет:
-                    notes.append(f"{адрес}: улика зовёт ключ `{флаг}`, которого у предмета нет")
-    return notes
-
-
-def acceptance_subject_gap(root: Path = ROOT) -> list[str]:
-    """Долг приёмки по предметам: условие объявлено, а механизма у него нет.
-
-    Это и есть вектор развития, выраженный числом: список только вниз.
-    """
-    return [f"{предмет}/{имя}: {(у or {}).get('про') or '—'} — механизма нет"
-            for предмет, тело in sorted(_предметы(root).items())
-            for имя, у in sorted((тело or {}).get("условия", {}).items())
-            if (у or {}).get("состояние") == "нет"]
-
-
-ЖИВЫЕ_ЦЕЛИ = re.compile(r"(?:scripts/guards|\.claude/hooks|tests)/[\w./-]+\.(?:py|sh|yaml)")
-
-
-def dead_command(root: Path = ROOT) -> list[str]:
-    """Команда, которую ПРЕДЛАГАЮТ запустить, ведёт в несуществующее.
-
-    Судятся только живые места: команда остатка (её печатают каждую сессию) и блоки команд
-    скилов (это инструкция к исполнению). Журнал и проза скила не судятся — там имя снесённого
-    файла законно, как урок; запрет на него запретил бы записывать прошлое.
-    """
-    notes = []
-    sys.path.insert(0, str(_at(root, ("scripts", "guards"))))
-    import _stamp
-    for хвост in _stamp.tails(root):
-        команда = str(хвост.get("cmd") or "")
-        цели = ЖИВЫЕ_ЦЕЛИ.findall(команда.split(maxsplit=1)[-1] if " " in команда else "")
-        for цель in цели:
-            if not (root / цель).exists():
-                notes.append(f"остаток `{хвост.get('key')}` предлагает запустить `{цель}`, которого "
-                             f"на диске нет: его печатают каждую сессию, и ИИ идёт в пустоту")
-    скилы = _at(root, (".claude", "skills"))
-    if скилы.is_dir():
-        for файл in sorted(скилы.rglob("SKILL.md")):
-            # Только блоки команд: в прозе скила `tests/runner.py` — это УРОК про удалённое
-            # («лежала декларация, ссылавшаяся на несуществующий…»), и обвинять её значит
-            # запрещать записывать прошлое. Тот же разбор, что у тела here-document.
-            блоки = "\n".join(re.findall(r"```(?:bash|sh|console)?\n(.*?)```",
-                                          файл.read_text(encoding="utf-8", errors="replace"), re.S))
-            for цель in sorted(set(ЖИВЫЕ_ЦЕЛИ.findall(блоки))):
-                if not (root / цель).exists():
-                    notes.append(f"скил `{файл.parent.name}` зовёт `{цель}`, которого на диске нет: "
-                                 f"инструкция ведёт в пустоту, а читают её перед работой")
-    return notes
-
-
-SKILLS_CATALOG = (".claude", "skills", "CATALOG.md")
-SKILL_ROW = re.compile(r"^\| `([a-z][a-z-]+)` \|([^|]*)\|([^|]*)\|", re.M)
-
-
-def skill_without_zone(root: Path = ROOT) -> list[str]:
-    """Скил, чья зона не объявлена, — и граница, названная в одну сторону.
-
-    Три находки, а не одна: скил без строки каталога (зона не объявлена вовсе), строка без скила
-    (каталог зовёт снесённое) и односторонняя граница. Последняя опаснее прочих: сосед, о котором
-    сказали, но который промолчал в ответ, считает зону своей — и оба развиваются в одну область,
-    пока это не всплывёт выбором не того скила.
-    """
-    каталог = _at(root, SKILLS_CATALOG)
-    дерево = _at(root, (".claude", "skills"))
-    if not каталог.exists() or not дерево.is_dir():
-        return []
-    на_диске = {p.name for p in дерево.iterdir() if (p / "SKILL.md").exists()}
-    строки = {имя: f"{зона} {границы}"
-              for имя, зона, границы in SKILL_ROW.findall(каталог.read_text(encoding="utf-8"))}
-    notes = [f"{имя}: зона не объявлена в {'/'.join(SKILLS_CATALOG)} — при выборе скила границы нет"
-             for имя in sorted(на_диске - set(строки))]
-    notes += [f"{'/'.join(SKILLS_CATALOG)} зовёт `{имя}`, которого на диске нет"
-              for имя in sorted(set(строки) - на_диске)]
-    for имя in sorted(на_диске & set(строки)):
-        соседи = {n for n in на_диске if n != имя and re.search(rf"`{re.escape(n)}`", строки[имя])}
-        notes += [f"{имя} → {сосед}: граница названа в ОДНУ сторону, обратной нет — сосед считает "
-                  f"зону своей" for сосед in sorted(соседи)
-                  if сосед in строки and not re.search(rf"`{re.escape(имя)}`", строки[сосед])]
-    return notes
-
-# Слово, встречающееся у половины библиотеки, признаком не является: метр, считающий `python`
-# и `server` за сходство, назвал бы путаемыми ВСЕ пары и был бы выключен в первый день.
-ФОН_ДОЛЯ = 0.5
-# Ниже порога совпадают служебные слова, а не предмет: замер дал 22 пары при 6, 35 при 3.
-БЛИЗОСТЬ = 6
-СЛОВО = re.compile(r"[a-zа-яё_]{5,}")
-
-
-def _описания(root: Path) -> dict[str, str]:
-    """`description` каждого скила — единственное, что читается в МОМЕНТ выбора."""
-    дерево = _at(root, (".claude", "skills"))
-    из_диска = {}
-    for каталог in sorted(дерево.iterdir()) if дерево.is_dir() else []:
-        файл = каталог / "SKILL.md"
-        if not файл.exists():
-            continue
-        m = re.search(r"^description:\s*(.+?)(?=^\w+:|^---)", файл.read_text(encoding="utf-8"),
-                      re.S | re.M)
-        из_диска[каталог.name] = " ".join((m.group(1) if m else "").split())
-    return из_диска
-
-
-def skill_boundary_invisible(root: Path = ROOT) -> list[str]:
-    """Пара скилов путаема по существу, а граница между ними объявлена только в каталоге.
-
-    Каталог в момент выбора скила не загружается — его читают ось и человек. Граница, живущая
-    лишь там, при выборе не существует, и обе стороны считают зону своей.
-    """
-    описания = _описания(root)
-    каталог = _at(root, SKILLS_CATALOG)
-    if len(описания) < 2 or not каталог.exists():
-        return []
-    строки = {имя: f"{зона} {границы}"
-              for имя, зона, границы in SKILL_ROW.findall(каталог.read_text(encoding="utf-8"))}
-    частота: dict[str, int] = {}
-    for текст in описания.values():
-        for слово in set(СЛОВО.findall(текст.lower())):
-            частота[слово] = частота.get(слово, 0) + 1
-    фон = {с for с, n in частота.items() if n >= len(описания) * ФОН_ДОЛЯ}
-    notes = []
-    for имя in sorted(описания):
-        for сосед in sorted(описания):
-            if сосед <= имя:
-                continue
-            if not (re.search(rf"`{re.escape(сосед)}`", строки.get(имя, ""))
-                    or re.search(rf"`{re.escape(имя)}`", строки.get(сосед, ""))):
-                continue
-            общее = ((set(СЛОВО.findall(описания[имя].lower()))
-                      & set(СЛОВО.findall(описания[сосед].lower()))) - фон)
-            взаимно = сосед in описания[имя] and имя in описания[сосед]
-            if len(общее) >= БЛИЗОСТЬ and not взаимно:
-                notes.append(f"{имя} ↔ {сосед}: общего в описаниях {len(общее)} слов, а граница "
-                             f"названа только в каталоге — при выборе скила её нет")
-    return notes
-
-
-PRECOMMIT = (".pre-commit-config.yaml",)
-INSTALL = ("install.sh",)
-
-
-def door_not_installed(root: Path = ROOT) -> list[str]:
-    """Дверь коммита объявлена, а установка её не ставит.
-
-    `.git/hooks/` не под git, поэтому на свежем клоне двери нет вовсе — и её отсутствие выглядит
-    как чистый проход: локально не судит никто, CI ловит уже после `push`.
-    """
-    config, install = _at(root, PRECOMMIT), _at(root, INSTALL)
-    if not config.exists() or not install.exists():
-        return []
-    if "pre-commit install" in install.read_text(encoding="utf-8", errors="replace"):
-        return []
-    return [f"{'/'.join(PRECOMMIT)} объявляет дверь коммита, а {'/'.join(INSTALL)} её не ставит — "
-            f"на свежем клоне двери нет, и это неотличимо от пройденных проверок"]
-
-
-# Хвосты, гасящие вердикт: `|| true` обнуляет код возврата, перенаправление уводит поток.
-HOOK_MUFFLE = ("2>/dev/null", "2>&1", "|| true", "; true")
-
-
-def hook_declared_muted(root: Path = ROOT) -> list[str]:
-    """Хук объявлен так, что сказать о находке он не может.
-
-    К модели ведут ровно два канала — `exit 2` со `stderr` и JSON `additionalContext` на stdout.
-    Хвост в команде рвёт первый и прячет трейс: упавший сторож становится неотличим от
-    промолчавшего, а сторож без голоса — отсутствующий сторож, который выглядит работающим.
-    """
-    settings = _at(root, HOOK_SETTINGS)
-    if not settings.exists():
-        return []
-    try:
-        declared = json.loads(settings.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return []                        # разбор объявления судит соседняя ось, здесь улики нет
-    notes = []
-    for event, blocks in (declared.get("hooks") or {}).items():
-        for block in blocks if isinstance(blocks, list) else ():
-            for hook in block.get("hooks", []):
-                command = str(hook.get("command", ""))
-                if "/".join(HOOKS) not in command:
-                    continue
-                muffle = [tail for tail in HOOK_MUFFLE if tail in command]
-                if muffle:
-                    name = Path(command.split()[1] if " " in command else command).name
-                    notes.append(f"{event}: {name} объявлен с {muffle} — вердикт не доходит ни до "
-                                 f"модели, ни до человека, и молчание выглядит чистым результатом")
-    return notes
-
-
-def _zones_of(path: Path) -> set[str]:
-    """Зоны, объявленные строками таблицы в этом каталоге."""
-    if not path.exists():
-        return set()
-    zones = set()
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.startswith("|"):
-            cell = line.split("|")[1].strip().strip("*").strip("`").strip()
-            if cell:
-                zones.add(cell)
-    return zones
-
-
-GUARD_HOME = re.compile(r"scripts/guards/([\w.]+\.py)")
-
-
-def zone_declared_twice(root: Path = ROOT) -> list[str]:
-    """Одну зону объявили два хозяина — правило «не плодить» перестало действовать.
-
-    Зона отвечает на «что покрывает ТОЛЬКО он», и второй претендент на ту же территорию и есть
-    размножение, ради запрета которого каталог заведён. Личность зоны — назван ли в ней сторож
-    (два дома у одного сторожа), а если не назван — сам текст зоны. Переписанный своими словами
-    дубль так не ловится, и это честный предел: близость формулировок машина не судит.
-    """
-    notes = []
-    for catalog in (_at(root, CATALOG), _at(root, GUARDS_CATALOG)):
-        if not catalog.exists():
-            continue
-        owners: dict[str, list[str]] = {}
-        for line in catalog.read_text(encoding="utf-8").splitlines():
-            cells = line.split("|")
-            if not line.startswith("|") or len(cells) < 3:
-                continue
-            name = cells[1].strip().strip("*").strip("`").strip()
-            if not (name.endswith(".py") or name.endswith("/")):
-                continue
-            named = sorted(set(GUARD_HOME.findall(cells[2])))
-            owners.setdefault(", ".join(named) if named else " ".join(cells[2].split()),
-                              []).append(name)
-        for zone, claimants in owners.items():
-            if len(claimants) > 1:
-                notes.append(f"{catalog.relative_to(root)}: зону `{zone[:60]}` объявили "
-                             f"{', '.join(claimants)} — у одной правды два хозяина, "
-                             f"и один из них всегда отстанет")
-    return notes
-
-
-def _acceptance(root: Path) -> dict:
-    путь = _at(root, ("scripts", "guards", "acceptance_scenarios.yaml"))
-    if not путь.exists():
-        return {}
-    try:
-        return yaml.safe_load(путь.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as beda:
-        return {"__битый__": str(beda)}
-
-
-
-def _evidence_роды(root: Path = ROOT) -> dict:
-    """Единый словарь улик читается своим источником; нет его — родов нет, а не «род неизвестен»."""
-    объявление = _at(root, ("scripts", "guards", "evidence.yaml"))
-    if not объявление.exists():
-        return {}
-    try:
-        return (yaml.safe_load(объявление.read_text(encoding="utf-8")) or {}).get("роды") or {}
-    except yaml.YAMLError:
-        return {}
-
-
-def acceptance_calls_missing(root: Path = ROOT) -> list[str]:
-    """Сценарий приёмки обязан звать существующее — исполнителя, род улики, журнал.
-
-    Названный, но несуществующий исполнитель ХУЖЕ отсутствующего: сценарий выглядит покрытым.
-    Судится только пара «названо ↔ существует»; долг «исполнителя нет вовсе» считает храповик
-    рядом, а зона задания сверяется с деревом, потому что стенд ведёт суд именно по ней.
-    """
-    config = _acceptance(root)
-    if not config:
-        return []
-    if "__битый__" in config:
-        return [f"scripts/guards/acceptance_scenarios.yaml не разбирается ({config['__битый__'][:80]}) — "
-                f"эксперт молчит, и это не отличить от «сценариев нет»"]
-    # Роды улики объявлены единым словарём (`evidence.yaml`), а не рядом со сценариями:
-    # вторая копия словаря разъехалась бы с первой на первой же новой улике.
-    роды, notes = set(_evidence_роды(root)), []
-    тексты = _suite_text(root)
-    for сценарий in config.get("сценарии", []):
-        имя = сценарий.get("имя", "?")
-        for род in сценарий.get("улики", []):
-            if род not in роды:
-                notes.append(f"acceptance_scenarios.yaml: сценарий «{имя}» зовёт род улики «{род}», "
-                             f"которого нет в объявлении — по этой улике он не включится никогда")
-        журнал = сценарий.get("журнал", "")
-        if журнал and not _at(root, tuple(журнал.split("/"))).exists():
-            notes.append(f"acceptance_scenarios.yaml: сценарий «{имя}» ссылается на {журнал}, "
-                         f"которого нет — совет опирается на запись, которой не существует")
-        исполнитель = сценарий.get("исполнитель")
-        if сценарий.get("состояние") == "судится" and not исполнитель:
-            notes.append(f"acceptance_scenarios.yaml: сценарий «{имя}» объявлен судимым без "
-                         f"исполнителя — «судится» держится словом")
-        if сценарий.get("состояние") == "совет" and not сценарий.get("станет-судимым"):
-            notes.append(f"acceptance_scenarios.yaml: сценарий «{имя}» советует, но не говорит, чем "
-                         f"станет судимым — долг без выхода")
-        if not исполнитель:
-            continue
-        набор = _at(root, tuple(исполнитель.get("набор", "").split("/")))
-        if not набор.exists():
-            notes.append(f"acceptance_scenarios.yaml: сценарий «{имя}» зовёт набор "
-                         f"{исполнитель.get('набор')}, которого нет в дереве")
-        elif исполнитель.get("метка", "") not in тексты:
-            notes.append(f"acceptance_scenarios.yaml: сценарий «{имя}» зовёт проверку "
-                         f"«{исполнитель.get('метка', '')[:45]}», которой нет ни в одном наборе")
-    задания = _at(root, ("tests", "studio_emulation", "tasks.yaml"))
-    if задания.exists():
-        for задание in (yaml.safe_load(задания.read_text(encoding="utf-8")) or {}).get("задания", []):
-            for зона in задание.get("зона", []):
-                if not _at(root, tuple(зона.split("/"))).exists():
-                    notes.append(f"tasks.yaml: задание «{задание.get('id')}» объявляет зоной {зона}, "
-                                 f"которой нет — суд по границам задачи станет пустым")
-    return notes
-
-
-def acceptance_advice_only(root: Path = ROOT) -> list[str]:
-    """Долг приёмки: сценарий, который советует, но никем не судится."""
-    return [f"acceptance_scenarios.yaml: «{s.get('имя')}» пока только советует — судить его некому"
-            for s in _acceptance(root).get("сценарии", []) if s.get("состояние") == "совет"]
-
-
-def guard_without_home(root: Path = ROOT) -> list[str]:
-    """Сторож, которого не судит ни один набор: его правку цикл сравнить не может.
-
-    Дом объявляется зоной в `tests/CATALOG.md` — строкой набора, называющей `scripts/guards/*.py`;
-    оттуда же `what_if.py` берёт третью карту сравнения. Обратная сторона так же красная:
-    объявленный дом несуществующего сторожа отправляет цикл сравнивать пустоту.
-    """
-    directory, catalog = _at(root, GUARDS), _at(root, CATALOG)
-    if not directory.is_dir() or not catalog.exists():
-        raise НетУлики("нет каталога сторожей или tests/CATALOG.md — дома сверять не с чем")
-    on_disk = {p.name for p in directory.glob("*.py") if not p.name.startswith("_")}
-    housed: set[str] = set()
-    for line in catalog.read_text(encoding="utf-8").splitlines():
-        cells = line.split("|")
-        if line.startswith("|") and len(cells) >= 3:
-            housed |= set(GUARD_HOME.findall(cells[2]))
-    return ([f"scripts/guards/{name} — сторожа не судит ни один набор: правку такого сторожа "
-             f"цикл `what_if.py` не с чем сравнить, третья карта его не видит"
-             for name in sorted(on_disk - housed)]
-            + [f"tests/CATALOG.md называет домом сторожа `scripts/guards/{name}`, которого нет — "
-               f"карта цикла ведёт в пустоту" for name in sorted(housed - on_disk)])
-
-
-def scenarios_same_radius(root: Path = ROOT) -> list[str]:
-    """Сценарии одного рода, заходящие ОДНИМ радиусом: второй ничего не добавляет.
-
-    Заказ владельца 2026-09-14: доказывать надо набором сценариев, а не мутациями, и «каждый
-    сценарий заходит с другого радиуса и реально имеет цену». Сценарий-двойник приходит уже
-    пройденным путём: он краснеет вместе с соседом и молчит там же, где сосед, — цена нулевая, а
-    счёт покрытия он раздувает.
-
-    Радиус ВЫВОДИТСЯ из шагов (`run`/`python`/`call`/`rpc`), а не объявляется: объявленный радиус
-    разошёлся бы с делом на первой же правке сценария.
-    """
-    sys.path.insert(0, str(_at(root, GUARDS)))
-    import what_if  # радиус сценария живёт у цикла: второй копии разбора не нужно
-    свод = what_if.радиусы_сценариев(root)
-    if not свод:
-        raise НетУлики("объявленных сценариев в этом дереве нет — судить радиусы не у кого")
-    группы: dict[tuple[str, frozenset[str]], list[str]] = {}
-    for имя, (род, радиус) in свод.items():
-        группы.setdefault((род, радиус), []).append(имя)
-    notes = []
-    for (род, радиус), имена in sorted(группы.items(), key=lambda п: sorted(п[1])):
-        if len(имена) < 2:
-            continue
-        notes += [f"tests/scenarios: `{имя}` ({род}) заходит тем же радиусом, что и "
-                  f"{', '.join(sorted(set(имена) - {имя}))} — цели {sorted(радиус) or 'не выводятся'}"
-                  for имя in sorted(имена)[1:]]
-    return notes
-
-
-def set_copies_source_form(root: Path = ROOT) -> list[str]:
-    """Набор держит КОПИЮ формы источника вместо того, чтобы поднять её у своего сторожа.
-
-    Сочинённая строка судит форму, которой в источнике может уже не быть: сдвиг разметки реестра на
-    один пробел ослепил разбор большинства строк, а набор остался зелёным ⟦vpm ec31⟧ — он проверял
-    свою копию. Сторож, умеющий отдать живую форму, объявляет две функции: `образец()` и
-    `разбирает(строка)`; с этого момента копия в его наборе — долг.
-
-    Послабления «набор зовёт образец — значит можно и копию» нет: владелец 2026-09-14 — «улики тут
-    им не место… формат изменился, а суть нет». Пограничные случаи разбора строятся СОСТОЯНИЯМИ
-    живой строки (`состояние()`), и копия не нужна даже для них.
-    """
-    каталог = _at(root, CATALOG)
-    if not каталог.exists():
-        raise НетУлики("нет tests/CATALOG.md — пары «набор ↔ сторож» брать неоткуда")
-    sys.path.insert(0, str(_at(root, GUARDS)))
-    # Каталог называет набор ИМЕНЕМ файла, а не путём: путь ищем по дереву наборов, иначе пара
-    # «набор ↔ сторож» не собирается вовсе, и ось молча судит пустоту — та самая ложная зелень.
-    пары: list[tuple[Path, str]] = []
-    файлы = {ф.name: ф for ф in _at(root, ("tests",)).rglob("test_*.py")}
-    for строка in каталог.read_text(encoding="utf-8").splitlines():
-        клетки = строка.split("|")
-        if not (строка.startswith("|") and len(клетки) >= 3):
-            continue
-        имя_набора = re.search(r"(test_[\w]+\.py)", клетки[1])
-        if not (имя_набора and имя_набора.group(1) in файлы):
-            continue
-        пары += [(файлы[имя_набора.group(1)], имя) for имя in GUARD_HOME.findall(клетки[2])]
-    if not пары:
-        raise НетУлики("в tests/CATALOG.md не нашлось ни одной пары «набор ↔ сторож» — "
-                       "судить копии формы не у кого")
-    notes = []
-    for файл_набора, сторож in sorted(set(пары)):
-        if not файл_набора.exists():
-            continue
-        try:
-            модуль = importlib.import_module(Path(сторож).stem)
-        except Exception:  # сторож, который не импортируется, судит своя ось
-            continue
-        разбирает = getattr(модуль, "разбирает", None)
-        if not callable(разбирает) or not callable(getattr(модуль, "образец", None)):
-            continue           # сторож формы не отдаёт — копий у набора требовать не с чего
-        текст = файл_набора.read_text(encoding="utf-8", errors="replace")
-        try:
-            дерево = ast.parse(текст)
-        except SyntaxError:
-            continue
-        копии = {узел.value for узел in ast.walk(дерево)
-                 if isinstance(узел, ast.Constant) and isinstance(узел.value, str)
-                 and разбирает(узел.value)}
-        if копии:
-            notes.append(f"{файл_набора.relative_to(root)}: копий формы источника {len(копии)} — "
-                         f"набор судит свою копию, а не форму, которую читает "
-                         f"`scripts/guards/{сторож}`; подними её через `образец()`")
-    return notes
-
-
-def guards_off_catalog(root: Path = ROOT) -> list[str]:
-    """Сторож без объявленной зоны — и правило «не плодить» перестаёт действовать на сторожей.
-
-    Тот же механизм, что у наборов: у скриптов он нужен ровно потому, что слепую зону тянет
-    закрыть НОВЫМ скриптом, хотя почти всегда она ложится в запас существующего. Обратная сторона
-    так же красная: строка про сторожа, которого нет, отправляет расширять пустоту.
-    """
-    directory = _at(root, GUARDS)
-    if not directory.is_dir():
-        raise НетУлики("каталога сторожей в этом дереве нет — зоны сверять не у кого")
-    scripts = sorted(p for p in directory.glob("*.py") if not p.name.startswith("_"))
-    zones = _zones_of(_at(root, GUARDS_CATALOG))
-    if not scripts and not zones:
-        return чисто()                 # ни сторожей, ни зон — обвинять некого и не в чем
-    if not zones:
-        return [f"{'/'.join(GUARDS_CATALOG)} — каталога зон нет, а сторожа есть: "
-                "правило «не плодить» держится дисциплиной, то есть не держится"]
-    notes = []
-    have = {p.name for p in scripts}
-    for name in sorted(have - zones):
-        notes.append(f"scripts/guards/{name} — сторож без строки-зоны в scripts/guards/CATALOG.md: "
-                     "сначала расширь хозяина по его запасу; заводишь свой — объяви зону и улику")
-    for zone in sorted(zones - have):
-        if zone.endswith(".py"):
-            notes.append(f"scripts/guards/CATALOG.md: зона `{zone}` объявлена, а сторожа нет — "
-                         "расширять предлагается несуществующее")
-    return notes
-
-
-def ceiling_moved_unrecorded(root: Path = ROOT) -> list[str]:
-    """Потолок сдвинут в дереве, а записи об этом в журнале нет: долг двинулся молча.
-
-    Сверяются ДВА источника — число в `*_baseline.txt` рабочего дерева и то же число в `HEAD`.
-    Разошлись — в журнале обязана быть подпись сдвига с этим файлом и этим новым числом.
-    Журнала нет (клон, CI, свежее дерево) — улики нет, и это не «записи не было».
-    """
-    import _stamp
-    дом = _at(root, GUARDS)
-    if not дом.is_dir():
-        return []
-    журнал = sorted(_at(root, ("tests", ".journal")).glob("stamps-*.jsonl"))
-    if not журнал:
-        return []
-    записано = set()
-    for файл in журнал:
-        for строка in файл.read_text(encoding="utf-8", errors="replace").splitlines():
-            try:
-                запись = json.loads(строка)
-            except json.JSONDecodeError:
-                continue
-            подробность = запись.get("detail") or {}
-            if запись.get("intent") == "сдвиг потолка":
-                записано.add((str(подробность.get("файл")), str(подробность.get("стало"))))
-    notes = []
-    for baseline in sorted(дом.glob("*_baseline.txt")):
-        сырое = _git_show(root, f"scripts/guards/{baseline.name}")
-        if сырое is None or сырое.strip() == baseline.read_text(encoding="utf-8").strip():
-            continue
-        было = _stamp.мера_потолка(сырое)
-        стало = _stamp.мера_потолка(baseline.read_text(encoding="utf-8"))
-        if (baseline.name, стало) not in записано:
-            notes.append(f"{baseline.name}: потолок {было} → {стало} сдвинут без записи в "
-                         f"журнале — через месяц это неотличимо от опечатки. Двигай его через "
-                         f"`--bless --почему \"<причина>\"`, тогда сдвиг подписан")
-    return notes
-
-
-def _git_show(root: Path, путь: str) -> str | None:
-    """Значение файла в HEAD. Нет git либо нет файла в HEAD — «улики нет», а не пустая строка."""
-    try:
-        done = subprocess.run(["git", "show", f"HEAD:{путь}"], cwd=str(root),
-                              capture_output=True, text=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return done.stdout if done.returncode == 0 else None
-
-
 # Кто читает запись следа/журнала и кто её СОБИРАЕТ. Списки поимённые, а не «все файлы»: `.get`
 # по строке встречается всюду, и обвинять каждый значило бы выключить сторожа в первый же день.
 RECORD_READERS = ("scripts/guards/reproduce.py",)
+
+
 RECORD_WRITERS = ("tests/harness/scenario.py",)
+
+
 # Имена, которыми в этих файлах зовут САМУ запись. Прочие `.get` читают объявления, а не запись.
 RECORD_RECEIVERS = {"entry", "e", "rec", "record"}
 
@@ -2970,31 +1194,6 @@ def record_field_mismatch(root: Path = ROOT) -> list[str]:
     return notes
 
 
-# Список поимённый: «все каталоги со сторожами» вывести нельзя — хуки лежат в `.claude`,
-# харнесс в `tests`, и производная тихо недосчитала бы обоих.
-JUDGING_TREES = ("scripts/guards", ".claude/hooks", "tests/harness")
-
-
-def typegate_uncovered(root: Path = ROOT) -> list[str]:
-    """Дерево, которым мы судим проект, само вне зоны гейта типов.
-
-    Зона читается из манифеста, а не повторяется здесь вторым списком: иначе `files` можно
-    было бы ужать обратно молча — храповик считал бы по своей копии и остался бы зелёным.
-    """
-    манифест = root / "pyproject.toml"
-    if not манифест.exists():
-        return []
-    зона = tomllib.loads(манифест.read_text(encoding="utf-8")).get("tool", {}).get("mypy", {}).get("files", [])
-    # Покрытие считается ПУТЁМ, а не строкой: `scripts` накрывает `scripts/guards`, и точное
-    # сравнение объявляло бы расширенную зону сужением — ложный отказ на честной правке.
-    def покрыто(дерево: str) -> bool:
-        части = Path(дерево).parts
-        return any(части[:len(Path(з).parts)] == Path(з).parts for з in зона)
-
-    return [f"{дерево} судит проект, а гейт типов его не видит: `[tool.mypy] files` = {зона}"
-            for дерево in JUDGING_TREES if not покрыто(дерево)]
-
-
 def axis_undeclared(root: Path = ROOT) -> list[str]:
     """Ось написана, но в реестр не внесена — судить её никто не будет, и молча.
 
@@ -3023,187 +1222,6 @@ def axis_undeclared(root: Path = ROOT) -> list[str]:
     return notes
 
 
-def чисто() -> list[str]:
-    """«Смотрел — нарушений нет», сказанное ВСЛУХ: ранний выход оси, который значит чистоту.
-
-    Нужен потому, что `return []` значит и это, и «источника нет», и различить их по коду нельзя.
-    """
-    return []
-
-
-def _немые(root: Path = ROOT) -> dict[str, str]:
-    """{ось: место раннего пустого списка} — оси, чьё молчание сказано МОЛЧА.
-
-    Ранний `return []` значит «источника нет», но читателю отчёта показывает «чисто» — ровно тот
-    класс немого промаха, который мы ловим у чужого кода. Сказать вслух можно двумя способами:
-    `raise НетУлики(...)` — источника нет; `return чисто()` — смотрел, нарушений нет.
-
-    Судится КАЖДЫЙ выход, а не функция целиком: ось, сказавшая `НетУлики` в одной ветке, ничего не
-    обещает про молчание в другой, и разбор «в теле есть raise — верим всей» пропускал мутанта.
-    Последний `return` функции не в счёт: там пустой список законно значит то же «чисто», и слово
-    у ХВОСТА пришлось бы вписывать полусотне осей ни за чем.
-    """
-    файл = _at(root, ("scripts", "guards", "invariants.py"))
-    if not файл.exists():
-        raise НетУлики("invariants.py в этом дереве нет — разбирать нечего")
-    декл = _at(root, ("scripts", "guards", "evidence.yaml"))
-    if not декл.exists():
-        raise НетУлики("evidence.yaml в этом дереве нет: какие функции здесь оси — неизвестно")
-    try:
-        объявление = (yaml.safe_load(декл.read_text(encoding="utf-8")) or {}).get("оси") or {}
-    except yaml.YAMLError as сбой:
-        raise НетУлики(f"evidence.yaml не разбирается ({сбой.__class__.__name__})") from сбой
-    оси = {ось.get("читатель") for группа in объявление.values() for ось in группа or ()}
-    немые = {}
-    for узел in ast.parse(файл.read_text(encoding="utf-8")).body:
-        if not isinstance(узел, ast.FunctionDef) or узел.name not in оси:
-            continue
-        хвост = узел.body[-1]
-        ранние = [у for у in ast.walk(узел)
-                  if isinstance(у, ast.Return) and у is not хвост
-                  and isinstance(у.value, ast.List) and not у.value.elts]
-        if ранние:
-            немые[узел.name] = f"invariants.py:{ранние[0].lineno}"
-    return немые
-
-
-def _требования(root: Path = ROOT) -> dict:
-    """Реестр требований проекта. Пусто — отказ судить: правил без требований не бывает."""
-    декл = _at(root, EVIDENCE_DECL)
-    if not декл.exists():
-        raise НетУлики("росписи улик в этом дереве нет — требований не объявлено")
-    try:
-        свод = (yaml.safe_load(декл.read_text(encoding="utf-8")) or {}).get("требования") or {}
-    except yaml.YAMLError as сбой:
-        raise НетУлики(f"evidence.yaml не разбирается ({сбой.__class__.__name__})") from сбой
-    if not свод:
-        raise НетУлики("ключа `требования` в росписи нет — судить нечего")
-    return свод
-
-
-def requirement_without_judge(root: Path = ROOT) -> list[str]:
-    """Требование, по которому не ругается НИКТО: правило исполняется настроением.
-
-    Долг считаемый и закрывается двумя способами: назвать существующего судью либо завести его.
-    Вопрос «а кто из двух сторожей обязан был ругаться» здесь и решается — судья у требования ОДИН.
-    """
-    return [f"evidence.yaml: требование «{ид}» — {(тело or {}).get('про', '')[:80]} — судьи нет: "
-            f"правило живёт прозой и исполняется настроением"
-            for ид, тело in sorted(_требования(root).items())
-            if not (тело or {}).get("судья")]
-
-
-def judge_without_evidence_state(root: Path = ROOT) -> list[str]:
-    """Судья подписывает вердикт, не объявив СОСТОЯНИЯ своей улики.
-
-    Ноль находок значит и «смотрел — чисто», и «смотреть было не на что», а подпись хранит только
-    число: снять улику по состоянию судьи нечем, и дыра отличается от чистоты вкусом. Объявляется
-    состояние ключом `улика=` у общей двери вердикта — там оно и попадает в роспись прогона.
-    """
-    дом = _at(root, GUARDS)
-    if not дом.is_dir():
-        raise НетУлики("каталога сторожей в этом дереве нет — чьи вердикты разбирать, неизвестно")
-    notes = []
-    for файл in sorted(дом.glob("*.py")):
-        try:
-            дерево = ast.parse(файл.read_text(encoding="utf-8"))
-        except SyntaxError:
-            continue
-        for узел in ast.walk(дерево):
-            if not isinstance(узел, ast.Call) or getattr(узел.func, "attr", "") not in ("close", "stamp"):
-                continue
-            if getattr(getattr(узел.func, "value", None), "id", "") != "_verdict":
-                continue
-            if not any(к.arg == "улика" for к in узел.keywords):
-                notes.append(f"{файл.name}:{узел.lineno} вердикт подписывается без `улика=`: "
-                             f"ноль находок в этой записи неотличим от «источника не было»")
-    return notes
-
-
-def scenarios_without_destructive(root: Path = ROOT) -> list[str]:
-    """Зона объявленных сценариев, в которой разрушение не пробовал никто.
-
-    Род сценария разбирает дом объявлений (`tests/harness/scenario.py`), здесь — только счёт по
-    зонам: где все сценарии положительные и отрицательные, проверены исправная работа и
-    объявленный отказ, а снос состояния в такой зоне первым пробует владелец на своих данных.
-    """
-    дом = _at(root, ("tests", "scenarios"))
-    if not дом.is_dir():
-        raise НетУлики("каталога объявленных сценариев в этом дереве нет")
-    sys.path.insert(0, str(ROOT))
-    from tests.harness.scenario import ScenarioError, роды
-    try:
-        свод = роды(дом)
-    except ScenarioError as сбой:
-        return [f"tests/scenarios: объявление не разбирается — {сбой}"]
-    if not свод:
-        raise НетУлики("в каталоге сценариев нет ни одного файла объявлений")
-    return [f"tests/scenarios/{файл}: ни одного РАЗРУШИТЕЛЬНОГО сценария — проверены исправная "
-            f"работа и отказ, а снос состояния в этой зоне не пробовал никто"
-            for файл, сценарии in sorted(свод.items())
-            if сценарии and "разрушительный" not in сценарии.values()]
-
-
-def axis_silent_without_reason(root: Path = ROOT) -> list[str]:
-    """Ось уходит в молчание, не назвав причины: «чисто» и «смотреть не на что» — одно и то же.
-
-    Долг считаемый: у оси либо есть `raise НетУлики(...)`, либо её пустой список объясняет только
-    автор, а отчёт печатает чистоту. Потолок опускается по мере перевода осей, и цена перевода
-    видна росписью прогона: молчащая ось с объявленной причиной называет её в следствии.
-    """
-    return [f"{место} ось `{имя}` молчит ранним пустым списком: скажи `raise НетУлики(«чего нет»)` "
-            f"или `return чисто()` — иначе отчёт выдаёт отсутствие источника за чистоту"
-            for имя, место in sorted(_немые(root).items())]
-
-
-def hook_false_unpinned(root: Path = ROOT) -> list[str]:
-    """Ложное срабатывание, за которым не закреплена проверка, — урок без механизма.
-
-    Сужать правило по ощущению нельзя: сужение без записанного случая глушит сторожа. Поэтому
-    долгом считается не САМО ложное (их и должно быть видно), а ложное без проверки, которая
-    краснеет при повторе.
-    """
-    журнал = _at(root, ("scripts", "guards", "hook_precision.jsonl"))
-    if not журнал.exists():
-        return []
-    import _precision
-    return _precision.ложные_без_проверки(журнал)
-
-
-ЗАМЫСЛОВ_В_ОКНЕ = 10
-
-
-def mutation_without_catch(root: Path = ROOT) -> list[str]:
-    """Мутация объявлена в реестре, а улики поимки у неё нет: её не добивает ни один набор.
-
-    Урок «мутация выжила = тест не добирается до механизма» держался словами и был переплачен
-    ещё раз 2026-09-10: фикстура нового набора не воспроизводила условие, и мутация выжила
-    молча. Объявленная непойманной мутация — честная слепая зона, но она обязана СЧИТАТЬСЯ:
-    иначе её забывают ровно так же, как забывают урок без механизма.
-    """
-    return [f"tests/CATALOG.md: мутация {номер} объявлена, а улики поимки нет — "
-            f"её не добивает ни один набор: {тело.strip()[:70]}"
-            for номер, тело in sorted(мутации(root).items()) if ПОЙМАНА not in тело]
-
-
-def intent_after_code(root: Path = ROOT) -> list[str]:
-    """Замысел, объявленный на УЖЕ правленной зоне: предсказывать было нечего, код написан.
-
-    Долг считается по замыслам, а не по всем подписям: отписка задним числом неотличима от
-    предсказания ровно до тех пор, пока её не считают.
-
-    Судится ОКНО последних замыслов, а не вся история: журнал append-only, поэтому абсолютное
-    число вниз не идёт ни от какой дисциплины — сто безупречных замыслов подряд оставляют его
-    прежним, и лечится оно только сдвигом потолка, то есть перестаёт быть долгом. Доля от
-    последних `ЗАМЫСЛОВ_В_ОКНЕ` убывает работой: запоздалый замысел выходит из окна, когда его
-    вытеснили объявленные до кода.
-    """
-    return [f"{з.get('where', '?')}: замысел «{(з.get('what') or '')[:60]}» "
-            f"объявлен на уже правленной зоне — пересказ, а не предсказание"
-            for з in окно_журнала(root, lambda з: з.get("role") == "ЗАМЫСЕЛ", ЗАМЫСЛОВ_В_ОКНЕ)
-            if (з.get("detail") or {}).get("зона-чиста") is False]
-
-
 def _реестр_осей() -> dict:
     """Реестр осей из объявления. Пусто — это отказ, а не пустой набор: сторож без осей
     зелен по всему, и молчание было бы неотличимо от чистого дерева."""
@@ -3224,22 +1242,6 @@ def _читатель(ось: dict):
     return fn
 
 
-ПОДЪЁМ_ПОТОЛКА = "VPM_CEILING_UP"
-
-
-def дверь_заперта(дверь: str, было: int, стало: int, разрешено: bool) -> str:
-    """Причина отказа поднять потолок, либо пусто.
-
-    Дверь стоит на РОСТЕ долга: вниз и на месте она не мешает, иначе закрытие долга просило бы
-    разрешения наравне с его набором.
-    """
-    if not дверь or стало <= было or разрешено:
-        return ""
-    return (f"потолок вверх {было} → {стало} у оси за дверью «{дверь}»: подъём — решение владельца "
-            f"под важную осознанную причину (экстренный коммит, передача куска кода человеку). "
-            f"Разрешение: {_permit.команда(ПОДЪЁМ_ПОТОЛКА, 'зачем именно поднимаем потолок')}")
-
-
 def _поле(ось: dict, имя: str) -> str:
     """Недостающее поле оси названо вслух: голый KeyError не говорит, КАКАЯ строка объявления
     неполна, а строк в реестре полсотни."""
@@ -3251,7 +1253,11 @@ def _поле(ось: dict, имя: str) -> str:
 
 
 _ОСИ = _реестр_осей()
+
+
 HARD = tuple((_поле(ось, "заголовок"), _читатель(ось)) for ось in _ОСИ.get("жёсткие") or ())
+
+
 # Пятое поле необязательно: дверь объявляют единицам осей, и требовать её у всех значило бы
 # писать «двери нет» полсотни раз.
 RATCHETS = tuple((_поле(ось, "заголовок"), _читатель(ось),
@@ -3271,182 +1277,46 @@ def _named_tree(argv: list[str]) -> Path | None:
     return None
 
 
-
-def _named_value(argv: list[str], flag: str) -> str:
-    """Значение именованного ключа из argv: у сторожа нет argparse, а ключ нужен один."""
-    return argv[argv.index(flag) + 1] if flag in argv and len(argv) > argv.index(flag) + 1 else ""
-
-
-def _bless_stamp(сдвинутые: list[tuple[str, int, int, str]], причина: str,
-                 root: Path = ROOT) -> int:
-    import _stamp
-    return _stamp.сдвиг_потолка(сдвинутые, причина, root)
-
-
-def карта_приёмки(root: Path = ROOT) -> int:
-    """Печать карты: предмет × условие × состояние. Пять строк «нет» и есть вектор развития."""
-    предметы = _предметы(root)
-    if not предметы:
-        print("объявления приёмки нет — улики нет, а не «условий ноль»")
-        return 1
-    знак = {"судится": "✓", "совет": "·", "нет": "✗"}
-    долг = 0
-    for предмет, тело in предметы.items():
-        print(f"\n▸ {предмет} — {(тело or {}).get('про', '')}")
-        for имя, у in (тело or {}).get("условия", {}).items():
-            у = у or {}
-            состояние = у.get("состояние", "?")
-            долг += состояние == "нет"
-            print(f"   {знак.get(состояние, '?')} {имя:4} {у.get('про', '')}")
-            if состояние == "нет":
-                print(f"        ждёт: {' '.join(str(у.get('ждёт', '')).split())}")
-    судимых = sum(1 for т in предметы.values() for у in (т or {}).get("условия", {}).values()
-                  if (у or {}).get("состояние") == "судится")
-    всего = sum(len((т or {}).get("условия", {})) for т in предметы.values())
-    print(f"\nсудится {судимых} из {всего} · без механизма {долг} — это и есть вектор развития")
-    return 0
-
-
-def _шаг_оси(title: str, читатель: Callable[..., object], notes: list[str],
-             нет_улики: str, немые: dict[str, str] | None) -> dict:
-    """Один проход оси, расписанный НАБОРОМ условий: исход, причина, следствие.
-
-    Раньше прогон оставлял после себя только число нарушений, и молчание оси было неотличимо от
-    её отсутствия: «смотрел, чисто», «смотреть не на что» и «ось сломана» печатались одинаково.
-    Здесь молчание называет разошедшееся условие поимённо, а `немые` — приговор разбора: ось,
-    которая молчать умеет, но причины не объявляет, не вправе отвечать «источник есть».
-    """
-    import _stamp
-    if нет_улики:
-        источник, следствие = "нет", нет_улики
-    elif notes:
-        источник, следствие = "есть", f"названо нарушений: {len(notes)}"
-    elif немые is None or читатель.__name__ in немые:
-        источник = "не объявлено"
-        следствие = ("молчит, а причина молчания не объявлена: чистота и отсутствие источника "
-                     "с этой записи неразличимы")
-    else:
-        источник, следствие = "есть", "смотрел — нарушений нет"
-    условия = [_stamp.условие("источник улики доступен", "есть", источник),
-               _stamp.условие("нарушение в дереве", "есть", "есть" if notes else "нет")]
-    return _stamp.строка_шага(title, "ось", условия,
-                              исход="сработал" if notes else "молчал", следствие=следствие)
-
-
 def main() -> int:
-    try:                                       # след: без отметки механизм выглядит пылящимся
-        sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
-        import _trace
-        _trace.mark("invariants.py")
-    except Exception:  # след не важнее самой работы
-        pass
-    # Режим хука: молчим, когда чисто. Сторож, печатающий «всё хорошо» после каждой правки,
-    # превращается в шум, и его перестают читать.
-    if "--приёмка" in sys.argv:
-        return карта_приёмки(_named_tree(sys.argv) or ROOT)
-    quiet = "--hook" in sys.argv
+    """Жёсткие оси — нарушение есть отказ; храповики — сверх потолка отказ. `--bless` пишет потолки по факту,
+    `--root` судит названное дерево (без потолков: они принадлежат своему дереву)."""
     named = _named_tree(sys.argv)
     root = named or ROOT
-    if named is not None and "--bless" in sys.argv:
+    bless = "--bless" in sys.argv
+    if named is not None and bless:
         print("invariants: --bless по чужому дереву запрещён — потолок принадлежит СВОЕМУ дереву, "
               "и запись чужого числа сюда была бы тихой ложью", file=sys.stderr)
         return 2
-    failed, нарушений = False, 0
-    # Значения разнородны намеренно: у судимой оси это числа, у отказавшейся — причина словами.
-    поимённо: dict[str, dict[str, object]] = {}
-    ряды: list[dict] = []
-    try:                      # приговор разбора: какие оси молчать умеют, а причины не объявляют
-        немые: dict[str, str] | None = _немые(root)
-    except НетУлики:
-        немые = None
+    failed = False
     for title, check in HARD:
         try:
             notes = check(root)
-        except НетУлики as нет:
-            # Ось без источника улики не молчит: её отказ — часть отчёта, иначе замер опирается
-            # на строку, за которой ничего не проверялось.
-            поимённо[title] = {"не судится": str(нет)}
-            ряды.append(_шаг_оси(title, check, [], str(нет), немые))
-            if not quiet:
-                print(строка_оси(title, [], str(нет)))
+        except НетУлики as нет:  # отказ судить — своей строкой, а не «чисто» и не провал прогона
+            print(строка_оси(title, [], str(нет)))
             continue
-        ряды.append(_шаг_оси(title, check, notes, "", немые))
-        нарушений += len(notes)
-        if notes:
-            поимённо[title] = {"нашёл": len(notes)}
-        if not quiet:
-            print(строка_оси(title, notes))
-        elif notes:
-            print(f"── {title}: {len(notes)} шт.")
+        print(строка_оси(title, notes))
         for note in notes:
             print(f"   ✗ {note}")
         failed = failed or bool(notes)
-
-    bless = "--bless" in sys.argv
-    # Причина у сдвига потолка спрашивается ДО записи: число, изменившееся без объяснения,
-    # через месяц неотличимо от опечатки, и «долг вырос» читается как «так и было».
-    причина = _named_value(sys.argv, "--почему")
-    if bless and not причина:
-        print("invariants: --bless без --почему запрещён. Потолок — это долг, и его сдвиг решение: "
-              "назови причину одной строкой, она уедет в подпись журнала.", file=sys.stderr)
-        return 2
-    сдвинутые: list[tuple[str, int, int, str]] = []
-    # Запись потолков отложена до конца круга: партия пишется целиком либо не пишется вовсе,
-    # иначе запертая дверь у последней оси оставляла бы уже переписанными все предыдущие.
-    к_записи: list[tuple[str, Path, int, int, str]] = []
-    for title, check, baseline, advice, дверь in RATCHETS:
+    for title, check, baseline, advice, _ in RATCHETS:
         try:
             notes = check(root)
         except НетУлики as нет:
-            # Храповик без источника нашёл бы НОЛЬ и прочитался как закрытый долг — а это самая
-            # дорогая ложь из возможных здесь: потолок опустился бы по исчезнувшей улике.
-            поимённо[title] = {"не судится": str(нет)}
-            ряды.append(_шаг_оси(title, check, [], str(нет), немые))
             print(строка_оси(title, [], str(нет)))
             continue
-        ряды.append(_шаг_оси(title, check, notes, "", немые))
         if named is not None:
-            # Потолок долга принадлежит своему дереву. Судить им чужое значит мерить чужой меркой;
-            # число печатаем, вердикт по нему не выносим.
             print(f"── {title}: {len(notes)} (потолок не судим — дерево чужое)")
             continue
         limit = int(baseline.read_text(encoding="utf-8").strip()) if baseline.exists() else len(notes)
-        if not quiet or len(notes) > limit:
-            print(строка_оси(title, notes, потолок=limit))
-        поимённо[title] = {"нашёл": len(notes), "потолок": limit}
+        print(строка_оси(title, notes, потолок=limit))
         if bless:
-            к_записи.append((title, baseline, limit, len(notes), дверь))
+            baseline.write_text(f"{len(notes)}\n", encoding="utf-8")
         elif len(notes) > limit:
             for note in notes:
                 print(f"   ✗ {note}")
             print(f"   {advice}")
             failed = True
-            нарушений += len(notes) - limit
-    if bless:
-        запреты = [з for title, baseline, было, стало, дверь in к_записи
-                   if (з := дверь_заперта(дверь, было, стало,
-                                          _permit.снят(ПОДЪЁМ_ПОТОЛКА, root)))]
-        if запреты:
-            for з in запреты:
-                print(f"invariants: {з}", file=sys.stderr)
-            print(_permit.текст(ПОДЪЁМ_ПОТОЛКА), file=sys.stderr)
-            return 2
-        for title, baseline, было, стало, _ in к_записи:
-            baseline.write_text(f"{стало}\n", encoding="utf-8")
-            print(f"── {title}\n   потолок записан: {стало}")
-            if стало != было:
-                сдвинутые.append((title, было, стало, baseline.name))
-        return _bless_stamp(сдвинутые, причина or "", root)
-    if named is not None or quiet:
-        # Чужое дерево судится не нашей меркой, а режим хука бьёт на каждую правку и залил бы журнал.
-        return 1 if failed else 0
-    import _stamp
-    _stamp.роспись(ряды, механизм="оси invariants",
-                   cmd=".venv/bin/python scripts/guards/invariants.py --check",
-                   зона="сторожа", root=root)
-    return _verdict.close("инварианты", нарушений,
-                          ".venv/bin/python scripts/guards/invariants.py --check", root=root,
-                          детали={"оси": поимённо}, улика="есть")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

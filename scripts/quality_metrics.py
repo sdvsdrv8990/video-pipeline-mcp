@@ -16,7 +16,7 @@ import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ВЕТВИ = (ast.If, ast.For, ast.While, ast.ExceptHandler, ast.AsyncFor)
-ВНЕ = ("node_modules", "__pycache__", "/.venv/", "/.git/", "studio_emulation")
+ВНЕ = ("node_modules", "__pycache__", "/.venv/", "/.git/")
 
 
 def разметка() -> collections.Counter:

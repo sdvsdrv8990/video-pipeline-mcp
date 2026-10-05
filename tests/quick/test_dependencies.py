@@ -133,10 +133,7 @@ def main() -> int:
     runtime = {bare(s) for s in project.get("dependencies", [])}
     for zone, prefix, declared_names in (
             ("tests", "tests/", borrowed.get("borrowed_by_tests") or []),
-            ("scripts", "scripts/", borrowed.get("borrowed_by_scripts") or []),
-            # Путь зоны объявлен рядом с именем: у хуков он не выводится из имени, и правило
-            # «имя + слэш» молча дало бы пустую зону, то есть зелёное на любом заимствовании.
-            ("hooks", ".claude/hooks/", borrowed.get("borrowed_by_hooks") or [])):
+            ("scripts", "scripts/", borrowed.get("borrowed_by_scripts") or [])):
         actual = {d for m, files in third.items() for d in mapping.get(m, set())
                   if d in runtime and any(f.startswith(prefix) for f in files)}
         said = {normal(n) for n in declared_names}

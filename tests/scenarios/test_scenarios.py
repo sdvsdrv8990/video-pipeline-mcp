@@ -121,8 +121,7 @@ def main() -> int:
                 total += 1
                 fails.append(f"{path.name}: {exc}")
                 continue
-            # Отбор — список через запятую: точечный прогон задетой правкой части
-            # (`blast_radius --affected` печатает готовую строку).
+            # Отбор — список через запятую: точечный прогон части сценариев по ID.
             only = [part for part in os.environ.get("VPM_SCENARIO", "").split(",") if part]
             if only:
                 scenarios = [s for s in scenarios if any(part in s.id for part in only)]
