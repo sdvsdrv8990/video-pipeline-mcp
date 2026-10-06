@@ -8,14 +8,15 @@
 """
 
 import importlib.util
+import math
 import os
 import re
 import shutil
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-MEMINFO = Path("/proc/meminfo")
-CGROUP_MAX = Path("/sys/fs/cgroup/memory.max")
+PROC = Path("/proc")             # корни чтения ядер и памяти; проверки подают временные каталоги
+FS_ROOT = Path("/")
 SYSFS_DRM = Path("/sys/class/drm")
 # Что делать с моделью, которая больше устройства. Механизмы — библиотечные (diffusers/accelerate),
 # здесь только их человеческая цена: она нужна и вердикту в каталоге, и объяснению при подъёме.
@@ -27,25 +28,16 @@ OVERSIZE_MODES = {
 PCI_IDS = Path("/usr/share/hwdata/pci.ids")     # системная база имён устройств, читается всеми
 
 
-def _meminfo() -> dict:
-    if not MEMINFO.exists():
+def _meminfo(path: Path) -> dict:
+    if not path.exists():
         return {}
     out = {}
-    for line in MEMINFO.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         name, _, rest = line.partition(":")
         parts = rest.split()
         if parts and parts[0].isdigit():
             out[name.strip()] = int(parts[0]) * 1024        # килобайты → байты
     return out
-
-
-def _cgroup_limit() -> int:
-    """Лимит контейнера, если сервер живёт в нём: «памяти много» на хосте ещё ничего не значит."""
-    try:
-        raw = CGROUP_MAX.read_text(encoding="utf-8").strip()
-        return int(raw) if raw.isdigit() else 0
-    except OSError:
-        return 0
 
 
 def _int_file(path: Path) -> int:
@@ -196,16 +188,12 @@ def _gpus(rules: dict) -> tuple[list[dict], list[str]]:
     return found, gaps
 
 
-def probe(disk_for: str | Path = ".", gpu_rules: dict | None = None) -> dict:
-    """Снимок железа, доступный без root. Неизвестное названо неизвестным."""
-    mem = _meminfo()
-    limit = _cgroup_limit()
-    total = mem.get("MemTotal", 0)
-    # «Доступно» ≠ «свободно»: ядро отдаёт кэш под запрос, поэтому MemFree систематически занижает.
-    available = mem.get("MemAvailable", mem.get("MemFree", 0))
-    if limit and (not total or limit < total):
-        total = limit
-        available = min(available or limit, limit)
+def probe(disk_for: str | Path = ".", gpu_rules: dict | None = None, *,
+          proc: Path = PROC, fs_root: Path = FS_ROOT) -> dict:
+    """Снимок железа, доступный без root. Ядра и память — ЭТОГО процесса (привязка и пределы cgroup по цепочке),
+    всегда числом: не ответила ни одна ступень — консервативный минимум (ядер 1, памяти 0) с причиной в `unknown`
+    (HW-05). `proc` и `fs_root` — корни, откуда читаются ядра и память."""
+    memory = _memory(proc, fs_root)
     cards, unknown = _gpus(gpu_rules or {})
     # Каталога весов может ещё не быть (первая установка): меряется диск ближайшего существующего предка — туда он ляжет.
     disk_at = next((p for p in (Path(disk_for).absolute(), *Path(disk_for).absolute().parents) if p.exists()),
@@ -216,19 +204,26 @@ def probe(disk_for: str | Path = ".", gpu_rules: dict | None = None) -> dict:
         # Не прочитано — не ноль: «0 свободно» назвало бы неверную причину (нет места вместо нет данных).
         free_disk = None
         unknown.append(f"свободное место под веса ({disk_for}: {exc.strerror or exc})")
-    if not mem:
-        unknown.append("объём памяти (нет /proc/meminfo — не Linux?)")
+    if memory["available"] is None:
+        unknown.append(f"объём памяти — консервативный 0: {memory['source']}")
+    cpus, cpu_source = _cpus(proc, fs_root)
+    if cpus is None:
+        cpus, cpu_source = 1, f"минимум 1: {cpu_source}"
+        unknown.append(f"число ядер — {cpu_source}")
     return {
-        "ram_total_mb": round(total / 1e6),
-        "ram_available_mb": round(available / 1e6),
-        "container_limit_mb": round(limit / 1e6) if limit else 0,
-        "cpu_count": os.cpu_count() or 0,
+        "ram_total_mb": round((memory["total"] or 0) / 1e6),
+        "ram_available_mb": round((memory["available"] or 0) / 1e6),
+        "container_limit_mb": round(memory["limit"] / 1e6) if memory["limit"] else 0,
+        "ram_source": memory["source"],
+        "cpu_count": cpus,
+        "cpu_source": cpu_source,
         "disk_free_mb": None if free_disk is None else round(free_disk / 1e6),
         "gpu": cards,
         "unknown": unknown,
-        "note": ("Прочитано без прав root: /proc/meminfo, cgroup, число ядер, свободное место и "
-                 "видеокарта из /sys/class/drm. Серийники и DMI требуют root и для совместимости "
-                 "не нужны. У карты смотри `usable`: видеть её память и уметь ею считать — разное."),
+        "note": ("Прочитано без прав root: ядра и память процесса (привязка, /proc/meminfo, пределы cgroup по цепочке; "
+                 "на прочих ОС — psutil), свободное место и видеокарта из /sys/class/drm. Серийники и DMI требуют "
+                 "root и для совместимости не нужны. У карты смотри `usable`: видеть её память и уметь ею считать — "
+                 "разное."),
     }
 
 
@@ -244,7 +239,7 @@ def compute_device(gpu_rules: dict, want: str = "", hw: dict | None = None) -> d
     dtypes = rules.get("dtype") or {}
     drivers = rules.get("drivers") or {}
     hw = probe(".", rules) if hw is None else hw
-    ram = int(hw.get("ram_available_mb") or 0)
+    ram = hw["ram_available_mb"]
     asked = str(want or "").strip().lower()
     if asked and asked != "auto":
         on_cpu = asked == "cpu"
@@ -264,6 +259,182 @@ def compute_device(gpu_rules: dict, want: str = "", hw: dict | None = None) -> d
             "why": ("считаем на процессоре: " + (idle[0]["why"] if idle else "карты не нашлось"))}
 
 
+def _cpus(proc: Path = PROC, fs_root: Path = FS_ROOT) -> tuple[int | None, str]:
+    """Ядра, которые может занять ЭТОТ процесс (HW-01): первая ответившая ступень привязки или ядер системы, затем квота
+    cgroup по всей цепочке предков — берётся меньшее. Не ответили ни ступени, ни квота — (None, кого спросили): минимум
+    ставит снимок (`probe`, HW-05)."""
+    asked: list[str] = []
+    count: int | None = None
+    for name, step in _CPU_STEPS:
+        asked.append(name)
+        count = step(proc, fs_root)
+        if count:
+            break
+    quota, where = _cpu_quota(proc, fs_root)
+    if count is None:
+        silent = "не ответила ни одна ступень — " + ", ".join(asked)
+        return (quota, f"квота {where}; {silent}") if quota is not None else (None, silent)
+    if quota is not None and quota < count:
+        return quota, f"квота {where} (ступень {asked[-1]}: {count})"
+    return count, asked[-1]
+
+
+def _cpu_affinity(_proc: Path, _fs_root: Path) -> int | None:
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        return len(psutil.Process().cpu_affinity())
+    except (AttributeError, psutil.Error, OSError):  # на macOS привязки в API нет; песочница запрещает вызов
+        return None
+
+
+def _cpu_list(path: Path) -> int | None:
+    """Число ядер в списке ядра вида `0-3,8,10-11` (`/sys/devices/system/cpu/online`)."""
+    text = _cgroup_text(path)
+    if not text:
+        return None
+    total = 0
+    for part in text.split(","):
+        low, _, high = part.partition("-")
+        if not low.isdigit() or (high and not high.isdigit()):
+            return None
+        total += int(high or low) - int(low) + 1
+    return total
+
+
+def _count_lines(path: Path, pattern: str) -> int | None:
+    found = len(re.findall(pattern, _cgroup_text(path) or "", flags=re.MULTILINE))
+    return found or None
+
+
+# Ступени ядер по цене (HW-11): системный вызов, psutil, sysconf, затем файлы ядра Linux.
+_CPU_STEPS = (
+    ("os.process_cpu_count", lambda proc, fs: (getattr(os, "process_cpu_count", None) or (lambda: None))()),
+    ("psutil.Process().cpu_affinity", _cpu_affinity),
+    ("os.cpu_count", lambda proc, fs: os.cpu_count()),
+    ("/sys/devices/system/cpu/online", lambda proc, fs: _cpu_list(fs / "sys/devices/system/cpu/online")),
+    ("/proc/cpuinfo processor", lambda proc, fs: _count_lines(proc / "cpuinfo", r"^processor\s*:")),
+    ("/proc/stat cpuN", lambda proc, fs: _count_lines(proc / "stat", r"^cpu\d+\s")),
+)
+
+
+def _cpu_quota(proc: Path, fs_root: Path) -> tuple[int | None, str]:
+    """Квота CPU — самая тесная по цепочке групп (`ceil(MAX / PERIOD)`); у v1 — `cfs_quota_us / cfs_period_us`."""
+    kind, levels = _cgroup_levels(proc, fs_root, "cpu")
+    best: int | None = None
+    where = ""
+    for name, level in levels:
+        if kind == "v2":
+            raw = (_cgroup_text(level / "cpu.max") or "").split()
+            quota, period = (raw + ["", ""])[:2]
+        else:
+            quota = _cgroup_text(level / "cpu.cfs_quota_us") or ""
+            period = _cgroup_text(level / "cpu.cfs_period_us") or ""
+        if quota.isdigit() and period.isdigit() and int(period):
+            cores = max(1, math.ceil(int(quota) / int(period)))
+            if best is None or cores < best:
+                best, where = cores, f"cgroup {kind} {name}: {quota}/{period}"
+    return best, where
+
+
+def _memory(proc: Path = PROC, fs_root: Path = FS_ROOT) -> dict:
+    """ОЗУ, которое может взять ЭТОТ процесс (HW-02), в байтах — {total, available, limit, source}.
+
+    Linux: /proc/meminfo и пределы cgroup по всей цепочке предков — действует самый тесный; занятое группой — рабочий
+    набор `memory.current − inactive_file` (кэш страниц ядро вытеснит). Прочие ОС — psutil. Не ответило ничего —
+    None с причиной: консервативный 0 ставит снимок (`probe`, HW-05) — «не влезет», а не «влезет»."""
+    mem = _meminfo(proc / "meminfo")
+    total, available, how = mem.get("MemTotal"), mem.get("MemAvailable"), "/proc/meminfo"
+    fallback = ("MemFree", "Buffers", "Cached")    # доступное ядер до 3.14 без MemAvailable (формула Ollama, HW-02)
+    if total and available is None and all(k in mem for k in fallback):
+        available, how = sum(mem[k] for k in fallback), "/proc/meminfo: MemFree + Buffers + Cached (нет MemAvailable)"
+    if not total:
+        total, available, how = _memory_portable()
+    limit: int | None = None
+    kind, levels = _cgroup_levels(proc, fs_root, "memory")
+    names = ("memory.max", "memory.current", "inactive_file") if kind == "v2" else \
+        ("memory.limit_in_bytes", "memory.usage_in_bytes", "total_inactive_file")
+    for name, level in levels:
+        cap, used = _cgroup_text(level / names[0]) or "", _cgroup_text(level / names[1]) or ""
+        if not cap.isdigit() or (total and int(cap) >= total):
+            continue                                     # «max» или предел v1 выше памяти машины — предела нет
+        stat = (_cgroup_text(level / "memory.stat") or "").splitlines()
+        cache = next((v for k, _, v in (row.partition(" ") for row in stat) if k == names[2]), "")
+        limit = int(cap) if limit is None else min(limit, int(cap))
+        if not used.isdigit():
+            room, why = 0, f"{names[1]} не прочитан — доступно 0"
+        elif cache.isdigit():
+            room, why = max(0, int(cap) - (int(used) - int(cache))), f"{names[0]} − ({names[1]} − {names[2]})"
+        else:
+            room, why = max(0, int(cap) - int(used)), f"{names[0]} − {names[1]} ({names[2]} нет — кэш не вычтен)"
+        if available is None or room < available:
+            available, how = room, f"cgroup {kind} {name}: {why}"
+    if limit is not None and (not total or limit < total):
+        total = limit
+    return {"total": total or None, "available": available if total else None, "limit": limit, "source": how}
+
+
+def _memory_portable() -> tuple[int | None, int | None, str]:
+    """Нет /proc/meminfo — переносимая память psutil (HW-02: macOS `host_statistics64`, Windows `GlobalMemoryStatusEx`);
+    нет и её — всего из sysconf POSIX, доступное неизвестно."""
+    try:
+        import psutil
+    except ImportError as exc:
+        why = f"нет /proc/meminfo, psutil не импортируется ({exc})"
+        try:
+            pages, size = os.sysconf("SC_PHYS_PAGES"), os.sysconf("SC_PAGE_SIZE")
+        except (AttributeError, ValueError, OSError):  # sysconf — только POSIX, и имя есть не у всех систем
+            return None, None, why
+        return (pages * size, None, why + ", всего — sysconf") if pages > 0 and size > 0 else (None, None, why)
+    vm = psutil.virtual_memory()
+    return vm.total, vm.available, "psutil.virtual_memory"
+
+
+def _cgroup_levels(proc: Path, fs_root: Path, controller: str) -> tuple[str, list[tuple[str, Path]]]:
+    """Группы процесса для контроллера — от своей до корня монтирования: («v2» или «v1», [(путь группы, каталог)]).
+    Контроллер не найден ни в v2, ни в v1 — пусто."""
+    own = (_cgroup_text(proc / "self" / "cgroup") or "").splitlines()
+    mounts = (_cgroup_text(proc / "self" / "mountinfo") or "").splitlines()
+    for kind in ("v2", "v1"):
+        # Строка /proc/self/cgroup — «иерархия:контроллеры:путь»; у v2 контроллеров нет («0::/путь»).
+        lines = ((ctl, path) for _, _, rest in (row.partition(":") for row in own)
+                 for ctl, sep, path in [rest.partition(":")] if sep)
+        path = next((p for ctl, p in lines if (not ctl if kind == "v2" else controller in ctl.split(","))), None)
+        if path is None:
+            continue
+        # Ядро дописывает « (deleted)» к пути группы, которую уже удалили.
+        group = PurePosixPath(path.removesuffix(" (deleted)"))
+        for row in mounts:
+            head, _, tail = row.partition(" - ")
+            fs_type, _, options = (tail.split() + ["", "", ""])[:3]
+            try:                                        # поля mountinfo (proc(5)): id, родитель, устройство, корень, точка
+                _, _, _, root, point, *_ = [re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), f) for f in head.split()]
+            except ValueError:
+                continue
+            if fs_type != ("cgroup2" if kind == "v2" else "cgroup"):
+                continue
+            if kind == "v1" and controller not in options.split(","):
+                continue
+            top = fs_root.joinpath(*PurePosixPath(point).parts[1:])
+            if kind == "v2" and controller not in (_cgroup_text(top / "cgroup.controllers") or "").split():
+                break                                    # v2 смонтирован, но контроллер у v1 (гибрид)
+            if not group.is_relative_to(root):
+                break
+            rel = PurePosixPath("/", group.relative_to(root))
+            return kind, [(str(name), top.joinpath(*name.parts[1:])) for name in (rel, *rel.parents)]
+    return "", []
+
+
+def _cgroup_text(path: Path) -> str | None:
+    """Текст файла группы или ядра; нет файла (корень иерархии, выключенный контроллер, не Linux) — None."""
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
 def placement(gpu_rules: dict, fit_rules: dict, entry: dict, where: dict) -> dict:
     """Класть модель целиком или с выгрузкой: она может быть больше выбранного устройства.
 
@@ -275,14 +446,16 @@ def placement(gpu_rules: dict, fit_rules: dict, entry: dict, where: dict) -> dic
     need_mb = round(FitEstimator(fit_rules).bytes_for(
         entry.get("params_by_dtype") or {}, int(entry.get("params_total") or 0),
         as_dtype=where.get("dtype", "")) / 1e6)
-    free = int(where.get("available_mb") or 0)
+    free = where["available_mb"]
     base = {"need_mb": need_mb, "available_mb": free, "device": where.get("device", "")}
     if where.get("device") == "cpu" or not need_mb or not free or need_mb <= free:
         # Неизвестный размер тоже кладём целиком: гадать «наверное, не влезет» — не лучше, а
         # отказ библиотеки по памяти будет громким и с настоящей причиной.
         return {**base, "mode": "device",
-                "why": (f"нужно ~{need_mb} МБ из {free} МБ" if need_mb and free
-                        else "размер модели неизвестен — кладём целиком")}
+                "why": ("размер модели неизвестен — кладём целиком" if not need_mb
+                        else f"нужно ~{need_mb} МБ из {free} МБ" if free or where.get("device") == "cpu"
+                        # У карты 0 — и «ноль свободно», и «драйвер не назвал объём» (hardware._gpus).
+                        else "объём памяти карты драйвер не назвал — кладём целиком, суда по памяти нет")}
     return {**base, "mode": mode,
             "why": (f"нужно ~{need_mb} МБ, а на устройстве {free} МБ — "
                     + OVERSIZE_MODES.get(mode, f"режим '{mode}' не объявлен, размещать нечем"))}
@@ -328,7 +501,7 @@ class FitEstimator:
         if live:
             best = max(live, key=lambda c: c["vram_free_mb"])
             return {"target": "gpu", "device": best["name"], "available_mb": best["vram_free_mb"]}
-        return {"target": "cpu", "device": "ОЗУ", "available_mb": hw.get("ram_available_mb", 0)}
+        return {"target": "cpu", "device": "ОЗУ", "available_mb": hw["ram_available_mb"]}
 
     def idle_gpu(self, hw: dict) -> dict:
         """Карта, память которой известна, но расчёту сейчас недоступна, — знать про неё полезно."""
@@ -336,18 +509,15 @@ class FitEstimator:
         return max(idle, key=lambda c: c["vram_free_mb"]) if idle else {}
 
     def verdict(self, need_bytes: int, available_mb: int, device: str = "ОЗУ") -> dict:
-        """Влезает / впритык / не влезает — с числами, по которым видно, почему."""
+        """Влезает / впритык / не влезает — с числами, по которым видно, почему. Доступно 0 — «не влезает»."""
         need_mb = round(need_bytes / 1e6)
         base = {"need_mb": need_mb, "available_mb": available_mb, "device": device}
         if not need_mb:
             return {**base, "verdict": "unknown",
                     "why": "источник не сообщает число параметров — оценить нечем"}
-        if not available_mb:
-            return {**base, "verdict": "unknown", "why": f"объём памяти ({device}) неизвестен"}
-        ratio = need_mb / available_mb
-        if ratio > 1:
+        if need_mb > available_mb:
             verdict, why = "no", f"нужно ~{need_mb} МБ при доступных {available_mb} МБ ({device})"
-        elif ratio > self.tight_ratio:
+        elif need_mb > self.tight_ratio * available_mb:
             verdict, why = "tight", (f"нужно ~{need_mb} МБ из {available_mb} МБ ({device}) — "
                                      "впритык, соседние процессы могут не оставить места")
         else:

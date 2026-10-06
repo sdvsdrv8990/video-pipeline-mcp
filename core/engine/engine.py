@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import jsonschema
 
 from core.contracts import ContractError, ToolResult, ErrorDetail, Recovery
+from core.declaration_schemas import Resources
 
 log = logging.getLogger(__name__)
 
@@ -43,39 +44,26 @@ class Engine:
         tools: Реестр инструментов
     """
 
-    def __init__(self, reactions=None, state_manager=None, resources=None, trail=None):
+    def __init__(self, reactions=None, state_manager=None, resources: Resources | None = None, trail=None):
         """Инициализация движка.
 
         Каждая зависимость необязательна, и отсутствие каждой МЕНЯЕТ поведение, а не отключает
         удобство: без `reactions` отказ уходит клиенту без класса и рецепта, без `resources`
         тяжёлый вызов морозит цикл событий, без `trail` сервер не оставляет после себя условий,
-        по которым отказ воспроизводят. Что именно объявлено — в `config/`, не здесь.
+        по которым отказ воспроизводят. Что именно объявлено — в `config/`, не здесь; `resources` уже прошёл
+        схему у двери деклараций — класс инструмента объявлен, у снятого с цикла есть предел и срок повтора.
         """
         self.tools: dict[str, ToolDefinition] = {}
         self.reactions = reactions
         self._state_manager = state_manager
         self._log_broken = False   # об отказе журнала говорим ОДИН раз за процесс
         self.trail = trail
-        declaration = resources or {}
-        self._offload = self._offload_map(declaration)
-        self._klass = {name: str(klass) for name, klass in (declaration.get("tools") or {}).items()}
-        self._limits: dict[str, asyncio.Semaphore] = {}
-        self._retry_after: dict[str, int] = {}
-        for name, body in (declaration.get("classes") or {}).items():
-            places = int((body or {}).get("max_concurrent") or 0)
-            if places > 0:
-                self._limits[str(name)] = asyncio.Semaphore(places)
-                self._retry_after[str(name)] = int((body or {}).get("retry_after_sec") or 0)
-
-    @staticmethod
-    def _offload_map(resources: dict) -> set[str]:
-        """Инструменты, чей класс объявлен снимаемым с цикла. Класс без `offload` = inline."""
-        classes = {name: bool((body or {}).get("offload"))
-                   for name, body in (resources.get("classes") or {}).items()}
-        default = classes.get(str(resources.get("default") or "inline"), False)
-        chosen = {name for name, klass in (resources.get("tools") or {}).items()
-                  if classes.get(str(klass), default)}
-        return chosen
+        classes = resources.classes if resources else {}
+        self._klass = dict(resources.tools) if resources else {}
+        self._offload = {name for name, klass in self._klass.items() if classes[klass].offload}
+        self._limits = {name: asyncio.Semaphore(body.max_concurrent)
+                        for name, body in classes.items() if body.max_concurrent}
+        self._retry_after = {name: body.retry_after_sec for name, body in classes.items() if body.retry_after_sec}
 
     async def _invoke(self, tool: ToolDefinition, params: dict) -> ToolResult:
         """Тяжёлый вызов уходит в поток со своим циклом, лёгкий исполняется здесь.
@@ -89,7 +77,7 @@ class Engine:
         limit = self._limits.get(self._klass.get(tool.name, ""))
         if limit is not None and limit.locked():
             klass = self._klass[tool.name]
-            wait = self._retry_after.get(klass, 0)
+            wait = self._retry_after[klass]
             return self._error("RESOURCE_BUSY",
                                f"Класс ресурса '{klass}' занят: свободных мест нет, "
                                f"повтор не раньше чем через {wait} с.",

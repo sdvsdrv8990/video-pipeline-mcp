@@ -24,7 +24,8 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent))
 
 from core.contracts import ContractError
-from core.declaration import Declaration
+from core.declaration import Declaration, Declared
+from core.declaration_schemas import Resources
 from core.engine import Engine
 from core.observability import Logs, wire
 from core.firewall import Firewall, FirewallRequest, FirewallDecision
@@ -125,6 +126,13 @@ def _load_yaml(path: Path) -> dict:
                        f"Заведи config/{path.name} — сервер поднимается по нему.").data
 
 
+def _load_resources(path: Path) -> Resources:
+    """Классы ресурсов и класс каждого инструмента — по схеме у двери. Битая декларация — отказ при старте, а не
+    работа без пределов: тяжёлое без мест и снятия с цикла морозит сервер целиком."""
+    return Declared(path, ContractError, "«resources»",
+                    f"Заведи config/{path.name} — по нему тяжёлые вызовы снимаются с цикла.", schema=Resources).model
+
+
 def create_server() -> tuple[Engine, Transport, Firewall]:
     """Создание и настройка сервера."""
     # Конфиг файрвола обязан ЗАГРУЖАТЬСЯ: объявленный, но не прочитанный файл
@@ -143,13 +151,9 @@ def create_server() -> tuple[Engine, Transport, Firewall]:
     print(f"📓 Журналы: {logs.root}")
     state_manager = StateManager(WORKSPACE_PATH, journal=logs.session)
 
-    # Объявление ресурсов: какие вызовы уходят с цикла событий. Не загрузили — тяжёлое снова
-    # морозит сервер целиком, поэтому отсутствие файла не молчит, а видно в консоли.
-    resources = _load_yaml(CONFIG_PATH / "resources.yaml")
-    if not resources:
-        print("⚠ config/resources.yaml не прочитан — тяжёлые вызовы идут в цикле событий")
-    engine = Engine(reactions=reactions, state_manager=state_manager, resources=resources,
-                    trail=logs.trail)
+    # Объявление ресурсов: какие вызовы уходят с цикла событий и сколько их идёт разом. Битое — отказ при старте.
+    engine = Engine(reactions=reactions, state_manager=state_manager,
+                    resources=_load_resources(CONFIG_PATH / "resources.yaml"), trail=logs.trail)
 
     # Создаём workspace если нет
     WORKSPACE_PATH.mkdir(parents=True, exist_ok=True)

@@ -589,6 +589,9 @@ class _КаталогМеста:
     def silence_sec(self):
         return 0.0                              # здесь судится место, а не тишина загрузчика
 
+    def speed(self):
+        return {"floor": 0, "window": 0}        # мера скорости выключена — судится место
+
 
 _тесный = _КаталогМеста(10 ** 6)
 try:
@@ -1043,6 +1046,11 @@ class _SlowCatalog:
     def silence_sec(self):
         return 0.0                              # здесь судится прозвонка, а не тишина загрузчика
 
+    def speed(self):
+        return dict(self.measure)               # мера скорости: по умолчанию выключена, тик-проверки NI-01 задают свою
+
+    measure = {"floor": 0, "window": 0}
+
     def on_disk(self, место):
         return self.landed                      # сколько «легло» — задаёт проверка
 
@@ -1175,6 +1183,38 @@ _regrown = _inst_tick._read("t16c")
 ok(_dropped["bytes"] == 0 and _regrown["heartbeat"] == 3020.0 and _regrown["bytes"] == 1024,
    f"байты упали и растут заново ниже прежнего пика — это работа, «последняя работа» движется "
    f"({_dropped['bytes']} → {_regrown['bytes']}, {_regrown['heartbeat']})")
+# NI-01: рост — работа, только если не медленнее меры загрузчика (байт/с) с прошлого тика; капля работой не считается.
+_drip_cat = _SlowCatalog(Path(tempfile.mkdtemp(prefix="instd_")))
+_drip_cat.measure = {"floor": 100, "window": 30}
+_inst_drip = ModelInstaller(_drip_cat, heartbeat_sec=1, stale_after_sec=100)
+_inst_drip._write({"install_id": "t16d", "model_id": "модель-d", "kind": "tts", "phase": "running",
+                   "started": 4000.0, "heartbeat": 4000.0, "bytes": 0})
+for _i, _now in enumerate(range(4010, 4200, 10), 1):    # 10 байт за 10 с — 1 байт/с при мере 100
+    _drip_cat.landed = _i * 10
+    _inst_drip._tick("t16d", _место16, float(_now))
+_drip = _inst_drip._read("t16d")
+ok(_drip["heartbeat"] == 4000.0 and _drip["bytes"] == 190 and _inst_drip._stalled(_drip, now=4101.0),
+   f"капля ниже меры: байты растут, а «последняя работа» стоит со старта — за пределом простой "
+   f"({_drip['heartbeat']}, {_drip['bytes']})")
+_drip_cat.landed = 190 + 1000                           # 1000 байт за 10 с — ровно мера
+_inst_drip._tick("t16d", _место16, 4200.0)
+_paced = _inst_drip._read("t16d")
+ok(_paced["heartbeat"] == 4200.0 and _paced["bytes"] == 1190,
+   f"законный: рост не медленнее меры с прошлого тика двигает «последнюю работу» ({_paced['heartbeat']})")
+
+
+def _built(stale_after: float) -> str:
+    try:
+        ModelInstaller(_drip_cat, heartbeat_sec=1, stale_after_sec=stale_after)
+        return ""
+    except _CE13 as e:
+        return f"{e.code}: {e.message}"
+
+
+_drip_cat.measure = {"floor": 100, "window": 150}
+ok(_built(150).startswith("SCHEMA_INVALID") and "speed_window_sec 150" in _built(150) and _built(151) == "",
+   f"простой не короче окна меры скорости: 150 с — отказ кодом с ключом окна, 151 с — строится ({_built(150)[:80]})")
+_drip_cat.measure = {"floor": 100, "window": 30}
 _stale_state = _inst_tick.status("t16")[0]
 ok(_stale_state["status"] == "failed" and _stale_state["error"]["code"] == "INSTALL_STALLED"
    and "Повтори" in _stale_state["error"]["recovery"]["reason"],
@@ -1320,6 +1360,149 @@ _hw = probe(ROOT, _gpu_rules)
 ok(_hw["ram_total_mb"] > 0 and _hw["ram_available_mb"] > 0 and _hw["cpu_count"] > 0,
    f"память и ядра прочитаны без root ({_hw['ram_available_mb']} из {_hw['ram_total_mb']} МБ, "
    f"{_hw['cpu_count']} ядер)")
+_own_cpus = getattr(os, "process_cpu_count", None)
+_sys_cpus = os.cpu_count
+_affinity = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
+_empty = Path(tempfile.mkdtemp())                       # корни без /proc и /sys: молчат ступени-файлы и cgroup
+_psutil_was = sys.modules.get("psutil")
+try:
+    os.process_cpu_count = lambda: 3                    # процесс привязан к 3 ядрам — подставной факт
+    _bound = probe(ROOT, _gpu_rules)
+    os.process_cpu_count = lambda: None                 # привязку не определить — по документации CPython None
+    _stepped = probe(ROOT, _gpu_rules)
+    _portable = probe(ROOT, _gpu_rules, proc=_empty, fs_root=_empty)   # нет /proc/meminfo — память через psutil
+    sys.modules["psutil"] = None                        # psutil нет — следующая ступень, ядра системы
+    _no_psutil = probe(ROOT, _gpu_rules)
+    os.cpu_count = lambda: None                         # и ядра системы не определить, файлов ядра нет
+    _blind = probe(ROOT, _gpu_rules, proc=_empty, fs_root=_empty)
+    os.cpu_count = _sys_cpus
+    del os.process_cpu_count                            # Python < 3.13: функции нет
+    _system = probe(ROOT, _gpu_rules)
+finally:
+    os.cpu_count = _sys_cpus
+    if _own_cpus:
+        os.process_cpu_count = _own_cpus
+    if _psutil_was is not None:
+        sys.modules["psutil"] = _psutil_was
+    else:
+        sys.modules.pop("psutil", None)
+ok(_bound["cpu_count"] == 3 and _bound["cpu_source"] == "os.process_cpu_count"
+   and _system["cpu_count"] == os.cpu_count() and _system["cpu_source"] == "os.cpu_count",
+   f"ядра — доступные процессу, источник назван; без process_cpu_count и psutil — ядра системы "
+   f"({_bound['cpu_count']} {_bound['cpu_source']} / {_system['cpu_count']} {_system['cpu_source']})")
+ok(_stepped["cpu_count"] == _affinity,
+   f"process_cpu_count вернул None — число со ступени ниже, привязка через psutil, а не 0 ({_stepped['cpu_count']})")
+ok(_stepped["cpu_source"] == "psutil.Process().cpu_affinity",
+   f"источник — ступень, которая ответила, а не та, что промолчала ({_stepped['cpu_source']})")
+ok(_no_psutil["cpu_count"] == os.cpu_count() and _no_psutil["cpu_source"] == "os.cpu_count",
+   f"psutil нет — ступень ниже, ядра системы ({_no_psutil['cpu_count']} {_no_psutil['cpu_source']})")
+ok(_blind["cpu_count"] == 1 and _blind["cpu_source"].startswith("минимум 1"),
+   f"не ответила ни одна ступень — консервативный минимум 1 (HW-05), а не 0 и не отказ "
+   f"({_blind['cpu_count']} {_blind['cpu_source']})")
+_blind_cores = [g for g in _blind["unknown"] if g.startswith("число ядер")]
+ok(len(_blind_cores) == 1 and all(s in _blind_cores[0] for s in ("os.process_cpu_count", "psutil", "os.cpu_count",
+                                                                   "/sys/devices/system/cpu/online", "/proc/stat cpuN")),
+   f"минимум назван в unknown вместе со всеми спрошенными ступенями ({_blind_cores or '—'})")
+ok(_blind["ram_available_mb"] == 0 and any(g.startswith("объём памяти") for g in _blind["unknown"]),
+   f"память не назвала ни одна ступень — консервативный 0 с причиной: «не влезет», а не «влезет» "
+   f"({_blind['ram_available_mb']} МБ, {_blind['ram_source']})")
+ok(_portable["ram_source"] == "psutil.virtual_memory" and _portable["ram_total_mb"] > 0,
+   f"нет /proc/meminfo (не Linux) — память через psutil, а не «неизвестно» ({_portable['ram_source']})")
+_cores_named = [g for s in (_hw, _bound, _stepped, _no_psutil, _system) for g in s["unknown"] if g.startswith("число ядер")]
+ok(not _cores_named,
+   f"число ядер известно — в unknown о ядрах ни строки, иначе ответ спорит сам с собой ({_cores_named or '—'})")
+
+
+def _machine(cgroup: str, mounts: list[str], files: dict[str, str],
+             meminfo: str = "MemTotal: 31250000 kB\nMemAvailable: 19531250 kB\n") -> dict:
+    """Снимок на подставной машине: <корень>/proc/self/{cgroup,mountinfo}, <корень>/proc/meminfo и файлы групп."""
+    root = Path(tempfile.mkdtemp())
+    (root / "proc" / "self").mkdir(parents=True)
+    (root / "proc" / "self" / "cgroup").write_text(cgroup, encoding="utf-8")
+    (root / "proc" / "self" / "mountinfo").write_text("\n".join(mounts) + "\n", encoding="utf-8")
+    (root / "proc" / "meminfo").write_text(meminfo, encoding="utf-8")
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    return probe(ROOT, _gpu_rules, proc=root / "proc", fs_root=root)
+
+
+_V2 = ["30 25 0:26 / /sys/fs/cgroup rw,nosuid - cgroup2 cgroup2 rw"]
+_CG = "sys/fs/cgroup"
+_nested = {f"{_CG}/cgroup.controllers": "cpu memory", f"{_CG}/a/b/memory.max": "max", f"{_CG}/a/b/cpu.max": "max 100000",
+           f"{_CG}/a/memory.max": "2000000000", f"{_CG}/a/memory.current": "1500000000",
+           f"{_CG}/a/memory.stat": "anon 1\ninactive_file 500000000\n", f"{_CG}/a/cpu.max": "150000 100000"}
+_live_cores = (getattr(os, "process_cpu_count", None) or os.cpu_count)() or 1
+_m1 = _machine("0::/a/b\n", _V2, _nested)
+ok(_m1["ram_total_mb"] == 2000 and _m1["container_limit_mb"] == 2000 and _m1["ram_available_mb"] == 1000
+   and "/a:" in _m1["ram_source"] and "inactive_file" in _m1["ram_source"],
+   f"предел — у предка, своя группа «max»: доступно = предел − (memory.current − inactive_file) "
+   f"({_m1['ram_available_mb']} из {_m1['ram_total_mb']} МБ, {_m1['ram_source']})")
+ok(_m1["cpu_count"] == min(_live_cores, 2) and ("квота" in _m1["cpu_source"]) == (_live_cores > 2),
+   f"квота у предка «150000 100000» — ceil, 2 ядра, меньшее из привязки и квоты ({_m1['cpu_count']} {_m1['cpu_source']})")
+_m2 = _machine("0::/a/b\n", _V2, {**_nested, f"{_CG}/a/memory.stat": "anon 1\n"})
+ok(_m2["ram_available_mb"] == 500 and "кэш не вычтен" in _m2["ram_source"],
+   f"нет inactive_file — занятое как есть, и это названо ({_m2['ram_available_mb']} МБ, {_m2['ram_source']})")
+_m3 = _machine("0::/\n", _V2, {f"{_CG}/cgroup.controllers": "memory", f"{_CG}/memory.max": "1000000000",
+                               f"{_CG}/memory.current": "200000000", f"{_CG}/memory.stat": "inactive_file 100000000\n"})
+ok(_m3["ram_total_mb"] == 1000 and _m3["ram_available_mb"] == 900 and "cgroup v2 /:" in _m3["ram_source"],
+   f"контейнер с cgroupns («0::/») — предел у корня монтирования ({_m3['ram_available_mb']} из {_m3['ram_total_mb']} МБ)")
+_m4 = _machine("0::/a/b (deleted)\n", _V2, {f"{_CG}/cgroup.controllers": "memory", f"{_CG}/a/b/memory.max": "1000000000",
+                                            f"{_CG}/a/b/memory.current": "300000000",
+                                            f"{_CG}/a/b/memory.stat": "inactive_file 100000000\n"})
+ok(_m4["ram_available_mb"] == 800 and "/a/b:" in _m4["ram_source"],
+   f"« (deleted)» снят с пути группы — предел своей группы найден ({_m4['ram_available_mb']} МБ, {_m4['ram_source']})")
+_m5 = _machine("4:memory:/x\n3:cpu,cpuacct:/x\n",
+               ["40 25 0:30 / /sys/fs/cgroup/memory rw - cgroup cgroup rw,memory",
+                "41 25 0:31 / /sys/fs/cgroup/cpu,cpuacct rw - cgroup cgroup rw,cpu,cpuacct"],
+               {f"{_CG}/memory/x/memory.limit_in_bytes": "1000000000", f"{_CG}/memory/x/memory.usage_in_bytes": "500000000",
+                f"{_CG}/memory/x/memory.stat": "total_inactive_file 100000000\n",
+                f"{_CG}/cpu,cpuacct/x/cpu.cfs_quota_us": "100000", f"{_CG}/cpu,cpuacct/x/cpu.cfs_period_us": "100000"})
+ok(_m5["ram_total_mb"] == 1000 and _m5["ram_available_mb"] == 600 and "v1" in _m5["ram_source"],
+   f"cgroup v1 — memory.limit_in_bytes − (usage_in_bytes − total_inactive_file) ({_m5['ram_source']})")
+ok(_m5["cpu_count"] == 1 and "v1" in _m5["cpu_source"],
+   f"cgroup v1 — квота cfs_quota_us / cfs_period_us ({_m5['cpu_count']} {_m5['cpu_source']})")
+_m6 = _machine("0::/\n", _V2, {f"{_CG}/cgroup.controllers": "memory"},
+               meminfo="MemTotal: 31250000 kB\nMemFree: 1000000 kB\nBuffers: 500000 kB\nCached: 2500000 kB\n")
+ok(_m6["ram_available_mb"] == 4096 and "MemFree + Buffers + Cached" in _m6["ram_source"],
+   f"нет MemAvailable — запасная формула названа ({_m6['ram_available_mb']} МБ, {_m6['ram_source']})")
+_m7 = _machine("4:memory:/x\n", ["40 25 0:30 / /sys/fs/cgroup/memory rw - cgroup cgroup rw,memory"],
+               {f"{_CG}/memory/x/memory.limit_in_bytes": "9223372036854771712",
+                f"{_CG}/memory/x/memory.usage_in_bytes": "500000000",
+                f"{_CG}/memory/x/memory.stat": "total_inactive_file 100000000\n"})
+ok(_m7["container_limit_mb"] == 0 and _m7["ram_total_mb"] == 32000 and _m7["ram_available_mb"] == 20000,
+   f"v1 «без предела» (число выше памяти машины) — не предел ({_m7['container_limit_mb']} МБ предела, "
+   f"{_m7['ram_available_mb']} из {_m7['ram_total_mb']} МБ)")
+_m8 = _machine("0::/a/b\n", _V2, {f"{_CG}/cgroup.controllers": "cpu", f"{_CG}/a/b/cpu.max": "200000 100000",
+                                  f"{_CG}/a/cpu.max": "100000 100000"})
+ok(_m8["cpu_count"] == 1 and "/a:" in _m8["cpu_source"],
+   f"квоты на двух уровнях — берётся самая тесная, у предка ({_m8['cpu_count']} {_m8['cpu_source']})")
+_ladder = Path(tempfile.mkdtemp())
+(_ladder / "proc").mkdir()
+try:
+    os.process_cpu_count = lambda: None
+    os.cpu_count = lambda: None
+    sys.modules["psutil"] = None
+    (_ladder / "sys/devices/system/cpu").mkdir(parents=True)
+    (_ladder / "sys/devices/system/cpu/online").write_text("0-3,8\n", encoding="utf-8")
+    (_ladder / "proc/cpuinfo").write_text("processor\t: 0\nprocessor\t: 1\nprocessor\t: 2\nprocessor\t: 3\n",
+                                          encoding="utf-8")
+    (_ladder / "proc/stat").write_text("cpu  1 2 3\ncpu0 1\ncpu1 1\ncpu2 1\nintr 5\n", encoding="utf-8")
+    _rungs = []
+    for _drop in ("sys/devices/system/cpu/online", "proc/cpuinfo", "proc/stat"):
+        _h = probe(ROOT, _gpu_rules, proc=_ladder / "proc", fs_root=_ladder)
+        _rungs.append((_h["cpu_count"], _h["cpu_source"]))
+        (_ladder / _drop).unlink()
+finally:
+    os.cpu_count = _sys_cpus
+    if _own_cpus:
+        os.process_cpu_count = _own_cpus
+    if _psutil_was is not None:
+        sys.modules["psutil"] = _psutil_was
+    else:
+        sys.modules.pop("psutil", None)
+ok(_rungs == [(5, "/sys/devices/system/cpu/online"), (4, "/proc/cpuinfo processor"), (3, "/proc/stat cpuN")],
+   f"файлы ядра — ступени по очереди: online «0-3,8», затем cpuinfo, затем stat ({_rungs})")
 ok(_hw["ram_available_mb"] <= _hw["ram_total_mb"],
    "доступно не больше общего — читается MemAvailable, а не выдуманное число")
 ok(_hw["disk_free_mb"] is not None and _hw["disk_free_mb"] > 0, "свободное место под веса известно")
@@ -1347,6 +1530,9 @@ ok(_est.verdict(1_000_000_000, 8000)["verdict"] == "fits"
 ok(_est.verdict(0, 8000)["verdict"] == "unknown"
    and "нечем" in _est.verdict(0, 8000)["why"],
    "нет числа параметров → «не знаю», а не «влезет»")
+_zero_ram = _est.verdict(1_000_000_000, 0)
+ok(_zero_ram["verdict"] == "no" and "при доступных 0 МБ" in _zero_ram["why"],
+   f"доступно 0 МБ — «не влезает» с числами, а не «впритык» и не «неизвестно» ({_zero_ram['verdict']}: {_zero_ram['why']})")
 ok("ОЦЕНКА" in _est.verdict(1_000_000_000, 8000)["why"],
    "вердикт назван оценкой, а не замером — иначе ему поверят как факту")
 
@@ -1767,6 +1953,84 @@ try:
        f"({_em13 and (_em13.code, _em13.facts)}, запросы туда: {_inner13}{'' if _em13 else f', ответ {_ansm13}'})")
     _httpx.request = _stand_request
 
+    # Синхронный бинарный ответ (RemoveBg): тип по формату строки, поток в остаток с пределом, обрыв POST — не повтор.
+    import contextlib as _ctx13
+    import core.providers.img.http_image as _him13
+    from core.contracts import ContractError as _CE13
+    from core.providers.download import Fetcher as _F13
+
+    _posts13: list = []
+
+    def _stream13(chunks, kind="image/png", cut=None):
+        @_ctx13.contextmanager
+        def stream(method, url, **kw):
+            _posts13.append((method, (kw.get("headers") or {}).get("Accept-Encoding")))
+
+            def body():
+                sent = 0
+                for chunk in chunks:
+                    if cut is not None and sent >= cut:
+                        raise _httpx.ReadError("соединение оборвано")
+                    sent += len(chunk)
+                    yield chunk
+            yield _httpx.Response(200, headers={"content-type": kind}, content=body(),
+                                  request=_httpx.Request(method, url))
+        return stream
+
+    _adrb = _reg.load("RemoveBg", "bg_removals")
+
+    def _remove_bg(target, fmt="png"):
+        _posts13.clear()
+        try:
+            _adrb.generate(MediaRequest(input="pic/frame.png", params={"response_format": fmt}, target=target,
+                                        models_dir=_reg.models_dir, source=_ws / "pic" / "frame.png",
+                                        api_key="k", provider="RemoveBg"))
+        except _CE13 as e:
+            return e
+        except Exception as e:  # мутант или поломка — улика проверки, а не обрыв набора
+            return _CE13("НЕ_ОТКАЗ", facts={"exception": f"{type(e).__name__}: {e}"})
+        return None
+
+    def _left13(target) -> bool:
+        return target.exists() or _him13.Files(target.parent).remnant(target.name, "result").exists()
+
+    _real_stream13, _real_results13 = _httpx.stream, _him13.results
+    _png13 = b"\x89PNG\r\n\x1a\n" + b"p" * 3000
+    _parts13 = [_png13[:1024], _png13[1024:2048], _png13[2048:]]
+    try:
+        _httpx.stream = _stream13(_parts13)
+        _e13b = _remove_bg(_ws / "rb13.png")
+        ok(_e13b is None and (_ws / "rb13.png").read_bytes() == _png13 and not _him13.Files(_ws).remnant(
+           "rb13.png", "result").exists() and _posts13 == [("POST", "identity")],
+           f"бинарный ответ встал под имя целиком, остатка нет, POST один и без распаковки ({_e13b}, {_posts13})")
+        _stale13 = _him13.Files(_ws).remnant("rb13s.png", "result")
+        _stale13.write_bytes(b"STALE-TAIL" * 50)          # хвост прерванного прошлого приёма
+        _httpx.stream = _stream13(_parts13)
+        _e13b = _remove_bg(_ws / "rb13s.png")
+        ok(_e13b is None and (_ws / "rb13s.png").read_bytes() == _png13 and not _stale13.exists(),
+           f"чужой хвост в остатке перед приёмом — под именем ровно новое тело, байт в байт ({_e13b})")
+        _httpx.stream = _stream13(_parts13, kind="text/html")
+        _e13b = _remove_bg(_ws / "rb13h.png")
+        ok(_e13b is not None and _e13b.code == "PROVIDER_FAILED" and _e13b.facts.get("status") == "Content-Type text/html"
+           and not _left13(_ws / "rb13h.png"), f"HTML вместо картинки — отказ до записи, файла нет ({_e13b and _e13b.facts})")
+        _him13.results = lambda cfg, **seams: _F13({**_real_results13(cfg, **seams).policy, "max_bytes": 1024}, **seams)
+        _httpx.stream = _stream13(_parts13)
+        _e13b = _remove_bg(_ws / "rb13l.png")
+        ok(_e13b is not None and _e13b.code == "DOWNLOAD_TOO_LARGE" and not _left13(_ws / "rb13l.png"),
+           f"тело сверх предела загрузчика результатов — отказ, ни файла, ни остатка ({_e13b and _e13b.code})")
+        _him13.results = _real_results13
+        _httpx.stream = _stream13(_parts13, cut=1024)
+        _e13b = _remove_bg(_ws / "rb13c.png")
+        ok(_e13b is not None and _e13b.code == "DOWNLOAD_INCOMPLETE" and _e13b.facts.get("got") == 1024
+           and len(_posts13) == 1 and not _left13(_ws / "rb13c.png"),
+           f"обрыв посреди тела POST — «не дочитан» без повтора, ни файла, ни остатка "
+           f"({_e13b and (_e13b.code, _e13b.facts)}, POST: {len(_posts13)})")
+        _e13b = _remove_bg(_ws / "rb13t.png", fmt="tiff")
+        ok(_e13b is not None and _e13b.code == "SCHEMA_INVALID" and not _posts13,
+           f"формат строки без объявленного типа — отказ объявления до запроса ({_e13b and _e13b.code}, POST: {_posts13})")
+    finally:
+        _httpx.stream, _him13.results = _real_stream13, _real_results13
+
     # Повтор: перегрузку повторяем, отказ по ключу — нет (иначе жжём платный лимит).
     _tries = {"n": 0}
 
@@ -1931,6 +2195,16 @@ ok(_held == {"big2"},
    f"не влезающее вытеснено по бюджету, а не сложено сверх памяти ({sorted(_held)})")
 ok(_p15.stats()["budget_mb"]["cpu"] == 500,
    f"бюджет считается от свободной памяти и объявленной доли ({_p15.stats()['budget_mb']})")
+
+# Свободно 0 — бюджет 0, а не «без предела»: прежняя модель выгружается до подъёма новой.
+_pool_mod._ENTRIES.clear(); _lifts["n"] = 0
+_p_zero = _Pool({"enabled": True, "budget_ratio": 0.5, "idle_ttl_sec": 0, "max_entries": 0},
+                {"ram_available_mb": 0, "gpu": []})
+_p_zero.get("z1", _lift("z1"), need_bytes=100_000_000, device="cpu")
+_p_zero.get("z2", _lift("z2"), need_bytes=100_000_000, device="cpu")
+_held0 = {r["key"] for r in _p_zero.stats()["models"]}
+ok(_held0 == {"z2"},
+   f"свободной памяти 0 — бюджет 0 судится: прежняя модель выгружена, а не держится без предела ({sorted(_held0)})")
 
 # Простой: залежавшееся убирается при СЛЕДУЮЩЕМ обращении, а не демоном в фоне.
 _pool_mod._ENTRIES.clear(); _lifts["n"] = 0
@@ -2432,6 +2706,7 @@ def _model_fetch(work: Path, records: list[str]) -> None:
             "fetch": {"schemes": ["https"], "hosts": ["huggingface.co", "us.aws.cdn.hf.co"], "block_private": True,
                       "max_bytes": 0, "timeout_sec": 30, "redirects": 5, "attempts": 1, "backoff_sec": 1,
                       "backoff_max_sec": 60, "retry_after_max_sec": 120, "jitter": 0,
+                      "speed_floor_bytes_per_sec": 0, "speed_window_sec": 30,
                       "retry_on": [429, 500, 502, 503, 504],
                       "codes": {"failed": "MODEL_SOURCE_FAILED", "corrupt": "MODEL_CORRUPT"}},
             "revisions": {"org/bg": "rev-bg", "org/sd": "rev-sd", "voices/piper": "rev-voices",
@@ -2487,6 +2762,39 @@ def _model_fetch(work: Path, records: list[str]) -> None:
        f"из одних весов в двух разрядностях тянется одна — fp16 ({sorted(pulled)})")
     ok((models / "img/sd/unet/diffusion.fp16.safetensors").is_file() and sd["path"] == "img/sd",
        "снимок лёг в каталог вида с именем модели")
+
+    print("== 19a1. Строка списка — тот же состав и та же ревизия, что у установки (MG-3) ==")
+    held19 = dict(info)
+
+    def declared(name: str, size: int):
+        return sibling(name, size, sha="0" * 64)    # длина объявлена источником; ни список, ни состав не качают
+
+    # Первым в ответе источника — файл, который установка не поставит: «первый попавшийся» в строке был бы виден.
+    info["org/sd"] = repo(declared("unet/diffusion.safetensors", 800_000),
+                          declared("unet/diffusion.fp16.safetensors", 400_000), declared("model_index.json", 1_000),
+                          declared("text_encoder/model.fp16.safetensors", 200_000))
+    info["org/bg"] = repo(declared("onnx/model_fp16.onnx", 150_000), declared("onnx/model.onnx", 300_000),
+                          declared("preprocessor_config.json", 100_000))
+    for repo_id, kind, want, mb in (("org/sd", "image", [], 0.6), ("org/bg", "bg_removal", [".onnx"], 0.4)):
+        mark = len(calls)
+        row, plan = cat._detail(repo_id, want, False), cat.manifest(repo_id, kind)
+        ok(row.get("mb") == plan["mb"] == mb,
+           f"{repo_id}: размер строки списка — сумма частей, которые поставит установка ({row} / {plan['mb']} / {mb})")
+        ok(row.get("file") in {p["source"] for p in plan["parts"]}
+           and Path(str(row.get("file"))).name == plan.get("file", Path(str(row.get("file"))).name),
+           f"{repo_id}: файл строки — из частей, которые поставит установка, и главный тот же, что в составе "
+           f"({row.get('file')} / {plan.get('file', '—')})")
+        asked = [c for c in calls[mark:] if c[0] == "model_info"]
+        ok(asked == [("model_info", repo_id, plan["revision"])] * 2,
+           f"{repo_id}: список и состав читают одну закреплённую ревизию — журнал двойника ({asked})")
+    info["org/free"] = repo(declared("onnx/model.onnx", 300_000))
+    mark = len(calls)
+    row = cat._detail("org/free", [".onnx"], False)
+    ok("detail_error" not in row and row.get("mb") == 0.3
+       and [c for c in calls[mark:] if c[0] == "model_info"] == [("model_info", "org/free", None)],
+       f"ревизия не закреплена — список читает текущее состояние одним запросом, без вычисления ревизии ({row})")
+    info.clear()
+    info.update(held19)
 
     print("== 19b. Голос piper: индекс → файлы голоса → каталог tts ==")
     remote[("voices/piper", "voices.json")] = _json.dumps({"ru_RU-test-low": {
@@ -3176,7 +3484,7 @@ def _model_fetch(work: Path, records: list[str]) -> None:
         return wrapped
 
     was_cfg = _srv.CONFIG_PATH
-    declared = _Eng(reactions=_REACTIONS, state_manager=_sm, resources=_srv._load_yaml(cfg.parent / "resources.yaml"))
+    declared = _Eng(reactions=_REACTIONS, state_manager=_sm, resources=_srv._load_resources(cfg.parent / "resources.yaml"))
     try:
         _srv.CONFIG_PATH = cfg.parent
         _srv.register_basic_tools(declared, _IDG(), _sm)

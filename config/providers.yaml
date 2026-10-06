@@ -154,6 +154,9 @@ online:
       file_field: image_file
       response: binary              # файл приходит телом ответа
       send: {size: img_size, format: response_format}
+      # Тип файла ответа по формату запроса (столбец response_format). Форматы png/jpg/zip — официальный клиент
+      # remove-bg/ruby request_options.rb; zip ↔ application/zip — его api_client.rb. Иной тип — отказ до записи.
+      content_types: {png: [image/png], jpg: [image/jpeg], zip: [application/zip]}
       kinds: [bg_removals]
     Bria:
       url: https://engine.prod.bria-api.com/v1/background/remove
@@ -459,6 +462,10 @@ local:
       backoff_max_sec: 60
       retry_after_max_sec: 120  # срок, названный сервером (Retry-After), — не дольше этого
       jitter: 0.1               # разброс паузы, чтобы повторы не шли волной
+      # Мера работы тела (NI-01), та же для приёма и для простоя установки: меньше предела байт/с за окно — обрыв
+      # попытки, и наблюдатель не считает такой рост работой. 0 — мера выключена, работа — любой рост.
+      speed_floor_bytes_per_sec: 0
+      speed_window_sec: 30      # окно меры, как curl --speed-time по умолчанию
       retry_on: [429, 500, 502, 503, 504]   # перегрузка и временная недоступность; иное повтором не лечится
       codes: {failed: MODEL_SOURCE_FAILED, corrupt: MODEL_CORRUPT}
     # В ONNX-репозитории рядом лежит ОДИН И ТОТ ЖЕ граф в нескольких разрядностях

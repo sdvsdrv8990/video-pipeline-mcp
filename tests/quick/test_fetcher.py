@@ -47,7 +47,8 @@ NAMES = {"huggingface.co": ["18.1.1.1"], CDN: ["13.2.2.2"], "evil.example": ["66
 # Политика весов из шага 0 (хосты — точные, факт HEAD); коды потребителя — данные его декларации.
 WEIGHTS = {"schemes": ["https"], "hosts": ["huggingface.co", CDN], "block_private": True, "max_bytes": 0,
            "timeout_sec": 30, "redirects": 5, "attempts": 1, "backoff_sec": 1, "backoff_max_sec": 60,
-           "retry_after_max_sec": 120, "jitter": 0, "retry_on": [429, 500, 502, 503, 504],
+           "retry_after_max_sec": 120, "jitter": 0, "speed_floor_bytes_per_sec": 0, "speed_window_sec": 30,
+           "retry_on": [429, 500, 502, 503, 504],
            "codes": {"failed": "MODEL_SOURCE_FAILED", "corrupt": "MODEL_CORRUPT"}}
 RESULTS = {**WEIGHTS, "hosts": [], "max_bytes": 6000,
            "codes": {"failed": "PROVIDER_FAILED", "corrupt": "MODEL_CORRUPT"}}
@@ -68,6 +69,9 @@ class World:
         self.honor_range, self.shift = True, 0
         self.statuses: list[tuple[int, dict]] = []   # ответы CDN до нормального (перегрузка)
         self.location = ""                        # куда ведёт resolve; пусто — на CDN с текущей подписью
+        self.coding: tuple[str, bytes] | None = None  # CDN шлёт сжатое тело (кодировка, байты) вопреки запросу
+        self.pace: list[float] = []               # секунд источника перед каждым куском; кончились — повтор последнего
+        self.now = 0.0                            # часы мира: их читает шов `clock` загрузчика
 
     def resolve(self, host, port, *args, **kwargs):
         self.resolved.append(host)
@@ -80,7 +84,8 @@ class World:
         self.log.append({"ip": request.url.host, "host": host, "sni": request.extensions.get("sni_hostname"),
                          "path": request.url.path, "query": request.url.query.decode(),
                          "range": request.headers.get("range"), "if_range": request.headers.get("if-range"),
-                         "auth": request.headers.get("authorization")})
+                         "auth": request.headers.get("authorization"),
+                         "accept_encoding": request.headers.get("accept-encoding")})
         if host == "huggingface.co" and "/resolve/" in request.url.path:
             return httpx.Response(302, headers={"location": self.location or
                                                 f"https://{CDN}/xet-bridge-us/72ce?Signature={self.signature}"})
@@ -89,6 +94,10 @@ class World:
         if self.statuses:
             status, headers = self.statuses.pop(0)
             return httpx.Response(status, headers=headers)
+        if self.coding:
+            coding, wire = self.coding
+            return httpx.Response(200, headers={"content-encoding": coding, "content-length": str(len(wire))},
+                                  content=iter([wire]))    # потоком, как из сети: байты httpx распаковал бы сразу
         body, start = self.body[:self.short] if self.short else self.body, 0
         asked = request.headers.get("range", "")
         if asked and self.honor_range and request.headers.get("if-range") in {self.etag, self.modified} - {""}:
@@ -99,7 +108,9 @@ class World:
         rest = body[start:]
         headers["content-length"] = str(len(rest))
         cut, self.cut = self.cut, None
-        return httpx.Response(206 if start else 200, headers=headers, content=self._stream(rest, cut))
+        stream = self._stream(rest, cut)
+        return httpx.Response(206 if start else 200, headers=headers,
+                              content=self._paced(stream) if self.pace else stream)
 
     @staticmethod
     def _stream(rest: bytes, cut: int | None):
@@ -107,6 +118,11 @@ class World:
             if cut is not None and i >= cut:
                 raise httpx.ReadError("соединение оборвано")
             yield rest[i:i + 1024]
+
+    def _paced(self, stream):
+        for n, chunk in enumerate(stream):
+            self.now += self.pace[min(n, len(self.pace) - 1)]
+            yield chunk
 
 
 def fetcher(world: World, policy: dict = WEIGHTS, proxies: dict | None = None, **over) -> tuple[Fetcher, list]:
@@ -418,6 +434,109 @@ try:
         detail = REACTIONS.get_error(code, "", facts=facts)
         check(f"{code}: код в реестре, факты в тексте ({want})",
               detail.code == code and want in detail.message and detail.recovery, detail.message)
+
+    print("== 12. Файл — без распаковки (NI-04): identity в запросе, сжатое вопреки ему — отказ до записи ==")
+    import gzip
+
+    world = World()
+    fresh()
+    _, e = pull(world, size=len(BODY))
+    check("каждый запрос к источнику ушёл с Accept-Encoding: identity, целое тело встало как есть",
+          e is None and on_disk() == BODY and all(r["accept_encoding"] == "identity" for r in world.log),
+          str([r["accept_encoding"] for r in world.log]))
+    packed = gzip.compress(BODY)
+    for label, wire, size in (
+            ("целое сжатое", packed, len(BODY)),
+            ("сжатое обрезано вдвое, длины в составе нет", packed[:len(packed) // 2], None),
+            ("битое сжатое", packed[:10] + bytes(b ^ 0xFF for b in packed[10:40]) + packed[40:], len(BODY))):
+        world = World()
+        world.coding = ("gzip", wire)
+        fresh()
+        _, e = pull(world, size=size)
+        check(f"{label} вопреки identity — отказ кодом до записи: под именем и в остатке пусто",
+              e is not None and e.code == "MODEL_SOURCE_FAILED" and e.facts.get("status") == "Content-Encoding gzip"
+              and on_disk() is None and remnant_size() is None, f"{e and e.code} {e and e.facts}")
+
+    print("== 15. Мера работы тела (NI-01): капля ниже предела за окно — отказ с тратой попытки, на ходу — отметки ==")
+
+    def paced(world: World, **over) -> tuple[Fetcher, list[str]]:
+        """Загрузчик с пределом 1024 байт/с; часы — мира, их двигает транспорт перед каждым куском."""
+        events: list[str] = []
+        return Fetcher({**WEIGHTS, "speed_floor_bytes_per_sec": 1024, **over}, transport=httpx.MockTransport(world.handle),
+                       resolve=world.resolve, sleep=lambda _s: events.append("sleep"), proxies=dict,
+                       mark=lambda: events.append("mark"), clock=lambda: world.now), events
+
+    fresh()
+    w = World()
+    w.pace = [5.0]                                  # 1024 байт за 5 с — 204.8 байт/с
+    f, events = paced(w, speed_window_sec=10, attempts=2)
+    _, e = attempt(lambda: f.fetch(RESOLVE, files, PART, "inst1", size=len(BODY)))
+    check("капля ниже предела за окно — DOWNLOAD_TOO_SLOW с принятым за окно, окном и пределом",
+          e is not None and e.code == "DOWNLOAD_TOO_SLOW"
+          and e.facts == {"host": CDN, "got": 2048, "window_sec": 10, "floor": 1024}, e and (e.code, e.facts))
+    check("медленный источник тратит попытку: обе дошли до тела, между ними пауза, остаток растёт для докачки",
+          len([x for x in w.log if x["host"] == CDN]) == 2 and events.count("sleep") == 1
+          and remnant_size() == 4096 and on_disk() is None, f"{w.log} {events.count('sleep')} {remnant_size()}")
+    check("капля отметок работы не даёт: отметки — только переходы и пауза повтора",
+          events.count("mark") == len(w.log) + events.count("sleep"),
+          f"{events.count('mark')} ≠ {len(w.log)} + {events.count('sleep')}")
+    detail = REACTIONS.get_error("DOWNLOAD_TOO_SLOW", "", facts=e.facts if e else {})
+    check("DOWNLOAD_TOO_SLOW: код в реестре, хост и числа в тексте, есть рецепт",
+          detail.code == "DOWNLOAD_TOO_SLOW" and all(s in detail.message for s in (CDN, "2048", "10", "1024"))
+          and detail.recovery, detail.message)
+
+    fresh()
+    w = World()
+    w.pace = [0.5]                                  # 2048 байт/с, окно 2 с закрывается дважды
+    f, events = paced(w, speed_window_sec=2)
+    _, e = attempt(lambda: f.fetch(RESOLVE, files, PART, "inst1", size=len(BODY), digest=SHA))
+    check("законный: не медленнее предела — окна закрываются выше него, файл лёг целиком",
+          e is None and on_disk() == BODY, e and (e.code, e.facts))
+    check("на ходу отметка на каждом куске, как при пределе 0 (M4): переходы + куски + блок сверки",
+          events.count("mark") == len(w.log) + len(BODY) // 1024 + 1, f"{events.count('mark')} ({len(w.log)} переходов)")
+
+    fresh()
+    w = World()
+    w.pace = [1.0]                                  # ровно предел: 1024 байт за 1 с, окно 10 с — L·T байт
+    f, events = paced(w, speed_window_sec=10)
+    _, e = attempt(lambda: f.fetch(RESOLVE, files, PART, "inst1", size=len(BODY), digest=SHA))
+    check("ровно на пределе — L·T байт за окно T: приём идёт, файл лёг целиком, отметка на каждом куске",
+          e is None and on_disk() == BODY and events.count("mark") == len(w.log) + len(BODY) // 1024 + 1,
+          f"{e and (e.code, e.facts)} {events.count('mark')}")
+
+    fresh()
+    w = World()
+    w.pace = [0.125] * 6 + [5.0]                    # быстрое начало, потом капля
+    f, events = paced(w, speed_window_sec=5)
+    _, e = attempt(lambda: f.fetch(RESOLVE, files, PART, "inst1", size=len(BODY)))
+    check("капля после быстрого начала — отказ в первом медленном окне: окно меряет своё, а не среднее с начала тела",
+          e is not None and e.code == "DOWNLOAD_TOO_SLOW" and e.facts.get("got") == 1024 and remnant_size() == 8192,
+          f"{e and (e.code, e.facts)} {remnant_size()}")
+
+    fresh()
+    w = World()
+    w.pace = [5.0]
+    f, events = paced(w, speed_floor_bytes_per_sec=0, speed_window_sec=10)
+    _, e = attempt(lambda: f.fetch(RESOLVE, files, PART, "inst1", size=len(BODY), digest=SHA))
+    check("предел 0 — та же капля принимается целиком, отметка на каждом куске (M4 как был)",
+          e is None and on_disk() == BODY and events.count("mark") == len(w.log) + len(BODY) // 1024 + 1,
+          f"{e and (e.code, e.facts)} {events.count('mark')}")
+
+    clock = [0.0]
+
+    def drip():
+        for i in range(0, len(BODY), 1024):
+            clock[0] += 5.0
+            yield BODY[i:i + 1024]
+
+    reply = httpx.Response(200, headers={"content-type": "image/png"}, content=drip(),
+                           request=httpx.Request("POST", "https://cdn.provider.example/r"))
+    f = Fetcher({**RESULTS, "speed_floor_bytes_per_sec": 1024, "speed_window_sec": 10}, clock=lambda: clock[0])
+    fresh()
+    e = attempt(lambda: f.receive(reply, files, PART, "inst1", accept=["image/png"]))[1]
+    check("результат каплей — отказ без повтора и без остатка: под именем и в остатке пусто",
+          e is not None and e.code == "DOWNLOAD_TOO_SLOW" and on_disk() is None and remnant_size() is None,
+          f"{e and (e.code, e.facts)} {remnant_size()}")
 finally:
     shutil.rmtree(work, ignore_errors=True)
 

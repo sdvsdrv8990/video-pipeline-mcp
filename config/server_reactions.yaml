@@ -245,6 +245,12 @@ DOWNLOAD_TOO_LARGE:
   recovery:
     reason: "Предел считается по ходу потока, а не после записи. Если такой размер штатный — подними предел в config/media_tasks.yaml: download.fetch.max_bytes для файла результата, download.answer.max_bytes для ответа статуса задачи."
 
+DOWNLOAD_TOO_SLOW:
+  class: server_recoverable
+  message_template: "Источник «{host}» отдаёт медленнее объявленного: {got} байт за {window_sec} с при пределе {floor} байт/с."
+  recovery:
+    reason: "Медленная передача — не работа: поток держался бы вечно. Попытка потрачена: веса модели докачиваются повтором с принятого, файл результата поставщика остатка не оставляет — повторный вызов качает его с начала. Если такая скорость штатна — порог в speed_floor_bytes_per_sec политики загрузки (config/providers.yaml local.install.fetch, config/media_tasks.yaml download.fetch)."
+
 SECRET_ACCESS_DENIED:
   class: integrity
   message_template: "Каталог секретов закрыт: ключи провайдеров не читаются инструментами."
@@ -465,6 +471,12 @@ SCHEMA_INVALID:
   message_template: "Декларация таблицы некорректна: {details}"
   recovery:
     reason: "Схема книги (config/templates/tables/*.schema.yaml) не соответствует формату spec/TABLE_SCHEMA_FORMAT.md — правит человек, автоматически не чинится."
+
+DECLARATION_INVALID:
+  class: human_required
+  message_template: "Декларация {file} не прошла проверку схемы: {details}."
+  recovery:
+    reason: "Поправь config/{file}: каждое названное поле — по схеме декларации (ключ, тип, обязательность, связь с другими ключами). Значения в ответ не идут — смотри их в самом файле."
 
 # ═══ Проверка целостности ═══
 

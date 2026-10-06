@@ -32,12 +32,14 @@ class ModelInstaller:
         self.catalog = catalog
         self.heartbeat = float(heartbeat_sec)
         self.stale_after = float(stale_after_sec)
-        silence = float(catalog.silence_sec())
-        if self.stale_after <= silence:
-            details = (f"local.install.progress.stale_after_sec {self.stale_after:g} с не длиннее наибольшей тишины "
-                       f"загрузчика {silence:g} с — max(2 × local.install.fetch.timeout_sec: соединение и ожидание ответа "
-                       "httpx меряет порознь; backoff_max_sec × (1 + jitter): пауза перед повтором). Законная пауза "
-                       "стала бы простоем — подними stale_after_sec выше этой тишины.")
+        silence, speed = float(catalog.silence_sec()), catalog.speed()
+        self.floor, window = float(speed["floor"]), float(speed["window"])
+        if self.stale_after <= max(silence, window):
+            details = (f"local.install.progress.stale_after_sec {self.stale_after:g} с не длиннее законной тишины: "
+                       f"тишины загрузчика {silence:g} с — max(2 × local.install.fetch.timeout_sec: соединение и ожидание "
+                       "ответа httpx меряет порознь; backoff_max_sec × (1 + jitter): пауза перед повтором) — и окна меры "
+                       f"скорости local.install.fetch.speed_window_sec {window:g} с. Законная пауза стала бы простоем — "
+                       "подними stale_after_sec выше обоих.")
             raise ContractError("SCHEMA_INVALID", details, facts={"details": details})
         self._marks: dict[str, float] = {}     # install_id → время последнего признака работы загрузчика или сверки
 
@@ -148,11 +150,13 @@ class ModelInstaller:
         if state["phase"] != "running":
             return False
         landed, mark = self.catalog.on_disk(место), self._marks.get(install_id, 0.0)
-        if landed > int(state.get("bytes", 0)):
+        grown = landed - int(state.get("bytes", 0))
+        # Рост — работа, если не медленнее меры загрузчика с прошлого тика или старта (NI-01); мера 0 — любой рост.
+        if grown > 0 and grown >= self.floor * (now - float(state.get("tick", state.get("started", now)))):
             state["heartbeat"] = now
         elif mark > float(state.get("heartbeat", 0)):
             state["heartbeat"] = mark
-        state["bytes"] = landed
+        state["bytes"], state["tick"] = landed, now
         self._write(state)
         return True
 

@@ -450,10 +450,12 @@ async def main():
 
     # Предел одновременности: перебор обязан вернуть КОД, а не ждать за пределом клиента.
     from core.contracts import ToolResult as _ToolResult
+    from core.declaration_schemas import Resources as _Resources
     from core.engine.engine import Engine as _Engine
-    _busy_res = {"default": "inline",
-                 "classes": {"пробный": {"offload": True, "max_concurrent": 1, "retry_after_sec": 7}},
-                 "tools": {"занятой": "пробный"}}
+    _busy_res = _Resources.model_validate({
+        "default": "пробный",
+        "classes": {"пробный": {"offload": True, "max_concurrent": 1, "retry_after_sec": 7}},
+        "tools": {"занятой": "пробный"}})
 
     async def _slow():
         await asyncio.sleep(0.2)
@@ -474,8 +476,10 @@ async def main():
     _after = await _eng.call("занятой", {})
     check("место освобождается после вызова", _after.status == "success",
           _after.error.code if _after.error else "")
-    _no_limit = _Engine(resources={"default": "inline", "classes": {"свободный": {"offload": True}},
-                                   "tools": {"занятой": "свободный"}})
+    # Снятый с цикла класс без предела не загружается вовсе (схема у двери, tests/quick/test_declarations.py);
+    # здесь — законный класс без снятия с цикла: предела нет, и отказа «занято» тоже.
+    _no_limit = _Engine(resources=_Resources.model_validate({
+        "default": "свободный", "classes": {"свободный": {"offload": False}}, "tools": {"занятой": "свободный"}}))
     _no_limit.register("занятой", "проба", {"type": "object", "properties": {}}, _slow)
     _t = asyncio.create_task(_no_limit.call("занятой", {}))
     await asyncio.sleep(0.05)

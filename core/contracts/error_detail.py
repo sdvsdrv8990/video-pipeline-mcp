@@ -38,6 +38,7 @@ _КОДЫ = {
     "PROVIDER_FAILED", "CONTENT_REJECTED", "LOCAL_INFERENCE_FAILED",
     "PROVIDER_NOT_CONFIGURED", "PROVIDER_EXHAUSTED",
     "PROVIDER_TIMEOUT", "DOWNLOAD_INCOMPLETE", "DOWNLOAD_FORBIDDEN", "DOWNLOAD_RANGE_INVALID", "DOWNLOAD_TOO_LARGE",
+    "DOWNLOAD_TOO_SLOW",
     "PROVIDER_ADAPTER_MISSING", "LOCAL_MODEL_MISSING", "USAGE_UNIT_UNKNOWN",
     "MODEL_INCOMPLETE", "MODEL_CORRUPT", "MODEL_UNVERIFIED",
     "MODEL_SOURCE_FORBIDDEN", "MODEL_SOURCE_FAILED", "MODEL_TOO_LARGE", "MODEL_NOT_IN_CATALOG", "MODEL_GATED", "MODEL_FORMAT_MISSING",
@@ -67,6 +68,8 @@ _КОДЫ = {
     "DUPLICATE_ID",
     # Таблицы: материализация книг по декларации
     "SCHEMA_INVALID",
+    # Декларация config/*.yaml не прошла схему двери (поле и правило — в errors)
+    "DECLARATION_INVALID",
     # Советы в успешном ответе: битая декларация не должна приезжать INTERNAL_ERROR
     "ADVICE_INVALID",
     # Иерархия ID: цепочка по каталогу назначения

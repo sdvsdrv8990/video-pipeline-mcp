@@ -9,6 +9,7 @@
 """
 
 import base64
+import contextlib
 import functools
 import json
 import random
@@ -152,14 +153,13 @@ class HttpImageAPI:
                 "PROVIDER_KEY_MISSING", f"У провайдера '{request.provider}' нет ключа доступа.",
                 reason="Ключ вносит владелец: python scripts/set_provider_key.py.")
         self._api_key = request.api_key
-        response = self._request(decl, "POST", self._url(decl, request.params), request,
-                                 body=self._body(decl, request))
         kind = str(decl.get("response") or "binary")
+        response = self._request(decl, "POST", self._url(decl, request.params), request,
+                                 body=self._body(decl, request),
+                                 sink=self._receiver(request) if kind == "binary" else None)
         meta = {"engine": "http", "provider": request.provider,
                 "compute": {"device": "remote", "why": f"вызов {decl.get('url')}"}}
         if kind == "binary":
-            request.target.parent.mkdir(parents=True, exist_ok=True)
-            request.target.write_bytes(response.content)
             return MediaOutcome(files=[request.target], meta={**meta, "sync": True})
         answer = self._json(response)
         if kind == "files":
@@ -259,7 +259,7 @@ class HttpImageAPI:
                        "назначенным — результат не принимается.")
         return request.target
 
-    def _request(self, decl: dict, method: str, url: str, request: MediaRequest, body: dict | None = None):
+    def _request(self, decl: dict, method: str, url: str, request: MediaRequest, body: dict | None = None, sink=None):
         """Вызов с повторами. Сколько раз повторять — столбцы строки канала, а не число в коде.
 
         Повторяем только то, что повторять осмысленно: перегрузку и временную недоступность
@@ -267,6 +267,7 @@ class HttpImageAPI:
         ключу или по содержимому повтором не лечится, и повторять его значит жечь платный лимит.
         Неидемпотентный запрос после ошибки, при которой провайдер мог его получить, не повторяется:
         работа могла выполниться и списаться (`online.retry` в декларации).
+        `sink` — тело принятого ответа потоком без распаковки (NI-04/06): что он вернул, то и ответ; его отказ — как есть.
         """
         import httpx
 
@@ -286,24 +287,32 @@ class HttpImageAPI:
         headers = self._headers(decl, request.api_key)
         last: Exception | None = None
         for attempt in range(attempts):
+            opened = contextlib.ExitStack()
             try:
-                response = httpx.request(method, url, headers=headers, timeout=timeout,
-                                         follow_redirects=False, **(body or {}))
+                response = (opened.enter_context(httpx.stream(
+                                method, url, headers={**headers, "Accept-Encoding": "identity"}, timeout=timeout,
+                                follow_redirects=False, **(body or {})))
+                            if sink else
+                            httpx.request(method, url, headers=headers, timeout=timeout,
+                                          follow_redirects=False, **(body or {})))
             except Exception as e:  # сеть/таймаут
                 last = self._unreachable(decl, request.provider, e)
                 # ошибка соединения — запрос не ушёл; любая другая — мог дойти и выполниться
                 if method.upper() not in idempotent and not isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout)):
                     raise last from e
             else:
-                if response.status_code < 400:
-                    return response
-                last = self._refusal(response)
-                if response.status_code not in retry_on:
-                    raise last or ProviderError(
-                        "PROVIDER_FAILED", "Провайдер не ответил и не назвал причины.",
-                        reason="Ни одна попытка не дошла до ответа — повтори позже.")
-                # Провайдер сам говорит, когда повторять — его срок важнее нашего.
-                pause = max(pause, retry_after(response.headers.get("Retry-After"), after_max, pause))
+                with opened:
+                    if response.status_code < 400:
+                        return sink(response) if sink else response
+                    if sink:
+                        response.read()
+                    last = self._refusal(response)
+                    if response.status_code not in retry_on:
+                        raise last or ProviderError(
+                            "PROVIDER_FAILED", "Провайдер не ответил и не назвал причины.",
+                            reason="Ни одна попытка не дошла до ответа — повтори позже.")
+                    # Провайдер сам говорит, когда повторять — его срок важнее нашего.
+                    pause = max(pause, retry_after(response.headers.get("Retry-After"), after_max, pause))
             if attempt + 1 < attempts and pause:
                 time.sleep(min(pause, pause_max) * (1 + jitter * self._rng.random()))
                 pause = min(pause * 2, pause_max)           # перегрузку не лечат равномерным долблением
@@ -390,6 +399,19 @@ class HttpImageAPI:
                 "PROVIDER_FAILED", f"Ответ провайдера не разобрать как JSON: {e}",
                 reason="Возможно, он отдаёт файл телом — тогда в декларации нужно "
                        "response: binary.") from e
+
+    def _receiver(self, request: MediaRequest):
+        """Приёмник бинарного ответа: допустимые типы — объявленные для формата, который просит строка канала (NI-03);
+        формат не передан — любой объявленный. Тело — тем же загрузчиком результатов, с его пределом (NI-06)."""
+        types = self.registry.need("online", "http", request.provider, "content_types", kind=dict)
+        asked = str(request.params.get(self._tasks.need("download", "format_column", kind=str)) or "").lower()
+        if asked and asked not in types:
+            raise ProviderError("SCHEMA_INVALID", facts={
+                "details": f"online.http.{request.provider}.content_types: формат «{asked}» не объявлен"})
+        accept = {str(t).lower() for f, kinds in types.items() if not asked or f == asked for t in kinds}
+        target = Path(request.target)
+        fetcher = results(self._tasks.config_file, transport=self.transport, resolve=self.resolve)
+        return lambda response: fetcher.receive(response, Files(target.parent), target.name, "result", accept=accept)
 
     # ═══ Задача ═══
 

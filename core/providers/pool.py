@@ -39,7 +39,7 @@ class ModelPool:
             cards = [c for c in (self.hardware.get("gpu") or []) if c.get("usable")]
             free_mb = float(cards[0].get("vram_free_mb") or 0) if cards else 0.0
         if not free_mb:
-            free_mb = float(self.hardware.get("ram_available_mb") or 0)
+            free_mb = float(self.hardware["ram_available_mb"])
         return int(free_mb * 1e6 * ratio)
 
     def held_bytes(self, device: str = "") -> int:
@@ -105,7 +105,7 @@ class ModelPool:
         budget = self.budget_bytes(device)
         order = sorted((k for k, e in _ENTRIES.items() if e["device"] == device),
                        key=lambda k: _ENTRIES[k]["used"])
-        while order and ((budget and self.held_bytes(device) + need_bytes > budget)
+        while order and (self.held_bytes(device) + need_bytes > budget
                          or (limit and len(_ENTRIES) >= limit)):
             self._drop(order.pop(0))
 

@@ -115,31 +115,19 @@ RES_OK = "default: inline\nclasses:\n  inline: {offload: false}\n  gpu: {offload
 
 RES_GHOST = "default: inline\nclasses:\n  inline: {offload: false}\ntools:\n  montage_render_sceen: inline\n"
 
-RES_CLASS = "default: inline\nclasses:\n  inline: {offload: false}\ntools:\n  media_generate: gpuu\n"
-
-RES_DEFAULT = "default: inlien\nclasses:\n  inline: {offload: false}\ntools: {}\n"
-
 INV_PATH = "tests/quick/tools_inventory.golden.json"
 
+# Связи внутри файла (класс не объявлен, опечатка в default, снятие с цикла без предела) судит схема у двери
+# деклараций при загрузке — случаи в tests/quick/test_declarations.py; здесь — только декларация против инвентаря.
+
 ok(not resources_off_inventory(make({"config/resources.yaml": RES_OK, INV_PATH: INV})),
-   "имена и классы сходятся — молчим")
+   "имена сходятся с инвентарём — молчим")
 
 ok(len(resources_off_inventory(make({"config/resources.yaml": RES_GHOST, INV_PATH: INV}))) == 1,
    "инструмент переименован — строка указывает в пустоту, снятие с цикла молча не действует")
 
-ok(len(resources_off_inventory(make({"config/resources.yaml": RES_CLASS, INV_PATH: INV}))) == 1,
-   "класс не объявлен — вызов тихо падает в default, а сервер снова морозится")
-
-ok(len(resources_off_inventory(make({"config/resources.yaml": RES_DEFAULT, INV_PATH: INV}))) == 1,
-   "опечатка в `default` — умолчание указывает в несуществующий класс")
-
 ok(not resources_off_inventory(make({"config/x.yaml": "y: 1"})),
    "объявления нет вовсе — не выдумываем нарушение")
-
-RES_NOLIMIT = "default: inline\nclasses:\n  inline: {offload: false}\n  gpu: {offload: true}\ntools:\n  media_generate: gpu\n"
-
-ok(len(resources_off_inventory(make({"config/resources.yaml": RES_NOLIMIT, INV_PATH: INV}))) == 1,
-   "класс снимается с цикла без предела — сто вызовов поднимут сто потоков")
 
 print("\n== ветвление по значению вместо таблицы ==")
 

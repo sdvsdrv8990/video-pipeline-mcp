@@ -7,9 +7,10 @@
 """
 
 from pathlib import Path
-from typing import TypeVar, overload
+from typing import Generic, TypeVar, overload
 
 import yaml
+from pydantic import BaseModel, ValidationError
 
 T = TypeVar("T")
 
@@ -85,3 +86,42 @@ def _is(value: object, kind: type) -> bool:
     if isinstance(value, bool):
         return kind is bool
     return isinstance(value, (int, float) if kind is float else kind)
+
+
+M = TypeVar("M", bound=BaseModel)
+
+
+class Declared(Declaration, Generic[M]):
+    """Декларация со схемой: файл проверяется целиком при загрузке, читатель получает неизменяемый объект.
+
+    Перечитывание по mtime собирает новый объект и переставляет ссылку — читатель видит объект целиком.
+    Правка, не прошедшая проверку, — отказ на каждое чтение, пока её не починят, без тихого отката к прежнему.
+    """
+
+    def __init__(self, config_file: str | Path, error_cls, subject: str, hint: str, schema: type[M]):
+        super().__init__(config_file, error_cls, subject, hint)
+        self._schema = schema
+        self._model: M | None = None
+        self._model_mtime: float | None = None
+
+    @property
+    def model(self) -> M:
+        data = self.data
+        if self._model is None or self._model_mtime != self._mtime:
+            try:
+                model = self._schema.model_validate(data)
+            except ValidationError as e:
+                errors = _schema_errors(e)
+                # Без цепочки причины: текст ValidationError несёт пришедшие значения, а журнал отказа пишет причину.
+                raise self._error(
+                    "DECLARATION_INVALID", errors=errors,
+                    facts={"file": self.config_file.name,
+                           "details": "; ".join(f"{x['field'] or '—'} ({x['rule']})" for x in errors)}) from None
+            self._model, self._model_mtime = model, self._mtime
+        return self._model
+
+
+def _schema_errors(error: ValidationError) -> list[dict]:
+    """Ошибки проверки — путь ключа, правило и что ждали; пришедшее значение в ответ не идёт: в декларациях бывают адреса."""
+    return [{"field": ".".join(str(part) for part in x["loc"]), "rule": x["type"], "expected": x["msg"]}
+            for x in error.errors()]

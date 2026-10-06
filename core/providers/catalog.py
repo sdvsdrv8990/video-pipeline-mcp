@@ -209,7 +209,7 @@ class ModelCatalog:
         """
         if repo in self._revisions:
             return self._revisions[repo]
-        declared = ((self.local.get("install") or {}).get("revisions") or {}).get(repo)
+        declared = self.pinned(repo)
         if declared:
             self._revisions[repo] = str(declared)
             return self._revisions[repo]
@@ -335,24 +335,23 @@ class ModelCatalog:
         return out
 
     def _detail(self, model_id: str, want: list[str], describe: bool) -> dict:
-        """Файлы модели, их размеры и описание — список моделей этого не отдаёт."""
+        """Файлы модели, их размеры и описание — список моделей этого не отдаёт. Размер — сумма тех частей, что поставит
+        установка (`_pick`), той же ревизии: закреплённой владельцем, иначе текущей."""
         from huggingface_hub import model_info
 
         try:
-            info = model_info(model_id, files_metadata=True)
+            info = model_info(model_id, revision=self.pinned(model_id) or None, files_metadata=True)
         except Exception as e:  # сеть/закрытый репозиторий
             # Не знаем — так и говорим: молча выкинуть модель значило бы соврать, что её нет.
             return {"detail_error": str(e)[:120]}
         sizes = {s.rfilename: int(s.size or 0) for s in (info.siblings or [])}
-        names = [n for n in sizes if not want or n.lower().endswith(tuple(want))]
-        keep, _ = self.allowed_files(names)
-        chosen = self.prefer(keep) or (keep[0] if keep else "")
+        picked, _, chosen = self._pick(list(sizes), tuple(want))
         card_data = getattr(info, "card_data", None)
         card = card_data.to_dict() if card_data else {}
         base = card.get("base_model")
         base = str(base[0]) if isinstance(base, list) and base else str(base or "")
         out = {"file": chosen, "base_model": base,
-               "mb": round(sizes.get(chosen, 0) / 1e6, 1) if chosen else None,
+               "mb": round(sum(sizes[n] for n in picked) / 1e6, 1) if chosen else None,
                "license": str(card.get("license") or "")}
         if describe:
             out["description"] = self.describe_model(model_id, base)
@@ -430,6 +429,23 @@ class ModelCatalog:
         return {name: voice for name, voice in self._piper_index(src).items()
                 if (not language or voice.get("language", {}).get("code") == language)
                 and not (max_mb and self._voice_mb(voice) > max_mb)}
+
+    def pinned(self, repo: str) -> str:
+        """Ревизия, объявленная владельцем (`local.install.revisions.<repo>`); не объявлена — пусто."""
+        return str(((self.local.get("install") or {}).get("revisions") or {}).get(repo) or "")
+
+    def _pick(self, names: list[str], want: tuple[str, ...]) -> tuple[list[str], list[dict], str]:
+        """Что из файлов репозитория ставится — (части, отказ с причиной, главный файл); одна выборка для состава и для
+        строки списка. Формат требуется — модель ОДИН граф (рядом те же веса в других разрядностях) и описания `.json`
+        для адаптера; иначе половинная точность и полная — одни и те же веса, берётся одна, иначе диск съедается вдвое."""
+        keep, refused = self.allowed_files(names)
+        if want:
+            graphs = [n for n in keep if n.lower().endswith(want)]
+            chosen = self.prefer(graphs) or (graphs[0] if graphs else "")
+            return ([chosen, *(n for n in keep if n.lower().endswith(".json"))] if chosen else []), refused, chosen
+        fp16 = [n for n in keep if ".fp16." in n]
+        picked = fp16 + [n for n in keep if not n.endswith(".safetensors")] if fp16 else keep
+        return picked, refused, self.prefer(picked) or (picked[0] if picked else "")
 
     # ═══ Правила установки ═══
 
@@ -616,6 +632,11 @@ class ModelCatalog:
         """Наибольшая тишина загрузчика весов между признаками работы — простой обязан быть длиннее (`Fetcher.silence_sec`)."""
         return self.fetcher().silence_sec()
 
+    def speed(self) -> dict:
+        """Мера работы тела из политики загрузчика весов (NI-01): та же пара судит приём и простой установки."""
+        policy = self.fetcher().policy
+        return {"floor": policy["speed_floor_bytes_per_sec"], "window": policy["speed_window_sec"]}
+
     @staticmethod
     def owner(entry: dict) -> str:
         """Владелец остатков модели — один на вид и имя: следующая установка той же модели докачивает (MF-04)."""
@@ -722,21 +743,11 @@ class ModelCatalog:
         if getattr(info, "gated", False):
             raise ProviderError("MODEL_GATED", facts={"model": model_id})
         siblings = {s.rfilename: s for s in (info.siblings or [])}
-        keep, refused = self.allowed_files(list(siblings))
         name, want = model_id.split("/")[-1], tuple(str(f).lower() for f in (src.get("require_formats") or []))
-        if want:
-            # Модель — ОДИН файл графа: рядом те же веса в других разрядностях; описания (.json) нужны адаптеру.
-            graphs = [n for n in keep if n.lower().endswith(want)]
-            chosen = self.prefer(graphs) or (graphs[0] if graphs else "")
-            if not chosen:
-                raise ProviderError("MODEL_FORMAT_MISSING", facts={"model": model_id, "formats": ", ".join(want)})
-            picked = [chosen, *(n for n in keep if n.lower().endswith(".json") and Path(n).name != "README.md")]
-            dest = Path(str(src.get("dest") or kind)) / name
-        else:
-            # Половинная точность и полная — одни и те же веса; берём одну, иначе диск съедается вдвое.
-            fp16 = [n for n in keep if ".fp16." in n]
-            picked = fp16 + [n for n in keep if not n.endswith(".safetensors")] if fp16 else keep
-            dest = Path(str(src.get("dest") or "img")) / name
+        picked, refused, chosen = self._pick(list(siblings), want)
+        if want and not chosen:
+            raise ProviderError("MODEL_FORMAT_MISSING", facts={"model": model_id, "formats": ", ".join(want)})
+        dest = Path(str(src.get("dest") or (kind if want else "img"))) / name
         parts = sorted((self._part(Path(n).name if want else n, n, siblings[n].size,
                                    *self._sibling_digest(siblings[n])) for n in picked), key=lambda p: p["path"])
         mb = round(sum(p["size"] or 0 for p in parts) / 1e6, 1)
@@ -746,7 +757,7 @@ class ModelCatalog:
         if want:
             return {**entry, "path": str(dest / Path(chosen).name), "file": Path(chosen).name}
         st = getattr(info, "safetensors", None)
-        return {**entry, "path": str(dest), "variant": "fp16" if fp16 else "",
+        return {**entry, "path": str(dest), "variant": "fp16" if any(".fp16." in n for n in picked) else "",
                 # Число параметров — в опись сразу: по нему судят о пригодности железа без запроса к сети.
                 "params_total": int(getattr(st, "total", 0) or 0),
                 "params_by_dtype": dict(getattr(st, "parameters", None) or {}),

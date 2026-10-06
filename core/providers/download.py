@@ -93,10 +93,12 @@ class Fetcher:
 
     # Политика загрузчика — одна форма для каждой декларации потребителя (веса, результаты поставщиков).
     POLICY = ("schemes", "hosts", "block_private", "max_bytes", "timeout_sec", "redirects", "attempts",
-              "backoff_sec", "backoff_max_sec", "retry_after_max_sec", "jitter", "retry_on", "codes")
+              "backoff_sec", "backoff_max_sec", "retry_after_max_sec", "jitter", "speed_floor_bytes_per_sec",
+              "speed_window_sec", "retry_on", "codes")
 
     def __init__(self, policy: dict, *, transport=None, resolve=socket.getaddrinfo, sleep=time.sleep,
-                 rng: random.Random | None = None, proxies=urllib.request.getproxies_environment, mark=None):
+                 rng: random.Random | None = None, proxies=urllib.request.getproxies_environment, mark=None,
+                 clock=time.monotonic):
         missing = [key for key in self.POLICY if key not in policy]
         if missing:
             details = f"в политике загрузки не объявлено: {', '.join(missing)}"
@@ -108,6 +110,7 @@ class Fetcher:
         self.rng = rng or random.Random()
         self.proxies = proxies
         self.mark = mark or (lambda: None)      # признак работы: переход, принятый кусок, начало паузы, блок сверки
+        self.clock = clock                      # мера скорости тела меряет окно этими часами; тест подставляет свои
 
     def fetch(self, url: str, files: Files, path: str | Path, owner: str, *, size: int | None = None,
               digest: str = "", algo: str = "sha256", headers: dict | None = None) -> dict:
@@ -221,7 +224,8 @@ class Fetcher:
             sent = dict(headers or {}) if target.host == origin else {}
             if offset and target.host == held:
                 sent.update({"Range": f"bytes={offset}-", "If-Range": validator})
-            sent["Host"] = target.netloc.decode("ascii")
+            # Файл — байты как пришли (NI-04): длина, предел и смещение Range — в одном представлении, без распаковки.
+            sent.update({"Host": target.netloc.decode("ascii"), "Accept-Encoding": "identity"})
             route = client(proxy)
             if proxy:
                 request = route.build_request("GET", target, headers=sent)
@@ -313,12 +317,20 @@ class Fetcher:
              offset: int = 0) -> int:
         """Тело открытого ответа — в остаток владельца без своего буфера: принятое до обрыва лежит на диске (MF-04).
         Длина — из состава или заявленная ответом; больше состава или предела `max_bytes` политики — остаток снят и отказ
-        кодом; обрыв или недобор — `_Again` с принятым. Признак работы — на каждом принятом куске (M4)."""
+        кодом; обрыв или недобор — `_Again` с принятым. Сжатое тело вопреки `identity` — отказ до записи: распаковка
+        сломала бы длину, предел и отпечаток (NI-04). Мера работы (NI-01): кусок — признак работы, если с начала окна
+        принято не меньше предела × прошедшее; окно закрылось ниже предела — `_Again` с `DOWNLOAD_TOO_SLOW`, попытка
+        потрачена. Предел 0 — признак на каждом куске, обрыва по скорости нет (M4 как был)."""
         import httpx
 
+        coding = str(response.headers.get("content-encoding") or "identity").strip().lower()
+        if coding != "identity":
+            raise self._failed(host, f"Content-Encoding {coding}")
         part = files.remnant(path, owner)
         expected = size if size is not None else self._length(response, offset)
         limit, over = int(self.policy["max_bytes"]), ""
+        floor, window = self.policy["speed_floor_bytes_per_sec"], self.policy["speed_window_sec"]
+        began, in_window = self.clock(), 0
         with os.fdopen(self._append(files, path, owner, part), "ab") as fh:
             try:
                 for chunk in response.iter_bytes():
@@ -330,7 +342,15 @@ class Fetcher:
                         over = "limit"
                         break
                     fh.write(chunk)
-                    self.mark()
+                    in_window += len(chunk)
+                    elapsed = self.clock() - began
+                    if in_window >= floor * elapsed:
+                        self.mark()
+                    if elapsed >= window:
+                        if in_window < floor * window:
+                            raise _Again(ContractError("DOWNLOAD_TOO_SLOW", facts={
+                                "host": host, "got": in_window, "window_sec": window, "floor": floor}))
+                        began, in_window = self.clock(), 0
             except httpx.TransportError as e:
                 raise _Again(self._short(host, offset, expected)) from e
         if over:
@@ -342,6 +362,22 @@ class Fetcher:
         if expected is not None and offset < expected:
             raise _Again(self._short(host, offset, expected))
         return offset
+
+    def receive(self, response, files: Files, path, owner: str, *, accept) -> Path:
+        """Тело уже открытого ответа API в файл через остаток владельца (адрес судил вызывающий): тип — из объявленных до
+        записи (NI-03), обрыв — отказ без повтора и без остатка, POST не докачивается (NI-05); целое встаёт под имя."""
+        host = response.url.host
+        kind = str(response.headers.get("content-type") or "").split(";")[0].strip().lower()
+        if kind not in accept:
+            raise self._failed(host, f"Content-Type {kind or '—'}")
+        files.drop(path, owner)
+        files.remnant(path, owner).parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.take(response, files, path, owner, host=host)
+        except _Again as e:
+            files.drop(path, owner)
+            raise e.refusal from e
+        return files.publish(path, owner)
 
 
 def results(config_file: str | Path, **seams) -> Fetcher:

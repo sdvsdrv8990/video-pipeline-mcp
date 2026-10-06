@@ -30,6 +30,8 @@ classifiers = [
 dependencies = [
     # Ядро
     "pydantic>=2.0,<3",
+    # Ошибки проверки схем деклараций с путём ключа (core/declaration_schemas.py); версию закрепляет pydantic.
+    "pydantic-core",
     "openpyxl>=3.1",
     # Провайдеры (STT/TTS/IMG)
     # Полы подняты по advisory (2026-08-12): ниже них известные CVE.
@@ -57,6 +59,9 @@ dependencies = [
     "filelock>=3.32",
     # Корень журналов по ОС (core/observability/logs, FS-17): импорт нашего кода, а приезжал транзитивно.
     "platformdirs>=4.11",
+    # Ядра и память процесса на macOS и Windows и привязка к ядрам (core/providers/hardware, HW-01/02): в stdlib
+    # переносимого вызова памяти нет; приезжал транзитивно через accelerate. Нижняя граница — версия, на которой мерено.
+    "psutil>=7.2",
     # Подпись артефактов и ключ инстанса (core/integrity): без неё подпись молча отключается.
     "cryptography>=42.0",
     # NB: cloudflared — бинарь, НЕ pip-пакет (ставится install.sh).
@@ -161,7 +166,7 @@ Repository = "https://github.com/sdvsdrv8990/video-pipeline-mcp"
 # установки (они и так приходят с сервером), а для снятия: убрав такую строку из `dependencies`,
 # ломаешь не только сервер, и узнать об этом надо ДО, а не по красному гейту. Обе стороны держит
 # `tests/quick/test_dependencies.py`: незаявленное заимствование и заявленное, которого уже нет.
-borrowed_by_tests = ["aiohttp", "httpx", "huggingface-hub", "jsonschema", "openpyxl", "pillow", "platformdirs", "pyyaml"]
+borrowed_by_tests = ["aiohttp", "httpx", "huggingface-hub", "jsonschema", "openpyxl", "pillow", "platformdirs", "pydantic", "pyyaml"]
 # Модуль, который даёт дистрибутив, — ОБЪЯВЛЕНИЕМ. Связать `import piper` с `piper-tts` можно
 # только через установленный пакет, а необязательная группа (модели, ускоритель) не стоит ни
 # здесь, ни в CI: там ставится ровно `.[dev]`. Без этой строки «не проверено» превращалось в
