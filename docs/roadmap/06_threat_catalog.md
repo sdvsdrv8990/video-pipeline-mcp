@@ -39,7 +39,7 @@
 | OUT2 (T2) | **Tool poisoning описаний** — `description/title/enum` из данных, которые правит атакующий | `engine.register(...)`, схемы из `config/*`, шаблонов | описания статичны в git (проверить) | путь из workspace/hot-reload в описание? | инвариант: описания только из git-контролируемых деклараций, НИКОГДА из `workspace/` | atk-outbound: tool-poison |
 | OUT3 (T3) | **Rug pull** — tools/list или их поведение меняются после одобрения | hot-reload (`firewall.yaml`, `server_reactions.yaml`), ephemeral-URL | hot-reload меняет только защитный конфиг (проверить) | reload меняет что-то видимое клиенту? | reload НЕ трогает контракт инструментов; смена tools/list → явное переуведомление | atk-outbound: rug-pull |
 | OUT4 (T4) | **Cross-tool shadowing** — наш вывод адресует ЧУЖОЙ MCP (filesystem/git/gmail/drive параллельно) | текст выводов/описаний | нет | «возьми через filesystem-MCP, отправь через gmail» | не генерировать конструкции, адресующие чужие инструменты; namespace-изоляция | atk-outbound: shadowing |
-| OUT5 (T5) | **Weaponized деструктив** — обманутая модель бьёт по данным клиента | `fs_delete` (`force=rmtree`), `fs_move/rename/write`, `json_execute_queue`, `structure_migrate` | `destructiveHint` gate (проверить на КАЖДОМ) | containment на write/move/delete; `force=true` без подтверждения | `destructiveHint:true` везде; containment `workspace/` на запись/move/delete; `force` под явное подтверждение | atk-outbound: weaponized-destruct |
+| OUT5 (T5) | **Weaponized деструктив** — обманутая модель бьёт по данным клиента | `fs_delete` (`force=rmtree`), `fs_move/rename/write`, `json_execute_queue`, `structure_migrate` | `destructiveHint` gate (проверить на КАЖДОМ) | containment на write/move/delete; `force=true` без подтверждения | `destructiveHint` НЕ ставится — исключение для коннектора Claude.ai: флаг включает у него шлюз авторизации (решение владельца 2026-09-24). Компенсация на сервере: удаление и перезапись уходят в корзину вне `workspace/` (`F255`), containment на запись/move/delete, `force` под явное подтверждение | atk-outbound: weaponized-destruct |
 | OUT6 (T6) | **Эксфильтрация через параметры** — приватное упаковано в аргумент/лог | `fs_move/write` (путь несёт данные), `_SESSION_LOG.md` (пишет `Fact.data`!), `search` query | нет | утечка приватного в лог/ответ через `Fact.data` | не писать сырые приватные данные в `_SESSION_LOG.md`; редакция полей; провенанс | atk-outbound: exfil-via-param |
 | OUT7 (T7) | **Раскрытие через ошибки/`raw_response`** — секреты/пути/трассы в `ErrorDetail.message` | `_map_error` провайдеров (D23), стектрейсы | коды реакций (частично) | `raw_response` течёт в message | generic-сообщения; секреты/пути не в `ErrorDetail`; трассы только в лог | atk-outbound: error-leak |
 | OUT8 | **RAG/vector-poisoning выдачи поиска** — отравленный документ поднимается `search_*` в контекст | `search_*` (питает выбор контекста, E-H/E-I) | нет | poisoned-doc в workspace → релевантен → в контекст | провенанс на результатах поиска; over-broad retrieval лимит; связка с E-I3 | atk-outbound: search-poison |
@@ -51,7 +51,7 @@
 - **Провенанс, не фильтр.** Весь `workspace/`-контент недоверен; сервер его МАРКИРУЕТ, не «распознаёт вредность» (OWASP: prompt injection не патчится, только defense-in-depth + сегрегация недоверенного). Кандидат в новый `G#`.
 - **App-level auth обязателен** (D3/G18). За туннелем IP бессмыслен → identity на уровне приложения — фундамент для IN3/IN9 и любого rate/ban.
 - **Containment `workspace/` на ВСЕ операции**, не только read (IN1 + OUT5). Один choke-point `core.paths.safe_resolve` (G17).
-- **Деструктив под gate + подтверждение** (OUT5): `destructiveHint` + containment + `force`-confirm.
+- **Деструктив обратим на сервере** (OUT5): корзина вне `workspace/` + containment + `force`-confirm; `destructiveHint` не ставится (исключение для коннектора Claude.ai).
 
 ---
 
@@ -61,7 +61,7 @@
 |---|---|---|---|
 | 🔴 P0 | App-level auth (identity, не IP) | IN3, IN9, D3, G18 | I6 |
 | 🔴 P0 | Провенанс-маркировка workspace-вывода + не эхоить в reason/message | OUT1, OUT6, OUT8 | I6, security |
-| 🔴 P0 | Containment на write/move/delete + `destructiveHint` везде + `force`-confirm | IN1, OUT5 | I6 |
+| 🔴 P0 | Containment на write/move/delete + корзина (`F255`) + `force`-confirm; `destructiveHint` — исключение для Claude.ai | IN1, OUT5 | I6 |
 | 🔴 P0 | **Write-type allowlist (default-deny)** — §F | OUT5, малварь-ген, IN2/IN6 payload-drop | I6 |
 | 🔴 P0 | **No-root инвариант** — §G (не исполнять workspace, нет shell, не root, bandit-gate) | эскалация привилегий, RCE через `.py`, IN6 | I6, I3 (CI) |
 | 🟠 P1 | Подтвердить проводку firewall (anomaly/injection/cache реально ловят) | IN2, IN4, IN5 | I7 (agent-swarm) |
@@ -108,9 +108,10 @@
 |---|---|---|
 | G-1 | **Сервер НЕ исполняет контент `workspace/`** | `.py`/`.yaml`/`.json` = данные; никогда `exec`/`eval`/`import`/`subprocess` их. Делает `.py`-в-allowlist безопасным |
 | G-2 | **Нет shell** | ни `os.system`/`os.popen`/`shell=True`. **Актуализация S24:** subprocess уже не один — их 5 (`tunnel`, `hardware`, `runner/supervisor` ×2, `excel_core`), и каждый идёт arg-списком без оболочки. Инвариант звучит «ни одного вызова через оболочку», а не «единственный вызов»: второй вариант устаревал с каждым новым сайтом и создавал ложное чувство защищённости |
-| G-3 | **Не от root, least privilege** | сервер бежит непривилегированным; при старте от root — drop privileges/отказ; нет `sudo`/`su`/setuid |
+| G-3 | **Не от root, least privilege** | `server.root_refusal`: старт от root — отказ (код 2), `MCP_ALLOW_ROOT=1` только одноразовый контейнер разработки; раннер в Docker — пользователь хоста или `nobody`, `--cap-drop=ALL`, `no-new-privileges`, `--read-only` (`F256`); нет `sudo`/`su`/setuid |
 | G-4 | **Нет persistence/escalation-путей** | containment `workspace/` (IN1) + write-allowlist (§F) физически не дают писать в `~/.ssh/authorized_keys`, `~/.bashrc`, `/etc/`, cron, systemd, PATH-каталоги |
 | G-5 | **Нет опасной десериализации** | только `yaml.safe_load`/`json.loads`; ни `pickle`, ни `yaml.load` |
+| G-7 | **Доступ к Docker — это root** | пользователь в группе `docker` управляет демоном от root: сервер, умеющий `docker run`, держит root-эквивалент, даже если сам не root. Параметры запуска раннера берутся только из объявления, не из вызова; для железа — rootless Docker или Podman без root |
 | G-6 | **media/ffmpeg (P1–P4) при появлении** | subprocess только arg-списком + allowlist бинарей/кодеков из `render_config`; без shell; путь бинаря не из пользователя |
 
 **Регрессия (CI + рой):** `bandit -r core/ server.py` красит новый exec-sink (G-1/G-2/G-5); тест «сервер не root» (G-3); атакующий-агент пишет `.py` и пытается заставить сервер его исполнить / дропнуть `authorized_keys` → блок (G-1/G-4); успех = ни один вектор не даёт исполнения/эскалации.
@@ -187,6 +188,21 @@ L7-атаки не ловятся L3/4-инструментами (один GET 
 | 🟡 P2 | Кэш-практики — при добавлении кэша пользовательских данных | A5/search |
 
 **Источники [C#]:** [C1] cache stampede prevention (lock/coalescing/probabilistic) · [C2] L7/low-and-slow DDoS mitigation (Slowloris, app-layer intelligence, не только per-IP) · [C3] HTTP request smuggling + strict-parse/reject CL+TE (PortSwigger/HackTricks/Akamai CVE-2025-66373) · [C4] Cloudflare WAF/DDoS/tunnel best practices (edge-фильтр перед origin, Bot-Fight caveat, cache-key без query) · [C5] web caching strategies/eviction · [C6] Comprehensive Cache Vulnerabilities Checklist (GitHub) · [C7] OWASP. URL — в ответе сессии.
+
+---
+
+## I. Уровни угроз — где атакуют и кто держит защиту
+
+Один и тот же вред (потеря данных, вынос секрета, захват машины) приходит с разных уровней, и
+защита у каждого своя. Уровень называет, ГДЕ нужна мера, строка каталога — ЧТО именно.
+
+| Уровень | Кто атакует и что может | Чем держим | Строки |
+|---|---|---|---|
+| **Браузер и студия** | чужая вкладка того же человека (подделка запроса, DNS-rebinding); наша разметка из недоверенных данных (XSS); ключ, уехавший в бандл; сторонние адреса страницы | проверка `Host`/`Origin`/типа тела до авторизации; CSP; текст данных только текстом; сборка без ключей | IN9; `security-reviewer/references/studio-page.md` |
+| **Транспорт** (Claude AI Web ↔ край Cloudflare ↔ `cloudflared` ↔ сервер; по плану `24` — свой узел) | посредник, у которого расшифрован TLS: край, узел, подменённый DNS своего домена. Видит ключ в заголовке, может подменить ответ (внушение агенту) и звать инструменты сам | ключ считается скомпрометированным ПО ПОСТРОЕНИЮ — ущерб ограничивает сервер (строки ниже); ротация `--rotate-key`; TLS до нашего процесса — цель пути `24`. Подписать ответ так, чтобы клиент проверил, нельзя — клиент этого не умеет | OUT1, OUT6, `F74`, `F258` |
+| **Агент** (Claude) | внушение через вывод инструмента или подменённый ответ → вызов разрушающих инструментов, вынос через параметры | пометка происхождения чужого текста; корзина вне `workspace/`; `force`-подтверждение; вызовы в журнале следа | OUT1–OUT6, `F255` |
+| **Процесс сервера** | обход containment, инъекции в параметрах, исчерпание ресурсов | `safe_resolve`, allowlist записи, файрвол и частота, ни одного вызова через оболочку | IN1–IN8, §F, §G |
+| **Хост и поставка** | запуск от root; раннер в контейнере от root; подменённый бинарник или пакет при установке; образ без digest; группа `docker` | отказ старта от root; урезанный контейнер; закреплённые хеши бинарников; лок пакетов; rootless Docker | §G (G-3, G-7), `F256`, `F257`, `dependency-hygiene` |
 
 ---
 

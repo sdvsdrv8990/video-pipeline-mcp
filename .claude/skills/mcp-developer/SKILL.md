@@ -1,6 +1,6 @@
 ---
 name: mcp-developer
-description: Use when building, debugging, or extending MCP server tools in the video_pipeline_mcp project — implementing Bounded-Context tool groups under tools/<group>/, wiring the generic core/engine and the config/*.yaml declarations, returning ToolResult/ErrorDetail contracts, emitting server_reactions codes, or working on the cloudflared transport tunnel to Claude AI Web. Python + Pydantic only.
+description: Use when building, debugging, or extending MCP server tools in the video_pipeline_mcp project — implementing Bounded-Context tool groups under tools/<group>/, wiring the generic core/engine and the config/*.yaml declarations, returning ToolResult/ErrorDetail contracts, emitting server_reactions codes, or working on the cloudflared transport tunnel to Claude AI Web. Python + Pydantic only. Tests for a tool are test-master.
 license: MIT
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 metadata:

@@ -44,18 +44,23 @@ else
     echo "cloudflared не найден — скачиваю статический бинарь в ./bin/ ..."
     mkdir -p bin
     ARCH="$(uname -m)"
+    # Версия и хеш закреплены: «latest» без проверки запускал бы любой подменённый по дороге файл.
+    # Обновление — новая версия и её SHA-256 из заметок релиза, одной правкой здесь.
+    CF_VERSION="2026.9.3"
     case "$ARCH" in
-        x86_64|amd64) CF_ARCH="amd64" ;;
-        aarch64|arm64) CF_ARCH="arm64" ;;
+        x86_64|amd64) CF_ARCH="amd64"; CF_SHA256="77e26d8d900e0b8469f416239d14b5f296525fdf79fee6f511ef55609e3fbac2" ;;
+        aarch64|arm64) CF_ARCH="arm64"; CF_SHA256="aaeb2d7d0da3614634c7e03ab13487a1522c2e79165ed2929cfe23d5e95b326d" ;;
         *) CF_ARCH="" ;;
     esac
     if [ -n "$CF_ARCH" ]; then
-        CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}"
-        if curl -fsSL "$CF_URL" -o bin/cloudflared 2>/dev/null || wget -q "$CF_URL" -O bin/cloudflared 2>/dev/null; then
+        CF_URL="https://github.com/cloudflare/cloudflared/releases/download/${CF_VERSION}/cloudflared-linux-${CF_ARCH}"
+        if { curl -fsSL "$CF_URL" -o bin/cloudflared 2>/dev/null || wget -q "$CF_URL" -O bin/cloudflared 2>/dev/null; } \
+           && echo "${CF_SHA256}  bin/cloudflared" | sha256sum --check --strict --status; then
             chmod +x bin/cloudflared
             echo "cloudflared установлен: ./bin/cloudflared ($(./bin/cloudflared --version 2>/dev/null | head -n 1))"
         else
-            echo "ВНИМАНИЕ: не удалось скачать cloudflared. Установите вручную:"
+            rm -f bin/cloudflared
+            echo "ВНИМАНИЕ: cloudflared не скачан или его хеш не совпал с закреплённым. Установите вручную:"
             echo "  https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
         fi
     else

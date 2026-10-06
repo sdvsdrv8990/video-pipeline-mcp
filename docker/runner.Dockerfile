@@ -47,6 +47,11 @@ EXPOSE 8770
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8770/health', timeout=4).status == 200 else 1)"
 
+# Запуск руками без `--user` тоже не даёт root внутри: супервизор подставляет пользователя хоста,
+# а без него процесс работает от служебного пользователя без прав.
+RUN useradd --system --uid 10001 --no-create-home --home-dir /tmp runner
+USER 10001
+
 # Токен приходит переменной MCP_RUNNER_TOKEN от того, кто поднял контейнер. Без неё раннер не
 # встаёт и говорит почему: без токена он исполнял бы задачи любого, кто дотянется до порта.
 CMD ["python", "-m", "core.runner", "--container"]

@@ -1,6 +1,6 @@
 ---
 name: dependency-hygiene
-description: Use when touching DEPENDENCIES of the video_pipeline_mcp server — adding or bumping a package, editing pyproject.toml or its dependency groups, running pip install (especially with --extra-index-url or a non-PyPI index), evaluating whether a package is trustworthy, deciding whether a proposed library fits what the project supports (archived upstream, forbidden weight formats, a major-version rollback, a workaround around its own API — find an alternative instead of building one), reacting to a CVE/advisory, or when the manifest and the .venv might disagree. Covers the upstream direction of supply chain (what we pull IN), which the server-facing security-reviewer does not: package trustworthiness, typosquatting / slopsquatting / dependency confusion, local-version pins for accelerator builds, and proving the environment where the code actually runs. Python + pip; pyproject.toml is the single dependency file, split into zone groups (runtime, test, scripts, dev, local, gpu-amd).
+description: Use when touching DEPENDENCIES of the video_pipeline_mcp project — adding or bumping a package, editing pyproject.toml or its dependency groups, running pip install (especially with a non-PyPI index), evaluating whether a package is trustworthy, deciding whether a proposed library fits what the project supports (archived upstream, forbidden weight formats, a major-version rollback, a workaround around its own API — find an alternative instead of building one), reacting to a CVE/advisory, or when the manifest and the .venv might disagree. Covers the upstream direction of supply chain (what we pull IN), which the server-facing security-reviewer does not: package trustworthiness, typosquatting / slopsquatting / dependency confusion, local-version pins for accelerator builds, and proving the environment where the code actually runs. Python + pip (pyproject.toml, one file split into zone groups) and npm for the studio (package.json + lockfile, npm ci); a library that studio-web-standards suggests is vetted here.
 license: MIT
 allowed-tools: Read, Grep, Glob, Edit, Bash, WebFetch, WebSearch
 metadata:
@@ -294,6 +294,12 @@ CI не менялась при каждом разделении.
 Правило: **любая установка с чужого индекса идёт через объявленную группу манифеста и точный пин**, а не разовой командой в шелле. Разовая команда не переживает следующую машину.
 
 ---
+
+## npm — студия
+
+Деревья студии и её эмуляции ставятся из своих `package-lock.json` через `npm ci`. Различия с pip,
+ради которых правила не переносятся дословно (скрипты установки исполняются в CI, выдуманные ИИ
+имена пакетов, свежие компрометированные версии, `overrides`), — `references/npm.md`.
 
 ## Реакция на advisory
 

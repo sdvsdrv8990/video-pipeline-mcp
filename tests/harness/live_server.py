@@ -66,6 +66,9 @@ class LiveServer:
                 "MCP_WORKSPACE": str(self.workspace),
                 # Ключ через среду: `ensure_digest` берёт его первым и .env проекта не трогает.
                 "MCP_AUTH_TOKEN": self.token,
+                # Стенд поднимается во временной области — одноразовая среда, а в контейнере
+                # разработки root единственный пользователь. Сам отказ судит test_audit_fixes.
+                "MCP_ALLOW_ROOT": "1",
                 "PYTHONUNBUFFERED": "1",
                 **self.extra_env}
 

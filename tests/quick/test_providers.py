@@ -1678,6 +1678,13 @@ ok(_dstr17.count("-v ") >= 2 and "vendor/models" in _dstr17 and str(_ws) in _dst
    "веса и рабочая область приезжают ТОМАМИ, а не слоями образа")
 ok("providers.yaml:ro" in _dstr17 and "tunnel.yaml" not in _dstr17,
    "декларации монтируются живые и только для чтения, а секреты внутрь не едут")
+_user17 = _docker17[_docker17.index("--user") + 1] if "--user" in _docker17 else ""
+ok(bool(_user17) and _user17.split(":")[0] != "0",
+   f"процесс в контейнере не root — даже если сервер поднят от root ({_user17 or 'флага --user нет'})")
+ok("--cap-drop=ALL" in _docker17 and "--security-opt=no-new-privileges" in _docker17,
+   "привилегии ядра сняты, и повысить их внутри контейнера нечем")
+ok("--read-only" in _docker17 and any(a.startswith("--tmpfs=/tmp") for a in _docker17),
+   "файловая система образа только для чтения; писать можно в томá и во временную память")
 
 # Стенд: свободный порт + КОПИЯ конфига, состояние и журнал в темпе. Боевой vendor/ не трогаем —
 # иначе тест поднимал бы раннер поверх настоящего и стирал его запись о запуске.

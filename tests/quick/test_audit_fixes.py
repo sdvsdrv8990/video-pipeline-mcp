@@ -551,6 +551,12 @@ async def main():
         check(f"{_name}: нет декларации → отказ, а не тихая пустота",
               _absent not in ("ТИХО", "ParserError"), _absent)
 
+    _root = getattr(S, "root_refusal", None)
+    check("сервер отказывается стартовать от root", _root is not None and bool(_root(0, {})))
+    check("явное MCP_ALLOW_ROOT=1 снимает отказ — одноразовый контейнер разработки",
+          _root is not None and not _root(0, {"MCP_ALLOW_ROOT": "1"}))
+    check("обычный пользователь стартует без условий", _root is not None and not _root(1000, {}))
+
     print()
     passed = sum(results)
     total = len(results)

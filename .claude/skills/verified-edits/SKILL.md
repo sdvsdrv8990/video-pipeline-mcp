@@ -1,6 +1,6 @@
 ---
 name: verified-edits
-description: Use when changing EXISTING files — especially batched or scripted edits (sed -i, python str.replace, multi-file patches), edits to manifests whose effect surfaces elsewhere (dependency extras, CI workflows, .gitignore, config), and any moment before claiming a change is done. Makes a missed edit LOUD instead of silent - anchors copied from a fresh read, fail-loud primitives, a post-condition per touched file, and proof from the environment where the change actually takes effect. Not about what to write or where to put it (that is project-conventions); about applying the change and proving it landed.
+description: Use when changing EXISTING files — especially batched or scripted edits (sed -i, python str.replace, multi-file patches), edits to manifests whose effect surfaces elsewhere (dependency extras, CI workflows, .gitignore, config), and any moment before claiming a change is done. Makes a missed edit LOUD instead of silent - anchors copied from a fresh read, fail-loud primitives, a post-condition per touched file, and proof from the environment where the change actually takes effect. Not about what to write or where to put it (that is project-conventions); about applying the change and proving it landed. Whether a studio edit is acceptable is studio-acceptance.
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 ---
 
