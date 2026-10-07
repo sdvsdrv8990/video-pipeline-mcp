@@ -117,7 +117,8 @@ async def main():
 
     # Реестр реакций подключён
     check("reactions wired (recovery present)",
-          r_req.error.recovery is not None and bool(r_req.error.recovery.reason))
+          r_req.error is not None and r_req.error.recovery is not None and bool(r_req.error.recovery.reason),
+          "" if r_req.error else "отказа нет")
     rtn = await engine.call("nope_tool", {})
     check("TOOL_NOT_FOUND via registry",
           rtn.status == "error" and rtn.error.code == "TOOL_NOT_FOUND"
@@ -245,9 +246,9 @@ async def main():
     _cls = rtf.error.reaction_class if rtf.error else None
     check("error несёт reaction_class из реестра", _cls == _reg_class and _reg_class is not None,
           f"got={_cls!r} vs реестр={_reg_class!r}")
-    check("error несёт recovery.reason из реестра (B2: yaml=SoT)",
-          rtf.error.recovery.reason == _reg_reason and bool(_reg_reason),
-          f"got={rtf.error.recovery.reason!r} vs реестр={_reg_reason!r}")
+    _reason = rtf.error.recovery.reason if rtf.error and rtf.error.recovery else None
+    check("error несёт recovery.reason из реестра (B2: yaml=SoT)", _reason == _reg_reason and bool(_reg_reason),
+          f"got={_reason!r} vs реестр={_reg_reason!r}")
 
     # DEFAULT-fallback игнорит DEFAULT.message_template (хардкодит свою строку без точки).
     # NB: reaction_class тут совпадёт ('unknown'==DEFAULT.class) — сам по себе не пруф. Меряем шаблон.
@@ -466,12 +467,13 @@ async def main():
     _running = asyncio.create_task(_eng.call("занятой", {}))
     await asyncio.sleep(0.05)
     _refused = await _eng.call("занятой", {})
+    _busy = _refused.error
     check("перебор предела отвечает RESOURCE_BUSY, а не ждёт",
-          _refused.status == "error" and _refused.error.code == "RESOURCE_BUSY",
-          _refused.error.code if _refused.error else "успех")
+          _refused.status == "error" and _busy is not None and _busy.code == "RESOURCE_BUSY",
+          _busy.code if _busy else "успех")
     check("отказ несёт класс из реестра и срок повтора",
-          _refused.error.reaction_class == "server_recoverable" and "7 с" in _refused.error.message,
-          f"{_refused.error.reaction_class} · {_refused.error.message[:60]}")
+          _busy is not None and _busy.reaction_class == "server_recoverable" and "7 с" in _busy.message,
+          f"{_busy.reaction_class} · {_busy.message[:60]}" if _busy else "отказа нет")
     await _running
     _after = await _eng.call("занятой", {})
     check("место освобождается после вызова", _after.status == "success",
@@ -506,26 +508,34 @@ async def main():
         _R192(_broken192)
         check("битый реестр реакций → код реестра, а не сырой ParserError", False, "загрузился тихо")
     except _CE192 as e:
-        check("битый реестр реакций → код реестра, а не сырой ParserError", e.code == "SCHEMA_INVALID", e.code)
+        check("битый реестр реакций → код реестра, а не сырой ParserError", e.code == "DECLARATION_INVALID", e.code)
     except Exception as e:
         check("битый реестр реакций → код реестра, а не сырой ParserError", False, type(e).__name__)
 
     # Компенсация проверяется на ВТОРОЙ операции: первая обязана успеть загрузить то,
-    # что перечитывание битого не имеет права снести.
+    # что перечитывание битого не имеет права снести. Судится отказ двери пути, каким его доставит Engine.
+    from core.paths import PathEscapeError as _Escape192
     _live192 = _R192(ROOT / "config" / "server_reactions.yaml")
-    check("боевой реестр даёт класс из yaml, а не unknown",
-          _live192.get_error("PATH_ESCAPE").reaction_class == "ai_recoverable",
-          _live192.get_error("PATH_ESCAPE").reaction_class)
+    _door192 = _EngineForSafe(reactions=_live192)
+
+    def _escape192():
+        return _door192.refusal(_Escape192("../вне")).error
+
+    _e192 = _escape192()
+    check("боевой реестр даёт класс из yaml и путь в тексте отказа, а не unknown",
+          _e192.reaction_class == "ai_recoverable" and "«../вне»" in _e192.message,
+          f"{_e192.reaction_class} · {_e192.message}")
     try:
         _live192.load(_broken192)
     except _CE192:
         pass
+    _e192 = _escape192()
     check("перечитывание битого держит ПРЕЖНИЙ реестр — отказы не обезличиваются на лету",
-          _live192.get_error("PATH_ESCAPE").reaction_class == "ai_recoverable",
-          _live192.get_error("PATH_ESCAPE").reaction_class)
+          _e192.reaction_class == "ai_recoverable" and "«../вне»" in _e192.message,
+          f"{_e192.reaction_class} · {_e192.message}")
 
     # Одна политика у ВСЕХ загрузчиков деклараций: нет файла → TEMPLATE_NOT_FOUND,
-    # битый → SCHEMA_INVALID. Инвариант вешается тестом, а не дисциплиной: шесть загрузчиков
+    # битый → DECLARATION_INVALID. Инвариант вешается тестом, а не дисциплиной: шесть загрузчиков
     # успели развести шесть разных ответов, и два из них молча ослабляли защиту.
     from core.contracts import ContractError
     from core.advice import Advice as _A194
@@ -561,8 +571,8 @@ async def main():
         ("Taxonomy", "video.tpl.yaml", lambda t, d: _T194(d).prefix("video")),
     ):
         _absent, _broken = _codes(_file, _call)
-        check(f"{_name}: битая декларация → SCHEMA_INVALID, а не сырой разбор",
-              _broken == "SCHEMA_INVALID", _broken)
+        check(f"{_name}: битая декларация → DECLARATION_INVALID, а не сырой разбор",
+              _broken == "DECLARATION_INVALID", _broken)
         check(f"{_name}: нет декларации → отказ, а не тихая пустота",
               _absent not in ("ТИХО", "ParserError"), _absent)
 

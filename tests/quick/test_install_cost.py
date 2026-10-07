@@ -1,17 +1,36 @@
 """
 tests/quick/test_install_cost.py — счёт установки: цена считается, а неизвестное называется.
 
-Сеть здесь не нужна и не зовётся: судится РАЗБОР ответа — что делает счёт, когда pip не отработал,
-когда индекс не сообщил размер и когда места на диске меньше требуемого. Живой прогон с сетью
-делает сам установщик, и его цифры меняются с каждым релизом колёс — тест на них не опирается.
+Сеть здесь не нужна и не зовётся: индекс колёс — подставной транспорт двери сервера (`Fetcher`), его журнал —
+истина о том, какие запросы ушли, куда (IP), под каким именем, с каким сроком и представлением клиента. Судится
+РАЗБОР ответа — что делает счёт, когда pip не отработал, когда индекс не сообщил размер, отказал, увёл во
+внутреннюю сеть или не достигнут вовсе, и когда места на диске меньше требуемого или его не прочитать. Живой прогон
+с сетью делает сам установщик, и его цифры меняются с каждым релизом колёс — тест на них не опирается.
 """
+import contextlib
+import io
+import os
+import shutil
+import socket
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT))
 
-import install_cost  # счёт установки: его же читают install.sh и configure.py
+import httpx
+import yaml
+
+import configure     # меню настройки: зовёт цену перед наборами расчёта и печатает отказ
+import install_cost  # счёт установки: его же читает configure.py перед наборами расчёта
+import core.packages
+from core.declaration import Declared
+from core.declaration_schemas import PackagesDecl
+from core.packages import PackageError
+from core.providers.download import Unreached
 
 _checks = 0
 _fails = []
@@ -27,32 +46,108 @@ def ok(cond, msg):
         print(f"  ✓ {msg}")
 
 
-print("== 1. Неизвестный размер называется, а не считается нулём ==")
+ИМЕНА = {"files.example": ["151.101.1.1"], "cdn.example": ["104.16.1.1"], "inner.example": ["10.0.0.5"],
+         "down.example": ["151.101.9.9"]}
+
+
+class _Индекс:
+    """Подставной индекс колёс: разрешение имён, журнал запросов, ответ по пути адреса; down.example — перегружен."""
+
+    def __init__(self, перегрузка: int = 0):
+        self.журнал: list[dict] = []
+        self.спрошены: list[str] = []
+        self.перегрузка = перегрузка            # столько первых ответов /busy.whl — 503
+        self.паузы: list[float] = []
+
+    def resolve(self, host, port, *args, **kwargs):
+        self.спрошены.append(host)
+        if host not in ИМЕНА:
+            raise socket.gaierror(f"нет имени {host}")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port)) for ip in ИМЕНА[host]]
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        self.журнал.append({"ip": request.url.host, "host": request.headers.get("host"), "path": request.url.path,
+                            "method": request.method, "agent": request.headers.get("user-agent"),
+                            "timeout": request.extensions.get("timeout", {}).get("read")})
+        path = request.url.path
+        if request.headers.get("host") == "down.example" or (path == "/busy.whl" and self.перегрузка):
+            self.перегрузка -= path == "/busy.whl"
+            return httpx.Response(503)
+        answers = {"/light.whl": (200, {"content-length": "2000000"}), "/silent.whl": (200, {}),
+                   "/moved.whl": (302, {"location": "https://cdn.example/real.whl"}),
+                   "/real.whl": (200, {"content-length": "3000000"}), "/closed.whl": (403, {}),
+                   "/busy.whl": (200, {"content-length": "1000000"})}
+        status, headers = answers.get(path, (404, {}))
+        return httpx.Response(status, headers=headers)
+
+    def швы(self) -> dict:
+        return {"transport": httpx.MockTransport(self.handle), "resolve": self.resolve, "sleep": self.паузы.append,
+                "proxies": dict}
+
+
+print("== 1. Неизвестный размер называется с причиной, а не считается нулём ==")
 _машина = {"свободно_мб": 100000, "озу_мб": 8000, "ядра": 4}
 _с_молчащими = {"цель": ".[gpu-amd]", "пакетов": 76, "скачать_мб": 6494.0,
-                "без_размера": ["torch"], "ошибка": ""}
+                "без_размера": [{"пакет": "torch", "почему": "HEAD download.pytorch.org: нет Content-Length"}],
+                "ошибка": ""}
 _строки, _хватает = install_cost.отчёт([_с_молчащими], _машина)
-ok(any("torch" in с for с in _строки),
-   "молчащий индекс назван поимённо — иначе его ноль сложится с остальными и соврёт в меньшую")
-ok(any("больше" in с for с in _строки),
-   "сказано, что итог БОЛЬШЕ посчитанного: неполный замер обязан быть слышен")
+ok(any("torch — HEAD download.pytorch.org: нет Content-Length" in с for с in _строки),
+   "молчащий индекс назван поимённо и с причиной — иначе его ноль сложится с остальными и соврёт в меньшую")
+ok(any("больше" in с and "(torch)" in с for с in _строки),
+   "сказано, что итог БОЛЬШЕ посчитанного, и чей размер не известен: неполный замер обязан быть слышен")
 
-print("\n== 1б. Сбор цены: пакет без размера попадает в список молчащих ==")
-# Подменяем ОБА источника — состав и размер: сеть здесь не нужна, а судится именно сложение.
-_прежний_состав, _прежний_размер = install_cost.состав, install_cost.размер
+print("\n== 1б. Сбор цены дверью сервера: длина, переход, молчание, отказ, внутренняя сеть, перегрузка ==")
+# Подменяется состав (pip) и сеть (транспорт и имена двери); суд адреса, повтор и разбор длины — настоящие.
+_прежний_состав = install_cost.состав
+_пакеты = [("лёгкий", "https://files.example/light.whl"), ("молчащий", "https://files.example/silent.whl"),
+           ("за-переходом", "https://files.example/moved.whl"), ("закрытый", "https://files.example/closed.whl"),
+           ("внутренний", "https://inner.example/x.whl"), ("занятый", "https://files.example/busy.whl"),
+           ("своё-дерево", "file:///дерево")]
 install_cost.состав = lambda цель, индекс="", **_: (
-    [{"metadata": {"name": "лёгкий"}, "download_info": {"url": "https://и/лёгкий.whl"}},
-     {"metadata": {"name": "молчащий"}, "download_info": {"url": "https://и/молчащий.whl"}},
-     {"metadata": {"name": "своё-дерево"}, "download_info": {"url": "file:///дерево"}}], "")
-install_cost.размер = lambda url: 2_000_000 if "лёгкий" in url else 0
+    [{"metadata": {"name": имя}, "download_info": {"url": url}} for имя, url in _пакеты], "")
+_индекс = _Индекс(перегрузка=1)
+install_cost.швы = _индекс.швы()
 _ц = install_cost.цена(".[проба]")
-install_cost.состав, install_cost.размер = _прежний_состав, _прежний_размер
-ok(_ц["без_размера"] == ["молчащий"],
-   f"пакет с нулевым ответом индекса попал в список молчащих ({_ц['без_размера']})")
-ok(round(_ц["скачать_мб"]) == 2,
-   f"считаются только ответившие: 2 МБ, а не тишина, сложенная как ноль ({_ц['скачать_мб']:.0f})")
-ok(_ц["пакетов"] == 3,
-   "пакеты считаются все, включая своё дерево из каталога: состав и цена — разные вопросы")
+_политика = install_cost.ИНДЕКС.model.index.fetch
+_почему = {м["пакет"]: м["почему"] for м in _ц["без_размера"]}
+ok(_ц["скачать_мб"] == 6.0 and _ц["пакетов"] == 7,
+   f"сложены только названные длины: 2 + 3 (за переходом) + 1 (после повтора) МБ; пакеты — все 7, включая своё "
+   f"дерево ({_ц['скачать_мб']} МБ, {_ц['пакетов']})")
+ok(list(_почему) == ["молчащий", "закрытый", "внутренний"]
+   and _почему["молчащий"] == "HEAD files.example: нет Content-Length"
+   and "PACKAGE_INDEX_FAILED" in _почему["закрытый"] and "403" in _почему["закрытый"]
+   and "DOWNLOAD_FORBIDDEN" in _почему["внутренний"],
+   f"без размера — ровно молчащий, отказавший 403 и внутренний, каждый со своей причиной, а не нулём ({_почему})")
+ok(not [x for x in _индекс.журнал if x["ip"] == "10.0.0.5"] and "inner.example" in _индекс.спрошены,
+   "имя, ведущее во внутреннюю сеть, судится разрешением — туда ни запроса")
+ok([x["ip"] for x in _индекс.журнал if x["path"] == "/real.whl"] == ["104.16.1.1"],
+   "переход на CDN судится и разрешается заново; длина — конечного ответа")
+ok(_индекс.журнал and all(x["method"] == "HEAD" and x["timeout"] == _политика.timeout_sec for x in _индекс.журнал)
+   and {x["agent"] for x in _индекс.журнал if x["host"] == "files.example"} == {install_cost.ЗАГОЛОВКИ["User-Agent"]},
+   f"каждый запрос — HEAD со сроком из packages.yaml; индексу клиент представляется как pip "
+   f"({sorted({(x['host'], x['agent'], x['timeout']) for x in _индекс.журнал})})")
+ok(_индекс.паузы == [_политика.backoff_sec] and [x["path"] for x in _индекс.журнал].count("/busy.whl") == 2,
+   f"перегрузка (503) повторена общим циклом двери с паузой политики, вторая попытка дала длину ({_индекс.паузы})")
+ok(not any(isinstance(п, Unreached) for п in _почему.values()),
+   "хост, ответивший без длины, 403 или судом адреса, — достигнут: его следующие пакеты спрошены, а не сняты разом")
+
+print("\n== 1в. Хост, не достигнутый после всех попыток, — одно решение на прогон: остальным его пакетам та же причина ==")
+_индекс = _Индекс()
+install_cost.швы = _индекс.швы()
+_пакеты = [("лежащий-1", "https://down.example/a.whl"), ("лежащий-2", "https://down.example/b.whl"),
+           ("лёгкий", "https://files.example/light.whl")]
+_ц = install_cost.цена(".[проба]")
+_почему = {м["пакет"]: м["почему"] for м in _ц["без_размера"]}
+_ждём_паузы = [min(_политика.backoff_sec * 2 ** n, _политика.backoff_max_sec) for n in range(_политика.attempts - 1)]
+_к_лежащему = [x["path"] for x in _индекс.журнал if x["host"] == "down.example"]
+ok(_к_лежащему == ["/a.whl"] * _политика.attempts and _индекс.паузы == _ждём_паузы,
+   f"первый пакет лежащего хоста — {_политика.attempts} попыток с паузами политики, второй — ни одного запроса "
+   f"({_к_лежащему}, {_индекс.паузы})")
+ok(isinstance(_почему.get("лежащий-1"), Unreached) and _почему.get("лежащий-2") is _почему.get("лежащий-1"),
+   f"у второго — тот же объект причины, что вернула дверь первому (метка Unreached дошла без пересборки) "
+   f"({ {к: (type(п).__name__, п) for к, п in _почему.items()} })")
+ok(_ц["скачать_мб"] == 2.0 and "/light.whl" in [x["path"] for x in _индекс.журнал],
+   f"другой хост того же прогона спрашивается как обычно ({_ц['скачать_мб']} МБ)")
 
 print("\n== 2. Отказ pip — это «не посчитано», а не «влезет» ==")
 _сломанный = {"цель": ".[нет-такой-группы]", "пакетов": 0, "скачать_мб": 0.0,
@@ -61,19 +156,19 @@ _строки, _хватает = install_cost.отчёт([_сломанный], 
 ok(any("не посчитано" in с and "pip вернул 1" in с for с in _строки),
    "причина названа дословно — «не посчитано» без причины неотличимо от «ноль»")
 
-print("\n== 3. Нехватка места — твёрдый отказ с обоими числами ==")
+print("\n== 3. Нехватка места — твёрдый отказ с обоими числами; непрочитанное место — не нехватка ==")
 _тесно = {"свободно_мб": 500, "озу_мб": 8000, "ядра": 4}
 _дорого = {"цель": ".[gpu-amd]", "пакетов": 76, "скачать_мб": 6494.0,
            "без_размера": [], "ошибка": ""}
 _строки, _хватает = install_cost.отчёт([_дорого], _тесно)
-ok(not _хватает, "вердикт отрицательный: свободного меньше, чем размер скачивания")
+ok(_хватает is False, "вердикт «не хватает»: свободного меньше, чем размер скачивания")
 ok(any("НЕ ХВАТАЕТ МЕСТА" in с and "6494" in с and "500" in с for с in _строки),
    "в отказе оба числа — нужное и свободное; без них он не проверяем")
 _слепо = {"свободно_мб": None, "озу_мб": 8000, "ядра": 4}
 _строки, _хватает = install_cost.отчёт([_дорого], _слепо)
-ok(not _хватает and any("не прочитано" in с and "6494" in с for с in _строки)
+ok(_хватает is None and _строки[-1] == "  свободное место не прочитано — хватит ли 6494 МБ, судить нечем"
    and not any("НЕ ХВАТАЕТ МЕСТА" in с for с in _строки),
-   "место не прочитано — вердикт отрицательный с названной причиной, а не «не хватает» и не «хватает»")
+   f"место не прочитано — вердикт «судить нечем» (None), причина — последней строкой, а не «не хватает» ({_хватает})")
 
 print("\n== 4. Цена складывается по целям, а свободное место берётся у машины ==")
 _дёшево = {"цель": ".", "пакетов": 66, "скачать_мб": 115.0, "без_размера": [], "ошибка": ""}
@@ -84,18 +179,21 @@ ok(any("свободно на диске" in с and "ОЗУ" in с for с in _с
    "машина в отчёте названа фактами probe, а не пересказом")
 
 print("\n== 5. Состав спрашивается у pip, и его отказ доезжает причиной ==")
-_пакеты, _ошибка = install_cost.состав(".[этой-группы-нет]", python=sys.executable, таймаут=120)
-ok(_пакеты == [] and bool(_ошибка),
+_пакеты_pip, _ошибка = _прежний_состав(".[этой-группы-нет]", python=sys.executable, таймаут=120)
+ok(_пакеты_pip == [] and bool(_ошибка),
    f"несуществующая группа даёт причину, а не пустой успех ({_ошибка[:60]})")
 
-print("\n== 6. Размер недоступного адреса — ноль, и он не выдаётся за пустой пакет ==")
-ok(install_cost.размер("https://такого-адреса-нет.invalid/x.whl") == 0,
-   "недоступный адрес отвечает нулём — вызывающий обязан назвать его «не сообщил»")
-ok("User-Agent" in install_cost.ЗАГОЛОВКИ,
-   "клиент представляется: индекс PyTorch отвечает 403 без этого, и размер торча не узнать")
+print("\n== 6. Недоступный адрес — «длина не узнана» с причиной после всех попыток политики, а не ноль ==")
+# Смена поведения B1: прежде недоступный адрес давал 0 и ходил в живой DNS; теперь имена — подставные.
+_индекс = _Индекс()
+install_cost.швы = _индекс.швы()
+_длина = install_cost.размер("https://absent.example/x.whl", _политика)
+ok(_длина == (None, "HEAD absent.example: gaierror") and isinstance(_длина[1], Unreached)
+   and _индекс.паузы == _ждём_паузы and not _индекс.журнал,
+   f"имя не разрешилось — None с родом обрыва и меткой Unreached после {_политика.attempts} попыток и пауз "
+   f"{_ждём_паузы}, а не 0; запроса нет ({_длина}, {_индекс.паузы})")
 
 print("\n== 7. Установка модели отказывает по МЕСТУ, а не только предупреждает в списке ==")
-sys.path.insert(0, str(ROOT))
 import models  # тот же скрипт, что зовут меню настройки и CLI
 
 
@@ -135,9 +233,6 @@ class _Ставит(_Каталог):
         return {**место["entry"], "path": "x"}
 
 
-import contextlib
-import io
-
 for _вердикт, _ждём, _что in (
         ("yes", False, "веса и расчёт влезают — предупреждения нет, установка идёт молча"),
         ("no", True, "веса влезли, а расчёт нет — это предупреждение, а не отказ: диск и память разные вопросы")):
@@ -170,6 +265,97 @@ ok(_код == 2 and not _Ставит.ставили,
 ok("MODEL_SIZE_UNKNOWN" in _вывод.getvalue() and "unet/w.safetensors" in _вывод.getvalue()
    and "'проба'" in _вывод.getvalue(),
    f"CLI печатает текст реестра с подставленными фактами, а не пустое «✗ КОД: » ({_вывод.getvalue().strip()})")
+
+print("\n== 8. Декларация индекса — схема двери: битый ключ — отказ кодом с полем до pip ==")
+ok(isinstance(install_cost.ИНДЕКС.model, PackagesDecl), "боевой packages.yaml проходит схему целиком")
+_папка = Path(tempfile.mkdtemp())
+_звали_pip: list[str] = []
+install_cost.состав = lambda цель, индекс="", **_: (_звали_pip.append(цель), ([], ""))[1]
+_прежний_индекс = install_cost.ИНДЕКС
+for _что, _правка, _ждём in (
+        ("нет ключа", lambda f: f.pop("attempts"), "index.fetch.attempts (missing)"),
+        ("ключ тела у HEAD", lambda f: f.update(max_bytes=0), "index.fetch.max_bytes (extra_forbidden)"),
+        ("нет кода отказа", lambda f: f.update(codes={}), "index.fetch.codes.failed (missing)"),
+        ("код тела у HEAD", lambda f: f["codes"].update(corrupt="X"), "index.fetch.codes.corrupt (extra_forbidden)"),
+        ("пауза выше потолка", lambda f: f.update(backoff_sec=f["backoff_max_sec"] + 1),
+         "index.fetch.backoff_sec (backoff_over_ceiling)")):
+    _звали_pip.clear()
+    _живая = yaml.safe_load((ROOT / "config" / "packages.yaml").read_text(encoding="utf-8"))
+    _правка(_живая["index"]["fetch"])
+    (_папка / "packages.yaml").write_text(yaml.safe_dump(_живая, allow_unicode=True), encoding="utf-8")
+    install_cost.ИНДЕКС = Declared(_папка / "packages.yaml", PackageError, "индекса пакетов", "—",
+                                   schema=PackagesDecl)
+    try:
+        install_cost.цена(".")
+        _отказ = None
+    except PackageError as e:
+        _отказ = e
+    ok(_отказ is not None and _отказ.code == "DECLARATION_INVALID" and _ждём in _отказ.facts.get("details", "")
+       and not _звали_pip,
+       f"{_что}: {_ждём} — DECLARATION_INVALID с полем и правилом, pip не звался "
+       f"({_отказ and (_отказ.code, _отказ.facts)}, pip {_звали_pip})")
+install_cost.ИНДЕКС, install_cost.состав = _прежний_индекс, _прежний_состав
+shutil.rmtree(_папка, ignore_errors=True)
+
+print("\n== 9. Код выхода: «не хватает» и «не прочитано» — свои, падение — код CPython; их не спутать ==")
+_код_падения = subprocess.run([sys.executable, "-c", "raise RuntimeError"], capture_output=True).returncode
+_прежняя_цена, _прежняя_машина = install_cost.цена, install_cost.машина
+install_cost.цена = lambda цель, индекс="": _дорого
+_коды = {}
+for _имя, _факты in (("хватает", _машина), ("не хватает", _тесно), ("не прочитано", _слепо)):
+    install_cost.машина = lambda _ф=_факты: _ф
+    with contextlib.redirect_stdout(io.StringIO()):
+        _коды[_имя] = install_cost.main(["--цель", ".[gpu-amd]"])
+install_cost.цена, install_cost.машина = _прежняя_цена, _прежняя_машина
+ok(_коды == {"хватает": 0, "не хватает": install_cost.НЕ_ХВАТАЕТ, "не прочитано": install_cost.НЕ_СУДИМО}
+   and len({install_cost.НЕ_ХВАТАЕТ, install_cost.НЕ_СУДИМО, _код_падения, 2}) == 4,
+   f"«не хватает» и «не прочитано» отвечают своими кодами — не кодом падения ({_код_падения}), не ошибкой вызова "
+   f"argparse (2) и не друг другом ({_коды})")
+_пусто = tempfile.mkdtemp()
+_упал = subprocess.run([sys.executable, str(ROOT / "scripts" / "install_cost.py")], capture_output=True, text=True,
+                       env={**os.environ, "MCP_CONFIG": _пусто})
+shutil.rmtree(_пусто, ignore_errors=True)
+ok(_упал.returncode == _код_падения and "НЕ ХВАТАЕТ" not in _упал.stdout and "PackageError" in _упал.stderr,
+   f"цена не посчитана (нет декларации индекса) — код падения, а не «не хватает»: читатель кода их различит "
+   f"(код {_упал.returncode}, {_упал.stderr.strip().splitlines()[-1:]})")
+
+print("\n== 10. Конфигуратор: отказ установки называет причину отчёта; «не прочитано» — не «не хватает» ==")
+
+
+class _План:
+    """Пакеты среды расчёта ровно в той части, которую спрашивает меню: план и установка (помнит, звали ли)."""
+
+    поставили = False
+
+    def __init__(self, project):
+        self.project = project
+
+    def judge(self, names):
+        return {"plan": [{"requirement": "torch", "have": None}], "checked": 1}
+
+    def install(self, names, index="", announce=None):
+        _План.поставили = True
+        return {"outcome": "поставлено", "checked": 1, "installed": ["torch"]}
+
+
+_прежние = core.packages.Packages, install_cost.цена, install_cost.машина
+core.packages.Packages = _План
+install_cost.цена = lambda цель, индекс="": _дорого
+_печать = {}
+for _имя, _факты in (("не прочитано", _слепо), ("не хватает", _тесно)):
+    install_cost.машина = lambda _ф=_факты: _ф
+    _вывод = io.StringIO()
+    with contextlib.redirect_stdout(_вывод):
+        configure._поставить("cpu", "")
+    _печать[_имя] = _вывод.getvalue()
+core.packages.Packages, install_cost.цена, install_cost.машина = _прежние
+ok("свободное место не прочитано" in _печать["не прочитано"] and "не хватает" not in _печать["не прочитано"].lower()
+   and "отменена" in _печать["не прочитано"] and not _План.поставили,
+   f"место не прочитано — меню печатает «не прочитано» и отменяет установку, слов «не хватает» нет "
+   f"({_печать['не прочитано'].strip().splitlines()[-2:]})")
+ok("НЕ ХВАТАЕТ МЕСТА" in _печать["не хватает"] and "отменена" in _печать["не хватает"] and not _План.поставили,
+   f"законный: места меньше нужного — нехватка с обоими числами, установка отменена "
+   f"({_печать['не хватает'].strip().splitlines()[-2:]})")
 
 print(f"\nПроверок: {_checks}, провалов: {len(_fails)}")
 for _f in _fails:

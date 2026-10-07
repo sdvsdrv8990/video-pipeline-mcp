@@ -140,7 +140,8 @@ class ModelInstaller:
             try:
                 if not self._tick(install_id, место, time.time()):
                     return
-            except Exception:  # наблюдение не должно ронять установку
+            except Exception:  # наблюдение не роняет установку, но причина остановки тиков — в журнале сервера
+                log.exception("наблюдение установки %s остановлено: признак работы больше не обновляется", install_id)
                 return
 
     def _tick(self, install_id: str, место: dict, now: float) -> bool:

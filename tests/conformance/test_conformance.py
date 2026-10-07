@@ -15,10 +15,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from core.declaration import declarations_root
 from tests.harness import AuthProxy, live_server
+from tests.harness.live_server import declarations_copy
 
 PACKAGE = "@modelcontextprotocol/conformance@latest"
 
@@ -80,19 +84,21 @@ if not shutil.which("npx"):
 # Конфиг прогона: копия БОЕВОГО, в которой поднят единственный порог — частота. Сторонний клиент
 # честно бьёт 30 сценариев подряд с одного адреса и на боевых 60 запросах в минуту банит сам себя
 # (`Blocked: IP заблокирован`), после чего «несоответствие спеке» — это на самом деле блокировка.
-cfg_dir = Path(tempfile.mkdtemp(prefix="conf_cfg_")) / "config"
-shutil.copytree(ROOT / "config", cfg_dir)
-fw = cfg_dir / "firewall.yaml"
-src_fw = (ROOT / "config" / "firewall.yaml").read_text(encoding="utf-8")
-fw.write_text(re.sub(r"max_requests_per_minute:\s*\d+",
-                     "max_requests_per_minute: 100000", src_fw, count=1), encoding="utf-8")
+cfg_dir = declarations_copy({"firewall.yaml": {"rate_limit.max_requests_per_minute": 100000}})
+
+
+def _declared(root: Path, name: str) -> object:
+    return yaml.safe_load((root / name).read_text(encoding="utf-8"))
+
 
 print("== 0. Прогон идёт по боевым декларациям, кроме ОДНОГО порога ==")
-diff_keys = [p.name for p in sorted((ROOT / "config").glob("*.yaml"))
-             if (cfg_dir / p.name).read_text(encoding="utf-8") != p.read_text(encoding="utf-8")]
+live = declarations_root()
+diff_keys = [p.name for p in sorted(live.glob("*.yaml")) if _declared(cfg_dir, p.name) != _declared(live, p.name)]
 ok(diff_keys == ["firewall.yaml"],
    f"от боевого конфига отличается ровно firewall.yaml ({diff_keys})")
-ok(fw.read_text(encoding="utf-8").replace("100000", "60") == src_fw,
+fw, src_fw = _declared(cfg_dir, "firewall.yaml"), _declared(live, "firewall.yaml")
+src_fw["rate_limit"].pop("max_requests_per_minute")
+ok(fw["rate_limit"].pop("max_requests_per_minute") == 100000 and fw == src_fw,
    "и в нём — ровно порог частоты, остальные правила файрвола боевые")
 
 with live_server(env={"MCP_CONFIG": str(cfg_dir)}) as srv, AuthProxy(srv.url, srv.token) as proxy:

@@ -7,7 +7,6 @@
 import asyncio
 import os
 import re
-import shutil
 import sys
 import tempfile
 import time
@@ -22,6 +21,7 @@ os.environ.setdefault("MCP_WORKSPACE", tempfile.mkdtemp(prefix="cfgchange_ws_"))
 
 from tests.harness.inprocess import create_server
 from tests.harness import live_server
+from tests.harness.live_server import declarations_copy
 
 results = []
 
@@ -70,11 +70,10 @@ async def test_hot_reload_rejects_broken_config():
     """Смена конфига на живом сервере — битый тип не должен уезжать в правила."""
     print("\n=== Hot-reload: битый конфиг ===")
 
-    tmp = Path(tempfile.mkdtemp(prefix="cfgchange_"))
-    shutil.copytree(ROOT / "config", tmp / "config")
-    cfg = tmp / "config" / "firewall.yaml"
+    decl = declarations_copy()
+    cfg = decl / "firewall.yaml"
 
-    with live_server(env={"MCP_CONFIG": str(tmp / "config")}) as srv:
+    with live_server(env={"MCP_CONFIG": str(decl)}) as srv:
         check("до правки сервер отвечает", srv.rpc.request("tools/list", {}).status_code == 200)
 
         text = cfg.read_text(encoding="utf-8")
@@ -90,6 +89,8 @@ async def test_hot_reload_rejects_broken_config():
         # Успех перезагрузки здесь = битые правила приняты: дальше падает сравнение int со строкой,
         # и сервер отвечает отказом на КАЖДЫЙ запрос, объявив «перезагружен без рестарта».
         check("сервер объявил отказ применить, а не успех", any("НЕ применён" in ln for ln in said), said)
+        check("отказ называет причину — путь ключа, а не «битый конфиг»",
+              any("rate_limit.max_requests_per_minute" in ln for ln in said), said)
 
         resp = srv.rpc.request("tools/list", {})
         check("после битого конфига сервер продолжает обслуживать", resp.status_code == 200,

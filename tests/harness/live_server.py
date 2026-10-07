@@ -18,6 +18,9 @@ import tempfile
 import time
 from pathlib import Path
 
+import yaml
+
+from core.declaration import declarations_root
 from core.observability import Logs
 
 from .console import Console
@@ -62,7 +65,7 @@ class LiveServer:
     @property
     def journals(self) -> Logs:
         """Журналы этого сервера той же функцией, что строит их сам сервер: где его след и журнал фактов."""
-        return Logs.from_config(self.extra_env.get("MCP_CONFIG") or ROOT / "config", str(self.logs))
+        return Logs.from_config(declarations_root(self._env()), str(self.logs))
 
     def _env(self) -> dict:
         return {**os.environ,
@@ -151,3 +154,20 @@ class LiveServer:
 def live_server(**kw) -> LiveServer:
     """`with live_server() as srv:` — сервер поднят, порт свой, область своя, ключ настоящий."""
     return LiveServer(**kw)
+
+
+def declarations_copy(changes: dict[str, dict[str, object]] | None = None, root: Path | None = None) -> Path:
+    """Копия боевого каталога деклараций в `<root>/config` (инструменты считают корнем проекта родителя каталога;
+    без `root` — свой временный), значения заменены по путям ключей; боевой каталог не трогается."""
+    copy = Path(root or tempfile.mkdtemp(prefix="vpm-decl-")) / "config"
+    shutil.copytree(declarations_root(), copy)
+    for name, values in (changes or {}).items():
+        data = yaml.safe_load((copy / name).read_text(encoding="utf-8"))
+        for key, value in values.items():
+            *parents, last = key.split(".")
+            node = data
+            for part in parents:
+                node = node[part]
+            node[last] = value
+        (copy / name).write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    return copy

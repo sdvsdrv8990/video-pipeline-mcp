@@ -434,16 +434,16 @@ def main():
     decl = Declaration(decl_dir / "d.yaml", ContractError, "пробы", "")
     check("тип совпал — значение как есть; int годится там, где читают float; без типа — как раньше",
           decl.need("a", "n", kind=int) == 5 and decl.need("a", "f", kind=float) == 2 and decl.need("a", "s") == "abc")
-    for key, kind in (("s", int), ("b", int), ("n", str)):
+    for key, kind, rule in (("s", int, "int_type"), ("b", int, "int_type"), ("n", str, "string_type")):
         said = refused(lambda: decl.need("a", key, kind=kind))
-        check(f"`a.{key}` как {kind.__name__} — SCHEMA_INVALID с путём и обоими типами",
-              getattr(said, "code", None) == "SCHEMA_INVALID" and f"a.{key}" in said.message
-              and kind.__name__ in said.message, said)
+        check(f"`a.{key}` как {kind.__name__} — DECLARATION_INVALID с путём и правилом схемы ({rule})",
+              getattr(said, "code", None) == "DECLARATION_INVALID" and f"a.{key}" in said.message
+              and [(x["field"], x["rule"]) for x in said.errors] == [(f"a.{key}", rule)], said)
     (decl_dir / "firewall.yaml").write_text("write_allowlist:\n  enabled: true\n  extensions: ['.md']\n"
                                             "file_limits:\n  read_bytes: 10\n  write_bytes: много\n", encoding="utf-8")
     said = refused(lambda: files.replace("тип.md", "x", policy=WritePolicy(decl_dir)))
-    check("предел записи строкой в объявлении — SCHEMA_INVALID через путь доставки, файла нет",
-          getattr(said, "code", None) == "SCHEMA_INVALID" and "write_bytes" in said.message
+    check("предел записи строкой в объявлении — DECLARATION_INVALID через путь доставки, файла нет",
+          getattr(said, "code", None) == "DECLARATION_INVALID" and "write_bytes" in said.message
           and not (ws / "тип.md").exists(), said)
     shutil.rmtree(ws, ignore_errors=True)
 

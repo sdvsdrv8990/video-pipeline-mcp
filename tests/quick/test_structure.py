@@ -1162,7 +1162,7 @@ try:
     _WP42(_broken42).check("payload.sh")
     ok(False, "битое объявление пропустило запись")
 except _WPE42 as e:
-    ok(e.code == "SCHEMA_INVALID", f"битое объявление → код реестра, а не сырой ParserError ({e.code})")
+    ok(e.code == "DECLARATION_INVALID", f"битое объявление → код реестра, а не сырой ParserError ({e.code})")
 except Exception as e:
     ok(False, f"битое объявление отдало {type(e).__name__} мимо контракта")
 
@@ -1429,11 +1429,9 @@ ok(_r47.status == "success" and [r["path"] for r in _r47.data["results"]] == ["l
    f"поиск: совпадение найдено, файл больше предела назван в unreadable ({_r47.data.get('unreadable')})")
 
 print("== 48. Пределы чтения и записи — разные ключи объявления: равные числа подмену ключа не прячут (FS-12) ==")
-_cfg48 = Path(tempfile.mkdtemp(prefix="vpm_cfg48_")) / "config"
-_shutil.copytree(CFG, _cfg48)
-_fw48 = _y.safe_load((_cfg48 / "firewall.yaml").read_text(encoding="utf-8"))
-_fw48["file_limits"] = {"read_bytes": 64 * 1024, "write_bytes": 128 * 1024}
-(_cfg48 / "firewall.yaml").write_text(_y.safe_dump(_fw48, allow_unicode=True), encoding="utf-8")
+from tests.harness.live_server import declarations_copy as _decl_copy48
+
+_cfg48 = _decl_copy48({"firewall.yaml": {"file_limits": {"read_bytes": 64 * 1024, "write_bytes": 128 * 1024}}})
 _ws48 = Path(tempfile.mkdtemp(prefix="vpm_ws48_"))
 _sm48, _ids48 = StateManager(_ws48), IDGenerator()
 _eng48 = Engine(reactions=Reactions(_cfg48 / "server_reactions.yaml"), state_manager=_sm48)

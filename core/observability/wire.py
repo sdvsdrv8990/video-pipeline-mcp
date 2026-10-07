@@ -55,8 +55,8 @@ class WireWatch(logging.Handler):
         try:
             self.trail.refusal("wire", f"WIRE_{record.levelname}", record.getMessage()[:200],
                                args={"logger": record.name})
-        except Exception:                          # наблюдение не имеет права ронять сервер
-            pass
+        except Exception:                          # наблюдение не роняет сервер; сбой — по правилу logging, в stderr
+            self.handleError(record)
 
 
 def attach(trail) -> WireWatch | None:

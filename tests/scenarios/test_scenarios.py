@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT))
 import yaml
 
 from tests.harness import live_server
+from tests.harness.live_server import declarations_copy
 from tests.harness.scenario import (Journal, Runner, ScenarioError, Step, Vocabulary, _steps,
                                     род_сценария,
                                     load, scenario_files)
@@ -129,21 +130,27 @@ def main() -> int:
             if not scenarios:
                 continue
             print(f"\n══ {path.name}: сценариев {len(scenarios)} ══")
-            with live_server() as srv:
-                srv.rpc.timeout = 180.0        # предел КЛИЕНТА: под coverage дерево с книгами идёт дольше
-                runner = Runner(srv, journal, STEPS)
-                for scenario in scenarios:
-                    ran.add(scenario.id)
-                    print(f"\n— {scenario.id}: {scenario.why}")
-                    for check in runner.run(scenario):
-                        total += 1
-                        # Метка всегда с именем сценария: по ней сравниваются ДВА прогона
-                        # (diff поведения), а шаговые метки в разных сценариях совпадают.
-                        if check.ok:
-                            print(f"  ✓ {check.scenario} · {check.label}")
-                        else:
-                            print(f"  ✗ {check.scenario} · {check.label}  → {check.detail}")
-                            fails.append(f"{check.scenario} · {check.label} → {check.detail}")
+            # Сценарий с порчей деклараций — на своём сервере над копией каталога (MCP_CONFIG); общий сервер файла — боевой.
+            groups = [({}, [s for s in scenarios if not s.declarations])] + [
+                ({"MCP_CONFIG": str(declarations_copy(s.declarations))}, [s]) for s in scenarios if s.declarations]
+            for env, group in groups:
+                if not group:
+                    continue
+                with live_server(env=env) as srv:
+                    srv.rpc.timeout = 180.0        # предел КЛИЕНТА: под coverage дерево с книгами идёт дольше
+                    runner = Runner(srv, journal, STEPS)
+                    for scenario in group:
+                        ran.add(scenario.id)
+                        print(f"\n— {scenario.id}: {scenario.why}")
+                        for check in runner.run(scenario):
+                            total += 1
+                            # Метка всегда с именем сценария: по ней сравниваются ДВА прогона
+                            # (diff поведения), а шаговые метки в разных сценариях совпадают.
+                            if check.ok:
+                                print(f"  ✓ {check.scenario} · {check.label}")
+                            else:
+                                print(f"  ✗ {check.scenario} · {check.label}  → {check.detail}")
+                                fails.append(f"{check.scenario} · {check.label} → {check.detail}")
         only = [part for part in os.environ.get("VPM_SCENARIO", "").split(",") if part]
         for path in maps:
             # Отбор применяется и к картам: иначе «точечный прогон» тянул всю карту целиком.

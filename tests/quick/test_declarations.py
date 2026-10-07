@@ -8,6 +8,7 @@
 import copy
 import logging
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -17,11 +18,11 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError, create_model
 
 from core.contracts import ContractError
-from core.declaration import Declared
-from core.declaration_schemas import Resources
+from core.declaration import Declaration, Declared
+from core.declaration_schemas import STRICT, Resources
 from core.engine import Engine
 from core.reactions import Reactions
 
@@ -69,6 +70,15 @@ CASES = [
     ("предел без срока повтора", spoil(("classes", "gpu"), {"offload": True, "max_concurrent": 1}),
      "classes.gpu.retry_after_sec", "retry_missing"),
     ("предел ноль", spoil(("classes", "gpu", "max_concurrent"), 0), "classes.gpu.max_concurrent", "greater_than"),
+]
+
+# (что испорчено, тело декларации, путь чтения `need`, тип чтения): истина — поле и правило схемы двери на том же файле
+NEED_CASES = [
+    ("нет ключа", "a:\n  x: 1\n", ("a", "n"), int),
+    ("строка вместо числа", f"a:\n  n: {MARK}\n", ("a", "n"), int),
+    ("bool вместо числа", "a:\n  n: true\n", ("a", "n"), int),
+    ("число вместо строки", "a:\n  n: 5\n", ("a", "n"), str),
+    ("список вместо словаря", "a:\n  n: []\n", ("a", "n"), dict),
 ]
 
 
@@ -123,24 +133,18 @@ def main():
     for label, apply, field, rule in CASES:
         path = work / "bad.yaml"
         write(path, apply(real), 2_000_000_000)
-        heard, root = Heard(), logging.getLogger()
-        root.addHandler(heard)
-        try:
-            door(path).model
+        said, heard, cause = refusal_of(engine, lambda: door(path).model)
+        if said is None:
             check(label, False, "загрузилось")
             continue
-        except ContractError as e:
-            said = engine.refusal(e).error
-            cause = e.__cause__
-        finally:
-            root.removeHandler(heard)
         named = [x for x in said.errors if x.get("field") == field and x.get("rule") == rule]
-        check(f"{label}: {CODE}, {field} ({rule})", said.code == CODE and bool(named),
-              f"{said.code} · {said.errors}")
+        check(f"{label}: {CODE}, {field} ({rule}) — в errors и в доставленном тексте",
+              said.code == CODE and bool(named) and f"{field} ({rule})" in said.message,
+              f"{said.code} · {said.message} · {said.errors}")
         delivered = repr(said.model_dump())
         check(f"{label}: пришедшего значения нет ни в ответе, ни в журнале, ни в причине",
-              MARK not in delivered and not any(MARK in line for line in heard.lines) and cause is None,
-              f"ответ:{MARK in delivered} журнал:{sum(MARK in x for x in heard.lines)} причина:{cause!r}")
+              MARK not in delivered and not any(MARK in line for line in heard) and cause is None,
+              f"ответ:{MARK in delivered} журнал:{sum(MARK in x for x in heard)} причина:{cause!r}")
     write(work / "bad.yaml", spoil(("tools", "media_generate"), "gpuu")(real), 2_100_000_000)
     try:
         door(work / "bad.yaml").model
@@ -154,6 +158,67 @@ def main():
         check("сервер: битый resources.yaml — старт отказывает, а не идёт без пределов", False, "загрузилось")
     except ContractError as e:
         check("сервер: битый resources.yaml — старт отказывает, а не идёт без пределов", e.code == CODE, e.code)
+
+    print("\n== одна точка: need и битый YAML — тот же отказ двери тем же словом, что у схемы ==")
+    for n, (label, body, path, kind) in enumerate(NEED_CASES):
+        probe = work / f"need{n}.yaml"
+        probe.write_text(body, encoding="utf-8")
+        said, heard, cause = refusal_of(engine, lambda: Declaration(probe, ContractError, "пробы", "").need(*path, kind=kind))
+        word, _, _ = refusal_of(engine, lambda: Declared(probe, ContractError, "пробы", "", schema=schema_of(path, kind)).model)
+        pairs = [(x["field"], x["rule"]) for x in said.errors] if said else []
+        truth = [(x["field"], x["rule"]) for x in word.errors] if word else []
+        check(f"need: {label} — {CODE}, то же поле и правило, что у схемы двери, и они в доставленном тексте",
+              said is not None and said.code == CODE and len(pairs) == 1 and pairs[0] in truth
+              and f"{pairs[0][0]} ({pairs[0][1]})" in said.message,
+              f"need {said and (said.code, said.message)} {pairs} · схема {truth}")
+        check(f"need: {label} — значения нет ни в ответе, ни в журнале, ни в причине",
+              said is not None and MARK not in repr(said.model_dump()) and not any(MARK in x for x in heard)
+              and cause is None, f"причина:{cause!r}")
+    broken = work / "broken.yaml"
+    broken.write_text(f"a: [1\nb: {MARK}\n", encoding="utf-8")
+    said, heard, cause = refusal_of(engine, lambda: Declaration(broken, ContractError, "пробы", "").data)
+    where = said.errors[0]["field"].split(":") if said and said.errors else []
+    check(f"битый YAML — {CODE}, правило yaml_syntax, место «строка:столбец»",
+          said is not None and said.code == CODE and [x["rule"] for x in said.errors] == ["yaml_syntax"]
+          and len(where) == 2 and all(part.isdigit() for part in where), said)
+    check("битый YAML — строки файла нет ни в ответе, ни в журнале, ни в причине",
+          said is not None and MARK not in repr(said.model_dump()) and not any(MARK in x for x in heard)
+          and cause is None, f"причина:{cause!r}")
+    check("битый YAML — подсказка называет файл декларации", said is not None and "broken.yaml" in said.recovery.reason,
+          said and said.recovery.reason[:120])
+
+    print("\n== каталог деклараций: одно решение «где лежат», подсказка называет файл от него ==")
+    decl_root = Path(tempfile.mkdtemp(prefix="decl-root-"))
+    (decl_root / "install.yaml").write_text("mcp: false\ntunnel: none\n", encoding="utf-8")
+    nested = decl_root / "templates" / "workspace" / "x.tpl.yaml"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("a: [1\n", encoding="utf-8")
+    outside = work / "вне.yaml"
+    outside.write_text("a: [1\n", encoding="utf-8")
+    prior = os.environ.get("MCP_CONFIG")
+    os.environ["MCP_CONFIG"] = str(decl_root)
+    try:
+        inner, _, _ = refusal_of(engine, lambda: Declaration(nested, ContractError, "пробы", "").data)
+        outer, _, _ = refusal_of(engine, lambda: Declaration(outside, ContractError, "пробы", "").data)
+    finally:
+        if prior is None:
+            del os.environ["MCP_CONFIG"]
+        else:
+            os.environ["MCP_CONFIG"] = prior
+    named = inner.facts.get("file") if inner else None
+    check("файл в подкаталоге назван путём от каталога деклараций, подсказка — им же, без приставки",
+          named == "templates/workspace/x.tpl.yaml" and f" {named} " in f" {inner.recovery.reason}",
+          inner and (named, inner.recovery.reason[:100]))
+    shown = repr(outer.model_dump()) if outer else ""
+    check("файл вне каталога деклараций — только имя, пути хоста в ответе нет",
+          outer is not None and outer.facts.get("file") == "вне.yaml" and str(work) not in shown
+          and str(Path.home()) not in shown, outer and outer.facts)
+    seen = subprocess.run(
+        [sys.executable, "-B", "-c", "import server; from core import deploy; from core.declaration import declarations_root;"
+                                     "print(server.CONFIG_PATH == declarations_root() == deploy._CONFIG.parent, deploy.install())"],
+        cwd=ROOT, env={**os.environ, "MCP_CONFIG": str(decl_root)}, capture_output=True, text=True)
+    check("MCP_CONFIG задан — сервер, установщик и дверь видят один каталог, установщик читает его install.yaml",
+          seen.stdout.strip() == "True (False, 'none')", seen.stdout.strip() or seen.stderr.strip()[-200:])
 
     print("\n== разрушительное: правка файла посреди работы ==")
     live = work / "live.yaml"
@@ -181,8 +246,7 @@ def main():
         watched.model
         check("битый YAML — отказ кодом", False, "загрузилось")
     except ContractError as e:
-        check("битый YAML — отказ кодом, а не сырой ParserError (до DC-09 — прежний SCHEMA_INVALID двери .data)",
-              e.code == "SCHEMA_INVALID", e.code)
+        check("битый YAML — отказ кодом двери, а не сырой ParserError", e.code == CODE, e.code)
     try:
         door(work / "нет.yaml").model
         check("нет файла — отказ кодом", False, "загрузилось")
@@ -197,6 +261,25 @@ def main():
             print(f"  - {f}")
         sys.exit(1)
     print("ВСЁ ЗЕЛЁНОЕ ✅")
+
+
+def refusal_of(engine: Engine, call) -> tuple:
+    """Отказ, каким его доставит Engine, всё, что ушло в журнал за время вызова, и причина; без отказа — None."""
+    heard, root = Heard(), logging.getLogger()
+    root.addHandler(heard)
+    try:
+        call()
+        return None, heard.lines, None
+    except ContractError as e:
+        return engine.refusal(e).error, heard.lines, e.__cause__
+    finally:
+        root.removeHandler(heard)
+
+
+def schema_of(path: tuple, kind: type) -> type[BaseModel]:
+    """Схема двери, которая читает то же значение тем же типом: её поле и правило — истина для `need`."""
+    inner = create_model("Inner", __config__=STRICT, **{path[1]: (kind, ...)})
+    return create_model("Probe", __config__=STRICT, **{path[0]: (inner, ...)})
 
 
 if __name__ == "__main__":

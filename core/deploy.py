@@ -9,14 +9,14 @@
 from pathlib import Path
 
 from core.contracts.errors import ContractError
-from core.declaration import Declaration
+from core.declaration import Declaration, declarations_root
 
 ENDS = ("client", "server", "both", "none")
 
 # Прежний словарь ролей: только вход перевода, читателей у него больше нет.
 _LEGACY = {"local": (True, "client"), "server": (False, "server"), "both": (True, "both")}
 
-_CONFIG = Path(__file__).resolve().parents[1] / "config" / "install.yaml"
+_CONFIG = declarations_root() / "install.yaml"
 _DEFAULT = (True, "client")
 
 

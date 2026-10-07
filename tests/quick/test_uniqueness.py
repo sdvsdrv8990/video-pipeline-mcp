@@ -278,7 +278,7 @@ try:
     UniquenessEngine(_bad).config
     ok(False, "битый YAML должен падать кодом реестра")
 except UniquenessError as e:
-    ok(e.code == "SCHEMA_INVALID", f"битая декларация → SCHEMA_INVALID (получено {e.code})")
+    ok(e.code == "DECLARATION_INVALID", f"битая декларация → DECLARATION_INVALID (получено {e.code})")
 try:
     UniquenessEngine(Path(tempfile.mkdtemp()) / "нет.yaml").config
     ok(False, "отсутствие декларации должно падать")

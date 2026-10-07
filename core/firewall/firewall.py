@@ -82,19 +82,15 @@ class Firewall:
         (self.rate_limiter, self.injection_detector,
          self.ip_blocklist, self.anomaly_detector, self.enabled, self.log_suspicious) = rules
 
-    def reload(self, config: dict | None) -> bool:
+    def reload(self, config: dict | None) -> None:
         """Горячая перезагрузка правил из нового config БЕЗ пересоздания файрвола.
 
-        Fail-closed: битый конфиг — не выключенный файрвол, а прежние рабочие правила
-        и False на выходе. Объект Firewall тот же, поэтому все держатели (в т.ч. Transport)
-        сразу видят новые правила; рантайм-счётчики rate-limit и баны IP при этом сбрасываются.
+        Fail-closed: битый конфиг — не выключенный файрвол, а прежние рабочие правила; причина уходит
+        исключением сборки вызывающему (правила подменяются только после неё). Объект Firewall тот же,
+        поэтому все держатели (в т.ч. Transport) сразу видят новые правила; рантайм-счётчики rate-limit
+        и баны IP при этом сбрасываются.
         """
-        try:
-            rules = self._make_rules(config)
-        except Exception:
-            return False
-        self._assign(rules)
-        return True
+        self._assign(self._make_rules(config))
 
     def check(self, request: FirewallRequest) -> FirewallResult:
         """Проверка запроса через все правила: первое сработавшее и решает исход."""

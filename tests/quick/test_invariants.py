@@ -210,6 +210,32 @@ ok(len(codes_without_emitter(make({"config/server_reactions.yaml": REGISTRY_TWO,
                                    "core/contracts/error_detail.py": 'KNOWN = ("ORPHAN_CODE",)\n'}))) == 1,
    "код назван ТОЛЬКО в перечне контракта — он объявляет коды, а не бросает: находка остаётся")
 
+PACKAGES_LIVE = (ROOT / "config" / "packages.yaml").read_text(encoding="utf-8")
+
+
+ORPHAN_IN_PACKAGES = PACKAGES_LIVE.replace("PACKAGE_INDEX_FAILED", "ORPHAN_CODE")
+
+
+def с_пакетами(packages: str, reader: str = "scripts/cost.py") -> Path:
+    """Корень с packages.yaml и модулем `reader`, который читает её слот (`PACKAGES`)."""
+    return make({"config/server_reactions.yaml": REGISTRY_TWO, "core/z.py": EMITTER, "config/packages.yaml": packages,
+                 "tests/quick/tools_inventory.golden.json": INVENTORY_TWO, "tests/scenarios/a.yaml": COVERS_ALL,
+                 reader: "from core.declaration_schemas import PACKAGES\n"})
+
+
+ok(not codes_without_emitter(с_пакетами(ORPHAN_IN_PACKAGES)),
+   "код отдаёт декларация полем-кодом схемы (index.fetch.codes.failed), слот читает скрипт — обещание держат: молчим")
+ok(len(codes_without_emitter(с_пакетами(ORPHAN_IN_PACKAGES, reader="docs/cost.md"))) == 1,
+   "слот декларации не читает ни сервер, ни скрипт — её код бросить некому: находка остаётся")
+ok(len(codes_without_emitter(с_пакетами(PACKAGES_LIVE.replace("hosts: []", "hosts: [ORPHAN_CODE]")))) == 1,
+   "та же строка в поле без метки кода (hosts) — не код: суд по типу поля, а не по виду строки, находка остаётся")
+ok("packages.yaml" in отказ(codes_without_emitter, с_пакетами(PACKAGES_LIVE.replace("attempts: 6", "attempts: 0"))),
+   "декларация не проходит свою схему — ось отказывает судить и называет файл, а не молчит")
+ok(not declared_but_unscripted(с_пакетами(ORPHAN_IN_PACKAGES)),
+   "код декларации, которую читает только скрипт, сценарий сервера не достанет — в «сервер бросает» его нет")
+ok(len(declared_but_unscripted(с_пакетами(ORPHAN_IN_PACKAGES, reader="core/cost.py"))) == 1,
+   "ту же декларацию читает код сервера — её код сервер бросает, и сценария на него нет: находка")
+
 ok(not declared_but_unscripted(make({"config/server_reactions.yaml": REGISTRY_TWO,
                                      "core/z.py": EMITTER,
                                      "tests/quick/tools_inventory.golden.json": INVENTORY_TWO,
@@ -560,32 +586,49 @@ DECL = "limits:\n  max_size: 10\n"
 
 NAMES = 'DECLARATION = "config/u.yaml"\n'
 
+DOOR = ('from core.declaration import Declaration\n'
+        'cfg = Declaration("config/u.yaml", ValueError, "", "").data\n')
+
 READS_ABSENT = 'x = cfg["limits"].get("max_retries", 3)\n'
 
-ok(len(default_instead_of_declaration(make({"config/u.yaml": DECL,
-                                            "core/z.py": NAMES + READS_ABSENT}))) == 1,
-   "читают раздел декларации и спрашивают строку, которой в нём нет — значение живёт в коде")
+WRAPPED = ('from core.declaration import Declaration\n\n\n'
+           'class Limits:\n'
+           '    def __init__(self, path):\n'
+           '        self._decl = Declaration(path, ValueError, "", "")\n\n'
+           '    @property\n'
+           '    def config(self):\n'
+           '        return self._decl.data\n\n'
+           '    @property\n'
+           '    def limits(self):\n'
+           '        return self.config.get("limits") or {}\n\n'
+           '    def retries(self):\n'
+           '        return self.limits.get("max_retries", 3)\n')
 
-ok(not default_instead_of_declaration(make({"config/u.yaml": "limits:\n  max_size: 10\n  max_retries: 3\n",
-                                            "core/z.py": NAMES + READS_ABSENT})),
+
+def ручки_мимо(code: str, decl: str = DECL) -> int:
+    return len(default_instead_of_declaration(make({"config/u.yaml": decl, "core/z.py": code})))
+
+
+ok(ручки_мимо(DOOR + READS_ABSENT) == 1,
+   "у значения из двери спрашивают строку, которой в декларации нет — значение живёт в коде")
+ok(ручки_мимо(DOOR + READS_ABSENT, "limits:\n  max_size: 10\n  max_retries: 3\n") == 0,
    "ключ объявлен — дефолт лишь страхует, правка конфига действует")
-
-ok(not default_instead_of_declaration(make({"config/u.yaml": DECL, "core/z.py": READS_ABSENT})),
-   "модуль не называет ни одной декларации — он их не грузит: это данные запроса, не конфигурация")
-
-ok(not default_instead_of_declaration(make({"config/u.yaml": DECL,
-                                            "core/z.py": NAMES + 'x = q["size"].get("min", 0)\n'})),
-   "приёмник добыт НЕобъявленным ключом — раздел принадлежит запросу, а не декларации")
-
-ok(not default_instead_of_declaration(make({"config/u.yaml": DECL,
-                                            "core/z.py": NAMES + 'x = cfg["limits"].get("nested", {})\n'})),
+ok(ручки_мимо(WRAPPED) == 1,
+   "дверь в атрибуте класса, данные через обёртку config, раздел через обёртку limits — тот же факт")
+ok(ручки_мимо(DOOR + 'for name, section in cfg.items():\n    x = section.get("max_retries", 3)\n') == 1,
+   "перебор разделов декларации — значение из двери, спуск прослежен")
+ok(ручки_мимо('import core.declaration as door\ncfg = door.Declaration("config/u.yaml", ValueError, "", "").data\n'
+              + READS_ABSENT) == 1,
+   "дверь импортом модуля — полное имя то же")
+ok(ручки_мимо(NAMES + READS_ABSENT) == 0,
+   "модуль называет декларацию строкой, но приёмник не из двери — форма чтения уликой не служит")
+ok(ручки_мимо(DOOR + 'import json\nvoice = json.loads(TEXT)\nx = voice.get("limits", {}).get("max_retries", 3)\n') == 0,
+   "ответ поставщика с ключом-тёзкой декларации — внешние данные, не конфигурация (catalog.py:256)")
+ok(ручки_мимо('class Declaration:\n    data = {"limits": {}}\n\n\ncfg = Declaration().data\n' + READS_ABSENT) == 0,
+   "свой класс с именем Declaration — не дверь: имя не черта, черта — полное имя импорта")
+ok(ручки_мимо(DOOR + 'x = cfg["limits"].get("nested", {})\n') == 0,
    "дефолт не литерал — это спуск по декларации, а не ручка")
-
-ok(not default_instead_of_declaration(make({"config/u.yaml": DECL,
-                                            "core/z.py": '# грузим config/u.yaml\n' + READS_ABSENT})),
-   "имя декларации в комментарии ничего не грузит — читателем модуль не становится")
-
-ok(not default_instead_of_declaration(make({"core/z.py": NAMES + READS_ABSENT})),
+ok(not default_instead_of_declaration(make({"core/z.py": DOOR + READS_ABSENT})),
    "деклараций нет вовсе — улики нет, а не «весь конфиг мимо»")
 
 print("\n== объявлено незавершённым ==")

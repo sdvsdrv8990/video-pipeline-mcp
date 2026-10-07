@@ -19,9 +19,11 @@ import time
 import urllib.request
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+from typing import Generic, TypeVar
 
 from core.contracts import ContractError
 from core.declaration import Declaration
+from core.declaration_schemas import RESULT_FETCH, FetchPolicy, RequestPolicy, ResultFetchPolicy
 from core.paths import Files, PathEscapeError
 from .task_cycle import TaskCycleError
 
@@ -81,7 +83,10 @@ class _Again(Exception):
         self.refusal, self.wait = refusal, wait
 
 
-class Fetcher:
+P = TypeVar("P", bound=RequestPolicy)
+
+
+class Fetcher(Generic[P]):
     """Часть по ссылке в файл корня — один загрузчик сервера для весов и для результатов поставщиков.
 
     Остаток — под именем владельца и переживает процесс (MF-04); докачка — `Range` от его длины с `If-Range` валидатором
@@ -91,18 +96,9 @@ class Fetcher:
     данные его декларации; транспорт, разрешение имён и сон внедряются (MF-16).
     """
 
-    # Политика загрузчика — одна форма для каждой декларации потребителя (веса, результаты поставщиков).
-    POLICY = ("schemes", "hosts", "block_private", "max_bytes", "timeout_sec", "redirects", "attempts",
-              "backoff_sec", "backoff_max_sec", "retry_after_max_sec", "jitter", "speed_floor_bytes_per_sec",
-              "speed_window_sec", "retry_on", "codes")
-
-    def __init__(self, policy: dict, *, transport=None, resolve=socket.getaddrinfo, sleep=time.sleep,
+    def __init__(self, policy: P, *, transport=None, resolve=socket.getaddrinfo, sleep=time.sleep,
                  rng: random.Random | None = None, proxies=urllib.request.getproxies_environment, mark=None,
                  clock=time.monotonic):
-        missing = [key for key in self.POLICY if key not in policy]
-        if missing:
-            details = f"в политике загрузки не объявлено: {', '.join(missing)}"
-            raise ContractError("SCHEMA_INVALID", details, facts={"details": details})
         self.policy = policy
         self.transport = transport
         self.resolve = resolve
@@ -119,38 +115,59 @@ class Fetcher:
         Обрыв оставляет остаток с заметкой, и следующий вызов того же владельца докачивает. Каждая попытка идёт от
         исходного адреса: подписанная ссылка CDN истекает, а переход судится и разрешается заново.
         """
+        body = self._body()
         part = files.remnant(path, owner)
         part.parent.mkdir(parents=True, exist_ok=True)
         resumed_from = self._usable(files, path, owner, part, size)[0]
-        cap, jitter = float(self.policy["backoff_max_sec"]), float(self.policy["jitter"])
-        pause, attempts, restarted = float(self.policy["backoff_sec"]), max(1, int(self.policy["attempts"])), False
         with contextlib.ExitStack() as stack:
-            routes: dict[str, object] = {}
-
-            def client(proxy: str):
-                if proxy not in routes:
-                    routes[proxy] = stack.enter_context(self._client(proxy))
-                return routes[proxy]
-
-            for attempt in range(attempts):
-                try:
-                    host, again = self._attempt(client, url, files, path, owner, part, size, headers)
-                    restarted = restarted or again
-                    break
-                except _Again as e:
-                    if attempt + 1 == attempts:
-                        raise e.refusal from e
-                    self.mark()
-                    self.sleep(min(max(pause, e.wait), cap) * (1 + jitter * self.rng.random()))
-                    pause = min(pause * 2, cap)
+            client = self._routes(stack)
+            try:
+                host, restarted = self._retry(
+                    lambda: self._attempt(client, url, files, path, owner, part, size, headers))
+            except _Again as e:
+                raise e.refusal from e
         got = part.stat().st_size
         found = file_digest(part, algo, self.mark) if digest else ""
         if found != digest.lower():
             files.drop(path, owner)
-            raise ContractError(self.policy["codes"]["corrupt"],
+            raise ContractError(body.codes.corrupt,
                                 facts={"part": files.name(files.place(path)), "expected": digest, "got": found})
         return {"path": files.publish(path, owner), "bytes": got, "resumed_from": resumed_from,
                 "restarted": restarted, "host": host}
+
+    def _body(self) -> FetchPolicy:
+        """Политика приёма тела: загрузчик, построенный с политикой без тела (длина по HEAD), тело не принимает — это
+        ошибка кода вызывающего, а не декларации; проверка до первого запроса."""
+        if not isinstance(self.policy, FetchPolicy):
+            raise TypeError(f"приём тела требует FetchPolicy, а загрузчик построен с {type(self.policy).__name__}")
+        return self.policy
+
+    def _retry(self, attempt):
+        """Попытка до исхода — один цикл повтора для всех приёмников двери. Повторимое (`_Again`) — пауза: своя растёт
+        вдвое от `backoff_sec` до `backoff_max_sec`, срок сервера не короче своей, разброс `jitter`; последний `_Again`
+        после `attempts` попыток — наружу: отказ это или «не узнано», решает приёмник."""
+        cap, jitter = self.policy.backoff_max_sec, self.policy.jitter
+        pause, left = self.policy.backoff_sec, self.policy.attempts
+        while True:
+            try:
+                return attempt()
+            except _Again as e:
+                left -= 1
+                if not left:
+                    raise
+                self.mark()
+                self.sleep(min(max(pause, e.wait), cap) * (1 + jitter * self.rng.random()))
+                pause = min(pause * 2, cap)
+
+    def _routes(self, stack: contextlib.ExitStack):
+        """Клиент маршрута по прокси — один на прокси за время вызова, закрывается вместе со `stack`."""
+        routes: dict[str, object] = {}
+
+        def client(proxy: str):
+            if proxy not in routes:
+                routes[proxy] = stack.enter_context(self._client(proxy))
+            return routes[proxy]
+        return client
 
     @staticmethod
     def _usable(files: Files, path, owner: str, part: Path, size: int | None) -> tuple[int, str, str]:
@@ -171,12 +188,7 @@ class Fetcher:
             return held, False
         response, host = self._open(client, url, headers, offset, validator, held)
         try:
-            status = response.status_code
-            if status in {int(c) for c in self.policy["retry_on"]}:
-                raise _Again(self._failed(host, status), retry_after(
-                    response.headers.get("Retry-After"), float(self.policy["retry_after_max_sec"]), 0.0))
-            if status >= REFUSED_FROM:
-                raise self._failed(host, status)
+            status = self._status(response, host)
             restarted = False
             if status == PARTIAL:
                 got = str(response.headers.get("content-range") or "")
@@ -195,6 +207,17 @@ class Fetcher:
             response.close()
         return host, restarted
 
+    def _status(self, response, host: str) -> int:
+        """Код ответа, судимый одинаково у всех приёмников: повторимый по `retry_on` — `_Again` со сроком сервера,
+        4xx и 5xx — отказ кодом потребителя, иначе код как есть."""
+        status = response.status_code
+        if status in self.policy.retry_on:
+            raise _Again(self._failed(host, status), retry_after(
+                response.headers.get("Retry-After"), self.policy.retry_after_max_sec, 0.0))
+        if status >= REFUSED_FROM:
+            raise self._failed(host, status)
+        return status
+
     @staticmethod
     def _append(files: Files, path, owner: str, part: Path) -> int:
         """Дескриптор дозаписи своего остатка, не проходя ссылку на его месте (FS-14): ссылку снимает `drop`, сама
@@ -207,17 +230,19 @@ class Fetcher:
             files.drop(path, owner)
             raise PathEscapeError(files.name(part)) from e
 
-    def _open(self, client, url: str, headers: dict | None, offset: int, validator: str, held: str):
+    def _open(self, client, url: str, headers: dict | None, offset: int, validator: str, held: str, *,
+              method: str = "GET", stop: str = ""):
         """Запрос с переходами — (ответ потоком, конечный хост). Каждый адрес судится до запроса.
 
         Напрямую — соединение на судимый IP (`Host` и SNI — исходное имя); через прокси среды — по имени, его разрешает
         прокси, а суд схемы и хоста тот же. Заголовки потребителя (ключ) уходят только исходному хосту; `Range` с
         `If-Range` — только хосту, чей валидатор лежит в заметке: валидатор одного сервера другому ничего не говорит.
+        Ответ с заголовком `stop` возвращается, даже если это переход.
         """
         import httpx
 
         origin = httpx.URL(url).host
-        for _ in range(int(self.policy["redirects"]) + 1):
+        for _ in range(self.policy.redirects + 1):
             target = httpx.URL(url)
             self._allowed(target)
             proxy = self._proxy(target)
@@ -228,9 +253,9 @@ class Fetcher:
             sent.update({"Host": target.netloc.decode("ascii"), "Accept-Encoding": "identity"})
             route = client(proxy)
             if proxy:
-                request = route.build_request("GET", target, headers=sent)
+                request = route.build_request(method, target, headers=sent)
             else:
-                request = route.build_request("GET", target.copy_with(host=self._judge(target)), headers=sent,
+                request = route.build_request(method, target.copy_with(host=self._judge(target)), headers=sent,
                                               extensions={"sni_hostname": target.host})
             try:
                 self.mark()
@@ -238,11 +263,11 @@ class Fetcher:
             except httpx.TransportError as e:
                 raise _Again(self._failed(target.host, type(e).__name__)) from e
             location = response.headers.get("location")
-            if response.status_code not in REDIRECTS or not location:
+            if response.status_code not in REDIRECTS or not location or (stop and stop in response.headers):
                 return response, target.host
             response.close()
             url = str(target.join(location))
-        raise self._failed(httpx.URL(url).host, f"переходов больше {self.policy['redirects']}")
+        raise self._failed(httpx.URL(url).host, f"переходов больше {self.policy.redirects}")
 
     def _proxy(self, target) -> str:
         """Прокси среды для адреса или пусто: схема и NO_PROXY — по правилам urllib, как у httpx с trust_env."""
@@ -254,8 +279,8 @@ class Fetcher:
 
     def _allowed(self, target) -> None:
         """Схема и хост — ровно из объявленных; `объявленный@чужой` — хост чужой, имя пользователя не в счёт."""
-        schemes = [str(s).lower() for s in self.policy["schemes"]]
-        hosts = [str(h).lower() for h in self.policy["hosts"]]
+        schemes = [s.lower() for s in self.policy.schemes]
+        hosts = [h.lower() for h in self.policy.hosts]
         if target.scheme not in schemes:
             raise ContractError("DOWNLOAD_FORBIDDEN", facts={"host": target.host, "allowed": ", ".join(schemes)})
         if hosts and target.host not in hosts:
@@ -268,7 +293,7 @@ class Fetcher:
         except OSError as e:
             raise _Again(self._failed(target.host, type(e).__name__)) from e
         addresses = list(dict.fromkeys(str(info[4][0]) for info in found))
-        inner = next((a for a in addresses if inner_address(a)), None) if self.policy["block_private"] else None
+        inner = next((a for a in addresses if inner_address(a)), None) if self.policy.block_private else None
         if inner or not addresses:
             raise ContractError("DOWNLOAD_FORBIDDEN", facts={"host": target.host, "address": inner or "—"})
         return addresses[0]
@@ -279,8 +304,7 @@ class Fetcher:
         import httpx
 
         route = {"transport": self.transport} if self.transport is not None or not proxy else {"proxy": proxy}
-        timeout = float(self.policy["timeout_sec"])
-        return httpx.Client(**route, timeout=timeout, follow_redirects=False, trust_env=False)
+        return httpx.Client(**route, timeout=self.policy.timeout_sec, follow_redirects=False, trust_env=False)
 
     @staticmethod
     def _validator(response) -> dict:
@@ -299,7 +323,7 @@ class Fetcher:
         return offset + int(told) if told.isdigit() else None
 
     def _failed(self, host: str, status) -> ContractError:
-        return ContractError(self.policy["codes"]["failed"], facts={"host": host, "status": status})
+        return ContractError(self.policy.codes.failed, facts={"host": host, "status": status})
 
     @staticmethod
     def _short(host: str, got: int, expected: int | None) -> ContractError:
@@ -310,8 +334,7 @@ class Fetcher:
         """Наибольшая тишина между отметками работы: на переходе — соединение и ожидание ответа (2 × timeout_sec,
         httpx меряет их порознь), либо пауза перед повтором (backoff_max_sec × (1 + jitter) — потолок сна в `fetch`);
         число попыток ограничено `attempts`, так что отметки не вечны."""
-        timeout, cap = float(self.policy["timeout_sec"]), float(self.policy["backoff_max_sec"])
-        return max(2 * timeout, cap * (1 + float(self.policy["jitter"])))
+        return max(2 * self.policy.timeout_sec, self.policy.backoff_max_sec * (1 + self.policy.jitter))
 
     def take(self, response, files: Files, path, owner: str, *, host: str, size: int | None = None,
              offset: int = 0) -> int:
@@ -328,8 +351,9 @@ class Fetcher:
             raise self._failed(host, f"Content-Encoding {coding}")
         part = files.remnant(path, owner)
         expected = size if size is not None else self._length(response, offset)
-        limit, over = int(self.policy["max_bytes"]), ""
-        floor, window = self.policy["speed_floor_bytes_per_sec"], self.policy["speed_window_sec"]
+        body = self._body()
+        limit, over = body.max_bytes, ""
+        floor, window = body.speed_floor_bytes_per_sec, body.speed_window_sec
         began, in_window = self.clock(), 0
         with os.fdopen(self._append(files, path, owner, part), "ab") as fh:
             try:
@@ -357,7 +381,7 @@ class Fetcher:
             files.drop(path, owner)
             if over == "limit":
                 raise ContractError("DOWNLOAD_TOO_LARGE", facts={"limit_mb": round(limit / 2**20, 3)})
-            raise ContractError(self.policy["codes"]["corrupt"],
+            raise ContractError(body.codes.corrupt,
                                 facts={"part": files.name(files.place(path)), "expected": size, "got": offset})
         if expected is not None and offset < expected:
             raise _Again(self._short(host, offset, expected))
@@ -366,6 +390,7 @@ class Fetcher:
     def receive(self, response, files: Files, path, owner: str, *, accept) -> Path:
         """Тело уже открытого ответа API в файл через остаток владельца (адрес судил вызывающий): тип — из объявленных до
         записи (NI-03), обрыв — отказ без повтора и без остатка, POST не докачивается (NI-05); целое встаёт под имя."""
+        self._body()
         host = response.url.host
         kind = str(response.headers.get("content-type") or "").split(";")[0].strip().lower()
         if kind not in accept:
@@ -379,9 +404,39 @@ class Fetcher:
             raise e.refusal from e
         return files.publish(path, owner)
 
+    def length(self, url: str, headers: dict | None = None, *, linked: str = "") -> tuple[int | None, str]:
+        """Длина файла по HEAD без тела — (байты или None, откуда длина или почему её нет).
 
-def results(config_file: str | Path, **seams) -> Fetcher:
+        Переходы, суд адреса и повтор — те же, что у `fetch`; остановка — на ответе с заголовком `linked` (длина файла
+        за переходом на CDN), иначе длина — `Content-Length` ответа, который не переход. Сеть не ответила или ответила
+        повторимым и после всех попыток — (None, `Unreached`): хост не достигнут; ответил без длины — (None, причина).
+        Чужой хост, внутренний адрес, отказ источника — отказ кодом.
+        """
+        with contextlib.ExitStack() as stack:
+            client = self._routes(stack)
+            try:
+                return self._retry(lambda: self._head(client, url, headers, linked))
+            except _Again as e:
+                return None, Unreached(f"HEAD {e.refusal.facts['host']}: {e.refusal.facts['status']}")
+
+    def _head(self, client, url: str, headers: dict | None, linked: str) -> tuple[int | None, str]:
+        """Одна попытка HEAD — (байты или None, откуда длина или почему её нет); повторимое — `_Again`."""
+        response, host = self._open(client, url, headers, 0, "", "", method="HEAD", stop=linked)
+        response.close()
+        status = self._status(response, host)
+        named = linked if linked and linked in response.headers else "Content-Length"
+        told = "" if named != linked and status in REDIRECTS else str(response.headers.get(named) or "")
+        if not told.isdigit():
+            return None, f"HEAD {host}: нет {' и '.join(filter(None, (linked, 'Content-Length')))}"
+        return int(told), f"HEAD {host}: {named}"
+
+
+class Unreached(str):
+    """Причина «длина не узнана» от `Fetcher.length`, когда дверь исчерпала повторы — хост не достигнут."""
+
+
+def results(config_file: str | Path, **seams) -> Fetcher[ResultFetchPolicy]:
     """Загрузчик результатов поставщиков по `download.fetch` декларации задач; ссылки на файл (`url_fields`) — там же."""
     decl = Declaration(config_file, TaskCycleError, "ожидания",
                        "Заведи config/media_tasks.yaml — правила загрузки объявлены там.")
-    return Fetcher(decl.need("download", "fetch", kind=dict), **seams)
+    return Fetcher(decl.section(*RESULT_FETCH.section, schema=RESULT_FETCH.schema), **seams)

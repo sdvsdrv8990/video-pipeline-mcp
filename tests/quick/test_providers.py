@@ -140,7 +140,7 @@ try:
     ProviderResolver(_bad).config
     ok(False, "битый YAML должен падать")
 except ProviderError as e:
-    ok(e.code == "SCHEMA_INVALID", f"битая декларация → SCHEMA_INVALID ({e.code})")
+    ok(e.code == "DECLARATION_INVALID", f"битая декларация → DECLARATION_INVALID ({e.code})")
 try:
     ProviderResolver(Path(tempfile.mkdtemp()) / "нет.yaml").config
     ok(False, "отсутствие декларации должно падать")
@@ -183,7 +183,7 @@ try:
     _got = ProviderResolver(_typo).resolve(_exhausted_rows, "tts")
     ok(False, f"опечатка в имени ключа отдала провайдера {_got['provider']} вместо отказа")
 except ProviderError as e:
-    ok(e.code == "SCHEMA_INVALID",
+    ok(e.code == "DECLARATION_INVALID",
        f"опечатка в ключе лимита → отказ, а не молчаливый выбор исчерпанного ({e.code})")
 
 _gone = _declared_as(lambda d: d.pop("limits"))
@@ -191,7 +191,7 @@ try:
     _got = ProviderResolver(_gone).resolve(_exhausted_rows, "tts")
     ok(False, f"снос раздела limits отдал провайдера {_got['provider']} вместо отказа")
 except ProviderError as e:
-    ok(e.code == "SCHEMA_INVALID",
+    ok(e.code == "DECLARATION_INVALID",
        f"снесённый раздел лимитов → отказ: контроль расхода не выключается молча ({e.code})")
 
 print("== 9. Инструмент: кто исполняет и какой моделью (шаг 2) ==")
@@ -693,17 +693,13 @@ _FakeLink.url = f"http://127.0.0.1:{_httpd.server_port}/result.wav"
 
 # Конфиг сервера не трогаем: копия каталога config/ + свой движок на ней. Правка боевого
 # конфига «на время теста» — ровно тот немой побочный эффект, который мы ловим у других.
-import shutil as _sh
-_acfg_dir = Path(tempfile.mkdtemp(prefix="async_cfg_")) / "config"
-_sh.copytree(ROOT / "config", _acfg_dir)
-_adata = yaml.safe_load(CFG.read_text(encoding="utf-8"))
-_adata["adapters"]["by_provider"]["Обл_async"] = "fake_async:_FakeAsync"
-_adata["adapters"]["by_provider"]["Обл_link"] = "fake_async:_FakeLink"
-(_acfg_dir / "providers.yaml").write_text(yaml.safe_dump(_adata, allow_unicode=True), encoding="utf-8")
+from tests.harness.live_server import declarations_copy
+
 # Тестовый провайдер живёт на петле — послабление объявлено в КОПИИ конфига, боевой запрет цел.
-_mdata = yaml.safe_load((_acfg_dir / "media_tasks.yaml").read_text(encoding="utf-8"))
-_mdata["download"]["fetch"].update({"schemes": ["http", "https"], "block_private": False})
-(_acfg_dir / "media_tasks.yaml").write_text(yaml.safe_dump(_mdata, allow_unicode=True), encoding="utf-8")
+_acfg_dir = declarations_copy({
+    "providers.yaml": {"adapters.by_provider.Обл_async": "fake_async:_FakeAsync",
+                       "adapters.by_provider.Обл_link": "fake_async:_FakeLink"},
+    "media_tasks.yaml": {"download.fetch.schemes": ["http", "https"], "download.fetch.block_private": False}})
 
 (_ws / "a").mkdir()
 _arow = {"resource_type": "tts_characters", "provider": "Обл_async", "fallback_provider": "",
@@ -866,11 +862,8 @@ except PathEscapeError:
     ok(False, "закрытый каталог назван «выходом за область» — причина подменена")
 
 print("== 14b. Провайдеру нужен ключ: сервер говорит «прав нет», а не молчит ==")
-_kcfg_dir = Path(tempfile.mkdtemp(prefix="key_cfg_")) / "config"
-_sh.copytree(ROOT / "config", _kcfg_dir)
-_kdata = yaml.safe_load(CFG.read_text(encoding="utf-8"))
-_kdata["adapters"]["by_provider"]["Обл_ключ"] = {"adapter": "fake_async:_FakeKeyed", "requires_key": True}
-(_kcfg_dir / "providers.yaml").write_text(yaml.safe_dump(_kdata, allow_unicode=True), encoding="utf-8")
+_kcfg_dir = declarations_copy({"providers.yaml": {
+    "adapters.by_provider.Обл_ключ": {"adapter": "fake_async:_FakeKeyed", "requires_key": True}}})
 
 
 class _FakeKeyed:
@@ -1280,17 +1273,17 @@ class _Models(_http.BaseHTTPRequestHandler):
 _mserv = _http.HTTPServer(("127.0.0.1", 0), _Models)
 _thr.Thread(target=_mserv.serve_forever, daemon=True).start()
 
-_ocfg_dir = Path(tempfile.mkdtemp(prefix="online_")) / "config"
-_sh.copytree(ROOT / "config", _ocfg_dir)
-_odata = yaml.safe_load(CFG.read_text(encoding="utf-8"))
-# https обязателен с ключом — для двойника послабление объявлено в КОПИИ конфига, боевой запрет цел.
-_odata["online"]["live"]["Двойник"] = {"url": f"https://127.0.0.1:{_mserv.server_port}/v1/models",
-                                       "auth": "bearer", "items": "data", "id_field": "id"}
-(_ocfg_dir / "providers.yaml").write_text(yaml.safe_dump(_odata, allow_unicode=True), encoding="utf-8")
+def _twin(scheme: str) -> Path:
+    """providers.yaml копии деклараций с двойником живого списка по `scheme`; боевой запрет цел."""
+    return declarations_copy({"providers.yaml": {"online.live.Двойник": {
+        "url": f"{scheme}://127.0.0.1:{_mserv.server_port}/v1/models", "auth": "bearer", "items": "data",
+        "id_field": "id"}}}) / "providers.yaml"
+
 
 from core.providers.catalog import OnlineCatalog as _OC
 
-_oc = _OC(_ocfg_dir / "providers.yaml")
+# https обязателен с ключом — для двойника послабление объявлено в КОПИИ конфига.
+_oc = _OC(_twin("https"))
 try:
     _oc.live("Двойник", "ключ")
     ok(False, "https-двойник без сертификата должен падать по сети, а не по проверке схемы")
@@ -1298,9 +1291,7 @@ except ProviderError as e:
     ok(e.code == "PROVIDER_FAILED", f"недоступный адрес → PROVIDER_FAILED, не молчание ({e.code})")
 
 # Тот же двойник по http: проверяем, что схема ловится ДО того, как ключ уйдёт в открытый канал.
-_odata["online"]["live"]["Двойник"]["url"] = f"http://127.0.0.1:{_mserv.server_port}/v1/models"
-(_ocfg_dir / "providers.yaml").write_text(yaml.safe_dump(_odata, allow_unicode=True), encoding="utf-8")
-_oc2 = _OC(_ocfg_dir / "providers.yaml")
+_oc2 = _OC(_twin("http"))
 try:
     _oc2.live("Двойник", "ключ")
     ok(False, "http с ключом должен отбиваться")
@@ -1608,9 +1599,11 @@ ok(_mc.entries() == _mc.inventory(),
    "что знает сервер о локальных моделях = опись поставленного, второго списка нет")
 
 # Протокол загрузки весов — политика загрузчика `local.install.fetch`, а не переключатель клиента HF (`transfer`).
+from core.declaration_schemas import FetchPolicy as _FetchPolicy
+
 _fetch_decl = _cfg_local["install"]["fetch"]
 ok(_fetch_decl["schemes"] == ["https"] and "transfer" not in _cfg_local["install"]
-   and _mc.fetcher().policy == _fetch_decl,
+   and _mc.fetcher().policy == _FetchPolicy.model_validate(_fetch_decl),
    "веса тянет загрузчик по объявленной политике: только https, хосты точные, переключателя Xet нет")
 _bare_cfg = _ws.parent / "providers_nofetch.yaml"
 _bare_data = yaml.safe_load(CFG.read_text(encoding="utf-8"))
@@ -1620,7 +1613,7 @@ try:
     ModelCatalog(_bare_cfg, ROOT / "vendor" / "models").fetcher()
     ok(False, "без объявленной политики загрузчик не строится")
 except ProviderError as _e_nofetch:
-    ok(_e_nofetch.code == "SCHEMA_INVALID",
+    ok(_e_nofetch.code == "DECLARATION_INVALID",
        f"нет `local.install.fetch` — отказ кодом, а не умолчание в коде ({_e_nofetch.code})")
 
 _inst_tool = _call("media_models", scope="installed")
@@ -2013,7 +2006,8 @@ try:
         _e13b = _remove_bg(_ws / "rb13h.png")
         ok(_e13b is not None and _e13b.code == "PROVIDER_FAILED" and _e13b.facts.get("status") == "Content-Type text/html"
            and not _left13(_ws / "rb13h.png"), f"HTML вместо картинки — отказ до записи, файла нет ({_e13b and _e13b.facts})")
-        _him13.results = lambda cfg, **seams: _F13({**_real_results13(cfg, **seams).policy, "max_bytes": 1024}, **seams)
+        _him13.results = lambda cfg, **seams: _F13(
+            _real_results13(cfg, **seams).policy.model_copy(update={"max_bytes": 1024}), **seams)
         _httpx.stream = _stream13(_parts13)
         _e13b = _remove_bg(_ws / "rb13l.png")
         ok(_e13b is not None and _e13b.code == "DOWNLOAD_TOO_LARGE" and not _left13(_ws / "rb13l.png"),
@@ -2318,18 +2312,14 @@ ok(_dstr17.count("-v ") >= 2 and "vendor/models" in _dstr17 and str(_ws) in _dst
 ok("providers.yaml:ro" in _dstr17 and "tunnel.yaml" not in _dstr17,
    "декларации монтируются живые и только для чтения, а секреты внутрь не едут")
 
-# Стенд: свободный порт + КОПИЯ конфига, состояние и журнал в темпе. Боевой vendor/ не трогаем —
-# иначе тест поднимал бы раннер поверх настоящего и стирал его запись о запуске.
+# Стенд: свободный порт + КОПИЯ конфига в своём корне проекта; состояние и журнал — путями от этого корня, как их
+# разрешает супервизор. Боевой vendor/ не трогаем — иначе тест поднимал бы раннер поверх настоящего и стирал его запись.
 _p17 = _sock17.socket(); _p17.bind(("127.0.0.1", 0)); _port17 = _p17.getsockname()[1]; _p17.close()
 _tmp17 = Path(tempfile.mkdtemp(prefix="runner_"))
-_cfg17 = _tmp17 / "config"
-_sh.copytree(ROOT / "config", _cfg17)
-_d17 = yaml.safe_load((_cfg17 / "providers.yaml").read_text(encoding="utf-8"))
-_d17["online"]["http"]["Local_runner"]["url"] = f"http://127.0.0.1:{_port17}/run"
-_d17["local"]["runner"].update({"state_file": str(_tmp17 / "state.json"),
-                                "log_file": str(_tmp17 / "runner.log")})
-_d17["local"]["models_dir"] = str(_reg.models_dir)
-(_cfg17 / "providers.yaml").write_text(yaml.safe_dump(_d17, allow_unicode=True), encoding="utf-8")
+_cfg17 = declarations_copy({"providers.yaml": {"online.http.Local_runner.url": f"http://127.0.0.1:{_port17}/run",
+                                               "local.runner.state_file": "state.json",
+                                               "local.runner.log_file": "runner.log",
+                                               "local.models_dir": str(_reg.models_dir)}}, root=_tmp17)
 
 _row17 = {**_row_bg, "provider": "Local_runner"}
 (_ws / "pic" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
@@ -2356,9 +2346,12 @@ try:
     _start17 = _c17("media_runner", action="start")
     ok(_start17.status == "success" and _start17.data["phase"] == "running" and _start17.data["pid"],
        f"инструмент поднял раннер ({_start17.data.get('phase') if _start17.status == 'success' else _start17.error.code})")
+    _state17 = _tmp17 / "state.json"
+    ok(_start17.status != "success" or _state17.is_file(),
+       f"состояние раннера легло от корня проекта копии — state_file объявлен путём от корня ({_state17})")
 
-    if _start17.status == "success":
-        _tok17 = _json.loads((_tmp17 / "state.json").read_text(encoding="utf-8"))["token"]
+    if _start17.status == "success" and _state17.is_file():
+        _tok17 = _json.loads(_state17.read_text(encoding="utf-8"))["token"]
         _base17 = f"http://127.0.0.1:{_port17}"
 
         # Токен не украшение: на петле сидит не только сервер.
@@ -2621,6 +2614,8 @@ def _model_fetch(work: Path, records: list[str]) -> None:
     cuts: dict[tuple[str, str], int] = {}   # обрыв тела части после стольких байт — на один ответ
     away: dict[tuple[str, str], str] = {}   # resolve части ведёт не на CDN, а сюда
     during: dict[tuple[str, str], object] = {}  # вызов посреди отдачи части — пока её загрузка идёт; на один ответ
+    lengthless: set[tuple[str, str]] = set()    # CDN отдаёт часть без Content-Length
+    unlinked: set[tuple[str, str]] = set()  # переход resolve на CDN без X-Linked-Size
 
     def put(repo_id: str, name: str, data: bytes, lfs: bool = True):
         """Файл источника и его строка model_info: длина и отпечаток сняты с самих байтов, а не с кода цели."""
@@ -2651,7 +2646,7 @@ def _model_fetch(work: Path, records: list[str]) -> None:
                 if cut is not None and i - start >= cut:
                     raise _hx19.ReadError("соединение оборвано")
                 yield data[i:i + 64]
-        headers = {"etag": tag, "content-length": str(len(data) - start)}
+        headers = {"etag": tag} if key in lengthless else {"etag": tag, "content-length": str(len(data) - start)}
         if start:
             headers["content-range"] = f"bytes {start}-{len(data) - 1}/{len(data)}"
         return _hx19.Response(206 if start else 200, headers=headers, content=stream())
@@ -2663,13 +2658,15 @@ def _model_fetch(work: Path, records: list[str]) -> None:
         if host == "huggingface.co":
             repo_id, _, rest = request.url.path.lstrip("/").partition("/resolve/")
             revision, _, name = rest.partition("/")
-            calls.append(("get", repo_id, name, revision, request.headers.get("range")))
+            calls.append((request.method.lower(), repo_id, name, revision, request.headers.get("range")))
             if (repo_id, name) not in remote:
                 return _hx19.Response(404)
             if (repo_id, name) in away:
                 return _hx19.Response(302, headers={"location": away[(repo_id, name)]})
             if (repo_id, name) in lfs_files:
-                return _hx19.Response(302, headers={"location": f"https://us.aws.cdn.hf.co/{repo_id}/{name}"})
+                # Длина файла за CDN — в заголовке перехода, как у настоящего на HEAD (huggingface_hub v1.31.0).
+                told = {} if (repo_id, name) in unlinked else {"x-linked-size": str(len(remote[(repo_id, name)]))}
+                return _hx19.Response(302, headers={"location": f"https://us.aws.cdn.hf.co/{repo_id}/{name}", **told})
             return served((repo_id, name), request)
         owner, repo_name, path = request.url.path.lstrip("/").split("/", 2)
         return served((f"{owner}/{repo_name}", path), request)
@@ -2684,8 +2681,7 @@ def _model_fetch(work: Path, records: list[str]) -> None:
     _t19.sleep = pauses.append
 
     models = work / "vendor" / "models"
-    cfg = work / "config" / "providers.yaml"
-    cfg.parent.mkdir(parents=True)
+    cfg = declarations_copy(root=work) / "providers.yaml"   # боевые декларации проекта `work`, своя — поверх
     retry = {"idempotent_methods": ["GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE"],
              "retry_after_max_sec": 30, "backoff_max_sec": 60, "backoff_jitter_ratio": 0}
     cfg.write_text(yaml.safe_dump({"online": {"retry": retry}, "local": {
@@ -2696,6 +2692,7 @@ def _model_fetch(work: Path, records: list[str]) -> None:
             "image": {"kind": "hf_hub", "dest": "img"},
             "bg_removal": {"kind": "hf_hub", "dest": "bg", "require_formats": [".onnx"]},
         },
+        "source_kinds": {"hf_hub": {"size_header": "X-Linked-Size"}},
         "install": {
             "allow_sources": ["huggingface.co"],
             "allow_suffixes": [".safetensors", ".onnx", ".json", ".txt"],
@@ -2713,12 +2710,12 @@ def _model_fetch(work: Path, records: list[str]) -> None:
                           "org/big": "rev-big", "org/closed": "rev-closed", "org/noonnx": "rev-noonnx",
                           "org/nodigest": "rev-nodigest", "org/liar": "rev-liar", "org/short": "rev-short",
                           "org/legacy": "rev-legacy", "org/space": "rev-space", "org/blind": "rev-blind",
+                          "org/headed": "rev-headed", "org/told": "rev-told", "org/astray": "rev-astray",
                           "org/moved": "rev-moved", "org/cut": "rev-cut", "org/away": "rev-away",
                           "org/twice": "rev-twice", "org/held": "rev-held", "org/slow": "rev-slow",
                           "org/foo": "rev-foo", "other/foo": "rev-other-foo", "third/foo": "rev-third-foo"},
         },
     }}, allow_unicode=True), encoding="utf-8")
-    _sh19.copy(ROOT / "config" / "server_reactions.yaml", cfg.parent)   # реестр отказов рядом с декларацией
     cat = ModelCatalog(cfg, models)
     graph, prep, voice_graph = b"g" * 300, b"{}" * 5, b"v" * 100
 
@@ -2814,6 +2811,10 @@ def _model_fetch(work: Path, records: list[str]) -> None:
     ok(all(d["verdict"] == "ready" and d["checked"] == "по длине" for d in seen.values()),
        f"целиком поставленные модели готовы, и в строке названо, как проверено ({seen})")
     ok({r["id"]: r for r in cat.installed()}["sd"]["variant"] == "fp16", "вариант весов виден в строке поставленного")
+    told = cat.manifest("org/sd", "image").get("params_total", "нет поля")
+    ok(told is None, f"источник не назвал числа параметров (нет safetensors) — в составе None, а не 0 ({told!r})")
+    told = {r["id"]: r for r in cat.installed()}["sd"].get("params_total", "нет поля")
+    ok(told is None, f"строка поставленного отдаёт неизвестное число параметров как None, а не 0 ({told!r})")
 
     print("== 19d. Состав: каждая часть с длиной, отпечатком и его алгоритмом, по пути ==")
     bg_parts = cat.manifest("org/bg", "bg_removal")["parts"]
@@ -3063,7 +3064,7 @@ def _model_fetch(work: Path, records: list[str]) -> None:
     bare.write_text(yaml.safe_dump({"local": {"models_dir": "vendor/models"}}), encoding="utf-8")
     sent = answers(Resp(200))
     ok(refused(lambda: HttpImageAPI(AdapterRegistry(bare, work))._request(
-        {"retry_on": [503]}, "POST", url, req)) == "SCHEMA_INVALID" and sent == [],
+        {"retry_on": [503]}, "POST", url, req)) == "DECLARATION_INVALID" and sent == [],
        "нет объявления повторов — отказ декларации до запроса, умолчания в коде нет")
 
     print("== 19m. Готовность к подъёму: состав по длине, отказ кодом причины, руками положенное — по политике ==")
@@ -3083,7 +3084,7 @@ def _model_fetch(work: Path, records: list[str]) -> None:
     base = yaml.safe_load(cfg.read_text(encoding="utf-8"))
     for policy, code, what in (("refuse", "MODEL_UNVERIFIED", "политика refuse — отказ"),
                                ("maybe", "SCHEMA_INVALID", "чужое значение — отказ декларации"),
-                               (None, "SCHEMA_INVALID", "ключа нет — отказ декларации, умолчания в коде нет")):
+                               (None, "DECLARATION_INVALID", "ключа нет — отказ декларации, умолчания в коде нет")):
         variant = work / f"hand_{policy}" / "providers.yaml"
         variant.parent.mkdir()
         local = {k: v for k, v in base["local"].items() if k != "hand_placed"} | ({"hand_placed": policy} if policy else {})
@@ -3162,11 +3163,117 @@ def _model_fetch(work: Path, records: list[str]) -> None:
     mark = len(calls)
     cat.install_planned(cat.место_под("org/sd", "image"))
     ok(not downloads(mark), "переустановка целой модели снимком не тянет ничего — пустой план не значит «весь репозиторий»")
-    info["org/blind"] = repo(sibling("model.onnx", None, sha=_hl19.sha256(b"b").hexdigest()))
+    # Длина части — по ступеням (MS-04): метаданные источника → HEAD без тела → неизвестна. Истина — байты стенда.
+    def unsized(repo_id: str, data: bytes, *, linked: bool, cdn_length: bool) -> None:
+        """Часть, чью длину model_info не назвал; HEAD найдёт её в X-Linked-Size перехода и/или в Content-Length CDN."""
+        found = put(repo_id, "model.onnx", data)
+        found.size = None
+        if not linked:
+            unlinked.add((repo_id, "model.onnx"))
+        if not cdn_length:
+            lengthless.add((repo_id, "model.onnx"))
+        info[repo_id] = repo(found)
+
+    def placed(repo_id: str) -> dict:
+        """Снимок места или код отказа: отказ — провал проверки, а не всего §19."""
+        try:
+            return cat.место_под(repo_id, "bg_removal")
+        except ContractError as e:          # каталог и загрузчик отказывают каждый своим кодом
+            return {"code": e.code}
+
+    unsized("org/headed", b"h" * 300_000, linked=True, cdn_length=False)
+    unsized("org/told", b"t" * 200_000, linked=False, cdn_length=True)
+    unsized("org/blind", b"b" * 100_000, linked=False, cdn_length=False)
+    for repo_id, mb, step in (("org/headed", 0.3, "X-Linked-Size перехода"), ("org/told", 0.2, "Content-Length CDN")):
+        mark = len(calls)
+        got = placed(repo_id)
+        sizes = [p["size"] for p in got.get("plan") or []]
+        ok(got.get("нужно_мб") == mb and sizes == [len(remote[(repo_id, "model.onnx")])]
+           and [c[0] for c in calls[mark:] if c[0] != "model_info"] == ["head"],
+           f"{repo_id}: метаданные длину не назвали — её назвал HEAD ({step}), тело не тянули ({got} {calls[mark:]})")
+        row = cat._detail(repo_id, [".onnx"], False)
+        ok(row.get("mb") == mb and "size_unknown" not in row, f"{repo_id}: строка списка — та же длина по HEAD ({row})")
     ok(outcome(lambda: cat.место_под("org/blind", "bg_removal")) == "MODEL_SIZE_UNKNOWN",
-       "длина части плана не названа — MODEL_SIZE_UNKNOWN, а не «хватает»")
+       "длину не назвали ни метаданные, ни HEAD — MODEL_SIZE_UNKNOWN, а не 0 и не «хватает»")
     said = delivered(lambda: cat.место_под("org/blind", "bg_removal"))
-    ok("model.onnx" in said and "org/blind" in said, f"клиент видит модель и часть без длины ({said})")
+    ok(all(s in said for s in ("org/blind", "model.onnx", "HEAD", "X-Linked-Size", "Content-Length")),
+       f"клиент видит модель, часть без длины и что спрошено ({said})")
+    row = cat._detail("org/blind", [".onnx"], False)
+    ok(row.get("mb") is None and "HEAD" in str((row.get("size_unknown") or {}).get("model.onnx")),
+       f"строка списка: размер пуст, а не 0, и названо, что спрошено ({row})")
+    from core.providers.download import Unreached
+
+    class _Недостижим:
+        """Загрузчик ровно в части, которую спрашивает ступень HEAD: длина не узнана с заданной причиной."""
+
+        def __init__(self, how):
+            self.how = how
+
+        def length(self, url, headers=None, *, linked=""):
+            return None, self.how
+
+    stages = []
+    for how in ("HEAD us.aws.cdn.hf.co: 503", Unreached("HEAD us.aws.cdn.hf.co: 503")):
+        cat.fetcher = lambda mark=None, _how=how: _Недостижим(_how)
+        stages.append(cat._part_sizes("org/blind", info["org/blind"], ["model.onnx"]))
+    del cat.fetcher
+    ok(stages[0] == stages[1] and stages[1][0] == {"model.onnx": None} and "503" in stages[1][1]["model.onnx"],
+       f"ступень HEAD каталога на причине Unreached («хост не достигнут») — тот же исход, что на простой строке ({stages})")
+
+    # Список хаба — по записанному ответу (MS-07): свойства вне expand хаб не присылает вовсе.
+    import json as _json19
+
+    from core.providers.hardware import FitEstimator
+    recorded = _json19.loads((ROOT / "tests" / "quick" / "hf_list_models.recorded.json").read_text(encoding="utf-8"))
+
+    class RecordedApi:
+        """Хаб по записанному ответу: запись — по источнику и по тому, есть ли likes в expand; разбор — ModelInfo хаба."""
+
+        def list_models(self, **kw):
+            label = "с_likes" if "likes" in (kw.get("expand") or []) else "без_likes"
+            return [_hf19.ModelInfo(**{"siblings": None, **item})
+                    for item in recorded[f"{'фон' if kw.get('filter') else 'картинка'}/{label}"]]
+
+    real_hf_api, _hf19.HfApi = _hf19.HfApi, RecordedApi
+    try:
+        hub = [r for src, kind in (({"tags": ["background-removal", "onnx"]}, "bg_removal"),
+                                   ({"pipeline_tag": "text-to-image"}, "image"))
+               for r in cat._from_hf(src, {}, 2, kind)]
+    finally:
+        _hf19.HfApi = real_hf_api
+    ok([(r["id"], r["likes"], r["downloads"]) for r in hub]
+       == [(m["id"], m["likes"], m["downloads"]) for key in ("фон/с_likes", "картинка/с_likes") for m in recorded[key]],
+       f"likes и downloads — числа хаба: likes просится в expand, иначе хаб его не пришлёт ({hub and hub[0]})")
+    totals = {r["id"]: r["params_total"] for r in hub}
+    ok(totals["abenzerps/Qwen-Image-2.1-Uncensored-GGUF"] is None
+       and totals["stabilityai/stable-diffusion-xl-base-1.0"] == 2567463684,
+       f"без safetensors (GGUF) хаб числа параметров не называет — None, а не 0; названное — как есть ({totals})")
+    est = FitEstimator({"dtype_bytes": {"F16": 2, "F32": 4}, "default_dtype_bytes": 4, "overhead": 1.0,
+                        "dtype_alias": {"fp16": "F16"}})
+    got = (est.bytes_for({"F32": 10}, None, as_dtype="fp16"), est.bytes_for({}, None), est.bytes_for({}, 5))
+    ok(got == (20, 0, 20),
+       "узел «параметры неизвестны» — bytes_for: None → число из разрядностей, поднятое в fp16 (10 × 2); ни total, "
+       f"ни разрядностей — знак 0 байт; названное число — по нему (5 × 4) ({got})")
+    kept = cat._enrich([{"id": "org/blind", "mb": None}, {"id": "org/headed", "mb": None}], [".onnx"], False, 1000, 5)
+    ok([r["id"] for r in kept] == ["org/blind"],
+       f"отсев min_mb: неизвестный размер не «мельче» — строка остаётся, известные 0.3 МБ отсеяны ({kept})")
+    unsized("org/astray", b"a" * 100_000, linked=False, cdn_length=True)
+    away[("org/astray", "model.onnx")] = "https://evil.example/x"
+    mark = len(wire)
+    try:
+        row = cat._detail("org/astray", [".onnx"], False)
+    except ContractError as e:
+        row = {"вылетел": e.code}       # строка списка не должна ронять весь список
+    ok(placed("org/astray") == {"code": "DOWNLOAD_FORBIDDEN"} and row.get("detail_error") == "DOWNLOAD_FORBIDDEN"
+       and not [w for w in wire[mark:] if w[0] == "evil.example"],
+       f"переход HEAD на чужой хост — отказ суда, а не «размер неизвестен»; строка списка называет код; туда ни "
+       f"запроса ({row} {wire[mark:]})")
+    fit = cat.with_fit(kept)[0]["fit"] if kept else {}
+    ok(fit.get("verdict") == "unknown" and "ни размера" in str(fit.get("why")),
+       f"пригодность без параметров и размера — «неизвестно» с причиной, а не «влезает» ({fit})")
+    ok(ModelCatalog._voice_mb({"files": {"a.onnx": {"size_bytes": 5_000_000}, "a.json": {}}}) is None
+       and ModelCatalog._voice_mb({"files": {"a.onnx": {"size_bytes": 5_000_000}, "a.json": {"size_bytes": 100_000}}})
+       == 5.1, "голос piper: файл без size_bytes — сумма неизвестна (None), а не меньше; названы все — сумма")
     real_probe = hw_mod.probe
     try:
         hw_mod.probe = lambda *a, **k: {**real_probe(*a, **k), "disk_free_mb": None}
@@ -3217,8 +3324,6 @@ def _model_fetch(work: Path, records: list[str]) -> None:
 
     print("== 19p. Повторная установка поставленной — «уже стоит» сразу: без задачи, сети и чтения весов (MF-17) ==")
     import threading
-    _sh19.copytree(ROOT / "config", cfg.parent, dirs_exist_ok=True,
-                   ignore=lambda d, names: {"providers.yaml"} if Path(d) == ROOT / "config" else set())
     shas, asked = {"org/float": "c1"}, []
 
     class FakeApi:

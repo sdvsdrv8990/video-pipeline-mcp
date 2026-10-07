@@ -14,11 +14,18 @@ import re
 import sys
 from collections.abc import Set as AbstractSet
 from pathlib import Path
+from typing import TypeGuard
 import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(ROOT))
+
+from core.contracts import ContractError  # noqa: E402
+from core.declaration import Declaration  # noqa: E402
+from core import declaration_schemas  # noqa: E402
+from core.declaration_schemas import SLOTS, Slot, registry_codes  # noqa: E402
 
 
 class НетУлики(Exception):
@@ -297,37 +304,72 @@ def scenario_calls_unknown_tool(root: Path = ROOT) -> list[str]:
 QUOTED_CODE = re.compile(r'["\']([A-Z][A-Z_0-9]{3,})["\']')
 
 
-def _emitted_codes(root: Path) -> set[str]:
-    """Коды, которые сервер вообще способен бросить.
+def _emitted_codes(root: Path, sources: list[Path]) -> set[str]:
+    """Коды, которые названный код способен бросить: в кавычках и из деклараций, которые он читает.
 
     Перечень контракта `error_detail.py` исключён: он коды ОБЪЯВЛЯЕТ, и с ним живым выглядит
     каждый. Берётся любая упомянутая в кавычках строка, а не одна форма вызова: `RAISED_CODE`
     видит 61 код из 66, и сторож на нём обвинял бы живые пути — ложное обвинение выключают
     быстрее, чем отсутствие сторожа.
     """
-    sources = [p for p in sorted(list((root / "core").rglob("*.py")) + list((root / "tools").rglob("*.py")))
-               if "__pycache__" not in str(p) and p != _at(root, CONTRACT)]
-    if (root / "server.py").exists():
-        sources.append(root / "server.py")
     found: set[str] = set()
     for source in sources:
-        found |= set(QUOTED_CODE.findall(source.read_text(encoding="utf-8")))
+        if source != _at(root, CONTRACT):
+            found |= set(QUOTED_CODE.findall(source.read_text(encoding="utf-8")))
+    return found | _declared_codes(root, sources)
+
+
+def _declared_codes(root: Path, readers: list[Path]) -> set[str]:
+    """Коды из деклараций, которые читает названный код: значения полей-кодов реестра в схемах слотов (`SLOTS`),
+    прочитанные дверью. Слот читает модуль, который импортирует его из `core.declaration_schemas`.
+
+    Их бросает потребитель политики за декларацию (загрузчик — `codes.failed`), и в коде они в кавычках не стоят.
+    Нет файла — нет и кодов из него; битая декларация — отказ судить, а не молчание.
+    """
+    named = {id(value): name for name, value in vars(declaration_schemas).items() if isinstance(value, Slot)}
+    imported: set[str] = set()
+    for reader in readers:
+        try:
+            tree = ast.parse(reader.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        imported |= {alias.name for node in ast.walk(tree)
+                     if isinstance(node, ast.ImportFrom) and node.module == declaration_schemas.__name__
+                     for alias in node.names}
+    found: set[str] = set()
+    for slot in (s for s in SLOTS if named.get(id(s)) in imported):
+        path = _at(root, ("config", slot.file))
+        if not path.exists():
+            continue
+        try:
+            found |= registry_codes(Declaration(path, ContractError, slot.file, "").section(*slot.section,
+                                                                                          schema=slot.schema))
+        except ContractError as сбой:
+            raise НетУлики(f"{slot.file} не проходит свою схему ({сбой.code}) — коды из неё не прочитать") from None
     return found
+
+
+def _script_sources(root: Path) -> list[Path]:
+    """Скрипты проекта: отвечают клиенту CLI тем же реестром (`cli_text`). Сторожа сюда не входят."""
+    return [p for p in sorted((root / "scripts").rglob("*.py"))
+            if "__pycache__" not in p.parts and "guards" not in p.relative_to(root).parts]
 
 
 def codes_without_emitter(root: Path = ROOT) -> list[str]:
     """Код объявлен клиенту реестром — а бросить его некому: обещание, которого никто не держит.
 
     Обратная сторона `codes_outside_registry`, и она молчала: ИИ читает реестр как перечень
-    возможных отказов и строит на нём восстановление, а такой отказ не придёт никогда.
+    возможных отказов и строит на нём восстановление, а такой отказ не придёт никогда. Бросить
+    может сервер и скрипты проекта: клиент CLI получает отказ тем же реестром.
     """
     registry = _at(root, REGISTRY)
     if not registry.exists():
         return []
     declared = {k for k, v in (yaml.safe_load(registry.read_text(encoding="utf-8")) or {}).items()
                 if isinstance(v, dict)}
-    return [f"код `{code}` объявлен в server_reactions.yaml, но ни один путь сервера его не бросает"
-            for code in sorted(declared - _emitted_codes(root))]
+    emitted = _emitted_codes(root, _python_sources(root) + _script_sources(root))
+    return [f"код `{code}` объявлен в server_reactions.yaml, но ни сервер, ни скрипты проекта его не бросают"
+            for code in sorted(declared - emitted)]
 
 
 def declared_but_unscripted(root: Path = ROOT) -> list[str]:
@@ -335,7 +377,8 @@ def declared_but_unscripted(root: Path = ROOT) -> list[str]:
 
     Слепота растёт молча: новый код отказа попадает в реестр, новый инструмент — в опись, а
     покрытие остаётся вчерашним. Храповик держит потолок, и долг закрывается ОБЪЯВЛЕНИЕМ в
-    `tests/scenarios/*.yaml` — python-скрипт на новый код писать не нужно.
+    `tests/scenarios/*.yaml` — python-скрипт на новый код писать не нужно. Судится только код
+    сервера: отказ скрипта сценарий сервера не достанет.
     """
     calls, codes = _scenario_declarations(root)
     notes = []
@@ -346,7 +389,7 @@ def declared_but_unscripted(root: Path = ROOT) -> list[str]:
         # Код, который бросить некому, сценарием не закрывается в принципе — он у соседнего
         # сторожа, и считать его здесь значило бы требовать невозможного.
         notes += [f"код отказа `{code}` сервер бросает, но ни один сценарий его не ждёт"
-                  for code in sorted((declared & _emitted_codes(root)) - codes)]
+                  for code in sorted((declared & _emitted_codes(root, _python_sources(root))) - codes)]
     inventory = _at(root, INVENTORY)
     if inventory.exists():
         notes += [f"инструмент `{tool}` есть в описи, но ни один сценарий его не зовёт"
@@ -1009,15 +1052,14 @@ def default_instead_of_declaration(root: Path = ROOT) -> list[str]:
     """Ключ читают с дефолтом, а в декларации его нет: значение живёт в коде, конфиг бессилен.
 
     Зеркало «ручки без читателя»: там объявление без читателя, здесь читатель без объявления.
-    Обвиняется не всякий `.get(имя, дефолт)` — таких на дереве 64, и это заголовки HTTP, поля
-    JSON-RPC, параметры инструментов и разбор `/proc`, то есть данные запроса, а не конфигурация.
-    Уликой чтение делают два условия разом: модуль называет файл декларации СТРОКОЙ (в комментарии
-    имя ничего не грузит), а приёмник добыт ОБЪЯВЛЕННЫМ ключом — читают раздел декларации и
-    спрашивают в нём строку, которой там нет. Дефолт обязан быть литералом: `.get("раздел", {})` —
-    это спуск по декларации, а не ручка.
+    Обвиняется не всякий `.get(имя, дефолт)` — это и заголовки HTTP, и поля JSON-RPC, и параметры
+    инструментов, и ответы поставщиков. Уликой чтение делает ФАКТ, а не форма: приёмник — значение из
+    двери деклараций (`Declaration`/`Declared` по полному имени импорта → `.data`, `.model`, `.need()`,
+    `.optional()`, обёртка класса, которая их отдаёт, спуск через `[…]`, `.get`, `or`, перебор), а
+    спрашиваемой строки нет ни в одной декларации. Дефолт обязан быть литералом: `.get("раздел", {})` —
+    спуск, а не ручка. Предел: значение, пришедшее аргументом или через чужой объект, не прослеживается.
     """
-    declarations = [f.name for f in sorted((root / "config").glob("*.yaml"))]
-    if not declarations:
+    if not any((root / "config").glob("*.yaml")):
         return []
     keys = _declaration_keys(root)
     notes = []
@@ -1026,26 +1068,134 @@ def default_instead_of_declaration(root: Path = ROOT) -> list[str]:
             tree = ast.parse(source.read_text(encoding="utf-8"))
         except SyntaxError:
             continue
-        strings = [n.value for n in ast.walk(tree)
-                   if isinstance(n, ast.Constant) and isinstance(n.value, str)]
-        if not any(name in text for text in strings for name in declarations):
-            continue
-        for node in ast.walk(tree):
-            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "get" and len(node.args) == 2):
-                continue
+        for node in _DoorFacts(tree).reads():
             key, default = node.args
-            if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
-                continue
-            if not isinstance(default, ast.Constant) or key.value in keys:
-                continue
-            section = _addressed_by(node.func.value)
-            if section is None or section not in keys:
-                continue
-            notes.append(f"{source.relative_to(root)}:{node.lineno} — `{key.value}` спрашивают "
-                         f"у раздела `{section}` с дефолтом {default.value!r}, а строки такой в "
-                         f"декларациях нет: значение живёт в коде, правка конфига бессильна")
+            if (isinstance(key, ast.Constant) and isinstance(key.value, str) and isinstance(default, ast.Constant)
+                    and key.value not in keys):
+                notes.append(f"{source.relative_to(root)}:{node.lineno} — `{key.value}` спрашивают у значения из "
+                             f"двери деклараций с дефолтом {ast.unparse(default)}, а строки такой в декларациях нет: "
+                             f"значение живёт в коде, правка конфига бессильна")
     return notes
+
+
+DOOR = {"core.declaration.Declaration", "core.declaration.Declared"}
+DOOR_DATA = {"data", "model"}          # свойства двери, отдающие разобранную декларацию
+DOOR_READS = {"need", "optional"}      # методы двери, отдающие её значение
+
+
+class _DoorFacts:
+    """Факты одного модуля: что держит дверь деклараций или её данные — имена области, атрибуты `self` класса,
+    обёртки класса (свойство или метод, которые их возвращают). Собирается до неподвижной точки: обёртка
+    `local` держится на обёртке `config`."""
+
+    def __init__(self, tree: ast.Module):
+        self.tree = tree
+        self.imported: dict[str, str] = {}                 # имя в модуле → полное имя по импорту
+        self.owner: dict[ast.AST, ast.ClassDef] = {}
+        self.sites: list[tuple[ast.stmt, ast.AST]] = []    # присваивание, перебор, возврат — с областью имён
+        self.gets: list[tuple[ast.Call, ast.expr, ast.AST]] = []   # `.get(ключ, дефолт)`, его приёмник, область имён
+        self._scan(tree, None, tree)
+        self.bound: set[tuple[int, str, str]] = set()      # (id области, имя или self.атрибут, obj | data)
+        self.wrappers: set[tuple[int, str]] = set()        # (id класса, имя обёртки)
+        while self._learn():                               # факты только прибывают, а их число конечно
+            pass
+
+    def reads(self) -> list[ast.Call]:
+        """Вызовы `.get(ключ, дефолт)` у значения из двери."""
+        return [call for call, receiver, scope in self.gets if self._data(receiver, scope)]
+
+    def _scan(self, node: ast.AST, cls: ast.ClassDef | None, scope: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if cls is not None:
+                    self.owner[child] = cls
+                self._scan(child, cls, child)
+                continue
+            match child:
+                case ast.Assign() | ast.AnnAssign() | ast.For() | ast.Return():
+                    self.sites.append((child, scope))
+                case ast.Call(func=ast.Attribute(value=receiver, attr="get"), args=[_, _]):
+                    self.gets.append((child, receiver, scope))
+                case ast.ImportFrom(module=str(module), level=0):
+                    self.imported.update({a.asname or a.name: f"{module}.{a.name}" for a in child.names})
+                case ast.Import():
+                    self.imported.update({a.asname or a.name: a.name for a in child.names})
+            self._scan(child, child if isinstance(child, ast.ClassDef) else cls, scope)
+
+    def _learn(self) -> bool:
+        before = len(self.bound) + len(self.wrappers)
+        for node, scope in self.sites:
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                kind = "obj" if self._obj(node.value, scope) else "data" if self._data(node.value, scope) else ""
+                for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                    self._bind(target, scope, kind)
+            elif isinstance(node, ast.For):
+                self._bind_loop(node, scope)
+            elif isinstance(node, ast.Return) and node.value is not None and scope in self.owner:
+                if self._data(node.value, scope):
+                    self.wrappers.add((id(self.owner[scope]), getattr(scope, "name", "")))
+        return len(self.bound) + len(self.wrappers) > before
+
+    def _bind(self, target: ast.AST, scope: ast.AST, kind: str) -> None:
+        if not kind:
+            return
+        if isinstance(target, ast.Name):
+            self.bound.add((id(scope), target.id, kind))
+        elif _self_attr(target) and scope in self.owner:
+            self.bound.add((id(self.owner[scope]), f"self.{target.attr}", kind))
+
+    def _bind_loop(self, node: ast.For, scope: ast.AST) -> None:
+        it = node.iter
+        over = (it.func.value if isinstance(it, ast.Call) and isinstance(it.func, ast.Attribute)
+                and it.func.attr in {"items", "values"} else it)
+        if not self._data(over, scope):
+            return
+        target = node.target.elts[-1] if isinstance(node.target, ast.Tuple) and node.target.elts else node.target
+        self._bind(target, scope, "data")
+
+    def _obj(self, node: ast.AST, scope: ast.AST) -> bool:
+        if isinstance(node, ast.Call):
+            return self._full(node.func) in DOOR
+        return self._held(node, scope, "obj")
+
+    def _data(self, node: ast.AST, scope: ast.AST) -> bool:
+        if isinstance(node, ast.Attribute) and node.attr in DOOR_DATA and self._obj(node.value, scope):
+            return True
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in DOOR_READS and self._obj(node.func.value, scope):
+                return True
+            if node.func.attr == "get" and self._data(node.func.value, scope):
+                return True
+            if _self_attr(node.func) and self._wrapper(node.func.attr, scope):
+                return True
+        if isinstance(node, ast.Subscript):
+            return self._data(node.value, scope)
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+            return self._data(node.values[0], scope)
+        if _self_attr(node) and self._wrapper(node.attr, scope):
+            return True
+        return self._held(node, scope, "data")
+
+    def _held(self, node: ast.AST, scope: ast.AST, kind: str) -> bool:
+        if isinstance(node, ast.Name):
+            return (id(scope), node.id, kind) in self.bound or (id(self.tree), node.id, kind) in self.bound
+        cls = self.owner.get(scope)
+        return _self_attr(node) and cls is not None and (id(cls), f"self.{node.attr}", kind) in self.bound
+
+    def _wrapper(self, name: str, scope: ast.AST) -> bool:
+        cls = self.owner.get(scope)
+        return cls is not None and (id(cls), name) in self.wrappers
+
+    def _full(self, func: ast.AST) -> str:
+        if isinstance(func, ast.Name):
+            return self.imported.get(func.id, "")
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id in self.imported:
+            return f"{self.imported[func.value.id]}.{func.attr}"
+        return ""
+
+
+def _self_attr(node: ast.AST) -> TypeGuard[ast.Attribute]:
+    return isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self"
 
 
 def declaration_loaded_privately(root: Path = ROOT) -> list[str]:

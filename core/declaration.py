@@ -6,13 +6,19 @@
 передаёт вызывающий — по нему видно, где порвалось.
 """
 
+import os
+from collections.abc import Mapping
+from functools import cache
 from pathlib import Path
 from typing import Generic, TypeVar, overload
 
 import yaml
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
+
+from core.declaration_schemas import STRICT
 
 T = TypeVar("T")
+M = TypeVar("M", bound=BaseModel)
 
 
 class Declaration:
@@ -37,11 +43,19 @@ class Declaration:
             try:
                 data = yaml.safe_load(self.config_file.read_text(encoding="utf-8")) or {}
             except yaml.YAMLError as e:
-                raise self._error(
-                    "SCHEMA_INVALID", f"Битый {self.config_file.name}: {e}",
-                    reason="Почини YAML — без него сервер не знает, как работать.") from e
+                # Без цепочки причины: текст ошибки YAML несёт строку файла вместе со значениями.
+                raise self._invalid([_yaml_error(e)]) from None
             self._data, self._mtime = data, mtime
         return self._data
+
+    def _invalid(self, errors: list[dict]) -> Exception:
+        """Единственный отказ на битую декларацию — битый YAML, нет ключа, не тот тип, схема: путь ключа и правило,
+        без пришедших значений. Файл назван от каталога деклараций; файл вне него — только имя: путь хоста в ответ не идёт."""
+        root, file = declarations_root(), self.config_file.resolve()
+        return self._error(
+            "DECLARATION_INVALID", errors=errors,
+            facts={"file": file.relative_to(root).as_posix() if file.is_relative_to(root) else file.name,
+                   "details": "; ".join(f"{x['field'] or '—'} ({x['rule']})" for x in errors)})
 
     def optional(self) -> dict:
         """Декларация, отсутствие которой — решение вызывающего, а не отказ.
@@ -62,33 +76,29 @@ class Declaration:
 
         Копия рядом с чтением (`sec.get("limit_column", "daily_limit")`) глушит опечатку в
         декларации: правка конфига не действует и об этом никто не узнаёт. `kind` — тип, которым
-        вызывающий читает значение: другой — тоже код реестра с путём и обоими типами, а не сырой
+        вызывающий читает значение: другой — тот же отказ двери с путём и правилом схемы, а не сырой
         ValueError у `int("abc")` дальше по коду.
         """
         node: object = self.data
         for depth, key in enumerate(path, 1):
             if not isinstance(node, dict) or key not in node:
-                raise self._error(
-                    "SCHEMA_INVALID", f"В {self.config_file.name} не объявлено `{'.'.join(path)}`.",
-                    reason=f"Добавь строку `{'.'.join(path[:depth])}`: сервер читает её оттуда, "
-                           f"своей копии у него нет.")
+                raise self._invalid(_missing(path[:depth]))
             node = node[key]
-        if kind is not None and not _is(node, kind):
-            raise self._error(
-                "SCHEMA_INVALID", f"В {self.config_file.name} `{'.'.join(path)}` — {type(node).__name__} "
-                                  f"«{node}», а сервер читает его как {kind.__name__}.",
-                reason=f"Поправь значение `{'.'.join(path)}`: тип задан тем, кто его читает, своей копии у сервера нет.")
+        if kind is not None:
+            try:
+                _adapter(kind).validate_python(node)
+            except ValidationError as e:
+                raise self._invalid(_schema_errors(e, path)) from None
         return node
 
-
-def _is(value: object, kind: type) -> bool:
-    """bool — подкласс int, но числом в декларации не считается; int годится там, где читают float."""
-    if isinstance(value, bool):
-        return kind is bool
-    return isinstance(value, (int, float) if kind is float else kind)
-
-
-M = TypeVar("M", bound=BaseModel)
+    def section(self, *path: str, schema: type[M]) -> M:
+        """Раздел декларации по пути — объект своей схемы: проверен целиком и неизменяем; битый — тот же отказ двери
+        с путём ключа от корня файла. Схема — модель со своей строгостью, поэтому без `_adapter`."""
+        node = self.need(*path)
+        try:
+            return schema.model_validate(node)
+        except ValidationError as e:
+            raise self._invalid(_schema_errors(e, path)) from None
 
 
 class Declared(Declaration, Generic[M]):
@@ -111,17 +121,37 @@ class Declared(Declaration, Generic[M]):
             try:
                 model = self._schema.model_validate(data)
             except ValidationError as e:
-                errors = _schema_errors(e)
                 # Без цепочки причины: текст ValidationError несёт пришедшие значения, а журнал отказа пишет причину.
-                raise self._error(
-                    "DECLARATION_INVALID", errors=errors,
-                    facts={"file": self.config_file.name,
-                           "details": "; ".join(f"{x['field'] or '—'} ({x['rule']})" for x in errors)}) from None
+                raise self._invalid(_schema_errors(e)) from None
             self._model, self._model_mtime = model, self._mtime
         return self._model
 
 
-def _schema_errors(error: ValidationError) -> list[dict]:
+def _schema_errors(error: ValidationError, prefix: tuple[str, ...] = ()) -> list[dict]:
     """Ошибки проверки — путь ключа, правило и что ждали; пришедшее значение в ответ не идёт: в декларациях бывают адреса."""
-    return [{"field": ".".join(str(part) for part in x["loc"]), "rule": x["type"], "expected": x["msg"]}
+    return [{"field": ".".join(str(part) for part in (*prefix, *x["loc"])), "rule": x["type"], "expected": x["msg"]}
             for x in error.errors()]
+
+
+def _yaml_error(error: yaml.YAMLError) -> dict:
+    """Битый YAML — своё правило (у схемы его нет), место — строка и столбец; строку файла не берём: в ней значения."""
+    mark = getattr(error, "problem_mark", None)
+    return {"field": f"{mark.line + 1}:{mark.column + 1}" if mark else "", "rule": "yaml_syntax",
+            "expected": str(getattr(error, "problem", None) or type(error).__name__)}
+
+
+def _missing(path: tuple[str, ...]) -> list[dict]:
+    """Нет ключа — то же правило и текст, что у схемы двери: ошибку собирает pydantic, а не строка в коде."""
+    return _schema_errors(ValidationError.from_exception_data("need", [{"type": "missing", "loc": path, "input": None}]))
+
+
+@cache
+def _adapter(kind: type) -> TypeAdapter:
+    """Проверка типа значения тем же строгим режимом, что у схем деклараций: «5» не число, bool не число."""
+    return TypeAdapter(kind, config=STRICT)
+
+
+def declarations_root(environ: Mapping[str, str] = os.environ) -> Path:
+    """Каталог деклараций: `MCP_CONFIG` (прогон рядом с боевым) или `config/` рядом с кодом сервера — одно решение
+    для сервера, установщика, подсказки отказа и харнесса, который поднимает сервер со своей средой."""
+    return Path(environ.get("MCP_CONFIG") or (Path(__file__).resolve().parents[1] / "config")).resolve()

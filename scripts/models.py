@@ -52,7 +52,8 @@ def cmd_local(args) -> int:
     cat = _catalog()
     scored, last = cat.with_fit(rows), {}  # type: ignore[var-annotated]
     for r in scored:
-        size = f"{r['mb']} МБ" if r.get("mb") else f"↓{r.get('downloads', 0)}"
+        size = (f"{r['mb']} МБ" if r.get("mb") is not None
+                else "размер не назван" if r.get("size_unknown") else f"↓{r.get('downloads', 0)}")
         params = f"{r['params_total'] / 1e9:.1f}B" if r.get("params_total") else "—"
         active = f"/{r['params_active'] / 1e9:.1f}B акт." if r.get("params_active") else ""
         fit = last = r.get("fit") or {}

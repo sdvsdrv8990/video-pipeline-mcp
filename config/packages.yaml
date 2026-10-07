@@ -1,0 +1,21 @@
+# packages.yaml — как сервер спрашивает индекс пакетов.
+#
+# `index.fetch` — длина колеса до установки (scripts/install_cost.py): HEAD по адресу из отчёта pip через
+# общий загрузчик (core/providers/download.py, Fetcher.length) с тем же судом схемы, хоста и адреса и тем же циклом
+# повтора, что у весов и результатов. Тела у HEAD нет — форма раздела RequestPolicy (core/declaration_schemas.py).
+# Значения — как у pip 26.2.1, который это колесо потом скачает.
+
+index:
+  fetch:
+    schemes: [https]            # PyPI и индексы драйверов (providers.yaml → local.gpu.drivers) — https
+    hosts: []                   # индекс называет отчёт pip (PyPI, --extra-index-url): любой публичный хост
+    block_private: true         # адрес во внутренней сети — отказ до запроса
+    timeout_sec: 15             # pip --timeout по умолчанию (cli/cmdoptions.py)
+    redirects: 30               # requests в pip: DEFAULT_REDIRECT_LIMIT (models.py)
+    attempts: 6                 # pip --retries 5 (cli/cmdoptions.py) — первая попытка и пять повторов
+    backoff_sec: 0.25           # pip backoff_factor (network/session.py); пауза растёт вдвое до потолка
+    backoff_max_sec: 120        # urllib3 в pip: Retry.DEFAULT_BACKOFF_MAX
+    retry_after_max_sec: 120    # срок сервера (Retry-After) — не дольше потолка паузы
+    jitter: 0                   # urllib3 в pip: backoff_jitter 0.0
+    retry_on: [500, 502, 503, 520, 527]   # status_forcelist сессии pip (network/session.py)
+    codes: {failed: PACKAGE_INDEX_FAILED}

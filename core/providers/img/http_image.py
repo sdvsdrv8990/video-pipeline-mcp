@@ -436,7 +436,7 @@ class HttpImageAPI:
         if decl.get("result_path"):
             found = self.dig(answer, str(decl["result_path"]))
             url = found if isinstance(found, str) else ""
-        for field in ([] if url else fetcher.policy["url_fields"]):
+        for field in (() if url else fetcher.policy.url_fields):
             value = answer.get(field)
             if isinstance(value, str) and value.strip():
                 url = value.strip()

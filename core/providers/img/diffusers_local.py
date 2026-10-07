@@ -107,7 +107,7 @@ class DiffusersLocalIMG:
         from ..hardware import FitEstimator
         entry = self.registry.model_entry(model_path.name) or {}
         need = FitEstimator((self.registry.config.get("local") or {}).get("fit") or {}).bytes_for(
-            entry.get("params_by_dtype") or {}, entry.get("params_total") or 0,
+            entry.get("params_by_dtype") or {}, entry.get("params_total"),
             as_dtype=where["dtype"])
         return self.registry.pool.get(key, build, need_bytes=need, device=where["device"])
 

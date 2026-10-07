@@ -15,7 +15,9 @@ from urllib.parse import urlparse
 
 from filelock import Timeout
 
+from core.contracts import ContractError
 from core.declaration import Declaration
+from core.declaration_schemas import MODEL_FETCH, FetchPolicy
 from core.paths import Files
 from .download import Fetcher, file_digest
 from .resolver import ProviderError
@@ -108,7 +110,7 @@ class ModelCatalog:
                         # в столбец строки: без него модель с файлами fp16 не поднимется вовсе.
                         "variant": str(entry.get("variant") or ""),
                         "mb": round(sum(f.stat().st_size for f in files) / 1e6, 1),
-                        "params_total": int(entry.get("params_total") or 0),
+                        "params_total": entry.get("params_total"),
                         "params_by_dtype": dict(entry.get("params_by_dtype") or {}),
                         "params_active": int(entry.get("params_active") or 0)})
         return out
@@ -271,9 +273,10 @@ class ModelCatalog:
         if src.get("library"):
             tags.append(str(src["library"]))
         # expand отдаёт число параметров ВМЕСТЕ со списком: иначе пришлось бы делать
-        # по запросу на модель, а без параметров вопрос «влезет ли» не решается.
+        # по запросу на модель, а без параметров вопрос «влезет ли» не решается. Свойства вне
+        # expand хаб не присылает вовсе (huggingface_hub hf_api.py, list_models) — likes просится явно.
         kwargs = {"sort": "downloads", "limit": max(limit * 4, 40),
-                  "expand": ["safetensors", "downloads", "gated", "tags"]}
+                  "expand": ["safetensors", "downloads", "gated", "tags", "likes"]}
         if src.get("pipeline_tag"):
             kwargs["pipeline_tag"] = src["pipeline_tag"]
         if tags:
@@ -282,17 +285,17 @@ class ModelCatalog:
         want = [str(f).lower() for f in (src.get("require_formats") or [])]
         rows = []
         for model in api.list_models(**kwargs):
-            downloads = int(model.downloads or 0)
-            if downloads < min_downloads:
+            if model.downloads < min_downloads:
                 continue
             if filters.get("gated") is False and model.gated:
                 continue
             st = getattr(model, "safetensors", None)
             by_dtype = dict(getattr(st, "parameters", None) or {})
             rows.append({"id": model.id, "kind": kind, "repo": model.id,
-                         "downloads": downloads, "likes": int(model.likes or 0),
+                         "downloads": model.downloads, "likes": model.likes,
                          "gated": bool(model.gated), "mb": None,
-                         "params_total": int(getattr(st, "total", 0) or 0),
+                         # Без safetensors (ONNX, GGUF) хаб числа параметров не называет — None, а не 0.
+                         "params_total": getattr(st, "total", None),
                          "params_by_dtype": by_dtype,
                          # Активные параметры объявляет не всякая модель (это про MoE). Нет —
                          # значит нет: выдуманное число здесь хуже честного пропуска.
@@ -325,18 +328,17 @@ class ModelCatalog:
             # Пустое поле карточки не затирает уже известное: лицензия ONNX-порта живёт в тегах,
             # а его card_data пуста — иначе найденное терялось бы по дороге.
             row = {**row, **{k: v for k, v in detail.items() if v not in (None, "")}}
-            if max_mb and (row.get("mb") or 0) > max_mb:
-                continue
-            if min_mb and (row.get("mb") or 0) < min_mb:
-                # Файл нужного формата нашёлся, но он посторонний: у LoRA-репозиториев рядом
-                # лежит чужой детектор лиц на сотню килобайт, и по нему модель попадала в список.
+            # min_mb: файл нужного формата нашёлся, но он посторонний — у LoRA-репозиториев рядом
+            # лежит чужой детектор лиц на сотню килобайт, и по нему модель попадала в список.
+            if self._outside(row["mb"], min_mb, max_mb):
                 continue
             out.append(row)
         return out
 
     def _detail(self, model_id: str, want: list[str], describe: bool) -> dict:
         """Файлы модели, их размеры и описание — список моделей этого не отдаёт. Размер — сумма тех частей, что поставит
-        установка (`_pick`), той же ревизии: закреплённой владельцем, иначе текущей."""
+        установка (`_pick`), той же ревизии: закреплённой владельцем, иначе текущей; длина части по ступеням
+        `_part_sizes`, не названа ни одной — `mb` пусто и `size_unknown` называет спрошенное."""
         from huggingface_hub import model_info
 
         try:
@@ -344,15 +346,19 @@ class ModelCatalog:
         except Exception as e:  # сеть/закрытый репозиторий
             # Не знаем — так и говорим: молча выкинуть модель значило бы соврать, что её нет.
             return {"detail_error": str(e)[:120]}
-        sizes = {s.rfilename: int(s.size or 0) for s in (info.siblings or [])}
-        picked, _, chosen = self._pick(list(sizes), tuple(want))
+        picked, _, chosen = self._pick([s.rfilename for s in info.siblings or []], tuple(want))
+        try:
+            sizes, unknown = self._part_sizes(model_id, info, picked)
+        except ContractError as e:  # суд адреса или отказ источника на HEAD: строка называет код, а не размер
+            return {"detail_error": e.code}
         card_data = getattr(info, "card_data", None)
         card = card_data.to_dict() if card_data else {}
         base = card.get("base_model")
         base = str(base[0]) if isinstance(base, list) and base else str(base or "")
-        out = {"file": chosen, "base_model": base,
-               "mb": round(sum(sizes[n] for n in picked) / 1e6, 1) if chosen else None,
-               "license": str(card.get("license") or "")}
+        out: dict[str, object] = {"file": chosen, "base_model": base, "mb": self._mb(sizes.values()) if chosen else None,
+                                  "license": str(card.get("license") or "")}
+        if unknown:
+            out["size_unknown"] = unknown
         if describe:
             out["description"] = self.describe_model(model_id, base)
         return out
@@ -419,16 +425,17 @@ class ModelCatalog:
         """Индекс голосов piper из объявленной ревизии: имя голоса → язык, качество, файлы с размером и md5."""
         return json.loads(self._small(src["repo"], src.get("index", "voices.json")))
 
-    @staticmethod
-    def _voice_mb(voice: dict) -> float:
-        return round(sum(f.get("size_bytes", 0) for f in (voice.get("files") or {}).values()) / 1e6, 1)
+    @classmethod
+    def _voice_mb(cls, voice: dict) -> float | None:
+        """Сумма длин файлов голоса по индексу; файл без `size_bytes` — сумма неизвестна (None), а не меньше."""
+        return cls._mb(f.get("size_bytes") for f in (voice.get("files") or {}).values())
 
     def _piper_voices(self, src: dict, filters: dict) -> dict:
         """Голоса индекса, прошедшие объявленный отсев (язык, предел размера): имя → запись индекса."""
         language, max_mb = str(filters.get("language") or ""), float(filters.get("max_mb") or 0)
         return {name: voice for name, voice in self._piper_index(src).items()
                 if (not language or voice.get("language", {}).get("code") == language)
-                and not (max_mb and self._voice_mb(voice) > max_mb)}
+                and not self._outside(self._voice_mb(voice), 0, max_mb)}
 
     def pinned(self, repo: str) -> str:
         """Ревизия, объявленная владельцем (`local.install.revisions.<repo>`); не объявлена — пусто."""
@@ -488,7 +495,13 @@ class ModelCatalog:
                 keep.append(name)
         return keep, refused
 
-    def check_size(self, total_mb: float, model_id: str) -> None:
+    def check_size(self, total_mb: float | None, model_id: str, unknown: dict[str, str] | None = None) -> None:
+        """Сумма частей против `max_total_mb`; сумма неизвестна — MODEL_SIZE_UNKNOWN с тем, что спрошено о каждой части
+        без длины: «нет данных» — не «влезает»."""
+        if total_mb is None:
+            raise ProviderError("MODEL_SIZE_UNKNOWN", facts={
+                "model": model_id, "parts": ", ".join(unknown or {}),
+                "asked": "; ".join(f"{name}: {how}" for name, how in (unknown or {}).items())})
         limit = float(self.install_rules.get("max_total_mb") or 0)
         if limit and total_mb > limit:
             raise ProviderError("MODEL_TOO_LARGE", facts={"model": model_id, "mb": round(total_mb), "limit_mb": round(limit)})
@@ -514,9 +527,6 @@ class ModelCatalog:
                                 facts={"model": entry["id"], "kind": entry["kind"], "held_by": str(taken.get("repo"))})
         plan = entry["parts"] if force else self.judge(entry)["plan"]
         свободно = probe(self.models_dir)["disk_free_mb"]
-        blind = [p["path"] for p in plan if p["size"] is None]
-        if blind:
-            raise ProviderError("MODEL_SIZE_UNKNOWN", facts={"model": model_id, "parts": ", ".join(blind)})
         if свободно is None:
             raise ProviderError("DISK_SPACE_UNKNOWN", facts={"model": model_id, "dir": str(self.models_dir)})
         нужно = round(sum(p["size"] for p in plan) / 1e6, 1)
@@ -545,7 +555,7 @@ class ModelCatalog:
         oversize = str(gpu_rules.get("oversize") or "error").lower()
         out = []
         for row in rows:
-            pbd, ptotal = row.get("params_by_dtype") or {}, row.get("params_total") or 0
+            pbd, ptotal = row.get("params_by_dtype") or {}, row.get("params_total")
             need = est.bytes_for(pbd, ptotal, as_dtype=load)
             if not need and row.get("mb"):
                 # Число параметров источник не сообщил — тогда мерим тем, что известно: размером
@@ -623,9 +633,10 @@ class ModelCatalog:
                           self.landing(entry, part), owner, size=part["size"], digest=part["digest"] or "",
                           algo=part["algo"] or "sha256", headers=headers)
 
-    def fetcher(self, mark=None) -> Fetcher:
-        """Загрузчик весов по объявленной политике `local.install.fetch`: ключа нет — отказ кодом, а не умолчание."""
-        return Fetcher(self._decl.need("local", "install", "fetch", kind=dict), transport=self.transport,
+    def fetcher(self, mark=None) -> Fetcher[FetchPolicy]:
+        """Загрузчик весов по объявленной политике `local.install.fetch` — объект схемы двери: битый раздел — отказ
+        кодом двери с путём ключа, а не умолчание."""
+        return Fetcher(self._decl.section(*MODEL_FETCH.section, schema=MODEL_FETCH.schema), transport=self.transport,
                        resolve=self.resolve, mark=mark)
 
     def silence_sec(self) -> float:
@@ -635,7 +646,7 @@ class ModelCatalog:
     def speed(self) -> dict:
         """Мера работы тела из политики загрузчика весов (NI-01): та же пара судит приём и простой установки."""
         policy = self.fetcher().policy
-        return {"floor": policy["speed_floor_bytes_per_sec"], "window": policy["speed_window_sec"]}
+        return {"floor": policy.speed_floor_bytes_per_sec, "window": policy.speed_window_sec}
 
     @staticmethod
     def owner(entry: dict) -> str:
@@ -726,7 +737,8 @@ class ModelCatalog:
         files = voice.get("files") or {}
         keep, refused = self.allowed_files(sorted(files))
         mb = self._voice_mb(voice)
-        self.check_size(mb, model_id)
+        self.check_size(mb, model_id, {n: "индекс голосов — без size_bytes" for n in sorted(files)
+                                       if files[n].get("size_bytes") is None})
         dest = str(src.get("dest") or "tts")
         parts = sorted((self._part(Path(n).name, n, files[n].get("size_bytes"), files[n].get("md5_digest"), "md5")
                         for n in keep), key=lambda p: p["path"])
@@ -748,10 +760,11 @@ class ModelCatalog:
         if want and not chosen:
             raise ProviderError("MODEL_FORMAT_MISSING", facts={"model": model_id, "formats": ", ".join(want)})
         dest = Path(str(src.get("dest") or (kind if want else "img"))) / name
-        parts = sorted((self._part(Path(n).name if want else n, n, siblings[n].size,
+        sizes, unknown = self._part_sizes(model_id, info, picked)
+        parts = sorted((self._part(Path(n).name if want else n, n, sizes[n],
                                    *self._sibling_digest(siblings[n])) for n in picked), key=lambda p: p["path"])
-        mb = round(sum(p["size"] or 0 for p in parts) / 1e6, 1)
-        self.check_size(mb, model_id)
+        mb = self._mb(sizes.values())
+        self.check_size(mb, model_id, unknown)
         entry = {"id": name, "kind": kind, "repo": model_id, "revision": rev, "dest": str(dest), "mb": mb,
                  "parts": parts, "refused": refused}
         if want:
@@ -759,7 +772,7 @@ class ModelCatalog:
         st = getattr(info, "safetensors", None)
         return {**entry, "path": str(dest), "variant": "fp16" if any(".fp16." in n for n in picked) else "",
                 # Число параметров — в опись сразу: по нему судят о пригодности железа без запроса к сети.
-                "params_total": int(getattr(st, "total", 0) or 0),
+                "params_total": getattr(st, "total", None),
                 "params_by_dtype": dict(getattr(st, "parameters", None) or {}),
                 "params_active": self._active_params(info)}
 
@@ -770,6 +783,36 @@ class ModelCatalog:
         замка модели: закончившаяся между ними установка той же модели даст повторную загрузку, а не порчу.
         """
         return self._install(место["entry"], место["plan"], progress, mark, held)
+
+    def _part_sizes(self, repo: str, info, names: list[str]) -> tuple[dict[str, int | None], dict[str, str]]:
+        """Длина частей `names` по ступеням (MS-04): названная ответом `model_info(files_metadata)`, иначе HEAD без тела
+        тем же загрузчиком той же ревизии, иначе неизвестна — None, а не ноль. Длину файла за переходом на CDN несёт
+        заголовок, объявленный видом источника (`local.source_kinds.hf_hub.size_header`). Исход — (путь → байты или
+        None, путь без длины → что спрошено)."""
+        named = {s.rfilename: s.size for s in info.siblings or []}
+        sizes: dict[str, int | None] = {n: None if named[n] is None else int(named[n]) for n in names}
+        blind = [n for n in names if sizes[n] is None]
+        if not blind:
+            return sizes, {}
+        header = self._decl.need("local", "source_kinds", "hf_hub", "size_header", kind=str)
+        fetcher, headers, revision, unknown = self.fetcher(), self._hf_headers(), self.revision(repo), {}
+        for name in blind:
+            sizes[name], how = fetcher.length(self._source_url(repo, revision, name), headers, linked=header)
+            if sizes[name] is None:
+                unknown[name] = f"метаданные источника — без длины; {how}"
+        return sizes, unknown
+
+    @staticmethod
+    def _mb(sizes) -> float | None:
+        """Сумма длин в МБ; хоть одна длина неизвестна — сумма неизвестна (None), а не меньше."""
+        known = list(sizes)
+        return None if None in known else round(sum(known) / 1e6, 1)
+
+    @staticmethod
+    def _outside(mb: float | None, low: float, high: float) -> bool:
+        """Сумма вне объявленных пределов отсева (0 — предела нет); неизвестная — не вне: «нет данных» — не «больше» и не
+        «меньше», а установка откажет MODEL_SIZE_UNKNOWN."""
+        return mb is not None and bool((high and mb > high) or (low and mb < low))
 
 
 class OnlineCatalog:

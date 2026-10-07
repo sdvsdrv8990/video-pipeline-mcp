@@ -20,13 +20,16 @@ from typing import Any, Callable
 
 import yaml
 
+from core.declaration import declarations_root
+
 ROOT = Path(__file__).resolve().parents[2]
 
 SCENARIO_KEYS = {"scenario", "why", "род", "given", "when", "then"}
 # Роды объявлены СПИСКОМ: свободное слово здесь означало бы, что покрытие зоны родами нельзя
 # посчитать — а именно счёт и отличает механизм от понятия.
 РОДЫ = ("положительный", "отрицательный", "разрушительный")
-GIVEN_KEYS = {"files"}
+# `declarations` — порча боевых деклараций в копии каталога (MCP_CONFIG): сценарий получает свой сервер.
+GIVEN_KEYS = {"files", "declarations"}
 STEP_KEYS = {"call", "python", "rpc", "run", "headers", "token", "repeat", "with", "as", "expect"}
 EXPECT_KEYS = {"ok", "code", "class", "recovery", "facts", "data", "data_contains",
                "data_absent", "console", "console_absent", "open", "http", "exit"}
@@ -59,7 +62,7 @@ class Vocabulary:
     """Реестр реакций как СЛОВАРЬ: код существует, класс у него такой-то. Выбор — за сценарием."""
 
     def __init__(self, path: Path | None = None):
-        raw = yaml.safe_load((path or ROOT / "config" / "server_reactions.yaml").read_text(encoding="utf-8"))
+        raw = yaml.safe_load((path or declarations_root() / "server_reactions.yaml").read_text(encoding="utf-8"))
         self.codes: dict[str, dict] = {k: v for k, v in (raw or {}).items() if isinstance(v, dict)}
 
     def validate(self, code: str, declared_class: str | None, where: str) -> None:
@@ -126,6 +129,7 @@ class Scenario:
     then: list[Step]
     source: Path
     род: str = "положительный"
+    declarations: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def _reject_unknown(got: dict, allowed: set[str], where: str) -> None:
@@ -290,9 +294,29 @@ def load(path: Path, vocab: Vocabulary) -> list[Scenario]:
             when=_steps(item.get("when") or [], vocab, f"{where}.when"),
             then=_steps(item.get("then") or [], vocab, f"{where}.then"),
             source=path,
+            declarations=_declarations(dict(given.get("declarations") or {}), f"{where}.given.declarations"),
         ))
     if not out:
         raise ScenarioError(f"{path.name}: ни одного сценария — пустой файл красит прогон зелёным ни за что")
+    return out
+
+
+def _declarations(raw: dict, where: str) -> dict[str, dict[str, Any]]:
+    """Порча боевых деклараций: файл и путь ключа обязаны быть в каталоге деклараций — порча несуществующего
+    проверяла бы не то."""
+    out = {}
+    for name, spoils in raw.items():
+        real = declarations_root() / str(name)
+        if not real.is_file() or not isinstance(spoils, dict) or not spoils:
+            raise ScenarioError(f"{where}: декларации `{name}` нет в каталоге деклараций или порча не названа")
+        data = read_yaml(real)
+        for key in spoils:
+            node = data
+            for part in str(key).split("."):
+                if not isinstance(node, dict) or part not in node:
+                    raise ScenarioError(f"{where}: в {name} нет ключа `{key}` — порча проверяла бы не то")
+                node = node[part]
+        out[str(name)] = {str(k): v for k, v in spoils.items()}
     return out
 
 

@@ -280,7 +280,7 @@ DOWNLOAD_FORBIDDEN:
   class: integrity
   message_template: "Адрес «{host}» не пропущен: туда не уходят ни ключ, ни запрос (разрешён: {allowed})."
   recovery:
-    reason: "Ключ уходит только по https на объявленный хост провайдера (config/providers.yaml → online.http), даже если адрес статуса или результата назвал сам провайдер. По ссылкам во внутреннюю сеть и на необъявленные схемы и хосты сервер тоже не ходит: результаты — config/media_tasks.yaml → download.fetch, веса — config/providers.yaml → local.install.fetch. Проверь, что вернул провайдер, и столбец model строки канала — он подставляется в адрес вызова."
+    reason: "Ключ уходит только по https на объявленный хост провайдера (config/providers.yaml → online.http), даже если адрес статуса или результата назвал сам провайдер. По ссылкам во внутреннюю сеть и на необъявленные схемы и хосты сервер тоже не ходит: результаты — config/media_tasks.yaml → download.fetch, веса — config/providers.yaml → local.install.fetch, длина колёс — config/packages.yaml → index.fetch. Проверь, что вернул провайдер, и столбец model строки канала — он подставляется в адрес вызова."
 
 PROVIDER_ADAPTER_MISSING:
   class: human_required
@@ -305,7 +305,7 @@ DISK_SPACE_UNKNOWN:
 
 MODEL_SIZE_UNKNOWN:
   class: human_required
-  message_template: "Хватит ли места под веса '{model}', не определить: источник не назвал длину частей — {parts}."
+  message_template: "Хватит ли места под веса '{model}', не определить: источник не назвал длину частей — {parts}. Спрошено: {asked}."
   recovery:
     suggested_tool: media_models
     reason: "Без длины каждой части место не проверить, а качать вслепую сервер не станет. Выбери модель, размер которой источник называет (media_models, scope='local'); иначе решает владелец — проверяет место сам и ставит модель вручную."
@@ -476,7 +476,7 @@ DECLARATION_INVALID:
   class: human_required
   message_template: "Декларация {file} не прошла проверку схемы: {details}."
   recovery:
-    reason: "Поправь config/{file}: каждое названное поле — по схеме декларации (ключ, тип, обязательность, связь с другими ключами). Значения в ответ не идут — смотри их в самом файле."
+    reason: "Поправь {file} в каталоге деклараций (MCP_CONFIG, иначе config/ сервера): каждое названное поле — по схеме декларации (ключ, тип, обязательность, связь с другими ключами). Значения в ответ не идут — смотри их в самом файле."
 
 # ═══ Проверка целостности ═══
 
@@ -647,6 +647,12 @@ PACKAGE_INSTALL_INCOMPLETE:
   message_template: "Установщик завершился успешно, но среда всё ещё не по требованиям: {requirements}."
   recovery:
     reason: "Суд после установки видит не то, что заказано (версия вне требования, пакет не появился). Сверь, в какой интерпретатор шла установка, и повтори."
+
+PACKAGE_INDEX_FAILED:
+  class: server_recoverable
+  message_template: "Индекс пакетов «{host}» не назвал длину колеса: {status}."
+  recovery:
+    reason: "Колесо вошло в цену установки без размера — итог больше посчитанного. Адрес колеса дал отчёт pip (PyPI или index драйвера в config/providers.yaml → local.gpu.drivers); как спрашивается индекс — config/packages.yaml → index.fetch. Перегрузку и недоступность (retry_on) отказом не считают: длина там просто не узнана."
 
 # ═══ Fallback ═══
 

@@ -1,0 +1,33 @@
+{
+ "_записано": "2026-10-07, GET https://huggingface.co/api/models (sort=downloads, limit=2, expand — как у huggingface_hub 1.31.0 list_models); источники — config/providers.yaml local.sources: фон (filter background-removal, onnx) и картинка (pipeline_tag text-to-image); каждый — без likes в expand и с ним",
+ "фон/без_likes": [
+  {"_id": "6720d1ac035954d93b936a64", "id": "briaai/RMBG-2.0", "gated": "auto", "downloads": 432123,
+   "safetensors": {"parameters": {"I64": 497664, "F32": 220202578}, "total": 220700242},
+   "tags": ["transformers", "pytorch", "onnx", "safetensors", "image-segmentation", "remove background", "background", "background-removal", "Pytorch", "vision", "legal liability", "transformers.js", "custom_code", "license:other", "region:us"]},
+  {"_id": "6578ba0332150025acca8494", "id": "briaai/RMBG-1.4", "gated": false, "downloads": 282455,
+   "safetensors": {"parameters": {"F32": 44075590}, "total": 44075590},
+   "tags": ["transformers", "pytorch", "onnx", "safetensors", "SegformerForSemanticSegmentation", "image-segmentation", "remove background", "background", "background-removal", "Pytorch", "vision", "legal liability", "transformers.js", "custom_code", "license:other", "region:us"]}
+ ],
+ "фон/с_likes": [
+  {"_id": "6720d1ac035954d93b936a64", "id": "briaai/RMBG-2.0", "gated": "auto", "likes": 1507, "downloads": 432123,
+   "safetensors": {"parameters": {"I64": 497664, "F32": 220202578}, "total": 220700242},
+   "tags": ["transformers", "pytorch", "onnx", "safetensors", "image-segmentation", "remove background", "background", "background-removal", "Pytorch", "vision", "legal liability", "transformers.js", "custom_code", "license:other", "region:us"]},
+  {"_id": "6578ba0332150025acca8494", "id": "briaai/RMBG-1.4", "gated": false, "likes": 2039, "downloads": 282455,
+   "safetensors": {"parameters": {"F32": 44075590}, "total": 44075590},
+   "tags": ["transformers", "pytorch", "onnx", "safetensors", "SegformerForSemanticSegmentation", "image-segmentation", "remove background", "background", "background-removal", "Pytorch", "vision", "legal liability", "transformers.js", "custom_code", "license:other", "region:us"]}
+ ],
+ "картинка/без_likes": [
+  {"_id": "64bfcd5ff462a99a04fd1ec8", "id": "stabilityai/stable-diffusion-xl-base-1.0", "gated": false, "downloads": 4372699,
+   "safetensors": {"parameters": {"F32": 2567463684}, "total": 2567463684},
+   "tags": ["diffusers", "onnx", "safetensors", "text-to-image", "stable-diffusion", "arxiv:2307.01952", "arxiv:2211.01324", "arxiv:2108.01073", "arxiv:2112.10752", "license:openrail++", "endpoints_compatible", "diffusers:StableDiffusionXLPipeline", "deploy:sagemaker", "deploy:azure", "region:us"]},
+  {"_id": "6ab000f1a587030ee97d13cf", "id": "abenzerps/Qwen-Image-2.1-Uncensored-GGUF", "gated": false, "downloads": 1820627,
+   "tags": ["gguf", "qwen", "image-generation", "comfyui", "comfyui-gguf", "text-to-image", "base_model:Qwen/Qwen-Image-2.1", "base_model:quantized:Qwen/Qwen-Image-2.1", "license:other", "region:us"]}
+ ],
+ "картинка/с_likes": [
+  {"_id": "64bfcd5ff462a99a04fd1ec8", "id": "stabilityai/stable-diffusion-xl-base-1.0", "gated": false, "likes": 8281, "downloads": 4372699,
+   "safetensors": {"parameters": {"F32": 2567463684}, "total": 2567463684},
+   "tags": ["diffusers", "onnx", "safetensors", "text-to-image", "stable-diffusion", "arxiv:2307.01952", "arxiv:2211.01324", "arxiv:2108.01073", "arxiv:2112.10752", "license:openrail++", "endpoints_compatible", "diffusers:StableDiffusionXLPipeline", "deploy:sagemaker", "deploy:azure", "region:us"]},
+  {"_id": "6ab000f1a587030ee97d13cf", "id": "abenzerps/Qwen-Image-2.1-Uncensored-GGUF", "gated": false, "likes": 3544, "downloads": 1820627,
+   "tags": ["gguf", "qwen", "image-generation", "comfyui", "comfyui-gguf", "text-to-image", "base_model:Qwen/Qwen-Image-2.1", "base_model:quantized:Qwen/Qwen-Image-2.1", "license:other", "region:us"]}
+ ]
+}

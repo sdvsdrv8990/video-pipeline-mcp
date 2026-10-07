@@ -149,9 +149,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 result.error.recovery.reason = redact(result.error.recovery.reason, [api_key])
         return result
 
-    def _answer_url(cycle: TaskCycle, answer: dict) -> str:
-        """Ссылка на результат в ответе задачи. Как называется поле — знает декларация."""
-        fields = ((cycle.config.get("download") or {}).get("fetch") or {}).get("url_fields") or []
+    def _url_in(fields: tuple[str, ...], answer: dict) -> str:
+        """Ссылка на результат в ответе задачи — первое непустое из полей, объявленных `download.fetch.url_fields`."""
         for field in fields:
             value = answer.get(field)
             if isinstance(value, str) and value.strip():
@@ -318,13 +317,16 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 ok, fetched = ctx.safe(lambda: adapter.fetch(answer, target))
             else:
                 # Адаптер не забирает файл сам — забираем по ссылке из ответа задачи.
-                url = _answer_url(cycle, answer)
+                ok, loader = ctx.safe(lambda: results(ctx.config_path / "media_tasks.yaml"))
+                if not ok:
+                    return loader
+                url = _url_in(loader.policy.url_fields, answer)
                 if not url:
                     return ctx.err(
                         "PROVIDER_FAILED", "Задача готова, но в ответе нет ссылки на результат.",
                         "Сервер ищет ссылку в полях, объявленных в config/media_tasks.yaml → "
                         "download.fetch.url_fields. Добавь туда поле этого провайдера.")
-                ok, fetched = ctx.safe(lambda: results(ctx.config_path / "media_tasks.yaml").fetch(
+                ok, fetched = ctx.safe(lambda: loader.fetch(
                     url, Files(Path(target).parent), Path(target).name, "result"))
             if not ok:
                 return fetched

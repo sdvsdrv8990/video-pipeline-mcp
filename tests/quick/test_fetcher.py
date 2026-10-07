@@ -17,8 +17,11 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 import httpx
+import yaml
 
 from core.contracts import ContractError
+from core.declaration import Declaration
+from core.declaration_schemas import FetchPolicy, RequestPolicy
 from core.paths import REMNANT, Files
 from core.providers.download import Fetcher, file_digest
 from core.reactions import Reactions
@@ -72,6 +75,8 @@ class World:
         self.coding: tuple[str, bytes] | None = None  # CDN шлёт сжатое тело (кодировка, байты) вопреки запросу
         self.pace: list[float] = []               # секунд источника перед каждым куском; кончились — повтор последнего
         self.now = 0.0                            # часы мира: их читает шов `clock` загрузчика
+        self.linked = ""                          # X-Linked-Size на переходе resolve — длина файла за CDN (как у HF)
+        self.lengthless = False                   # CDN не называет Content-Length
 
     def resolve(self, host, port, *args, **kwargs):
         self.resolved.append(host)
@@ -85,10 +90,10 @@ class World:
                          "path": request.url.path, "query": request.url.query.decode(),
                          "range": request.headers.get("range"), "if_range": request.headers.get("if-range"),
                          "auth": request.headers.get("authorization"),
-                         "accept_encoding": request.headers.get("accept-encoding")})
+                         "accept_encoding": request.headers.get("accept-encoding"), "method": request.method})
         if host == "huggingface.co" and "/resolve/" in request.url.path:
-            return httpx.Response(302, headers={"location": self.location or
-                                                f"https://{CDN}/xet-bridge-us/72ce?Signature={self.signature}"})
+            moved = {"location": self.location or f"https://{CDN}/xet-bridge-us/72ce?Signature={self.signature}"}
+            return httpx.Response(302, headers={**moved, **({"x-linked-size": self.linked} if self.linked else {})})
         if host == CDN and request.url.params.get("Signature") != self.signature:
             return httpx.Response(403)                # подпись истекла
         if self.statuses:
@@ -106,7 +111,8 @@ class World:
         if start:
             headers["content-range"] = f"bytes {start + self.shift}-{len(body) - 1}/{len(body)}"
         rest = body[start:]
-        headers["content-length"] = str(len(rest))
+        if not self.lengthless:
+            headers["content-length"] = str(len(rest))
         cut, self.cut = self.cut, None
         stream = self._stream(rest, cut)
         return httpx.Response(206 if start else 200, headers=headers,
@@ -128,7 +134,8 @@ class World:
 def fetcher(world: World, policy: dict = WEIGHTS, proxies: dict | None = None, **over) -> tuple[Fetcher, list]:
     """Загрузчик на подставном мире; прокси — только названные тестом, не из среды прогона (TS-09)."""
     pauses: list[float] = []
-    return Fetcher({**policy, **over}, transport=httpx.MockTransport(world.handle), resolve=world.resolve,
+    return Fetcher(FetchPolicy.model_validate({**policy, **over}), transport=httpx.MockTransport(world.handle),
+                   resolve=world.resolve,
                    sleep=pauses.append, proxies=lambda: dict(proxies or {})), pauses
 
 
@@ -392,19 +399,41 @@ try:
           e is not None and e.code == "DOWNLOAD_FORBIDDEN" and not [x for x in w.log if x["host"] == "evil.example"],
           f"{e and (e.code, e.facts)} {w.log}")
 
-    print("== 13. Политика — полная или отказ кодом при постройке, а не KeyError посреди загрузки ==")
-    e = attempt(lambda: Fetcher({k: v for k, v in WEIGHTS.items() if k not in ("codes", "redirects")}))[1]
-    check("в политике нет ключей — SCHEMA_INVALID, и он их называет",
-          e is not None and e.code == "SCHEMA_INVALID" and "codes" in e.facts.get("details", "")
-          and "redirects" in e.facts.get("details", ""), e and (e.code, e.facts))
-    check("законный: полная политика строит загрузчик", attempt(lambda: Fetcher(dict(WEIGHTS)))[1] is None)
+    print("== 13. Политика — объект схемы двери: битая — отказ двери при чтении, тело без своей политики — ошибка кода ==")
+    decl = work / "fetch.yaml"
+    decl.write_text(yaml.safe_dump({"fetch": {k: v for k, v in WEIGHTS.items() if k not in ("codes", "redirects")}}),
+                    encoding="utf-8")
+    e = attempt(lambda: Declaration(decl, ContractError, "загрузки", "").section("fetch", schema=FetchPolicy))[1]
+    check("в разделе нет ключей — отказ двери DECLARATION_INVALID, ключи названы путём от корня файла",
+          e is not None and e.code == "DECLARATION_INVALID" and "fetch.codes" in e.facts.get("details", "")
+          and "fetch.redirects" in e.facts.get("details", ""), e and (e.code, e.facts))
+    check("законный: полная политика строит загрузчик",
+          attempt(lambda: Fetcher(FetchPolicy.model_validate(WEIGHTS)))[1] is None)
+    fresh()
+    w = World()
+    body_only = set(FetchPolicy.model_fields) - set(RequestPolicy.model_fields)
+    head = RequestPolicy.model_validate({k: v for k, v in WEIGHTS.items() if k not in body_only}
+                                        | {"codes": {"failed": "MODEL_SOURCE_FAILED"}})
+    f = Fetcher(head, transport=httpx.MockTransport(w.handle), resolve=w.resolve, sleep=lambda _s: None, proxies=dict)
+    reply = httpx.Response(200, headers={"content-type": "image/png"}, content=BODY,
+                           request=httpx.Request("POST", "https://cdn.provider.example/r"))
+    refused = [attempt(lambda: f.fetch(RESOLVE, files, PART, "inst1", size=len(BODY), digest=SHA))[1],
+               attempt(lambda: f.receive(reply, files, PART, "inst1", accept=["image/png"]))[1]]
+    check("политика без тела: приём тела (fetch, receive) — ошибка кода с именем схемы до первого запроса",
+          all(e is not None and e.code == "НЕ_ОТКАЗ" and e.facts["exception"].startswith("TypeError")
+              and "FetchPolicy" in e.facts["exception"] for e in refused)
+          and not w.log and not w.resolved and on_disk() is None and remnant_size() is None,
+          f"{[e and (e.code, e.facts) for e in refused]} {w.log}")
+    check("законный: та же политика без тела отвечает длиной по HEAD",
+          attempt(lambda: f.length(RESOLVE, linked="X-Linked-Size"))[0] == (len(BODY), f"HEAD {CDN}: Content-Length"))
 
     print("== 14. Отметки работы: переход, кусок, начало паузы, блок сверки — простой не ловит законную тишину ==")
     fresh()
     w = World()
     w.statuses = [(503, {"Retry-After": "7"})]
     events: list[str] = []
-    f = Fetcher({**WEIGHTS, "attempts": 2}, transport=httpx.MockTransport(w.handle), resolve=w.resolve,
+    f = Fetcher(FetchPolicy.model_validate({**WEIGHTS, "attempts": 2}), transport=httpx.MockTransport(w.handle),
+                resolve=w.resolve,
                 sleep=lambda _s: events.append("sleep"), proxies=dict, mark=lambda: events.append("mark"))
     got, e = attempt(lambda: f.fetch(RESOLVE, files, PART, "inst1", size=len(BODY), digest=SHA))
     sleeps = [i for i, x in enumerate(events) if x == "sleep"]
@@ -420,9 +449,10 @@ try:
           file_digest(big, "sha256", lambda: blocks.append(1)) == hashlib.sha256(big.read_bytes()).hexdigest()
           and len(blocks) == 4, len(blocks))
     check("наибольшая тишина между отметками — max(2 × timeout_sec, backoff_max_sec × (1 + jitter))",
-          Fetcher(WEIGHTS).silence_sec() == 60.0
-          and Fetcher({**WEIGHTS, "timeout_sec": 90, "backoff_max_sec": 200, "jitter": 0.5}).silence_sec() == 300.0,
-          (Fetcher(WEIGHTS).silence_sec()))
+          Fetcher(FetchPolicy.model_validate(WEIGHTS)).silence_sec() == 60.0
+          and Fetcher(FetchPolicy.model_validate({**WEIGHTS, "timeout_sec": 90, "backoff_max_sec": 200,
+                                                  "jitter": 0.5})).silence_sec() == 300.0,
+          (Fetcher(FetchPolicy.model_validate(WEIGHTS)).silence_sec()))
 
     print("== 11. Путь доставки: у каждого кода загрузчика — текст реестра с фактами ==")
     for code, facts, want in (
@@ -462,7 +492,8 @@ try:
     def paced(world: World, **over) -> tuple[Fetcher, list[str]]:
         """Загрузчик с пределом 1024 байт/с; часы — мира, их двигает транспорт перед каждым куском."""
         events: list[str] = []
-        return Fetcher({**WEIGHTS, "speed_floor_bytes_per_sec": 1024, **over}, transport=httpx.MockTransport(world.handle),
+        return Fetcher(FetchPolicy.model_validate({**WEIGHTS, "speed_floor_bytes_per_sec": 1024, **over}),
+                       transport=httpx.MockTransport(world.handle),
                        resolve=world.resolve, sleep=lambda _s: events.append("sleep"), proxies=dict,
                        mark=lambda: events.append("mark"), clock=lambda: world.now), events
 
@@ -531,12 +562,80 @@ try:
 
     reply = httpx.Response(200, headers={"content-type": "image/png"}, content=drip(),
                            request=httpx.Request("POST", "https://cdn.provider.example/r"))
-    f = Fetcher({**RESULTS, "speed_floor_bytes_per_sec": 1024, "speed_window_sec": 10}, clock=lambda: clock[0])
+    f = Fetcher(FetchPolicy.model_validate({**RESULTS, "speed_floor_bytes_per_sec": 1024, "speed_window_sec": 10}),
+                clock=lambda: clock[0])
     fresh()
     e = attempt(lambda: f.receive(reply, files, PART, "inst1", accept=["image/png"]))[1]
     check("результат каплей — отказ без повтора и без остатка: под именем и в остатке пусто",
           e is not None and e.code == "DOWNLOAD_TOO_SLOW" and on_disk() is None and remnant_size() is None,
           f"{e and (e.code, e.facts)} {remnant_size()}")
+
+    print("== 16. Длина по HEAD без тела (MS-04): заголовок перехода, иначе Content-Length не перехода, иначе None ==")
+
+    def head(world: World, **over):
+        """Длина части тем же загрузчиком: (исход length, отказ, паузы); заголовок длины — как у HF."""
+        f, pauses = fetcher(world, **over)
+        got, e = attempt(lambda: f.length(RESOLVE, {"Authorization": "Bearer t"}, linked="X-Linked-Size"))
+        return got, e, pauses
+
+    w = World()
+    w.linked = "123456789"
+    got, e, _ = head(w)
+    check("HF назвал длину на переходе — она и есть; на CDN запроса нет, только HEAD, ключ — исходному хосту",
+          got == (123456789, "HEAD huggingface.co: X-Linked-Size")
+          and [(x["host"], x["method"], x["auth"]) for x in w.log] == [("huggingface.co", "HEAD", "Bearer t")]
+          and w.resolved == ["huggingface.co"], f"{got} {e and (e.code, e.facts)} {w.log}")
+    w = World()
+    got, e, _ = head(w)
+    check("законный: перехода с длиной нет — Content-Length конечного ответа, переход судится и разрешается",
+          got == (len(BODY), f"HEAD {CDN}: Content-Length")
+          and [(x["ip"], x["method"], x["auth"]) for x in w.log] == [("18.1.1.1", "HEAD", "Bearer t"),
+                                                                       ("13.2.2.2", "HEAD", None)],
+          f"{got} {e and (e.code, e.facts)} {w.log}")
+    from core.providers.download import Unreached
+
+    w = World()
+    w.lengthless = True
+    got, e, _ = head(w)
+    check("длины нет ни в заголовке перехода, ни у конечного ответа — None с тем, что спрошено, а не 0; хост достигнут",
+          e is None and got == (None, f"HEAD {CDN}: нет X-Linked-Size и Content-Length")
+          and not isinstance(got[1], Unreached), f"{got} {type(got[1]).__name__} {e and e.facts}")
+    w = World()
+    w.statuses = [(503, {"Retry-After": "7"})]
+    got, e, pauses = head(w, attempts=3)
+    check("перегрузка на HEAD — повтор общим циклом двери, как у fetch: пауза — срок сервера, вторая попытка дала длину",
+          e is None and got == (len(BODY), f"HEAD {CDN}: Content-Length") and pauses == [7.0] and len(w.log) == 4,
+          f"{got} {pauses} {len(w.log)}")
+    w = World()
+    w.statuses = [(503, {})] * 3
+    got, e, pauses = head(w, attempts=3)
+    check("перегрузка на всех попытках — None с кодом ответа и меткой Unreached: хост не достигнут, а не отказ",
+          e is None and got == (None, f"HEAD {CDN}: 503") and isinstance(got[1], Unreached)
+          and pauses == [1.0, 2.0] and len(w.log) == 6, f"{got} {type(got[1]).__name__} {pauses} {len(w.log)}")
+    w = World()
+
+    def offline(request):
+        raise httpx.ConnectError("нет связи")
+
+    f, _ = fetcher(w)
+    f.transport = httpx.MockTransport(offline)
+    got, e = attempt(lambda: f.length(RESOLVE, linked="X-Linked-Size"))
+    check("сеть не ответила — None с родом обрыва и меткой Unreached, а не исключение",
+          e is None and got == (None, "HEAD huggingface.co: ConnectError") and isinstance(got[1], Unreached),
+          f"{got} {type(got[1]).__name__} {e and (e.code, e.facts)}")
+    for case, location, code in (("чужой хост на переходе", "https://evil.example/x", "DOWNLOAD_FORBIDDEN"),
+                                 ("https → http на переходе", f"http://{CDN}/x", "DOWNLOAD_FORBIDDEN")):
+        w = World()
+        w.location = location
+        got, e, _ = head(w)
+        check(f"{case}: отказ суда, а не «длина неизвестна»; туда ни запроса",
+              e is not None and e.code == code and len(w.log) == 1, f"{got} {e and (e.code, e.facts)} {w.log}")
+    w = World()
+    w.statuses = [(404, {})]
+    got, e, _ = head(w)
+    check("источник ответил 404 — отказ источника кодом потребителя, а не «длина неизвестна»",
+          e is not None and e.code == "MODEL_SOURCE_FAILED" and e.facts == {"host": CDN, "status": 404},
+          f"{got} {e and (e.code, e.facts)}")
 finally:
     shutil.rmtree(work, ignore_errors=True)
 

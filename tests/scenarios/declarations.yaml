@@ -1,0 +1,18 @@
+# Битая декларация — ответ кодом двери, а не падение и не тихое умолчание. Порча — в копии боевого каталога
+# (`given.declarations`, свой сервер с MCP_CONFIG на копию): боевой конфиг не трогается, код идёт настоящим путём.
+
+- scenario: decl_broken_value_answers_door_code
+  why: предел записи строкой в декларации — отказ двери кодом с классом «зови человека», и сервер продолжает обслуживать
+  given:
+    files:
+      notes/ok.txt: живой файл
+    declarations:
+      firewall.yaml: {file_limits.write_bytes: много}
+  when:
+    - call: fs_write_file
+      with: {path: notes/new.txt, content: x}
+      expect: {ok: false, code: DECLARATION_INVALID, class: human_required, console_absent: Traceback}
+  then:
+    - call: fs_read_file
+      with: {path: notes/ok.txt}
+      expect: {ok: true, data_contains: {content.value: живой}, console_absent: Traceback}

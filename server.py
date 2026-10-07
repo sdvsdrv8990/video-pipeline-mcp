@@ -24,8 +24,8 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent))
 
 from core.contracts import ContractError
-from core.declaration import Declaration, Declared
-from core.declaration_schemas import Resources
+from core.declaration import Declaration, Declared, declarations_root
+from core.declaration_schemas import RESOURCES, Resources
 from core.engine import Engine
 from core.observability import Logs, wire
 from core.firewall import Firewall, FirewallRequest, FirewallDecision
@@ -54,7 +54,7 @@ WORKSPACE_PATH = Path(os.environ.get("MCP_WORKSPACE") or (BASE_PATH / "workspace
 # Каталог деклараций переопределяется по той же причине, что и рабочая область: конформанс-прогон
 # обязан идти по БОЕВОМУ конфигу, но со своим порогом частоты — иначе сторонний клиент, честно
 # долбящий 30 сценариев подряд, банит сам себя, и «несоответствие спеке» оказывается блокировкой.
-CONFIG_PATH = Path(os.environ.get("MCP_CONFIG") or (BASE_PATH / "config")).resolve()
+CONFIG_PATH = declarations_root()
 # Корень журналов переопределяется средой по той же причине: тестовый сервер рядом с боевым пишет свой след и журнал
 # фактов, а не дописывает журнал владельца. Нет переменной — каталог журналов пользователя этой ОС (observability.yaml).
 LOGS_OVERRIDE = os.environ.get("MCP_LOGS")
@@ -130,7 +130,7 @@ def _load_resources(path: Path) -> Resources:
     """Классы ресурсов и класс каждого инструмента — по схеме у двери. Битая декларация — отказ при старте, а не
     работа без пределов: тяжёлое без мест и снятия с цикла морозит сервер целиком."""
     return Declared(path, ContractError, "«resources»",
-                    f"Заведи config/{path.name} — по нему тяжёлые вызовы снимаются с цикла.", schema=Resources).model
+                    f"Заведи config/{path.name} — по нему тяжёлые вызовы снимаются с цикла.", schema=RESOURCES.schema).model
 
 
 def create_server() -> tuple[Engine, Transport, Firewall]:
@@ -153,7 +153,7 @@ def create_server() -> tuple[Engine, Transport, Firewall]:
 
     # Объявление ресурсов: какие вызовы уходят с цикла событий и сколько их идёт разом. Битое — отказ при старте.
     engine = Engine(reactions=reactions, state_manager=state_manager,
-                    resources=_load_resources(CONFIG_PATH / "resources.yaml"), trail=logs.trail)
+                    resources=_load_resources(CONFIG_PATH / RESOURCES.file), trail=logs.trail)
 
     # Создаём workspace если нет
     WORKSPACE_PATH.mkdir(parents=True, exist_ok=True)
@@ -530,11 +530,9 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
                     continue
                 cfg_mtime[cfg_path] = m  # фиксируем сразу → битый конфиг не ретрайдим каждые 10с
                 try:
-                    if kind == "firewall":
-                        if firewall and firewall.reload(_load_yaml(cfg_path)):
-                            print("♻️  [config] firewall.yaml перезагружен без рестарта")
-                        else:
-                            print("⚠️  [config] firewall.yaml НЕ применён (битый конфиг) — держим прежние правила (fail-closed)")
+                    if kind == "firewall" and firewall is not None:
+                        firewall.reload(_load_yaml(cfg_path))   # битый — исключение с причиной, прежние правила целы
+                        print("♻️  [config] firewall.yaml перезагружен без рестарта")
                     elif kind == "reactions" and reactions is not None:
                         reactions.load(cfg_path)
                         print("♻️  [config] server_reactions.yaml перезагружен без рестарта")

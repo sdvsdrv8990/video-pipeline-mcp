@@ -99,7 +99,7 @@ class RunnerService:
             return self._answer("AUTH_FAILED", 401, facts={"header": self.token_header})
         try:
             body = await request.json()
-        except Exception:  # тело не разобрать
+        except (ValueError, LookupError):  # битый JSON или кодировка тела; предел размера aiohttp ответит сам (413)
             return self._answer("VALIDATION_ERROR", 400, errors=[{"field": "body", "rule": "json"}])
         if not isinstance(body, dict):
             return self._answer("VALIDATION_ERROR", 400, errors=[{"field": "body", "rule": "object"}])

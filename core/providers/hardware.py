@@ -444,7 +444,7 @@ def placement(gpu_rules: dict, fit_rules: dict, entry: dict, where: dict) -> dic
     """
     mode = str((gpu_rules or {}).get("oversize") or "error").lower()
     need_mb = round(FitEstimator(fit_rules).bytes_for(
-        entry.get("params_by_dtype") or {}, int(entry.get("params_total") or 0),
+        entry.get("params_by_dtype") or {}, entry.get("params_total"),
         as_dtype=where.get("dtype", "")) / 1e6)
     free = where["available_mb"]
     base = {"need_mb": need_mb, "available_mb": free, "device": where.get("device", "")}
@@ -472,23 +472,25 @@ class FitEstimator:
         self.tight_ratio = float(rules.get("tight_ratio", 0.8))
         self.aliases = {str(k).lower(): str(v).upper() for k, v in (rules.get("dtype_alias") or {}).items()}
 
-    def bytes_for(self, params_by_dtype: dict, params_total: int = 0, as_dtype: str = "") -> int:
+    def bytes_for(self, params_by_dtype: dict, params_total: int | None = 0, as_dtype: str = "") -> int:
         """Сколько памяти нужно под веса + запас на активации.
 
         Считаем по РАЗРЯДНОСТИ каждого куска весов: одна и та же модель в fp16 весит вдвое
         меньше, чем в fp32, и вердикт из-за этого меняется на противоположный. `as_dtype` —
         разрядность, в которой модель РЕАЛЬНО поднимут (её задаёт устройство): веса лежат в
-        fp32, а грузятся в fp16 — считать по диску значило бы завысить вдвое.
+        fp32, а грузятся в fp16 — считать по диску значило бы завысить вдвое. Число параметров,
+        которого источник не назвал, — None: тогда счёт по разрядностям.
+        0 байт = источник не назвал ни total, ни by_dtype; реальной модели с 0 байт нет.
         """
         key = self.aliases.get(str(as_dtype).lower(), "")
-        total = int(params_total or 0) or sum(int(c) for c in (params_by_dtype or {}).values())
+        total = sum(int(c) for c in (params_by_dtype or {}).values()) if params_total is None else int(params_total)
         if key and total:
             raw = total * self.dtype_bytes.get(key, self.default_bytes)
         elif params_by_dtype:
             raw = sum(int(count) * self.dtype_bytes.get(str(dtype).upper(), self.default_bytes)
                       for dtype, count in params_by_dtype.items())
         else:
-            raw = int(params_total or 0) * self.default_bytes
+            raw = total * self.default_bytes
         return int(raw * self.overhead)
 
     def pool(self, hw: dict) -> dict:
@@ -512,9 +514,9 @@ class FitEstimator:
         """Влезает / впритык / не влезает — с числами, по которым видно, почему. Доступно 0 — «не влезает»."""
         need_mb = round(need_bytes / 1e6)
         base = {"need_mb": need_mb, "available_mb": available_mb, "device": device}
-        if not need_mb:
+        if not need_bytes:
             return {**base, "verdict": "unknown",
-                    "why": "источник не сообщает число параметров — оценить нечем"}
+                    "why": "источник не назвал ни числа параметров, ни размера весов — оценить нечем"}
         if need_mb > available_mb:
             verdict, why = "no", f"нужно ~{need_mb} МБ при доступных {available_mb} МБ ({device})"
         elif need_mb > self.tight_ratio * available_mb:
