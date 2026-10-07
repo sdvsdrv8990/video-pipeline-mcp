@@ -1196,17 +1196,44 @@ ok(_paced["heartbeat"] == 4200.0 and _paced["bytes"] == 1190,
    f"законный: рост не медленнее меры с прошлого тика двигает «последнюю работу» ({_paced['heartbeat']})")
 
 
+from core.declaration import Declaration as _Decl16
+from core.declaration_schemas import MODEL_INSTALL as _MI16
+
+
 def _built(stale_after: float) -> str:
+    """Раздел local.install с окном меры 150 с — связь простоя с тишиной загрузчика судит схема у двери."""
+    data = yaml.safe_load(CFG.read_text(encoding="utf-8"))
+    data["local"]["install"]["fetch"]["speed_window_sec"] = 150
+    data["local"]["install"]["progress"]["stale_after_sec"] = stale_after
+    path = Path(tempfile.mkdtemp(prefix="install_decl_")) / "providers.yaml"
+    path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
     try:
-        ModelInstaller(_drip_cat, heartbeat_sec=1, stale_after_sec=stale_after)
+        _Decl16(path, _CE13, "провайдеров", "").section(*_MI16.section, schema=_MI16.schema)
         return ""
     except _CE13 as e:
-        return f"{e.code}: {e.message}"
+        return f"{e.code}: {e.facts.get('details', '')}"
 
 
-_drip_cat.measure = {"floor": 100, "window": 150}
-ok(_built(150).startswith("SCHEMA_INVALID") and "speed_window_sec 150" in _built(150) and _built(151) == "",
-   f"простой не короче окна меры скорости: 150 с — отказ кодом с ключом окна, 151 с — строится ({_built(150)[:80]})")
+ok(_built(150).startswith("DECLARATION_INVALID") and "local.install.progress.stale_after_sec" in _built(150)
+   and _built(151) == "",
+   f"простой не длиннее окна меры: 150 с — отказ двери с путём ключа, 151 с — раздел проходит ({_built(150)[:80]})")
+
+
+def _without_revisions() -> str:
+    """Раздел local.install без `revisions`: незакреплённость объявляется явно, отсутствие ключа — отказ двери."""
+    data = yaml.safe_load(CFG.read_text(encoding="utf-8"))
+    data["local"]["install"].pop("revisions")
+    path = Path(tempfile.mkdtemp(prefix="install_decl_")) / "providers.yaml"
+    path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+    try:
+        _Decl16(path, _CE13, "провайдеров", "").section(*_MI16.section, schema=_MI16.schema)
+        return ""
+    except _CE13 as e:
+        return f"{e.code}: {e.facts.get('details', '')}"
+
+
+ok(_without_revisions().startswith("DECLARATION_INVALID") and "local.install.revisions" in _without_revisions(),
+   f"закреплённые ревизии не объявлены — отказ двери с путём, а не «не закреплено» молча ({_without_revisions()[:90]})")
 _drip_cat.measure = {"floor": 100, "window": 30}
 _stale_state = _inst_tick.status("t16")[0]
 ok(_stale_state["status"] == "failed" and _stale_state["error"]["code"] == "INSTALL_STALLED"
@@ -1518,9 +1545,9 @@ ok(_est.verdict(1_000_000_000, 8000)["verdict"] == "fits"
    and _est.verdict(7_000_000_000, 8000)["verdict"] == "tight"
    and _est.verdict(9_000_000_000, 8000)["verdict"] == "no",
    "три исхода: влезает / впритык / не влезает — пороги из декларации")
-ok(_est.verdict(0, 8000)["verdict"] == "unknown"
-   and "нечем" in _est.verdict(0, 8000)["why"],
-   "нет числа параметров → «не знаю», а не «влезет»")
+ok(_est.verdict(None, 8000)["verdict"] == "unknown"
+   and "нечем" in _est.verdict(None, 8000)["why"],
+   "нет числа параметров (размер None) → «не знаю», а не «влезет»")
 _zero_ram = _est.verdict(1_000_000_000, 0)
 ok(_zero_ram["verdict"] == "no" and "при доступных 0 МБ" in _zero_ram["why"],
    f"доступно 0 МБ — «не влезает» с числами, а не «впритык» и не «неизвестно» ({_zero_ram['verdict']}: {_zero_ram['why']})")
@@ -1540,6 +1567,28 @@ ok(_est.pool({"ram_available_mb": 8000})["available_mb"] == 8000,
    "карты нет вовсе → прежнее поведение, ОЗУ")
 ok(_est.idle_gpu(_amd)["vram_free_mb"] == 15000 and not _est.idle_gpu(_ok_gpu),
    "простаивающая карта возвращается отдельно — иначе про её 15 ГБ никто не узнает")
+
+# Объём карты не назван (None) и «ноль свободно» (0) — разные факты: каждый судится своей причиной, а не истинностью.
+from core.providers.hardware import _int_file, compute_device as _cd18, placement as _pl18
+_cd_blind = {"ram_available_mb": 30000, "gpu": [{**_ok_gpu["gpu"][0], "driver": "nvidia",
+                                                  "vram_total_mb": None, "vram_free_mb": None}]}
+_cd_full = {"ram_available_mb": 30000, "gpu": [{**_ok_gpu["gpu"][0], "driver": "nvidia", "vram_free_mb": 0}]}
+_cd_auto = {"drivers": {"nvidia": {"torch_device": "cuda"}}}
+ok(_cd18({}, "cuda", hw=_cd_blind)["available_mb"] is None and _cd18({}, "cuda", hw=_cd_full)["available_mb"] == 0,
+   "карту задала строка канала: объём не назван — None, известный ноль свободного — 0, а не одно и то же")
+ok(_cd18(_cd_auto, hw=_cd_blind)["device"] == "cpu" and _cd18(_cd_auto, hw=_cd_full)["device"] == "cpu"
+   and _cd18(_cd_auto, hw={**_cd_full, "gpu": [{**_cd_full["gpu"][0], "vram_free_mb": 9000}]})["device"] == "cuda",
+   "автовыбор: карта без названного объёма и занятая карта не берутся, карта со свободной памятью — берётся")
+ok(_est.pool(_cd_blind)["target"] == "cpu" and _est.pool(_cd_full)["target"] == "cpu",
+   "пул вердикта: неизвестный объём и ноль свободного — считаем по ОЗУ, карту не обещаем")
+_cd_model = {"params_by_dtype": {"F16": 1_000_000_000}}
+_cd_unnamed = _pl18({}, {}, _cd_model, {"device": "cuda", "available_mb": None})
+_cd_zero = _pl18({}, {}, _cd_model, {"device": "cuda", "available_mb": 0})
+ok(_cd_unnamed["mode"] == "device" and "не назвал" in _cd_unnamed["why"] and _cd_zero["mode"] != "device",
+   f"размещение: объём не назван — кладём целиком с этой причиной; ноль свободного — не «влезает» "
+   f"({_cd_unnamed}, {_cd_zero})")
+ok(_int_file(ROOT / "нет-такого-файла") is None and _int_file(ROOT / "README.md") is None,
+   "sysfs: файла нет или в нём не число — None (драйвер не назвал), а не 0")
 ok("карта" in _est.verdict(1_000_000_000, 15000, "карта")["why"],
    "в вердикте названо, ПО КАКОЙ памяти он посчитан")
 
@@ -2189,6 +2238,37 @@ ok(_held == {"big2"},
    f"не влезающее вытеснено по бюджету, а не сложено сверх памяти ({sorted(_held)})")
 ok(_p15.stats()["budget_mb"]["cpu"] == 500,
    f"бюджет считается от свободной памяти и объявленной доли ({_p15.stats()['budget_mb']})")
+_p15_rules = {"enabled": True, "budget_ratio": 0.5, "idle_ttl_sec": 0, "max_entries": 0}
+_p15_blind = _Pool(_p15_rules, {**_hw15, "gpu": [{"usable": True, "vram_free_mb": None}]})
+_p15_full = _Pool(_p15_rules, {**_hw15, "gpu": [{"usable": True, "vram_free_mb": 0}]})
+ok(_p15_blind.budget_bytes("cuda") == 500_000_000 and _p15_full.budget_bytes("cuda") == 0,
+   f"бюджет карты: объём не назван — по ОЗУ, известный ноль свободного — 0, а не ОЗУ "
+   f"({_p15_blind.budget_bytes('cuda')}, {_p15_full.budget_bytes('cuda')})")
+
+# Неизвестный размер: запись хранит None, в сумму не входит и выгружается первой — пока она держится, бюджет не доказать.
+import logging as _lg15
+
+_pool_mod._ENTRIES.clear(); _lifts["n"] = 0
+_p_unk = _Pool({"enabled": True, "budget_ratio": 0.5, "idle_ttl_sec": 0, "max_entries": 2}, _hw15)
+_p_unk.get("old", _lift("old"), need_bytes=100_000_000, device="cpu")
+_p_unk.get("blind", _lift("blind"), need_bytes=None, device="cpu")
+_st = _p_unk.stats()
+ok({r["key"]: r["mb"] for r in _st["models"]} == {"old": 100.0, "blind": None} and _st["held_mb"]["cpu"] == 100.0,
+   f"модель неизвестного размера в учёте — mb null, в сумму занятого не входит, а не 0 ({_st['models']}, {_st['held_mb']})")
+_said: list[str] = []
+_catch = _lg15.Handler()
+_catch.emit = lambda rec: _said.append(rec.getMessage())
+_was_level = _pool_mod.log.level
+_pool_mod.log.addHandler(_catch)
+_pool_mod.log.setLevel(_lg15.INFO)
+_p_unk.get("new", _lift("new"), need_bytes=100_000_000, device="cpu")
+_pool_mod.log.removeHandler(_catch)
+_pool_mod.log.setLevel(_was_level)
+_held_u = {r["key"] for r in _p_unk.stats()["models"]}
+ok(_held_u == {"old", "new"} and any("blind" in s and "размер неизвестен" in s for s in _said),
+   f"нужно место — первой выгружена модель неизвестного размера, а не самая давняя, и причина в журнале "
+   f"({sorted(_held_u)}, {_said})")
+_pool_mod._ENTRIES.clear()
 
 # Свободно 0 — бюджет 0, а не «без предела»: прежняя модель выгружается до подъёма новой.
 _pool_mod._ENTRIES.clear(); _lifts["n"] = 0
@@ -2963,10 +3043,18 @@ def _model_fetch(work: Path, records: list[str]) -> None:
     marks: list = []
     ok(cat.judge(second["entry"], deep=True, mark=lambda: marks.append(1))["verdict"] == "ready" and marks,
        f"суд по отпечатку отмечает работу по ходу чтения, а не одной отметкой до ({len(marks)} отметок)")
-    ok(cat.silence_sec() == 60.0 and refused(lambda: Watcher(cat, stale_after_sec=60)) == "SCHEMA_INVALID"
-       and refused(lambda: Watcher(cat, stale_after_sec=61)) == "",
-       f"простой не короче тишины загрузчика: 60 с (2 × timeout 30) — отказ кодом, 61 с — строится "
-       f"({cat.silence_sec()})")
+    def stale(seconds: int) -> str:
+        """Та же декларация с другим простоем — связь с тишиной загрузчика судит схема раздела у двери."""
+        data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+        data["local"]["install"]["progress"]["stale_after_sec"] = seconds
+        variant = work / f"stale_{seconds}" / "providers.yaml"
+        variant.parent.mkdir(exist_ok=True)
+        variant.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+        return refused(lambda: ModelCatalog(variant, models).install_policy())
+
+    ok(cat.silence_sec() == 60.0 and stale(60) == "DECLARATION_INVALID" and stale(61) == "",
+       f"простой не длиннее тишины загрузчика: 60 с (2 × timeout 30) — отказ двери, 61 с — раздел проходит "
+       f"({cat.silence_sec()}, {stale(60)})")
     info["org/away"] = repo(put("org/away", "model.onnx", b"a" * 100))
     away[("org/away", "model.onnx")] = "https://evil.example/org/away/model.onnx"
     w0 = len(wire)
@@ -3251,9 +3339,16 @@ def _model_fetch(work: Path, records: list[str]) -> None:
     est = FitEstimator({"dtype_bytes": {"F16": 2, "F32": 4}, "default_dtype_bytes": 4, "overhead": 1.0,
                         "dtype_alias": {"fp16": "F16"}})
     got = (est.bytes_for({"F32": 10}, None, as_dtype="fp16"), est.bytes_for({}, None), est.bytes_for({}, 5))
-    ok(got == (20, 0, 20),
+    ok(got == (20, None, 20),
        "узел «параметры неизвестны» — bytes_for: None → число из разрядностей, поднятое в fp16 (10 × 2); ни total, "
-       f"ни разрядностей — знак 0 байт; названное число — по нему (5 × 4) ({got})")
+       f"ни разрядностей — None (размер неизвестен), а не 0; названное число — по нему (5 × 4) ({got})")
+    from core.providers.hardware import placement
+    unknown, zero = est.verdict(None, 1000), est.verdict(0, 1000)
+    ok(unknown["verdict"] == "unknown" and unknown["need_mb"] is None and zero["verdict"] != "unknown",
+       f"verdict судит None, а не истинность: неизвестный размер — unknown, известный 0 с ним не сливается ({unknown}, {zero})")
+    laid = placement({}, {}, {"params_by_dtype": {}, "params_total": None}, {"device": "gpu", "available_mb": 1000})
+    ok(laid["mode"] == "device" and laid["need_mb"] is None and "неизвестен" in laid["why"],
+       f"размещение: размер неизвестен — кладём целиком с этой причиной, need_mb None, а не 0 ({laid})")
     kept = cat._enrich([{"id": "org/blind", "mb": None}, {"id": "org/headed", "mb": None}], [".onnx"], False, 1000, 5)
     ok([r["id"] for r in kept] == ["org/blind"],
        f"отсев min_mb: неизвестный размер не «мельче» — строка остаётся, известные 0.3 МБ отсеяны ({kept})")
@@ -3271,6 +3366,9 @@ def _model_fetch(work: Path, records: list[str]) -> None:
     fit = cat.with_fit(kept)[0]["fit"] if kept else {}
     ok(fit.get("verdict") == "unknown" and "ни размера" in str(fit.get("why")),
        f"пригодность без параметров и размера — «неизвестно» с причиной, а не «влезает» ({fit})")
+    by_disk = cat.with_fit([{"id": "org/disk", "mb": 500.0, "params_total": None, "params_by_dtype": {}}])[0]["fit"]
+    ok(by_disk.get("verdict") != "unknown" and (by_disk.get("need_mb") or 0) >= 500,
+       f"параметров нет, размер весов известен — пригодность мерится по диску, а не «неизвестно» ({by_disk})")
     ok(ModelCatalog._voice_mb({"files": {"a.onnx": {"size_bytes": 5_000_000}, "a.json": {}}}) is None
        and ModelCatalog._voice_mb({"files": {"a.onnx": {"size_bytes": 5_000_000}, "a.json": {"size_bytes": 100_000}}})
        == 5.1, "голос piper: файл без size_bytes — сумма неизвестна (None), а не меньше; названы все — сумма")

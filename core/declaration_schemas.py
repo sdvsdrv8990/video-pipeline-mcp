@@ -7,10 +7,10 @@
 
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import Annotated, Generic, NamedTuple, TypeVar, get_args, get_origin
+from typing import Annotated, Generic, Literal, NamedTuple, TypeVar, get_args, get_origin
 
-from pydantic import (AfterValidator, BaseModel, ConfigDict, Field, Strict, StrictInt, StrictStr, ValidationError,
-                      model_validator)
+from pydantic import (AfterValidator, BaseModel, ConfigDict, Field, Strict, StrictBool, StrictFloat, StrictInt,
+                      StrictStr, ValidationError, model_validator)
 from pydantic_core import InitErrorDetails, PydanticCustomError
 
 STRICT = ConfigDict(strict=True, frozen=True, extra="forbid")
@@ -40,14 +40,23 @@ class ResourceClass(BaseModel):
     retry_after_sec: int | None = Field(default=None, gt=0)
 
 
+class WorkClass(BaseModel):
+    """Внутренняя работа сервера (описания каталога, поиск): сколько её идёт разом. Клиенту «занято» она не отвечает."""
+
+    model_config = STRICT
+
+    max_concurrent: int = Field(gt=0)
+
+
 class Resources(BaseModel):
-    """`config/resources.yaml`: классы ресурсов и класс каждого инструмента."""
+    """`config/resources.yaml`: классы ресурсов, класс каждого инструмента и места внутренней работы."""
 
     model_config = STRICT
 
     default: str
     classes: Annotated[Mapping[str, ResourceClass], ReadOnly]
     tools: Annotated[Mapping[str, str], ReadOnly]
+    work: Annotated[Mapping[str, WorkClass], ReadOnly]
 
     @model_validator(mode="after")
     def _coherent(self) -> "Resources":
@@ -120,6 +129,12 @@ class RequestPolicy(BaseModel):
             raise ValidationError.from_exception_data(type(self).__name__, gaps)
         return self
 
+    @property
+    def silence_sec(self) -> float:
+        """Наибольшая законная тишина загрузчика между отметками работы: соединение и ожидание ответа (2 × timeout_sec,
+        httpx меряет их порознь) либо пауза перед повтором (backoff_max_sec × (1 + jitter)); попыток — `attempts`."""
+        return max(2 * self.timeout_sec, self.backoff_max_sec * (1 + self.jitter))
+
 
 class FetchPolicy(RequestPolicy):
     """Раздел `fetch` потребителя, которому загрузчик отдаёт тело (файл, память): плюс предел, мера скорости и код порчи."""
@@ -134,6 +149,50 @@ class ResultFetchPolicy(FetchPolicy):
     """`media_tasks.yaml` `download.fetch`: загрузка результатов поставщиков; плюс поля ответа, где искать ссылку на файл."""
 
     url_fields: Annotated[tuple[StrictStr, ...], Listed]
+
+
+class InstallProgress(BaseModel):
+    """Наблюдение за установкой: как часто пересчитывать легшие байты и сколько тишины — уже простой."""
+
+    model_config = STRICT
+
+    heartbeat_sec: float = Field(gt=0)
+    stale_after_sec: float = Field(gt=0)
+
+
+class InstallPolicy(BaseModel):
+    """`providers.yaml` `local.install`: откуда и что ставить, сколько места, как тянуть и как судить простой.
+
+    `revisions` — закреплённая ревизия модели (репозиторий → коммит): часть происхождения, пустое отображение — явное
+    «не закреплено». Простой (`progress.stale_after_sec`) длиннее законной тишины загрузчика и окна меры скорости.
+    """
+
+    model_config = STRICT
+
+    allow_sources: Annotated[tuple[StrictStr, ...], Listed]
+    allow_suffixes: Annotated[tuple[StrictStr, ...], Listed]
+    deny_suffixes: Annotated[tuple[StrictStr, ...], Listed]
+    max_total_mb: float = Field(gt=0)
+    fetch: FetchPolicy
+    prefer_files: Annotated[tuple[StrictStr, ...], Listed]
+    progress: InstallProgress
+    revisions: Annotated[Mapping[StrictStr, StrictStr], ReadOnly]
+
+    @model_validator(mode="after")
+    def _coherent(self) -> "InstallPolicy":
+        gaps = _install_gaps(self)
+        if gaps:
+            raise ValidationError.from_exception_data(type(self).__name__, gaps)
+        return self
+
+
+def _install_gaps(policy: InstallPolicy) -> list[InitErrorDetails]:
+    """Связь разделов установки: простой длиннее наибольшей законной тишины загрузчика и окна меры скорости."""
+    quiet = max(policy.fetch.silence_sec, policy.fetch.speed_window_sec)
+    if policy.progress.stale_after_sec <= quiet:
+        return [_gap("stale_within_silence", f"простой длиннее законной тишины загрузчика и окна меры ({quiet:g} с)",
+                     ("progress", "stale_after_sec"))]
+    return []
 
 
 def _fetch_gaps(policy: RequestPolicy) -> list[InitErrorDetails]:
@@ -159,6 +218,48 @@ class PackagesDecl(BaseModel):
     index: PackageIndex
 
 
+ColumnType = Literal["string", "date", "enum", "integer", "float", "list", "boolean"]
+Cell = StrictStr | StrictInt | StrictFloat | StrictBool
+
+
+class BookColumn(BaseModel):
+    """Столбец листа книги: тип значения (по нему — правило деградации формулы), флаг роли (id — ключ, W — вводится,
+    F — вычисляется формулой, fk — ссылка), допустимые значения перечисления, формула и запасное значение формулы."""
+
+    model_config = STRICT
+
+    name: StrictStr = Field(min_length=1)
+    type: ColumnType
+    flag: Literal["id", "W", "F", "fk"]
+    enum: Annotated[tuple[StrictStr, ...], Listed] = ()
+    formula: StrictStr = ""
+    on_empty: Cell | None = None
+
+
+class BookSheet(BaseModel):
+    """Лист книги: столбцы по порядку и стартовые строки (значения по именам столбцов, список — в ячейку через запятую)."""
+
+    model_config = STRICT
+
+    name: StrictStr = Field(min_length=1)
+    columns: Annotated[tuple[BookColumn, ...], Listed] = Field(min_length=1)
+    rows: Annotated[tuple[Annotated[Mapping[StrictStr, Cell | Annotated[tuple[Cell, ...], Listed]], ReadOnly], ...],
+                    Listed] = ()
+
+
+class BookSchema(BaseModel):
+    """`config/templates/tables/<книга>.schema.yaml`: книга таблиц — уровень структуры, источник, листы; своё правило
+    деградации формул перекрывает общее `_defaults.yaml` по типу столбца."""
+
+    model_config = STRICT
+
+    book: StrictStr
+    level: StrictStr
+    source: StrictStr
+    sheets: Annotated[tuple[BookSheet, ...], Listed] = Field(min_length=1)
+    degrade: Annotated[Mapping[ColumnType, Cell], ReadOnly] = Field(default_factory=lambda: MappingProxyType({}))
+
+
 M = TypeVar("M", bound=BaseModel)
 
 
@@ -173,9 +274,10 @@ class Slot(NamedTuple, Generic[M]):
 
 RESOURCES = Slot("resources.yaml", (), Resources)
 PACKAGES = Slot("packages.yaml", (), PackagesDecl)
+MODEL_INSTALL = Slot("providers.yaml", ("local", "install"), InstallPolicy)
 MODEL_FETCH = Slot("providers.yaml", ("local", "install", "fetch"), FetchPolicy)
 RESULT_FETCH = Slot("media_tasks.yaml", ("download", "fetch"), ResultFetchPolicy)
-SLOTS = (RESOURCES, PACKAGES, MODEL_FETCH, RESULT_FETCH)
+SLOTS = (RESOURCES, PACKAGES, MODEL_INSTALL, MODEL_FETCH, RESULT_FETCH)
 
 
 def registry_codes(model: BaseModel) -> frozenset[str]:

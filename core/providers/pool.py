@@ -7,9 +7,11 @@
 памяти, держим, иначе выгружаем самое давнее.
 """
 
+import logging
 import threading
 import time
 
+log = logging.getLogger(__name__)
 _LOCK = threading.Lock()
 _ENTRIES: dict[str, dict] = {}
 
@@ -34,21 +36,24 @@ class ModelPool:
         значит менять один тормоз на другой.
         """
         ratio = float(self.rules.get("budget_ratio") or 0.5)
-        free_mb = 0.0
+        free_mb = None
         if device != "cpu":
             cards = [c for c in (self.hardware.get("gpu") or []) if c.get("usable")]
-            free_mb = float(cards[0].get("vram_free_mb") or 0) if cards else 0.0
-        if not free_mb:
-            free_mb = float(self.hardware["ram_available_mb"])
-        return int(free_mb * 1e6 * ratio)
+            free_mb = cards[0].get("vram_free_mb") if cards else None
+        if free_mb is None:
+            # Карты нет или драйвер не назвал её объём — бюджет по ОЗУ; известный 0 на карте — бюджет 0.
+            free_mb = self.hardware["ram_available_mb"]
+        return int(float(free_mb) * 1e6 * ratio)
 
     def held_bytes(self, device: str = "") -> int:
-        return sum(e["bytes"] for e in _ENTRIES.values() if not device or e["device"] == device)
+        """Сумма известных размеров; запись неизвестного размера (None) в сумму не входит — её выгружают первой."""
+        return sum(e["bytes"] for e in _ENTRIES.values()
+                   if e["bytes"] is not None and (not device or e["device"] == device))
 
     # ═══ Доступ ═══
 
-    def get(self, key: str, loader, need_bytes: int = 0, device: str = "cpu"):
-        """Отдать поднятую модель или поднять её, освободив место по объявленному бюджету."""
+    def get(self, key: str, loader, need_bytes: int | None = 0, device: str = "cpu"):
+        """Отдать поднятую модель или поднять её, освободив место по объявленному бюджету; размер неизвестен — None."""
         if not self.enabled:
             return loader()
         with _LOCK:
@@ -75,7 +80,7 @@ class ModelPool:
     def stats(self) -> dict:
         """Что держим прямо сейчас — вместе с бюджетом, иначе числа не с чем сравнить."""
         with _LOCK:
-            rows = [{"key": k, "device": e["device"], "mb": round(e["bytes"] / 1e6, 1),
+            rows = [{"key": k, "device": e["device"], "mb": None if e["bytes"] is None else round(e["bytes"] / 1e6, 1),
                      "measured": e["measured"], "hits": e["hits"],
                      "idle_sec": round(time.time() - e["used"], 1)}
                     for k, e in _ENTRIES.items()]
@@ -99,15 +104,20 @@ class ModelPool:
         for key in [k for k, e in _ENTRIES.items() if now - e["used"] > ttl]:
             self._drop(key)
 
-    def _make_room(self, need_bytes: int, device: str) -> None:
-        """Освободить место под новую модель: сначала самое давнее."""
+    def _make_room(self, need_bytes: int | None, device: str) -> None:
+        """Освободить место под новую модель: сначала записи неизвестного размера — пока они держатся, бюджет не
+        доказать, — затем самое давнее. Новая модель неизвестного размера места под себя не готовит."""
         limit = int(self.rules.get("max_entries") or 0)
         budget = self.budget_bytes(device)
+        need = 0 if need_bytes is None else need_bytes
         order = sorted((k for k, e in _ENTRIES.items() if e["device"] == device),
-                       key=lambda k: _ENTRIES[k]["used"])
-        while order and (self.held_bytes(device) + need_bytes > budget
+                       key=lambda k: (_ENTRIES[k]["bytes"] is not None, _ENTRIES[k]["used"]))
+        while order and (self.held_bytes(device) + need > budget
                          or (limit and len(_ENTRIES) >= limit)):
-            self._drop(order.pop(0))
+            key = order.pop(0)
+            if _ENTRIES[key]["bytes"] is None:
+                log.info("пул: выгружаю %s — размер неизвестен, бюджет не доказать", key)
+            self._drop(key)
 
     @staticmethod
     def _drop(key: str) -> None:

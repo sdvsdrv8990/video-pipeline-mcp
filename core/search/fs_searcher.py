@@ -209,12 +209,14 @@ class FsSearcher:
             task.error = str(e)
             raise
 
-    def search_parallel(self, tasks: list[FsSearchTask], max_workers: int = 4) -> dict:
-        """Параллельный поиск по нескольким задачам."""
+    def search_parallel(self, tasks: list[FsSearchTask]) -> dict:
+        """Параллельный поиск по нескольким задачам; места даёт узел ёмкости (класс `search`), вызывающий их не решает."""
+        from core.capacity import Capacity
+
         results = {}
         errors = []
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=Capacity().places("search")) as executor:
             futures = {}
             for task in tasks:
                 future = executor.submit(self.search, task)

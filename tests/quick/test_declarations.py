@@ -125,9 +125,20 @@ def main():
         check("объект неизменяем", False, "присваивание прошло")
     except ValidationError as e:
         check("объект неизменяем", e.errors()[0]["type"] == "frozen_instance", e.errors()[0]["type"])
-    inline_only = {"default": "inline", "classes": {"inline": {"offload": False}}, "tools": {"x": "inline"}}
+    inline_only = {"default": "inline", "classes": {"inline": {"offload": False}}, "tools": {"x": "inline"}, "work": {}}
     write(work / "inline.yaml", inline_only, 1_000_000_000)
     check("класс без снятия с цикла и без предела — законен", door(work / "inline.yaml").model.classes["inline"].max_concurrent is None)
+    from core.capacity import Capacity
+    live = Capacity()
+    declared = door(ROOT / "config" / "resources.yaml").model
+    got = {name: live.places(name) for name in ("describe", "search", "cpu_heavy", "inline")}
+    check("узел ёмкости — одна точка мест: внутренняя работа из work, класс инструмента из classes, без предела — None",
+          got == {"describe": declared.work["describe"].max_concurrent, "search": declared.work["search"].max_concurrent,
+                  "cpu_heavy": declared.classes["cpu_heavy"].max_concurrent, "inline": None}, got)
+    given = Resources.model_validate({**inline_only, "work": {"describe": {"max_concurrent": 3}}})
+    check("готовую модель узел судит по ней, а не по файлу: describe 3 из модели при 8 в декларации",
+          Capacity(given).places("describe") == 3 != declared.work["describe"].max_concurrent,
+          (Capacity(given).places("describe"), declared.work["describe"].max_concurrent))
 
     print("\n== больное: порча — отказ при загрузке с путём и правилом, через путь доставки ==")
     for label, apply, field, rule in CASES:

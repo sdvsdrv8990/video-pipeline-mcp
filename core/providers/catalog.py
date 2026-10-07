@@ -17,7 +17,7 @@ from filelock import Timeout
 
 from core.contracts import ContractError
 from core.declaration import Declaration
-from core.declaration_schemas import MODEL_FETCH, FetchPolicy
+from core.declaration_schemas import MODEL_FETCH, MODEL_INSTALL, FetchPolicy, InstallPolicy
 from core.paths import Files
 from .download import Fetcher, file_digest
 from .resolver import ProviderError
@@ -316,8 +316,9 @@ class ModelCatalog:
         """Дописать то, чего в списке нет: какой файл ляжет, сколько весит и что модель делает."""
         from concurrent.futures import ThreadPoolExecutor
 
-        workers = int((self.local.get("describe") or {}).get("workers") or 8)
-        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        from core.capacity import Capacity
+
+        with ThreadPoolExecutor(max_workers=Capacity().places("describe")) as pool:
             details = list(pool.map(lambda r: self._detail(r["id"], want, describe), rows))
         out = []
         for row, detail in zip(rows, details, strict=True):
@@ -557,7 +558,7 @@ class ModelCatalog:
         for row in rows:
             pbd, ptotal = row.get("params_by_dtype") or {}, row.get("params_total")
             need = est.bytes_for(pbd, ptotal, as_dtype=load)
-            if not need and row.get("mb"):
+            if need is None and row.get("mb"):
                 # Число параметров источник не сообщил — тогда мерим тем, что известно: размером
                 # весов на диске. Это грубее, но лучше, чем промолчать про пригодность вовсе.
                 need = int(float(row["mb"]) * 1e6 * est.overhead)
@@ -567,10 +568,11 @@ class ModelCatalog:
                 # части. Молчать об этом значит советовать модель полегче там, где она не нужна.
                 fit["oversize"] = {"mode": oversize, "note": OVERSIZE_MODES.get(
                     oversize, f"режим '{oversize}' не объявлен")}
-            if idle and need:
+            if idle and need is not None:
                 # Карта на машине есть, но её память расчёту недоступна: показываем, что было бы
                 # на ней, и чем это перекрыто, — иначе «no» на ОЗУ выглядит приговором железу.
-                need_gpu = est.bytes_for(pbd, ptotal, as_dtype=gpu_load) or need
+                need_gpu = est.bytes_for(pbd, ptotal, as_dtype=gpu_load)
+                need_gpu = need if need_gpu is None else need_gpu
                 fit["on_gpu"] = {**est.verdict(need_gpu, idle["vram_free_mb"], idle["name"]),
                                  "dtype": gpu_load, "usable": False, "blocked_by": idle["why"]}
             out.append({**row, "fit": fit})
@@ -647,6 +649,11 @@ class ModelCatalog:
         """Мера работы тела из политики загрузчика весов (NI-01): та же пара судит приём и простой установки."""
         policy = self.fetcher().policy
         return {"floor": policy.speed_floor_bytes_per_sec, "window": policy.speed_window_sec}
+
+    def install_policy(self) -> InstallPolicy:
+        """Раздел `local.install` — объект схемы двери: простой длиннее законной тишины загрузчика судит схема, битый
+        раздел — отказ кодом двери с путём ключа."""
+        return self._decl.section(*MODEL_INSTALL.section, schema=MODEL_INSTALL.schema)
 
     @staticmethod
     def owner(entry: dict) -> str:

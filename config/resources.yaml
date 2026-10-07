@@ -62,3 +62,10 @@ tools:
   media_models: network
   media_model_install: network
   media_install_status: cpu_heavy   # сети нет: обход каталога задач с чтением файлов состояния
+
+# Места внутренней работы сервера — внутри одного вызова инструмента; читает их узел ёмкости (core/capacity.py).
+work:
+  describe:               # описания строк каталога: model_info и README на строку (ModelCatalog._enrich)
+    max_concurrent: 8     # не мерено: прежнее значение catalog.py `or 8`; замер — одновременных запросов до 429 хаба
+  search:                 # параллельный поиск по диску и таблицам (FsSearcher, QueryPlanner)
+    max_concurrent: 4     # не мерено: прежнее умолчание сигнатур max_workers=4; замер — время поиска от числа потоков

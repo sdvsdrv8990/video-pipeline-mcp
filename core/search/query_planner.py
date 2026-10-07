@@ -109,19 +109,21 @@ class QueryPlanner:
 
         return groups
 
-    def execute_plan(self, plan: QueryPlan, max_workers: int = 4) -> dict:
-        """Выполнение плана запроса.
+    def execute_plan(self, plan: QueryPlan) -> dict:
+        """Выполнение плана запроса; места даёт узел ёмкости (класс `search`), вызывающий их не решает.
 
         Returns:
             dict с результатами: rows, metadata, errors
         """
+        from core.capacity import Capacity
+
         groups = self.analyze_dependencies(plan)
         all_results = []
         errors = []
 
         for group in groups:
             # Задачи в группе = параллельно
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=Capacity().places("search")) as executor:
                 futures = {}
                 for task in group:
                     future = executor.submit(self._execute_read, task)

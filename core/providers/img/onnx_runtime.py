@@ -39,7 +39,7 @@ class OnnxImage:
             except Exception as e:  # битый или чужой граф; причина — по цепочке `from e` в журнал, не клиенту
                 raise ProviderError("MODEL_UNLOADABLE", facts={"model": Path(model_path).name}) from e
 
-        size = model_path.stat().st_size if model_path.is_file() else 0
+        size = model_path.stat().st_size if model_path.is_file() else None
         return self.registry.pool.get(f"onnx|{model_path}|{','.join(providers)}", load,
                                       need_bytes=size, device="cpu")
 

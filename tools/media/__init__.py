@@ -489,13 +489,12 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         return RunnerSupervisor(registry, ctx.config_path.parent)
 
     def _installer() -> ModelInstaller:
-        """Наблюдатель за установками: пределы прозвонки — из декларации, не из кода."""
+        """Наблюдатель за установками: пределы прозвонки — из раздела `local.install`, связь простоя с тишиной
+        загрузчика судит схема у двери."""
         registry = AdapterRegistry(ctx.config_path / "providers.yaml", ctx.config_path.parent)
         catalog = ModelCatalog(ctx.config_path / "providers.yaml", registry.models_dir)
-        progress = ("local", "install", "progress")
-        return ModelInstaller(catalog,
-                              heartbeat_sec=registry.need(*progress, "heartbeat_sec", kind=float),
-                              stale_after_sec=registry.need(*progress, "stale_after_sec", kind=float))
+        progress = catalog.install_policy().progress
+        return ModelInstaller(catalog, heartbeat_sec=progress.heartbeat_sec, stale_after_sec=progress.stale_after_sec)
 
     async def media_model_install(model_id: str, kind: str, confirm: bool = False,
                                   force: bool = False) -> "ToolResult":

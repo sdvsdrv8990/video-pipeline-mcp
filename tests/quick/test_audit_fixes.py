@@ -456,7 +456,7 @@ async def main():
     _busy_res = _Resources.model_validate({
         "default": "пробный",
         "classes": {"пробный": {"offload": True, "max_concurrent": 1, "retry_after_sec": 7}},
-        "tools": {"занятой": "пробный"}})
+        "tools": {"занятой": "пробный"}, "work": {}})
 
     async def _slow():
         await asyncio.sleep(0.2)
@@ -481,7 +481,8 @@ async def main():
     # Снятый с цикла класс без предела не загружается вовсе (схема у двери, tests/quick/test_declarations.py);
     # здесь — законный класс без снятия с цикла: предела нет, и отказа «занято» тоже.
     _no_limit = _Engine(resources=_Resources.model_validate({
-        "default": "свободный", "classes": {"свободный": {"offload": False}}, "tools": {"занятой": "свободный"}}))
+        "default": "свободный", "classes": {"свободный": {"offload": False}}, "tools": {"занятой": "свободный"},
+        "work": {}}))
     _no_limit.register("занятой", "проба", {"type": "object", "properties": {}}, _slow)
     _t = asyncio.create_task(_no_limit.call("занятой", {}))
     await asyncio.sleep(0.05)

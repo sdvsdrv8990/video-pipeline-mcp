@@ -331,10 +331,9 @@ class Fetcher(Generic[P]):
                              facts={"host": host, "got": got, "expected": "—" if expected is None else expected})
 
     def silence_sec(self) -> float:
-        """Наибольшая тишина между отметками работы: на переходе — соединение и ожидание ответа (2 × timeout_sec,
-        httpx меряет их порознь), либо пауза перед повтором (backoff_max_sec × (1 + jitter) — потолок сна в `fetch`);
-        число попыток ограничено `attempts`, так что отметки не вечны."""
-        return max(2 * self.policy.timeout_sec, self.policy.backoff_max_sec * (1 + self.policy.jitter))
+        """Наибольшая тишина между отметками работы — свойство политики (`RequestPolicy.silence_sec`): её же судит схема
+        раздела установки против `progress.stale_after_sec`."""
+        return self.policy.silence_sec
 
     def take(self, response, files: Files, path, owner: str, *, host: str, size: int | None = None,
              offset: int = 0) -> int:

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import jsonschema
 
 from core.contracts import ContractError, ToolResult, ErrorDetail, Recovery
+from core.capacity import Capacity
 from core.declaration_schemas import Resources
 
 log = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ class Engine:
         тяжёлый вызов морозит цикл событий, без `trail` сервер не оставляет после себя условий,
         по которым отказ воспроизводят. Что именно объявлено — в `config/`, не здесь; `resources` уже прошёл
         схему у двери деклараций — класс инструмента объявлен, у снятого с цикла есть предел и срок повтора.
+        Места классов решает узел ёмкости (`Capacity`), а не движок.
         """
         self.tools: dict[str, ToolDefinition] = {}
         self.reactions = reactions
@@ -61,8 +63,8 @@ class Engine:
         classes = resources.classes if resources else {}
         self._klass = dict(resources.tools) if resources else {}
         self._offload = {name for name, klass in self._klass.items() if classes[klass].offload}
-        self._limits = {name: asyncio.Semaphore(body.max_concurrent)
-                        for name, body in classes.items() if body.max_concurrent}
+        places = {name: Capacity(resources).places(name) for name in classes} if resources else {}
+        self._limits = {name: asyncio.Semaphore(n) for name, n in places.items() if n}
         self._retry_after = {name: body.retry_after_sec for name, body in classes.items() if body.retry_after_sec}
 
     async def _invoke(self, tool: ToolDefinition, params: dict) -> ToolResult:

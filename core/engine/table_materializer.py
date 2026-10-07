@@ -7,10 +7,10 @@ YAML, а не код.
 
 from pathlib import Path
 
-import yaml
-
 from core.excel import ExcelEngine, ExcelError
 from core.contracts import ContractError
+from core.declaration import Declaration
+from core.declaration_schemas import BookSchema
 
 
 class TableMaterializerError(ContractError):
@@ -30,9 +30,9 @@ class TableMaterializer:
     def _degrade_rules(self, schema: dict) -> dict:
         """Запасные значения по типу столбца: книга перекрывает общий `_defaults.yaml`."""
         if self._defaults is None:
-            path = self.schemas_dir / "_defaults.yaml"
-            data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
-            self._defaults = (data or {}).get("degrade") or {}
+            data = Declaration(self.schemas_dir / "_defaults.yaml", TableMaterializerError, "общих правил книг",
+                               "Поправь _defaults.yaml в config/templates/tables/.").optional()
+            self._defaults = data.get("degrade") or {}
         return {**self._defaults, **(schema.get("degrade") or {})}
 
     @staticmethod
@@ -58,24 +58,14 @@ class TableMaterializer:
         return f"=IFERROR({body},{self._excel_literal(fallback)})"
 
     def load_schema(self, book: str) -> dict:
-        """Прочитать декларацию книги. Схема-источник истины, не код."""
+        """Декларация книги, проверенная схемой у двери (`BookSchema`): листы, их имена, столбцы с именем, типом и флагом;
+        битая — отказ двери с путём ключа. Отдаётся тот же словарь, что прочитала дверь."""
         path = self.schemas_dir / f"{book}.schema.yaml"
-        if not path.exists():
-            raise TableMaterializerError(
-                "TEMPLATE_NOT_FOUND", f"Схема книги не найдена: {book}",
-                reason=f"Заведи {path.name} в config/templates/tables/ (формат — spec/TABLE_SCHEMA_FORMAT.md).")
-        schema = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        sheets = schema.get("sheets") or []
-        if not sheets:
-            raise TableMaterializerError(
-                "SCHEMA_INVALID", f"В схеме '{book}' нет ни одного листа (sheets).",
-                reason="Опиши хотя бы один лист с колонками; книга без листов не материализуется.")
-        for sheet in sheets:
-            if not sheet.get("name"):
-                raise TableMaterializerError(
-                    "SCHEMA_INVALID", f"В схеме '{book}' есть лист без имени.",
-                    reason="У каждого листа обязательно поле name.")
-        return schema
+        door = Declaration(path, TableMaterializerError, f"книги {book}",
+                           f"Заведи {path.name} в config/templates/tables/ (формат — схема BookSchema, "
+                           "core/declaration_schemas.py).")
+        door.section(schema=BookSchema)
+        return door.data
 
     def materialize(self, book: str, path: str) -> dict:
         """Создать книгу по декларации: листы → столбцы → формулы → валидации.
@@ -97,11 +87,7 @@ class TableMaterializer:
                 name = sheet["name"]
                 columns = sheet.get("columns") or []
                 for col in columns:
-                    col_name = col.get("name")
-                    if not col_name:
-                        raise TableMaterializerError(
-                            "SCHEMA_INVALID", f"Лист '{name}' книги '{book}': колонка без имени.",
-                            reason="У каждой колонки обязательно поле name.")
+                    col_name = col["name"]             # имя столбца гарантирует схема книги у двери
                     # F = вычисляемая: формула из спеки, иначе только заголовок-плейсхолдер.
                     formula = col.get("formula") if col.get("flag") == "F" else None
                     if formula:

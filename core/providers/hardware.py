@@ -40,12 +40,13 @@ def _meminfo(path: Path) -> dict:
     return out
 
 
-def _int_file(path: Path) -> int:
+def _int_file(path: Path) -> int | None:
+    """Целое из файла sysfs; файла нет или в нём не число — None (драйвер не назвал), а не 0."""
     try:
         raw = path.read_text(encoding="utf-8").strip()
     except OSError:
-        return 0
-    return int(raw) if raw.isdigit() else 0
+        return None
+    return int(raw) if raw.isdigit() else None
 
 
 def _uevent(dev: Path) -> dict:
@@ -165,13 +166,14 @@ def _gpus(rules: dict) -> tuple[list[dict], list[str]]:
         usable, why = _usability(driver, drivers.get(driver, {}), tag, package)
         total, used = _int_file(dev / "mem_info_vram_total"), _int_file(dev / "mem_info_vram_used")
         found.append({"pci": pci, "driver": driver, "name": "", "slot": slot,
-                      "vram_total_mb": round(total / 1e6), "vram_free_mb": round((total - used) / 1e6),
+                      "vram_total_mb": None if total is None else round(total / 1e6),
+                      "vram_free_mb": None if total is None or used is None else round((total - used) / 1e6),
                       "usable": usable, "why": why})
     names = _pci_names({c["pci"] for c in found if c["pci"]})
     smi = _nvidia_smi()
     for card in found:
         card["name"] = names.get(card["pci"]) or card["pci"] or card["driver"]
-        if not card["vram_total_mb"] and smi:
+        if card["vram_total_mb"] is None and smi:
             # sysfs объём не отдал (так у nvidia) — берём у её утилиты, по порядку карт.
             card.update({k: v for k, v in smi.pop(0).items() if k != "name"})
     found.extend({**c, "pci": "", "driver": "nvidia", "slot": "", "usable": bool(tag == "cu"),
@@ -182,7 +184,7 @@ def _gpus(rules: dict) -> tuple[list[dict], list[str]]:
         gaps.append("видеокарта: в /sys/class/drm карт не найдено и nvidia-smi в системе нет — "
                     "наличие GPU НЕ проверено (а не «его нет»)")
     for card in found:
-        if not card["vram_total_mb"]:
+        if card["vram_total_mb"] is None:
             gaps.append(f"видеокарта {card['name']}: драйвер '{card['driver']}' не сообщает объём "
                         "своей памяти — влезет ли в неё модель, не оценить")
     return found, gaps
@@ -227,6 +229,12 @@ def probe(disk_for: str | Path = ".", gpu_rules: dict | None = None, *,
     }
 
 
+def _has_free(card: dict) -> bool:
+    """Свободная память карты известна и не нуль: неизвестный объём — нет данных, известный 0 — карта занята."""
+    free = card.get("vram_free_mb")
+    return free is not None and free > 0
+
+
 def compute_device(gpu_rules: dict, want: str = "", hw: dict | None = None) -> dict:
     """Где считать эту модель: устройство и разрядность. Решает железо, а не адаптер.
 
@@ -243,13 +251,14 @@ def compute_device(gpu_rules: dict, want: str = "", hw: dict | None = None) -> d
     asked = str(want or "").strip().lower()
     if asked and asked != "auto":
         on_cpu = asked == "cpu"
-        card: dict = next((c for c in (hw.get("gpu") or []) if c.get("vram_free_mb")), {})
+        card: dict = next((c for c in (hw.get("gpu") or []) if c.get("vram_free_mb") is not None), {})
+        # Объём не назван ни у одной карты — None («драйвер не назвал»), а не 0 («ноль свободно»).
         return {"device": asked, "dtype": str(dtypes.get("cpu" if on_cpu else "gpu", "")),
-                "available_mb": ram if on_cpu else int(card.get("vram_free_mb") or 0),
+                "available_mb": ram if on_cpu else card.get("vram_free_mb"),
                 "source": "строка канала", "why": f"устройство '{asked}' задано столбцом строки"}
     for card in hw.get("gpu") or []:
         name = str((drivers.get(card.get("driver")) or {}).get("torch_device") or "")
-        if card.get("usable") and card.get("vram_free_mb") and name:
+        if card.get("usable") and _has_free(card) and name:
             return {"device": name, "dtype": str(dtypes.get("gpu", "")),
                     "available_mb": int(card["vram_free_mb"]), "source": "проба железа",
                     "why": f"{card['name']}: {card['vram_free_mb']} МБ свободно, {card['why']}"}
@@ -443,19 +452,18 @@ def placement(gpu_rules: dict, fit_rules: dict, entry: dict, where: dict) -> dic
     решено здесь. `error` означает отказ вслух: молча посчитать вдесятеро дольше — хуже отказа.
     """
     mode = str((gpu_rules or {}).get("oversize") or "error").lower()
-    need_mb = round(FitEstimator(fit_rules).bytes_for(
-        entry.get("params_by_dtype") or {}, entry.get("params_total"),
-        as_dtype=where.get("dtype", "")) / 1e6)
+    need = FitEstimator(fit_rules).bytes_for(
+        entry.get("params_by_dtype") or {}, entry.get("params_total"), as_dtype=where.get("dtype", ""))
+    need_mb = None if need is None else round(need / 1e6)
     free = where["available_mb"]
     base = {"need_mb": need_mb, "available_mb": free, "device": where.get("device", "")}
-    if where.get("device") == "cpu" or not need_mb or not free or need_mb <= free:
+    if where.get("device") == "cpu" or need_mb is None or free is None or need_mb <= free:
         # Неизвестный размер тоже кладём целиком: гадать «наверное, не влезет» — не лучше, а
         # отказ библиотеки по памяти будет громким и с настоящей причиной.
         return {**base, "mode": "device",
-                "why": ("размер модели неизвестен — кладём целиком" if not need_mb
-                        else f"нужно ~{need_mb} МБ из {free} МБ" if free or where.get("device") == "cpu"
-                        # У карты 0 — и «ноль свободно», и «драйвер не назвал объём» (hardware._gpus).
-                        else "объём памяти карты драйвер не назвал — кладём целиком, суда по памяти нет")}
+                "why": ("размер модели неизвестен — кладём целиком" if need_mb is None
+                        else "объём памяти карты драйвер не назвал — кладём целиком, суда по памяти нет"
+                        if free is None else f"нужно ~{need_mb} МБ из {free} МБ")}
     return {**base, "mode": mode,
             "why": (f"нужно ~{need_mb} МБ, а на устройстве {free} МБ — "
                     + OVERSIZE_MODES.get(mode, f"режим '{mode}' не объявлен, размещать нечем"))}
@@ -472,16 +480,17 @@ class FitEstimator:
         self.tight_ratio = float(rules.get("tight_ratio", 0.8))
         self.aliases = {str(k).lower(): str(v).upper() for k, v in (rules.get("dtype_alias") or {}).items()}
 
-    def bytes_for(self, params_by_dtype: dict, params_total: int | None = 0, as_dtype: str = "") -> int:
-        """Сколько памяти нужно под веса + запас на активации.
+    def bytes_for(self, params_by_dtype: dict, params_total: int | None = 0, as_dtype: str = "") -> int | None:
+        """Сколько памяти нужно под веса + запас на активации; источник не назвал ни total, ни by_dtype — None.
 
         Считаем по РАЗРЯДНОСТИ каждого куска весов: одна и та же модель в fp16 весит вдвое
         меньше, чем в fp32, и вердикт из-за этого меняется на противоположный. `as_dtype` —
         разрядность, в которой модель РЕАЛЬНО поднимут (её задаёт устройство): веса лежат в
         fp32, а грузятся в fp16 — считать по диску значило бы завысить вдвое. Число параметров,
         которого источник не назвал, — None: тогда счёт по разрядностям.
-        0 байт = источник не назвал ни total, ни by_dtype; реальной модели с 0 байт нет.
         """
+        if params_total is None and not params_by_dtype:
+            return None
         key = self.aliases.get(str(as_dtype).lower(), "")
         total = sum(int(c) for c in (params_by_dtype or {}).values()) if params_total is None else int(params_total)
         if key and total:
@@ -499,7 +508,7 @@ class FitEstimator:
         Карта, объём которой виден, но `usable=False`, сюда не попадает: обещать её память —
         значит обещать чужое. Она возвращается отдельно, вторым числом.
         """
-        live = [c for c in (hw.get("gpu") or []) if c.get("usable") and c.get("vram_free_mb")]
+        live = [c for c in (hw.get("gpu") or []) if c.get("usable") and _has_free(c)]
         if live:
             best = max(live, key=lambda c: c["vram_free_mb"])
             return {"target": "gpu", "device": best["name"], "available_mb": best["vram_free_mb"]}
@@ -507,14 +516,15 @@ class FitEstimator:
 
     def idle_gpu(self, hw: dict) -> dict:
         """Карта, память которой известна, но расчёту сейчас недоступна, — знать про неё полезно."""
-        idle = [c for c in (hw.get("gpu") or []) if not c.get("usable") and c.get("vram_free_mb")]
+        idle = [c for c in (hw.get("gpu") or []) if not c.get("usable") and c.get("vram_free_mb") is not None]
         return max(idle, key=lambda c: c["vram_free_mb"]) if idle else {}
 
-    def verdict(self, need_bytes: int, available_mb: int, device: str = "ОЗУ") -> dict:
-        """Влезает / впритык / не влезает — с числами, по которым видно, почему. Доступно 0 — «не влезает»."""
-        need_mb = round(need_bytes / 1e6)
+    def verdict(self, need_bytes: int | None, available_mb: int, device: str = "ОЗУ") -> dict:
+        """Влезает / впритык / не влезает — с числами, по которым видно, почему. Доступно 0 — «не влезает».
+        Размер неизвестен (None) — «unknown», need_mb None."""
+        need_mb = None if need_bytes is None else round(need_bytes / 1e6)
         base = {"need_mb": need_mb, "available_mb": available_mb, "device": device}
-        if not need_bytes:
+        if need_mb is None:
             return {**base, "verdict": "unknown",
                     "why": "источник не назвал ни числа параметров, ни размера весов — оценить нечем"}
         if need_mb > available_mb:

@@ -32,7 +32,7 @@ class PiperLocalTTS:
                     reason="Поставь зависимости группы local (piper-tts) в окружение сервера.") from e
             return PiperVoice.load(model_path)
 
-        size = model_path.stat().st_size if model_path.is_file() else 0
+        size = model_path.stat().st_size if model_path.is_file() else None
         return self.registry.pool.get(f"piper|{model_path}", load, need_bytes=size, device="cpu")
 
     def generate(self, request: MediaRequest) -> MediaOutcome:

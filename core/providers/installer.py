@@ -31,16 +31,8 @@ class ModelInstaller:
     def __init__(self, catalog, heartbeat_sec: float = 2.0, stale_after_sec: float = 120.0):
         self.catalog = catalog
         self.heartbeat = float(heartbeat_sec)
-        self.stale_after = float(stale_after_sec)
-        silence, speed = float(catalog.silence_sec()), catalog.speed()
-        self.floor, window = float(speed["floor"]), float(speed["window"])
-        if self.stale_after <= max(silence, window):
-            details = (f"local.install.progress.stale_after_sec {self.stale_after:g} с не длиннее законной тишины: "
-                       f"тишины загрузчика {silence:g} с — max(2 × local.install.fetch.timeout_sec: соединение и ожидание "
-                       "ответа httpx меряет порознь; backoff_max_sec × (1 + jitter): пауза перед повтором) — и окна меры "
-                       f"скорости local.install.fetch.speed_window_sec {window:g} с. Законная пауза стала бы простоем — "
-                       "подними stale_after_sec выше обоих.")
-            raise ContractError("SCHEMA_INVALID", details, facts={"details": details})
+        self.stale_after = float(stale_after_sec)    # простой длиннее законной тишины — судит схема `local.install`
+        self.floor = float(catalog.speed()["floor"])
         self._marks: dict[str, float] = {}     # install_id → время последнего признака работы загрузчика или сверки
 
     # ═══ Состояние ═══

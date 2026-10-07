@@ -78,16 +78,35 @@ try:
 except TableMaterializerError as e:
     ok(e.code == "TEMPLATE_NOT_FOUND", f"нет схемы → TEMPLATE_NOT_FOUND (получено {e.code})")
     ok(bool(e.reason), "в ошибке есть actionable reason")
-
-bad = SCHEMAS / "_tmp_broken.schema.yaml"
-bad.write_text("book: broken\nsheets: []\n", encoding="utf-8")
+_broken_dir = Path(tempfile.mkdtemp(prefix="schemas_broken_"))
+(_broken_dir / "b.schema.yaml").write_text("sheets: [name: x\n", encoding="utf-8")
 try:
-    mat.materialize("_tmp_broken", "broken.xlsx")
-    ok(False, "схема без листов должна падать")
+    TableMaterializer(ExcelEngine(Path(tempfile.mkdtemp(prefix="ws_broken_"))), _broken_dir).load_schema("b")
+    ok(False, "битый YAML схемы книги должен давать отказ двери")
 except TableMaterializerError as e:
-    ok(e.code == "SCHEMA_INVALID", f"схема без листов → SCHEMA_INVALID (получено {e.code})")
-finally:
-    bad.unlink()
+    ok(e.code == "DECLARATION_INVALID" and "yaml_syntax" in e.facts.get("details", ""),
+       f"битый YAML схемы → отказ двери с местом ошибки, а не сырое исключение ({e.code}, {e.facts})")
+
+def _book_refusal(text: str) -> tuple[str, str]:
+    """Код и детали отказа на схему книги `text`; любое иное исключение — его имя: проверка назовёт, а не упадёт."""
+    probe_dir = Path(tempfile.mkdtemp(prefix="schemas_probe_"))
+    (probe_dir / "p.schema.yaml").write_text(text, encoding="utf-8")
+    try:
+        TableMaterializer(ExcelEngine(Path(tempfile.mkdtemp(prefix="ws_probe_"))), probe_dir).materialize("p", "p.xlsx")
+        return "", ""
+    except TableMaterializerError as e:
+        return e.code, e.facts.get("details", "")
+    except Exception as e:  # мутант снял проверку схемы — падение вместо отказа видно проверке
+        return type(e).__name__, str(e)
+
+
+_no_sheets = _book_refusal("book: broken\nlevel: video\nsource: test\nsheets: []\n")
+ok(_no_sheets[0] == "DECLARATION_INVALID" and "sheets" in _no_sheets[1],
+   f"схема без листов → отказ двери схемой книги с путём sheets ({_no_sheets})")
+_bad_type = _book_refusal("book: b\nlevel: video\nsource: test\nsheets:\n  - name: s\n    columns:\n"
+                          "      - {name: c, type: strnig, flag: W}\n")
+ok(_bad_type[0] == "DECLARATION_INVALID" and "sheets.0.columns.0.type" in _bad_type[1],
+   f"неизвестный тип столбца → отказ двери с путём столбца, а не столбец без правила деградации ({_bad_type})")
 
 try:
     mat.materialize("network_config", "networks/net_1/network_config.xlsx")
@@ -212,7 +231,7 @@ import yaml as _y2
 _sch30 = Path(tempfile.mkdtemp(prefix="deg_"))
 _shutil2.copy(SCHEMAS / "_defaults.yaml", _sch30 / "_defaults.yaml")
 (_sch30 / "probe.schema.yaml").write_text(_y2.safe_dump({
-    "book": "probe",
+    "book": "probe", "level": "video", "source": "test",
     "sheets": [{"name": "CALC", "columns": [
         {"name": "views", "type": "integer", "flag": "W"},
         {"name": "likes", "type": "integer", "flag": "W"},
@@ -393,7 +412,7 @@ ok(_r9.facts and _r9.facts[0].type == "TableMaterialized", "результат �
 _proj9 = _ws9 / "networks" / ".templates" / "tables"
 _proj9.mkdir(parents=True)
 (_proj9 / "network_config.schema.yaml").write_text(_yaml.safe_dump({
-    "book": "network_config", "level": "network",
+    "book": "network_config", "level": "network", "source": "test",
     "sheets": [{"name": "ТОЛЬКО_ПРОЕКТНЫЙ",
                 "columns": [{"name": "col", "type": "string", "flag": "W"}]}]},
     allow_unicode=True), encoding="utf-8")
