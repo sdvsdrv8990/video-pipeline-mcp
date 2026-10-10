@@ -60,7 +60,7 @@ class SceneScript:
         rig = (self.book.config.get("rig") or {}).get("slots") or {}
         rows, _source, _owner = self.book._upward(table, rig["sheet"])
         if not rows:
-            rows = self.book._declared_rows(rig["fallback_book"], rig["sheet"])
+            rows = self.book._named_rows("rig", "slots")
         out = []
         for row in rows:
             slot = {rig["id_column"]: row.get(rig["id_column"]),

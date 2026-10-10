@@ -11,7 +11,6 @@
 import base64
 import contextlib
 import functools
-import json
 import random
 import socket
 import time
@@ -20,10 +19,11 @@ from typing import ClassVar
 from urllib.parse import urlparse
 
 from core.declaration import Declaration
+from core.declaration_schemas import RESULT_ANSWER, ProviderUrl
 from core.paths import Files
 
 from ..adapters import MediaOutcome, MediaRequest
-from ..download import REDIRECTS, REFUSED_FROM, results, retry_after
+from ..download import answers, results, retry_after
 from ..resolver import ProviderError
 
 
@@ -33,6 +33,9 @@ class HttpImageAPI:
     # Сеть загрузчика результата (MF-16): None — настоящий транспорт; адаптер поднимает реестр, подмена — на классе.
     transport: ClassVar = None
     resolve: ClassVar = staticmethod(socket.getaddrinfo)
+    # Часы и сон двери ответа: ими меряется срок опроса и пауза повтора; подмена — на классе, как у сети.
+    clock: ClassVar = staticmethod(time.monotonic)
+    sleep: ClassVar = staticmethod(time.sleep)
 
     def __init__(self, registry, rng: random.Random | None = None):
         self.registry = registry
@@ -376,7 +379,7 @@ class HttpImageAPI:
             return None
         try:
             body = response.json()
-        except Exception:  # не JSON в теле
+        except ValueError:  # не JSON в теле (и не UTF): отказ назовёт `_refusal` цитатой ответа
             return None
         code = str(body.get("code") or "") if isinstance(body, dict) else ""
         if not re.fullmatch(r"[A-Z][A-Z_]{2,48}", code):
@@ -415,9 +418,10 @@ class HttpImageAPI:
 
     # ═══ Задача ═══
 
-    def poll(self, task_id: str) -> dict:
-        """Статус задачи. Слова статусов разбирает общий цикл — здесь только запрос."""
-        return self._answer(self._status_url)
+    def poll(self, task_id: str, within: float | None = None) -> dict:
+        """Статус задачи. Слова статусов разбирает общий цикл — здесь только запрос; `within` — остаток срока цикла
+        ожидания (секунды): опрос с повторами в него укладывается."""
+        return self._answer(self._status_url, within)
 
     def _poll_headers(self, url: str) -> dict:
         """Ключ к адресу, который назвал ответ провайдера, — только после суда адреса (`_own`), как у вызова."""
@@ -451,34 +455,16 @@ class HttpImageAPI:
         fetcher.fetch(url, Files(target.parent), target.name, "result")
         return target
 
-    def _answer(self, url: str) -> dict:
-        """JSON статуса или адреса результата с объявленного хоста: ключ — после суда адреса, тело — по ходу и не больше
-        объявленного предела, запрос — не дольше объявленного срока (`download.answer` декларации задач)."""
-        import httpx
-
+    def _answer(self, url: str, within: float | None = None) -> dict:
+        """JSON статуса или адреса результата с объявленного хоста: ключ — после суда адреса (`_poll_headers`), запрос и
+        тело — дверью загрузчика по `download.answer` декларации задач, хост — из объявленного адреса провайдера, срок —
+        `deadline_sec` или остаток вызывающего `within`. Отказ провайдера — его причиной (`_refusal`), отказ самой двери
+        — как есть."""
         headers = self._poll_headers(url)
-        limit = self._tasks.need("download", "answer", "max_bytes", kind=int)
-        timeout = self._tasks.need("download", "answer", "timeout_sec", kind=float)
-        host, body = urlparse(url).hostname or "", bytearray()
-        try:
-            with httpx.stream("GET", url, headers=headers, timeout=timeout, follow_redirects=False) as response:
-                if response.status_code >= REFUSED_FROM:
-                    response.read()
-                    raise self._refusal(response)
-                if response.status_code in REDIRECTS:       # по переходу с ключом не идём: адрес назвал бы ответ
-                    raise ProviderError("PROVIDER_FAILED", facts={"host": host, "status": response.status_code})
-                for chunk in response.iter_bytes():
-                    body += chunk
-                    if len(body) > limit:
-                        raise ProviderError("DOWNLOAD_TOO_LARGE", facts={"limit_mb": round(limit / 2**20, 3)})
-        except ProviderError:
-            raise
-        except Exception as e:  # сеть/таймаут
-            raise ProviderError("PROVIDER_FAILED", facts={"host": host, "status": type(e).__name__}) from e
-        try:
-            return json.loads(bytes(body))
-        except ValueError as e:
-            raise ProviderError("PROVIDER_FAILED", facts={"host": host, "status": "ответ не JSON"}) from e
+        declared = self.registry.need("online", "http", next(iter(self._decl_cache), ""), "url", kind=ProviderUrl)
+        fetcher = answers(self._tasks, RESULT_ANSWER, declared, transport=self.transport, resolve=self.resolve,
+                          clock=self.clock, sleep=self.sleep)
+        return fetcher.answer(url, headers, refused=self._refusal, within=within)
 
     @functools.cached_property
     def _tasks(self) -> Declaration:

@@ -378,8 +378,8 @@ try:
     w = World()
     w.location = "https://cdn.provider.example/out.png"
     _, e = pull(w, RESULTS)
-    check("сверх предела — DOWNLOAD_TOO_LARGE {limit_mb}, остаток убран",
-          e is not None and e.code == "DOWNLOAD_TOO_LARGE" and e.facts == {"limit_mb": 0.006}
+    check("сверх предела — DOWNLOAD_TOO_LARGE {limit_mb}, остаток убран (загрузчик без слота — ключ «max_bytes»)",
+          e is not None and e.code == "DOWNLOAD_TOO_LARGE" and e.facts == {"limit_mb": 0.006, "key": "max_bytes"}
           and remnant_size() is None, e and (e.code, e.facts))
 
     print("== 12. Прокси среды: через него — по имени, без разрешения и закрепления; суд хоста тот же ==")
@@ -448,22 +448,31 @@ try:
     check("сверка отпечатка отмечает каждый МиБ прочитанного и считает тот же отпечаток",
           file_digest(big, "sha256", lambda: blocks.append(1)) == hashlib.sha256(big.read_bytes()).hexdigest()
           and len(blocks) == 4, len(blocks))
-    check("наибольшая тишина между отметками — max(2 × timeout_sec, backoff_max_sec × (1 + jitter))",
-          Fetcher(FetchPolicy.model_validate(WEIGHTS)).silence_sec() == 60.0
-          and Fetcher(FetchPolicy.model_validate({**WEIGHTS, "timeout_sec": 90, "backoff_max_sec": 200,
-                                                  "jitter": 0.5})).silence_sec() == 300.0,
-          (Fetcher(FetchPolicy.model_validate(WEIGHTS)).silence_sec()))
+    # Смена поведения (дверь, срок сервера): пауза повтора бывает и сроком сервера до retry_after_max_sec — тишина его
+    # покрывает; прежде формула знала только свою паузу, и простой установки судился бы по ней.
+    silences = [Fetcher(FetchPolicy.model_validate({**WEIGHTS, **over})).silence_sec() for over in (
+        {}, {"timeout_sec": 90, "backoff_max_sec": 200, "jitter": 0.5},
+        {"timeout_sec": 90, "backoff_max_sec": 10, "retry_after_max_sec": 45})]
+    check("наибольшая тишина между отметками — max(2 × timeout_sec, backoff_max_sec × (1 + jitter), "
+          "retry_after_max_sec): срок сервера, своя пауза, соединение — каждый в своём случае",
+          silences == [120.0, 300.0, 180.0], silences)
 
     print("== 11. Путь доставки: у каждого кода загрузчика — текст реестра с фактами ==")
     for code, facts, want in (
             ("DOWNLOAD_FORBIDDEN", {"host": "evil.example", "allowed": CDN}, "evil.example"),
             ("DOWNLOAD_RANGE_INVALID", {"host": CDN, "expected": 4096, "got": "bytes 0-9/10"}, "4096"),
             ("DOWNLOAD_INCOMPLETE", {"host": CDN, "got": 4096, "expected": 10240}, "4096"),
-            ("DOWNLOAD_TOO_LARGE", {"limit_mb": 100.0}, "100"),
+            ("DOWNLOAD_TOO_LARGE", {"limit_mb": 100.0, "key": "config/media_tasks.yaml → download.fetch.max_bytes"},
+             "100"),
             ("MODEL_SOURCE_FAILED", {"host": CDN, "status": 404}, "404")):
         detail = REACTIONS.get_error(code, "", facts=facts)
         check(f"{code}: код в реестре, факты в тексте ({want})",
               detail.code == code and want in detail.message and detail.recovery, detail.message)
+    detail = REACTIONS.get_error("DOWNLOAD_TOO_LARGE", "", facts={"limit_mb": 1.0,
+                                                                  "key": "config/providers.yaml → online.answer.max_bytes"})
+    check("рецепт DOWNLOAD_TOO_LARGE называет ключ предела из фактов отказа — один источник, не перечень в тексте",
+          "config/providers.yaml → online.answer.max_bytes" in detail.recovery.reason
+          and "download.answer" not in detail.recovery.reason, detail.recovery.reason)
 
     print("== 12. Файл — без распаковки (NI-04): identity в запросе, сжатое вопреки ему — отказ до записи ==")
     import gzip
@@ -636,6 +645,371 @@ try:
     check("источник ответил 404 — отказ источника кодом потребителя, а не «длина неизвестна»",
           e is not None and e.code == "MODEL_SOURCE_FAILED" and e.facts == {"host": CDN, "status": 404},
           f"{got} {e and (e.code, e.facts)}")
+
+    print("== 17. Ответ API в память (NI-09, NI-06, NI-07): та же дверь, предел до разбора, отказ — код или перевод ==")
+    import gzip
+    import json
+
+    from core.declaration_schemas import SLOTS, AddressedPolicy, AnswerPolicy, ProviderUrl, Slot
+    from core.providers.download import answers
+
+    NAMES["api.provider.example"] = ["52.4.4.4"]
+    API, DECLARED = "https://api.provider.example/v1/models", "https://api.provider.example/v1/{model}"
+    # Форма политики — как online.answer и download.answer: без хоста (его ставит читатель), предел > 0, без переходов,
+    # срок обращения; часы событий §17 — настоящие, срок с запасом: его меряет §18 подставными часами.
+    ANSWER = {"schemes": ["https"], "block_private": True, "max_bytes": 4096, "timeout_sec": 30, "deadline_sec": 600,
+              "redirects": 0,
+              "attempts": 3, "backoff_sec": 0.5, "backoff_max_sec": 8, "retry_after_max_sec": 120, "jitter": 0,
+              "speed_floor_bytes_per_sec": 0, "speed_window_sec": 30, "retry_on": [408, 409, 429, 500, 502, 503, 504],
+              "codes": {"failed": "PROVIDER_FAILED", "corrupt": "DOWNLOAD_INCOMPLETE"}}
+    SLOT = Slot("answer.yaml", ("answer",), AnswerPolicy)
+    LIST = {"data": [{"id": "модель-1"}, {"id": "модель-2"}]}
+
+    class Api:
+        """Подставной API провайдера: ответы по очереди (код, тело, заголовки[, обрыв после байт]) — последний
+        повторяется; тело идёт кусками по 1024, `pulled` — сколько кусков дверь вытянула; журнал — куда и с чем."""
+
+        def __init__(self, *replies):
+            self.replies, self.log, self.pulled = list(replies), [], 0
+
+        def handle(self, request: httpx.Request) -> httpx.Response:
+            self.log.append({"ip": request.url.host, "host": request.headers.get("host"),
+                             "sni": request.extensions.get("sni_hostname"), "path": request.url.path,
+                             "auth": request.headers.get("authorization"),
+                             "accept_encoding": request.headers.get("accept-encoding")})
+            status, body, headers, *cut = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+            return httpx.Response(status, headers=headers, content=self._chunks(body, cut[0] if cut else None))
+
+        def _chunks(self, body: bytes, cut: int | None):
+            for i in range(0, len(body), 1024):
+                if cut is not None and i >= cut:
+                    raise httpx.ReadError("соединение оборвано")
+                self.pulled += 1
+                yield body[i:i + 1024]
+
+    def ask(api: Api, refused=None, url: str = API, declared: str = DECLARED, **over):
+        """Ответ двери на подставном API — (значение, отказ, паузы, разрешённые имена). Загрузчик собран читателем
+        `answers` из декларации, хост — из объявленного адреса `declared`; ключ — в заголовке потребителя."""
+        decl = work / "answer.yaml"
+        decl.write_text(yaml.safe_dump({"answer": {**ANSWER, **over}}), encoding="utf-8")
+        w, pauses = World(), []
+        got, e = attempt(lambda: answers(Declaration(decl, ContractError, "ответа", ""), SLOT, declared,
+                                         transport=httpx.MockTransport(api.handle), resolve=w.resolve,
+                                         sleep=pauses.append, proxies=dict).answer(
+            url, {"Authorization": "Bearer t"}, refused=refused))
+        return got, e, pauses, w.resolved
+
+    api = Api((200, json.dumps(LIST, ensure_ascii=False).encode(), {"content-type": "application/json"}))
+    got, e, _, resolved = ask(api)
+    check("законный: JSON целиком; соединение на судимый IP, имя в Host и SNI, ключ исходному хосту, без распаковки",
+          e is None and got == LIST and resolved == ["api.provider.example"]
+          and [(x["ip"], x["host"], x["sni"], x["auth"], x["accept_encoding"]) for x in api.log]
+          == [("52.4.4.4", "api.provider.example", "api.provider.example", "Bearer t", "identity")],
+          f"{got} {e and (e.code, e.facts)} {api.log}")
+    got, e, _, _ = ask(Api((200, json.dumps(LIST).encode("utf-16"), {})))
+    check("законный: JSON разобран из байтов — UTF-16 с меткой, как разрешает RFC 8259, без угадывания кодировки",
+          e is None and got == LIST, f"{got} {e and (e.code, e.facts)}")
+
+    api = Api((200, b"[" + b"1," * 30000 + b"1]", {}))     # 60 КБ — годный JSON, если дочитать
+    got, e, _, _ = ask(api)
+    check("тело сверх max_bytes — DOWNLOAD_TOO_LARGE {limit_mb} до разбора: годный, но длинный JSON не принят, "
+          "кусков вытянуто не больше предела",
+          e is not None and e.code == "DOWNLOAD_TOO_LARGE" and api.pulled <= 5
+          and e.facts == {"limit_mb": 0.004, "key": "config/answer.yaml → answer.max_bytes"},
+          f"{e and (e.code, e.facts)} кусков {api.pulled}")
+    api = Api((200, gzip.compress(json.dumps(LIST).encode()), {"content-encoding": "gzip"}))
+    got, e, _, _ = ask(api)
+    check("сжатое вопреки identity — отказ кодом политики до приёма: ни куска не вытянуто",
+          e is not None and e.code == "PROVIDER_FAILED"
+          and e.facts == {"host": "api.provider.example", "status": "Content-Encoding gzip"} and api.pulled == 0,
+          f"{e and (e.code, e.facts)} кусков {api.pulled}")
+    got, e, _, _ = ask(Api((200, b"<html>200 OK</html>", {"content-type": "text/html"})))
+    check("200 не JSON — отказ кодом политики с причиной, а не трасса разбора",
+          e is not None and e.code == "PROVIDER_FAILED"
+          and e.facts == {"host": "api.provider.example", "status": "ответ не JSON"}, e and (e.code, e.facts))
+
+    api = Api((404, b'{"detail": "no"}', {}))
+    got, e, _, _ = ask(api)
+    check("404 без переводчика — код политики с хостом и статусом, без повтора",
+          e is not None and e.code == "PROVIDER_FAILED" and e.facts == {"host": "api.provider.example", "status": 404}
+          and len(api.log) == 1, f"{e and (e.code, e.facts)} {len(api.log)}")
+    told: list = []
+
+    def translated(response):
+        told.append((response.status_code, response.json()))
+        return ContractError("AUTH_FAILED", facts={"status": response.status_code})
+
+    api = Api((401, b'{"detail": "bad key"}', {}))
+    got, e, _, _ = ask(api, refused=translated)
+    check("401 с переводчиком потребителя — его отказ как есть; переводчик видит код и тело, прочитанное дверью",
+          e is not None and e.code == "AUTH_FAILED" and told == [(401, {"detail": "bad key"})] and len(api.log) == 1,
+          f"{e and (e.code, e.facts)} {told}")
+    told.clear()
+    got, e, _, _ = ask(Api((401, b"x" * 9000, {})), refused=translated)
+    check("тело отказа сверх предела — DOWNLOAD_TOO_LARGE двери, переводчик не зван: отказ двери не переписывается",
+          e is not None and e.code == "DOWNLOAD_TOO_LARGE" and not told, f"{e and (e.code, e.facts)} {told}")
+
+    api = Api((503, b"", {"Retry-After": "7"}), (200, json.dumps(LIST).encode(), {}))
+    got, e, pauses, _ = ask(api)
+    check("перегрузка — повтор общим циклом двери: пауза — срок сервера, вторая попытка дала ответ",
+          e is None and got == LIST and pauses == [7.0] and len(api.log) == 2, f"{got} {pauses} {e and e.facts}")
+    told.clear()
+    api = Api((503, b'{"detail": "busy"}', {}))
+    got, e, pauses, _ = ask(api, refused=translated)
+    check("перегрузка на всех попытках — перевод потребителя последнего ответа; паузы растут вдвое от backoff_sec",
+          e is not None and e.code == "AUTH_FAILED" and e.facts == {"status": 503} and pauses == [0.5, 1.0]
+          and len(api.log) == 3, f"{e and (e.code, e.facts)} {pauses} {len(api.log)}")
+    api = Api((200, json.dumps(LIST).encode() * 60, {}, 1024), (200, json.dumps(LIST).encode(), {}))
+    got, e, _, _ = ask(api)
+    check("обрыв посреди тела — повтор: остатка у ответа нет, вторая попытка с начала",
+          e is None and got == LIST and len(api.log) == 2, f"{got} {e and (e.code, e.facts)}")
+    got, e, _, _ = ask(Api((200, json.dumps(LIST).encode() * 60, {}, 1024)), attempts=1)
+    check("обрыв на последней попытке — код политики с принятым, не DOWNLOAD_INCOMPLETE «на диске»",
+          e is not None and e.code == "PROVIDER_FAILED"
+          and e.facts == {"host": "api.provider.example", "status": "ответ оборван на 1024 байт"}, e and (e.code, e.facts))
+
+    api = Api((302, b"", {"location": "https://api.provider.example/v2/models"}), (200, json.dumps(LIST).encode(), {}))
+    got, e, _, _ = ask(api)
+    check("переход при redirects 0 (как в декларациях) — отказ, по переходу ни запроса, даже на тот же хост",
+          e is not None and e.code == "PROVIDER_FAILED"
+          and e.facts == {"host": "api.provider.example", "status": "переходов больше 0"} and len(api.log) == 1,
+          f"{e and (e.code, e.facts)} {api.log}")
+    api = Api((302, b"", {"location": "https://evil.example/x"}), (200, json.dumps(LIST).encode(), {}))
+    got, e, _, resolved = ask(api, redirects=1)
+    check("переход на необъявленный хост (политика события — redirects 1) — DOWNLOAD_FORBIDDEN: хост — только "
+          "из объявленного адреса; к чужому ни разрешения имени, ни запроса",
+          e is not None and e.code == "DOWNLOAD_FORBIDDEN"
+          and e.facts == {"host": "evil.example", "allowed": "api.provider.example"}
+          and len(api.log) == 1 and "evil.example" not in resolved, f"{e and (e.code, e.facts)} {api.log} {resolved}")
+    api = Api((302, b"", {"location": "/v2/models"}), (200, json.dumps(LIST).encode(), {}))
+    got, e, _, _ = ask(api, redirects=1)
+    check("законный: переход на тот же объявленный хост при redirects 1 — ответ; ключ — исходному хосту оба раза",
+          e is None and got == LIST and [(x["path"], x["auth"]) for x in api.log]
+          == [("/v1/models", "Bearer t"), ("/v2/models", "Bearer t")], f"{e and (e.code, e.facts)} {api.log}")
+    api = Api((200, json.dumps(LIST).encode(), {}))
+    got, e, _, _ = ask(api, url="https://inner.example/v1", declared="https://inner.example/{model}")
+    check("имя провайдера ведёт и во внутреннюю сеть — DOWNLOAD_FORBIDDEN с адресом, запроса нет",
+          e is not None and e.code == "DOWNLOAD_FORBIDDEN"
+          and e.facts == {"host": "inner.example", "address": "10.0.0.7"} and not api.log, f"{e and (e.code, e.facts)}")
+
+    api = Api((200, json.dumps(LIST).encode(), {}))
+    contract = [attempt(lambda: Fetcher(FetchPolicy.model_validate(policy), transport=httpx.MockTransport(api.handle),
+                                        resolve=World().resolve, proxies=dict).answer(API))[1]
+                for policy in ({**RESULTS, "hosts": []}, {**RESULTS, "hosts": ["api.provider.example"], "max_bytes": 0})]
+    check("политика без хоста или без предела — ошибка кода до запроса: ответ в память только с объявленного хоста",
+          all(e is not None and e.code == "НЕ_ОТКАЗ" and e.facts["exception"].startswith("TypeError") for e in contract)
+          and not api.log, f"{[e and e.facts for e in contract]} {api.log}")
+
+    def decl_refusal(body: dict, *path, kind=None):
+        """Отказ двери деклараций на разделе `body` (схемой AnswerPolicy или типом `kind`) — детали или «принято»."""
+        decl = work / "answer.yaml"
+        decl.write_text(yaml.safe_dump(body, allow_unicode=True), encoding="utf-8")
+        door = Declaration(decl, ContractError, "ответа", "")
+        e = attempt(lambda: door.need(*path, kind=kind) if kind else door.section(*path, schema=AnswerPolicy))[1]
+        return e.facts.get("details", "") if e is not None and e.code == "DECLARATION_INVALID" else "принято"
+
+    check("предел ответа 0 — отказ схемы с путём ключа (NI-06: у приёмника в память предел обязателен)",
+          decl_refusal({"answer": {**ANSWER, "max_bytes": 0}}, "answer") == "answer.max_bytes (greater_than)")
+    check("срока обращения нет — отказ схемы с путём ключа: срок не берётся умолчанием в коде",
+          decl_refusal({"answer": {k: v for k, v in ANSWER.items() if k != "deadline_sec"}}, "answer")
+          == "answer.deadline_sec (missing)")
+    check("явный hosts в разделе ответа — отказ схемы: хост один, из объявленного адреса, списка рядом нет",
+          decl_refusal({"answer": {**ANSWER, "hosts": ["api.provider.example"]}}, "answer")
+          == "answer.hosts (hosts_derived)")
+    for case, url, verdict in (
+            ("подстановка в хосте", "https://{region}.api.example/v1", "x.url (host_templated)"),
+            ("подстановка в середине хоста", "https://api.{region}.example/v1", "x.url (host_templated)"),
+            ("подстановка сразу за хостом", "https://api.example{path}", "x.url (host_templated)"),
+            ("адрес без хоста", "https:///v1/{model}", "x.url (host_templated)"),
+            ("законный: подстановка в пути", "https://api.example/v1/{model}", "принято"),
+            ("законный: подстановка в запросе", "https://api.example/x.json?id={model}", "принято")):
+        check(f"адрес провайдера: {case} — {verdict}",
+              decl_refusal({"x": {"url": url}}, "x", "url", kind=ProviderUrl) == verdict, url)
+    (work / "answer.yaml").write_text(yaml.safe_dump({"answer": ANSWER}), encoding="utf-8")
+    hosts = answers(Declaration(work / "answer.yaml", ContractError, "", ""), SLOT, DECLARED).policy.hosts
+    check("читатель ставит хост из объявленного адреса до подстановки — ровно один",
+          hosts == ("api.provider.example",), hosts)
+
+    # Обновлено в B3: разделов обращения к объявленному адресу стало четыре (ответы и прозвонки раннера и туннеля).
+    live = {slot.section: slot for slot in SLOTS if issubclass(slot.schema, AddressedPolicy)}
+    taken = {path: attempt(lambda: Declaration(ROOT / "config" / slot.file, ContractError, slot.file, "").section(
+        *slot.section, schema=slot.schema))[1] for path, slot in live.items()}
+    check("живые декларации: каждый раздел обращения к объявленному адресу проходит свою схему — ответы (online.answer, "
+          "download.answer), прозвонка раннера (local.runner.health), прозвонка туннеля",
+          set(live) == {("online", "answer"), ("download", "answer"), ("local", "runner", "health"), ("прозвонка",)}
+          and not any(taken.values()), {k: v and v.facts for k, v in taken.items()})
+    providers = yaml.safe_load((ROOT / "config" / "providers.yaml").read_text(encoding="utf-8"))
+    urls = [(f"{section}.{name}", body["url"]) for section, table in (
+        ("online.live", providers["online"]["live"]), ("capabilities.online", providers["capabilities"]["online"]),
+        ("online.http", providers["online"]["http"])) for name, body in table.items()]
+    wrong = [(where, url) for where, url in urls
+             if decl_refusal({"x": {"url": url}}, "x", "url", kind=ProviderUrl) != "принято"]
+    check(f"живые декларации: у всех {len(urls)} адресов провайдеров хост объявлен, а не подставлен",
+          len(urls) >= 9 and not wrong, wrong)
+
+    print("== 18. Срок обращения: повтор — в одном месте стека, срок идёт вниз; два потолка паузы ==")
+
+    class Clock:
+        """Часы и сон события: сон двигает часы; молчащий сервер двигает их на срок фазы, который дверь отдала транспорту
+        (как httpx: фаза кончается тайм-аутом). Журнал — сроки фаз и паузы."""
+
+        def __init__(self):
+            self.now, self.slept, self.phases = 0.0, [], []
+
+        def sleep(self, seconds):
+            self.slept.append(round(seconds, 6))
+            self.now += seconds
+
+        def time(self):
+            return self.now
+
+        def hung(self, request):
+            phase = request.extensions["timeout"]["connect"]
+            self.phases.append(round(phase, 6))
+            self.now += phase
+            raise httpx.ConnectTimeout("сервер молчит")
+
+    LIVE = yaml.safe_load((ROOT / "config" / "providers.yaml").read_text(encoding="utf-8"))["online"]["answer"]
+
+    def timed(handle, clock: Clock, within=None, **over):
+        """Ответ двери на подставных часах — (значение, отказ). Политика — живая online.answer, разброс 0 и правки
+        события поверх."""
+        decl = work / "answer.yaml"
+        decl.write_text(yaml.safe_dump({"answer": {**LIVE, "jitter": 0, **over}}, allow_unicode=True), encoding="utf-8")
+        door = answers(Declaration(decl, ContractError, "ответа", ""), SLOT, DECLARED, transport=httpx.MockTransport(handle),
+                       resolve=World().resolve, sleep=clock.sleep, clock=clock.time, proxies=dict)
+        return attempt(lambda: door.answer(API, {"Authorization": "Bearer t"}, within=within))
+
+    def replies(*answers_):
+        """Ответы API по очереди (код, заголовки, тело), последний повторяется; журнал — пути запросов."""
+        log: list[str] = []
+
+        def handle(request):
+            log.append(request.url.path)
+            status, headers, body = answers_[min(len(log), len(answers_)) - 1]
+            return httpx.Response(status, headers=headers, content=body)
+        return handle, log
+
+    after, before = Clock(), Clock()
+    _, e_after = timed(after.hung, after)
+    _, e_before = timed(before.hung, before, deadline_sec=10**9)
+    check(f"зависший провайдер списка и спеки: всё обращение — в deadline_sec {LIVE['deadline_sec']} с (после "
+          f"{after.now:g} с; без срока, как в B2 до доделки, — {before.now:g} с); фазы урезаны до половины остатка",
+          e_after is not None and e_after.code == "PROVIDER_FAILED" and after.now <= LIVE["deadline_sec"]
+          and after.phases == [30, 14.75, 6.875] and before.phases == [30, 30, 30] and before.now == 91.5,
+          f"{after.phases} {after.slept} {after.now} | {before.phases} {before.now} {e_after and e_after.facts}")
+    clock = Clock()
+    _, e = timed(clock.hung, clock, within=10)
+    check("срок вызывающего короче своего — обращение в него укладывается, первая фаза — половина остатка",
+          e is not None and clock.phases[0] == 5 and clock.now <= 10, f"{clock.phases} {clock.now}")
+    clock = Clock()
+    handle, log = replies((503, {"Retry-After": "70"}, b""))
+    _, e = timed(handle, clock)
+    check("сервер назвал срок длиннее остатка обращения — повтора нет, отказ сразу, срок — в фактах: решает вызывающий",
+          e is not None and e.facts == {"host": "api.provider.example", "status": 503, "retry_after_sec": 70.0}
+          and len(log) == 1 and not clock.slept, f"{e and e.facts} {log} {clock.slept}")
+    clock = Clock()
+    handle, log = replies((503, {"Retry-After": "200"}, b""))
+    _, e = timed(handle, clock, deadline_sec=10**9)
+    check("срок сервера длиннее retry_after_max_sec — повтора нет и без срока обращения, срок — в фактах",
+          e is not None and e.facts.get("retry_after_sec") == 200.0 and len(log) == 1 and not clock.slept,
+          f"{e and e.facts} {log} {clock.slept}")
+    clock = Clock()
+    handle, log = replies((503, {"Retry-After": "100"}, b""), (200, {}, json.dumps(LIST).encode()))
+    got, e = timed(handle, clock, deadline_sec=10**9)
+    check("срок сервера выше своего потолка паузы (backoff_max_sec 8), но в retry_after_max_sec — ждём его целиком "
+          "(прежде дверь резала его до 8 с)",
+          e is None and got == LIST and clock.slept == [100.0] and len(log) == 2, f"{clock.slept} {e and e.facts}")
+    clock = Clock()
+
+    def drip(request):
+        def chunks():
+            for _ in range(3):
+                clock.now += 25
+                yield b" " * 1024
+        return httpx.Response(200, content=chunks())
+
+    _, e = timed(drip, clock)
+    check("капля тела за срок обращения — кусок после срока не принят, отказ кодом политики; перебор — не больше "
+          "одной фазы чтения",
+          e is not None and e.facts == {"host": "api.provider.example", "status": "срок обращения истёк на 2048 байт"}
+          and clock.now <= LIVE["deadline_sec"] + LIVE["timeout_sec"], f"{e and e.facts} {clock.now}")
+
+    # Два потолка у всех потребителей двери с B1 (файл, длина): свой — backoff_max_sec, сервера — retry_after_max_sec.
+    fresh()
+    w = World()
+    w.statuses = [(503, {"Retry-After": "100"})]
+    f, pauses = fetcher(w, attempts=2)
+    _, e = attempt(lambda: f.fetch(RESOLVE, files, PART, "inst1", size=len(BODY)))
+    check("смена поведения у загрузки весов: срок сервера 100 с между своим потолком (60) и retry_after_max_sec (120) "
+          "выжидается целиком — прежде 60",
+          e is None and pauses == [100.0] and on_disk() == BODY, f"{pauses} {e and (e.code, e.facts)}")
+    fresh()
+    w = World()
+    w.statuses = [(503, {"Retry-After": "300"})]
+    f, pauses = fetcher(w, attempts=3)
+    _, e = attempt(lambda: f.fetch(RESOLVE, files, PART, "inst1", size=len(BODY)))
+    check("смена поведения: срок сервера длиннее retry_after_max_sec — повтора нет, код потребителя со сроком в "
+          "фактах (прежде — ждали потолок и повторяли)",
+          e is not None and e.code == "MODEL_SOURCE_FAILED" and not pauses
+          and e.facts == {"host": CDN, "status": 503, "retry_after_sec": 300.0}
+          and len([x for x in w.log if x["host"] == CDN]) == 1, f"{pauses} {e and (e.code, e.facts)}")
+    w = World()
+    w.statuses = [(503, {"Retry-After": "300"})]
+    f, pauses = fetcher(w, attempts=3)
+    got, e = attempt(lambda: f.length(RESOLVE, linked="X-Linked-Size"))
+    check("длина по HEAD: срок сервера длиннее потолка — «не узнано» сразу, без повторов (решает вызывающий)",
+          e is None and got == (None, f"HEAD {CDN}: 503") and isinstance(got[1], Unreached) and not pauses,
+          f"{got} {pauses} {e and e.facts}")
+
+    print("== 19. Статус без тела и судья петли (B3): код — улика, переход — как есть, внутренняя сеть — только петле ==")
+    from core.declaration_schemas import ProbePolicy
+
+    PROBE = {k: v for k, v in ANSWER.items() if k not in ("max_bytes", "speed_floor_bytes_per_sec", "speed_window_sec")}
+    PROBE["codes"] = {"failed": "PROVIDER_FAILED"}
+    PROBE_SLOT = Slot("probe.yaml", ("probe",), ProbePolicy)
+
+    def peek(api: Api, declared: str = DECLARED, **over):
+        """Статус двери на подставном API — (исход, отказ, паузы); загрузчик собран читателем из декларации прозвонки."""
+        decl = work / "probe.yaml"
+        decl.write_text(yaml.safe_dump({"probe": {**PROBE, **over}}), encoding="utf-8")
+        pauses: list[float] = []
+        got, e = attempt(lambda: answers(Declaration(decl, ContractError, "прозвонки", ""), PROBE_SLOT, declared,
+                                         transport=httpx.MockTransport(api.handle), resolve=World().resolve,
+                                         sleep=pauses.append, proxies=dict).status(API))
+        return got, e, pauses
+
+    api = Api((530, b"x" * 9000, {"server": "cloudflare"}))
+    got, e, _ = peek(api)
+    check("статус: 530 — ответ (код и заголовки), а не отказ двери; тело не вытянуто",
+          e is None and got[0] == 530 and got[1].get("server") == "cloudflare" and api.pulled == 0,
+          (got, e and e.facts, api.pulled))
+    api = Api((302, b"", {"location": "https://evil.example/x"}), (200, b"", {}))
+    got, e, _ = peek(api)
+    check("статус: переход возвращается как есть — по нему не идём, к хосту из Location ни запроса",
+          e is None and got[0] == 302 and len(api.log) == 1, (got, e and e.facts, api.log))
+    api = Api((503, b"", {}), (200, b"", {}))
+    got, e, pauses = peek(api, retry_on=[503], attempts=2)
+    check("статус: код из retry_on повторяется общим циклом двери, прочие коды — ответ",
+          e is None and got[0] == 200 and len(api.log) == 2 and len(pauses) == 1, (got, pauses, e and e.facts))
+    api = Api((200, b"", {}))
+    e = attempt(lambda: Fetcher(FetchPolicy.model_validate({**RESULTS, "hosts": ["api.provider.example"]}),
+                                transport=httpx.MockTransport(api.handle), resolve=World().resolve,
+                                proxies=dict).status(API))[1]
+    check("статус без политики обращения к объявленному адресу — ошибка кода до запроса",
+          e is not None and e.code == "НЕ_ОТКАЗ" and e.facts["exception"].startswith("TypeError") and not api.log,
+          (e and e.facts, api.log))
+    for case, declared, admitted in (
+            ("литерал петли", "http://127.0.0.1:8770/run", True),
+            ("литерал петли IPv6", "http://[::1]:8770/run", True),
+            ("имя localhost — не литерал: разрешение подменило бы адрес", "http://localhost:8770/run", False),
+            ("адрес внутренней сети — не петля", "http://10.0.0.5:8770/run", False)):
+        decl = work / "probe.yaml"
+        decl.write_text(yaml.safe_dump({"probe": {**PROBE, "schemes": ["http"], "block_private": False}}),
+                        encoding="utf-8")
+        e = attempt(lambda: answers(Declaration(decl, ContractError, "прозвонки", ""), PROBE_SLOT, declared))[1]
+        check(f"судья петли: {case} при block_private: false — {'принят' if admitted else 'отказ до запроса'}",
+              e is None if admitted else (e is not None and e.code == "DOWNLOAD_FORBIDDEN"), e and (e.code, e.facts))
 finally:
     shutil.rmtree(work, ignore_errors=True)
 

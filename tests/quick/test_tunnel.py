@@ -291,6 +291,89 @@ def test_probe_refuses_foreign_scheme():
           "СОДЕРЖИМОЕ ДИСКА" not in str(улика), улика)
 
 
+def test_probe_through_door():
+    """Прозвонка — дверью загрузчика (`Fetcher.status`, политика tunnel_diagnostics.yaml → прозвонка): хост судится
+    разобранным и целиком, соединение — на судимый IP, тело не читается, срок — подставными часами."""
+    import httpx
+
+    class Край:
+        """Подставной публичный край: журнал запросов (IP, Host, SNI), вытянутые куски тела, часы события. Без ответа —
+        молчит: соединение и ответ съедают каждый свою фазу, которую дверь отдала транспорту."""
+
+        def __init__(self, ответ=None, имена=None):
+            self.ответ, self.имена, self.журнал, self.кусков, self.часы = ответ, имена or {}, [], 0, 0.0
+
+        def resolve(self, host, port, *a, **k):
+            return [(2, 1, 6, "", (self.имена.get(host, "104.16.230.132"), port))]
+
+        def тело(self):
+            for _ in range(4):
+                self.кусков += 1
+                yield b"x" * 1024
+
+        def handle(self, request):
+            self.журнал.append((request.url.host, request.headers.get("host"), request.extensions.get("sni_hostname")))
+            if self.ответ is None:
+                фаза = request.extensions["timeout"]
+                self.часы += фаза["connect"] + фаза["read"]
+                raise httpx.ReadTimeout("молчит")
+            код, сервер = self.ответ
+            return httpx.Response(код, headers={"Server": сервер}, content=self.тело())
+
+    прежние = tuple(CloudflaredTunnel.__dict__[шов] for шов in ("transport", "resolve", "clock", "sleep"))
+
+    def прозвонить(адрес, край, режим="quick", hostname="", **kw):
+        CloudflaredTunnel.transport = httpx.MockTransport(край.handle)
+        CloudflaredTunnel.resolve = staticmethod(край.resolve)
+        CloudflaredTunnel.clock = staticmethod(lambda: край.часы)
+        CloudflaredTunnel.sleep = staticmethod(lambda s: setattr(край, "часы", край.часы + s))
+        t = CloudflaredTunnel(port=8080); t.mode = режим; t.hostname = hostname; t._public_url = адрес
+        return t.probe(**kw)
+
+    try:
+        край = Край((530, "cloudflare"))
+        улика = прозвонить("https://abc-1.trycloudflare.com", край)
+        check("край отвечает 530 — «не дошло», кто — край; соединение на судимый IP, имя в Host и SNI; тело не вытянуто",
+              улика["дошло"] is False and улика["кто"] == "cloudflare" and край.кусков == 0
+              and край.журнал == [("104.16.230.132", "abc-1.trycloudflare.com", "abc-1.trycloudflare.com")],
+              (улика, край.журнал, край.кусков))
+        край = Край((405, "Python/3.14 aiohttp/3.9"))
+        улика = прозвонить("https://abc-1.trycloudflare.com", край)
+        check("наш процесс ответил 405 — «дошло»: код — улика, а не отказ двери; тело не вытянуто",
+              улика["дошло"] is True and улика["код"] == 405 and край.кусков == 0, (улика, край.кусков))
+        край = Край((405, "aiohttp"), имена={"abc-1.trycloudflare.com": "10.0.0.9"})
+        улика = прозвонить("https://abc-1.trycloudflare.com", край)
+        check("публичное имя разрешилось во внутреннюю сеть — «не дошло» с отказом двери, запроса нет",
+              улика["дошло"] is False and "DOWNLOAD_FORBIDDEN" in улика["текст"] and not край.журнал,
+              (улика, край.журнал))
+        for случай, адрес in (
+                ("адрес зоны в строке запроса чужого хоста", "https://evil.example/?x=https://abc.trycloudflare.com"),
+                ("зона quick в начале чужого хоста", "https://abc.trycloudflare.com.evil.example/"),
+                ("имя зоны как имя пользователя", "https://abc.trycloudflare.com@evil.example/")):
+            край = Край((405, "aiohttp"))
+            улика = прозвонить(адрес, край)
+            check(f"quick: {случай} — хост судится разобранным и целиком, туда ни запроса",
+                  улика["дошло"] is False and not край.журнал, (улика, край.журнал))
+        край = Край((405, "aiohttp"))
+        улика = прозвонить(None, край, режим="named", hostname="mcp.example.com")
+        check("named: прозвонка идёт ровно на объявленный hostname",
+              улика["дошло"] is True and [h for _, h, _ in край.журнал] == ["mcp.example.com"], (улика, край.журнал))
+        край = Край((405, "aiohttp"))
+        улика = прозвонить("https://other.example", край, режим="named", hostname="mcp.example.com")
+        check("named: адрес не объявленного hostname — не спрашиваем", улика["дошло"] is False and not край.журнал,
+              (улика, край.журнал))
+        край = Край()
+        прозвонить("https://abc-1.trycloudflare.com", край)
+        по_умолчанию = край.часы
+        край = Край()
+        прозвонить("https://abc-1.trycloudflare.com", край, timeout=60)
+        check(f"срок: молчащий край — прозвонка в срок вызывающего ({по_умолчанию:g} с при timeout 8) и не дольше "
+              f"deadline_sec политики ({край.часы:g} с при timeout 60); прежде фаза 8 с × 2 и тело без предела",
+              по_умолчанию == 8 and край.часы == 16, (по_умолчанию, край.часы))
+    finally:
+        CloudflaredTunnel.transport, CloudflaredTunnel.resolve, CloudflaredTunnel.clock, CloudflaredTunnel.sleep = прежние
+
+
 class _Живой:
     """Двойник поднятого туннеля: приёмка спрашивает у него ровно status() и probe()."""
 
@@ -371,6 +454,46 @@ def test_приёмка_концы_и_бинари():
     check("конец none — нечем проверять, а не «прошло»", исход == НЕЧЕМ, исход)
 
 
+def test_каталог_одна_дверь():
+    """Диагностика и прозвонка читают каталог проверок одной дверью (`каталог_проверок`): каталог деклараций прогона
+    (`MCP_CONFIG`) судит обеих; прежде диагностика читала `config/` рядом с кодом мимо него."""
+    import os
+    import shutil
+
+    import httpx
+
+    from core.transport.diagnostics import Диагностика
+    from tests.harness.live_server import declarations_copy
+
+    копия = declarations_copy({"tunnel_diagnostics.yaml": {
+        "проверки": [{"id": "конфигурация", "что": "Конфигурация", "доказывает": "копия", "режим": "быстрая"}],
+        "прозвонка.codes.failed": "PROVIDER_TIMEOUT"}})
+    прежний = os.environ.get("MCP_CONFIG")
+    прежние = tuple(CloudflaredTunnel.__dict__[шов] for шов in ("transport", "resolve"))
+
+    def молчит(request):
+        raise httpx.ConnectError("порт молчит")
+
+    os.environ["MCP_CONFIG"] = str(копия)
+    try:
+        проверки = {п.id for п in Диагностика(_Живой(), конец="client").проверки("полная")}
+        CloudflaredTunnel.transport = httpx.MockTransport(молчит)
+        CloudflaredTunnel.resolve = staticmethod(lambda host, port, *a, **k: [(2, 1, 6, "", ("104.16.230.132", port))])
+        t = CloudflaredTunnel(port=8080); t.mode = "quick"; t._public_url = "https://abc-1.trycloudflare.com"
+        улика = t.probe()
+    finally:
+        CloudflaredTunnel.transport, CloudflaredTunnel.resolve = прежние
+        if прежний is None:
+            os.environ.pop("MCP_CONFIG", None)
+        else:
+            os.environ["MCP_CONFIG"] = прежний
+        shutil.rmtree(копия.parent, ignore_errors=True)
+    check("MCP_CONFIG: диагностика читает каталог деклараций прогона, а не config/ рядом с кодом",
+          проверки == {"конфигурация"}, проверки)
+    check("MCP_CONFIG: прозвонка — тот же каталог: код отказа «не дошло» из копии",
+          улика["дошло"] is False and улика["текст"].startswith("PROVIDER_TIMEOUT"), улика)
+
+
 def main():
     test_command_building()
     test_readiness_event_driven()
@@ -380,10 +503,12 @@ def main():
     test_first_attempt_retries()
     test_probe_names_the_responder()
     test_probe_refuses_foreign_scheme()
+    test_probe_through_door()
     test_приёмка_не_считает_непроверенное_пройденным()
     test_приёмка_поток_и_уборка()
     test_приёмка_каталог_и_исполнители()
     test_приёмка_концы_и_бинари()
+    test_каталог_одна_дверь()
     print()
     passed, total = sum(results), len(results)
     print(f"ИТОГО: {passed}/{total} проверок пройдено")

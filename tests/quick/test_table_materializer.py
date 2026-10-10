@@ -45,6 +45,16 @@ def new_materializer(ws: str):
 ws = tempfile.mkdtemp(prefix="tm_")
 mat = new_materializer(ws)
 
+print("== 0. Дверь книги отдаёт модель: читатель получает неизменяемую схему, а не словарь ==")
+# Перед e2e: дверь, отдавшая словарь, уронила бы §1 падением, а не названной проверкой.
+from core.declaration_schemas import BookSchema
+try:
+    _door0 = mat.load_schema("network_config")
+except Exception as _e0:  # мутант двери: падение вместо модели видно проверке
+    _door0 = _e0
+ok(isinstance(_door0, BookSchema) and BookSchema.model_config.get("frozen") is True,
+   f"load_schema отдаёт неизменяемую модель BookSchema ({type(_door0).__name__})")
+
 print("== 1. e2e: proof-схема network_config → книга ==")
 res = mat.materialize("network_config", "networks/net_1/network_config.xlsx")
 book = Path(ws) / "networks" / "net_1" / "network_config.xlsx"
@@ -87,10 +97,13 @@ except TableMaterializerError as e:
     ok(e.code == "DECLARATION_INVALID" and "yaml_syntax" in e.facts.get("details", ""),
        f"битый YAML схемы → отказ двери с местом ошибки, а не сырое исключение ({e.code}, {e.facts})")
 
-def _book_refusal(text: str) -> tuple[str, str]:
-    """Код и детали отказа на схему книги `text`; любое иное исключение — его имя: проверка назовёт, а не упадёт."""
+def _book_refusal(text: str, rules: str = "") -> tuple[str, str]:
+    """Код и детали отказа на схему книги `text` (и общие правила `rules`, если даны); любое иное исключение — его имя:
+    проверка назовёт, а не упадёт."""
     probe_dir = Path(tempfile.mkdtemp(prefix="schemas_probe_"))
     (probe_dir / "p.schema.yaml").write_text(text, encoding="utf-8")
+    if rules:
+        (probe_dir / "_defaults.yaml").write_text(rules, encoding="utf-8")
     try:
         TableMaterializer(ExcelEngine(Path(tempfile.mkdtemp(prefix="ws_probe_"))), probe_dir).materialize("p", "p.xlsx")
         return "", ""
@@ -107,6 +120,30 @@ _bad_type = _book_refusal("book: b\nlevel: video\nsource: test\nsheets:\n  - nam
                           "      - {name: c, type: strnig, flag: W}\n")
 ok(_bad_type[0] == "DECLARATION_INVALID" and "sheets.0.columns.0.type" in _bad_type[1],
    f"неизвестный тип столбца → отказ двери с путём столбца, а не столбец без правила деградации ({_bad_type})")
+
+# Род порчи → путь ключа, который обязан назвать отказ двери: у каждого обязательного ключа схемы своя строка.
+_SHEET = "sheets:\n  - name: s\n    columns:\n      - {name: c, type: string, flag: W}\n"
+_BROKEN_BOOKS = {
+    "неизвестный флаг столбца": ("book: b\nlevel: video\nsource: test\nsheets:\n  - name: s\n    columns:\n"
+                                 "      - {name: c, type: string, flag: X}\n", "", "sheets.0.columns.0.flag"),
+    "книга без level": ("book: b\nsource: test\n" + _SHEET, "", "level (missing)"),
+    "книга без source": ("book: b\nlevel: video\n" + _SHEET, "", "source (missing)"),
+    "опечатка типа в общих правилах": ("book: b\nlevel: video\nsource: test\n" + _SHEET, "degrade: {flaot: 0}\n",
+                                       "degrade.flaot"),
+}
+# Имя листа судит библиотека записи книги, а не число в коде. Независимая истина события — документация формата:
+# Microsoft «Rename a worksheet» — имя листа не длиннее 31 символа и без / \ ? * : [ ].
+_DOC_TITLE = 31
+_BOOK_HEAD = "book: b\nlevel: video\nsource: test\n"
+_BROKEN_BOOKS["имя листа длиннее документированного предела"] = (
+    _BOOK_HEAD + _SHEET.replace("name: s", "name: " + "Л" * (_DOC_TITLE + 1)), "", "sheets.0.name (xlsx_sheet_title)")
+_BROKEN_BOOKS["запретный знак в имени листа"] = (
+    _BOOK_HEAD + _SHEET.replace("name: s", "name: 'a/b'"), "", "sheets.0.name (xlsx_sheet_title)")
+for _case, (_text, _rules, _path) in _BROKEN_BOOKS.items():
+    _got = _book_refusal(_text, _rules)
+    ok(_got[0] == "DECLARATION_INVALID" and _path in _got[1], f"{_case} → отказ двери с путём {_path} ({_got})")
+_edge = _book_refusal(_BOOK_HEAD + _SHEET.replace("name: s", "name: " + "Л" * _DOC_TITLE))
+ok(_edge == ("", ""), f"имя листа ровно на документированном пределе проходит дверь и ложится в книгу ({_edge})")
 
 try:
     mat.materialize("network_config", "networks/net_1/network_config.xlsx")
@@ -270,6 +307,29 @@ except ExcelError as _e:
 _src30 = (ROOT / "core/engine/table_materializer.py").read_text(encoding="utf-8")
 ok("PENDING" not in _src30, "запасные значения не зашиты в код — только читаются из _defaults.yaml")
 
+print("== 7d. Приоритет запасного значения — как объявлено: on_empty столбца → degrade книги → _defaults.yaml ==")
+# Истина — по построению: формула в ячейке несёт то запасное значение, которое объявлено ближе всех к столбцу;
+# пересчёт не нужен, проверка не зависит от LibreOffice.
+_sch7d = Path(tempfile.mkdtemp(prefix="deg7d_"))
+_shutil2.copy(SCHEMAS / "_defaults.yaml", _sch7d / "_defaults.yaml")
+(_sch7d / "p.schema.yaml").write_text(_y2.safe_dump({
+    "book": "p", "level": "video", "source": "test", "degrade": {"string": "КНИГА"},
+    "sheets": [{"name": "CALC", "columns": [
+        {"name": "a", "type": "integer", "flag": "W"},
+        {"name": "rate", "type": "float", "flag": "F", "formula": "=1/A2"},
+        {"name": "label", "type": "string", "flag": "F", "formula": "=1/A2"},
+        {"name": "note", "type": "string", "flag": "F", "formula": "=1/A2", "on_empty": "СВОЁ"},
+    ]}]}, allow_unicode=True), encoding="utf-8")
+_ws7d = tempfile.mkdtemp(prefix="deg7d_ws_")
+TableMaterializer(ExcelEngine(_ws7d), _sch7d).materialize("p", "p.xlsx")
+_f7d = dict(zip(("a", "rate", "label", "note"),
+                (c.value for c in openpyxl.load_workbook(Path(_ws7d) / "p.xlsx")["CALC"][2])))
+_rules7d = _y2.safe_load((SCHEMAS / "_defaults.yaml").read_text(encoding="utf-8"))["degrade"]
+ok(_f7d["rate"] == f"=IFERROR(1/A2,{_rules7d['float']})",
+   f"столбец без своего значения и без правила книги — общее правило типа ({_f7d['rate']})")
+ok(_f7d["label"] == '=IFERROR(1/A2,"КНИГА")', f"degrade книги перекрывает общее правило того же типа ({_f7d['label']})")
+ok(_f7d["note"] == '=IFERROR(1/A2,"СВОЁ")', f"on_empty столбца перекрывает и книгу, и общее правило ({_f7d['note']})")
+
 print("== 8. Конвертер спека→схема: что разобрано, а что честно отдано человеку ==")
 import importlib.util
 
@@ -431,6 +491,188 @@ ok(_r9d.status == "success" and len(_r9d.data["materialized"][0]["sheets"]) > 1,
 _r9m = _call9(pending=[], mode="нечто")
 ok(_r9m.status == "error" and _r9m.error.code == "VALIDATION_ERROR",
    f"неизвестный режим → отказ кодом реестра ({_r9m.error.code if _r9m.error else 'успех!'})")
+
+print("== 10. Схему книги читает одна дверь: у КАЖДОГО читателя битая книга — отказ, а не строки словарём ==")
+# Причина рождается в файле книги (копия боевых деклараций), следствие судится там, где его видит клиент: ответ
+# инструмента или единственный перевод исключения в отказ (Engine.refusal). Читатель — строка таблицы, а не функция.
+from core.montage.book import SceneBook
+from core.montage.ledger import RenderLedger
+from core.reactions import Reactions as _Reactions10
+from tests.harness.live_server import declarations_copy
+from tools import media as _media10, uniqueness as _uniq10
+from tools._context import build_context
+
+_REACT10 = _Reactions10(ROOT / "config" / "server_reactions.yaml")
+
+
+def _books(state: str) -> Path:
+    """Копия боевых деклараций: книги целы, у каждой книги первый столбец первого листа с неизвестным типом, книг нет,
+    или у каждой книги листы переименованы (книга цела, но названных декларациями листов в ней нет)."""
+    cfg = declarations_copy()
+    (cfg / "tunnel.yaml").unlink(missing_ok=True)       # машинное объявление вне git: читателям книг не нужно
+    for schema_file in (cfg / "templates" / "tables").glob("*.schema.yaml"):
+        if state == "нет книг":
+            schema_file.unlink()
+        elif state in ("битые", "листы переименованы"):
+            data = _yaml.safe_load(schema_file.read_text(encoding="utf-8"))
+            if state == "битые":
+                data["sheets"][0]["columns"][0]["type"] = "strnig"
+            else:   # короткие имена: событие мерит ссылку на лист, а не длину имени (её судит библиотека записи)
+                for index, sheet in enumerate(data["sheets"]):
+                    sheet["name"] = f"Л{index}"
+            schema_file.write_text(_yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    return cfg
+
+
+def _said(cfg: Path, call) -> tuple[str, str]:
+    """(код, детали) того, что увидит клиент; успех — ("", ""); чужое исключение — его имя: проверка назовёт, а не упадёт."""
+    ws = Path(tempfile.mkdtemp(prefix="tm10_")) / "workspace"
+    (ws / "v0").mkdir(parents=True)
+    (ws / "v0" / "read.json").write_text("{}", encoding="utf-8")
+    sm = _SM(ws)
+    eng = _Eng(reactions=_REACT10, state_manager=sm)
+    try:
+        res = call(cfg, ws, sm, eng)
+    except Exception as e:  # мутант читателя: падение вместо отказа видно проверке
+        refused = eng.refusal(e)
+        if refused is None:
+            return type(e).__name__, str(e)[:160]
+        res = refused
+    if getattr(res, "status", "success") == "error":
+        return res.error.code, res.error.facts.get("details", "")
+    return "", ""
+
+
+def _tool(group, name: str, **params):
+    def call(cfg, ws, sm, eng):
+        group.register(eng, build_context(eng, _IDG(), sm, cfg))
+        return _aio.run(eng.call(name, params))
+    return call
+
+
+_READERS = {
+    "материализатор (TableMaterializer.materialize)":
+        lambda cfg, ws, sm, eng: TableMaterializer(ExcelEngine(ws), cfg / "templates" / "tables").materialize(
+            "channel_data", "ch.xlsx"),
+    "монтаж: профиль рендера (SceneBook)":
+        lambda cfg, ws, sm, eng: SceneBook(sm, cfg, lambda p: (ws / p).resolve()).profile("v0", "long_16x9"),
+    "монтаж: строка результата (RenderLedger)":
+        lambda cfg, ws, sm, eng: RenderLedger(sm, cfg, _IDG()).record("v0", {"stage": "draft"}),
+    "media_provider_status": _tool(_media10, "media_provider_status", table="v0"),
+    "uniqueness_check": _tool(_uniq10, "uniqueness_check", table="v0"),
+}
+_CFG10 = {state: _books(state) for state in ("целые", "битые", "нет книг", "листы переименованы")}
+# Какой ключ своей декларации читатель судит по листам книги; материализатор листы не называет, а строит все.
+_NAMES_SHEET = {"монтаж: профиль рендера (SceneBook)": "profile.sheet",
+                "монтаж: строка результата (RenderLedger)": "target.sheet",
+                "media_provider_status": "source.sheet", "uniqueness_check": "sources.profile.sheet"}
+for _reader, _call10 in _READERS.items():
+    _whole, _broken, _absent, _renamed = (_said(_CFG10[s], _call10)
+                                          for s in ("целые", "битые", "нет книг", "листы переименованы"))
+    ok(_whole == ("", ""), f"{_reader}: целая книга читается моделью, ответ — успех ({_whole})")
+    ok(_broken[0] == "DECLARATION_INVALID" and "sheets.0.columns.0.type" in _broken[1],
+       f"{_reader}: битая книга → отказ двери с путём ключа, а не строки мимо схемы ({_broken})")
+    ok(_absent[0] == "TEMPLATE_NOT_FOUND",
+       f"{_reader}: объявленной книги нет → TEMPLATE_NOT_FOUND, а не молчаливое «строк нет» ({_absent})")
+    _key10 = _NAMES_SHEET.get(_reader)
+    ok(_renamed == ("", "") if _key10 is None else
+       _renamed[0] == "DECLARATION_INVALID" and f"{_key10} (literal_error)" in _renamed[1],
+       f"{_reader}: названного листа в книге нет → " + (f"отказ с путём {_key10}, а не «строк нет»" if _key10 else
+                                                         "материализатор строит листы книги, какими они объявлены")
+       + f" ({_renamed})")
+
+# Какую книгу судит строка результата — объявлено в montage.yaml `target.book`; ключа нет — отказ двери, а не книга
+# по умолчанию из кода.
+_no_target_book = declarations_copy()
+(_no_target_book / "tunnel.yaml").unlink(missing_ok=True)
+_montage10 = _yaml.safe_load((_no_target_book / "montage.yaml").read_text(encoding="utf-8"))
+del _montage10["target"]["book"]
+(_no_target_book / "montage.yaml").write_text(_yaml.safe_dump(_montage10, allow_unicode=True, sort_keys=False),
+                                              encoding="utf-8")
+_unnamed = _said(_no_target_book, _READERS["монтаж: строка результата (RenderLedger)"])
+ok(_unnamed[0] == "DECLARATION_INVALID" and "target.book" in _unnamed[1],
+   f"книга строки результата не объявлена → отказ двери с путём target.book, а не книга из кода ({_unnamed})")
+
+# Строки дефолта уходят читателю его копией (`list[dict]`, как до двери): читатель дополняет свою строку, объявление
+# остаётся неизменяемым.
+from core.contracts import ContractError as _CE10
+from core.declaration import Declaration as _Decl10
+from core.engine.table_materializer import declared_rows as _rows10, named_sheet as _sheet10
+
+_montage_door = _Decl10(CFG / "montage.yaml", _CE10, "монтажа", "—")
+_copy10 = _rows10(CFG, _montage_door, "scene", "roles")
+try:
+    _copy10[0]["_row_id"] = "R1"
+    _augmented = _copy10[0].get("_row_id")
+except TypeError as _e10:  # мутант отдал строки объявления: правка копии — TypeError
+    _augmented = type(_e10).__name__
+ok(_augmented == "R1" and "_row_id" not in _sheet10(CFG, _montage_door, "scene", "roles").rows[0],
+   f"строки дефолта — копия читателя: дополнение легло в копию, объявление не тронуто ({_augmented})")
+
+print("== 11. Лист, названный декларацией, объявлен книгой: суд у двери того, кто назвал ==")
+# Ссылка на лист книги — отображение с ключами `sheet` и книгой (`fallback_book` или `book`). Ссылки берутся из самих
+# деклараций, а не из списка в тесте: новая ссылка судится, не дожидаясь правки набора.
+_BOOK_KEYS = ("fallback_book", "book")
+
+
+def _references(cfg: Path) -> list[tuple[str, tuple[str, ...], str]]:
+    found: list[tuple[str, tuple[str, ...], str]] = []
+
+    def walk(node, file: str, path: tuple[str, ...]) -> None:
+        if isinstance(node, dict):
+            key = next((k for k in _BOOK_KEYS if isinstance(node.get(k), str)), None)
+            if key and isinstance(node.get("sheet"), str):
+                found.append((file, path, key))
+            for name, value in node.items():
+                walk(value, file, (*path, str(name)))
+
+    for decl in sorted(cfg.glob("*.yaml")):
+        walk(_yaml.safe_load(decl.read_text(encoding="utf-8")), decl.name, ())
+    return found
+
+
+def _named(cfg: Path, file: str, path: tuple[str, ...], key: str) -> tuple[str, str]:
+    """(код, детали) суда ссылки; успех — ("", имя листа); чужое исключение — его имя."""
+    try:
+        return "", _sheet10(cfg, _Decl10(cfg / file, _CE10, file, "—"), *path, book=key).name
+    except _CE10 as e:
+        return e.code, f"{e.facts.get('file')}: {e.facts.get('details')}"
+    except Exception as e:  # мутант суда: падение вместо отказа видно проверке
+        return type(e).__name__, str(e)[:120]
+
+
+_REFS = _references(CFG)
+_live11 = [(f, p, k, _named(CFG, f, p, k)) for f, p, k in _REFS]
+ok(len(_REFS) >= 10 and all(code == "" for *_, (code, _) in _live11),
+   f"живая конфигурация: каждая ссылка на лист судится и проходит ({sum(not c for *_, (c, _) in _live11)}/{len(_REFS)}: "
+   f"{[(f, '.'.join(p)) for f, p, _, (c, _) in _live11 if c]})")
+
+
+def _broken_refs(change) -> Path:
+    """Копия деклараций, где у каждой ссылки на лист сделана правка `change(отображение, ключ книги)`."""
+    cfg = declarations_copy()
+    (cfg / "tunnel.yaml").unlink(missing_ok=True)
+    for file in sorted({f for f, _, _ in _REFS}):
+        data = _yaml.safe_load((cfg / file).read_text(encoding="utf-8"))
+        for _f, path, key in (r for r in _REFS if r[0] == file):
+            node = data
+            for part in path:
+                node = node[part]
+            change(node, key)
+        (cfg / file).write_text(_yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    return cfg
+
+
+_undeclared = _broken_refs(lambda node, key: node.update(sheet=node["sheet"] + "_НЕ_ОБЪЯВЛЕН"))
+_unnamed11 = _broken_refs(lambda node, key: node.pop(key))
+for _file, _path, _key in _REFS:
+    _at = ".".join(_path)
+    _sick = _named(_undeclared, _file, _path, _key)
+    ok(_sick[0] == "DECLARATION_INVALID" and _sick[1] == f"{_file}: {_at}.sheet (literal_error)",
+       f"{_file} {_at}: лист, которого книга не объявляет → отказ двери с путём {_at}.sheet, а не «строк нет» ({_sick})")
+    _gone = _named(_unnamed11, _file, _path, _key)
+    ok(_gone[0] == "DECLARATION_INVALID" and _gone[1] == f"{_file}: {_at}.{_key} (missing)",
+       f"{_file} {_at}: книга не названа → отказ двери с путём {_at}.{_key}, а не пропуск ({_gone})")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

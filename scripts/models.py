@@ -59,7 +59,7 @@ def cmd_local(args) -> int:
         fit = last = r.get("fit") or {}
         gpu = f"  (на карте: {fit['on_gpu']['verdict']})" if fit.get("on_gpu") else ""
         print(f"  {r['id']:<44} {size:<12}{params + active:<12}"
-              f"{fit.get('verdict', '?'):<7}{fit.get('need_mb', 0)} МБ{gpu}")
+              f"{fit.get('verdict', '?'):<7}{_мб(fit.get('need_mb'))}{gpu}")
         if r.get("description"):
             # Числа не отвечают, ЧТО модель делает: без этого выбор идёт вслепую.
             print(f"      {r['description'][:150]}")
@@ -67,7 +67,7 @@ def cmd_local(args) -> int:
             print(f"      лицензия: {r['license']}"
                   + (f" · файл: {r['file']}" if r.get("file") else ""))
     if last.get("device"):
-        print(f"\nВердикт считался по: {last['device']} ({last.get('available_mb', 0)} МБ).")
+        print(f"\nВердикт считался по: {last['device']} ({_мб(last.get('available_mb'))}).")
     if last.get("on_gpu"):
         print(f"Память карты в вердикт не вошла: {last['on_gpu']['blocked_by']}")
     print(f"\nВсего {len(rows)}. Поставить: python scripts/models.py install <id> --kind {args.kind}")
@@ -158,8 +158,13 @@ def _предупредить_о_расчёте(cat, место: dict) -> None:
     вердикт = (cat.with_fit([место["entry"]])[0].get("fit") or {})
     if вердикт.get("verdict") == "no":
         print(f"  веса влезут ({место['нужно_мб']:.0f} МБ при {место['свободно_мб']:.0f} МБ), но расчёт — нет: "
-              f"нужно {вердикт.get('need_mb', 0)} МБ на {вердикт.get('device', '?')}, "
-              f"доступно {вердикт.get('available_mb', 0)} МБ")
+              f"нужно {_мб(вердикт.get('need_mb'))} на {вердикт.get('device', '?')}, "
+              f"доступно {_мб(вердикт.get('available_mb'))}")
+
+
+def _мб(value) -> str:
+    """Объём из вердикта расчёта: число — «N МБ», неизвестный (None) — «не известно», а не 0."""
+    return "не известно" if value is None else f"{value} МБ"
 
 
 def _kinds() -> str:

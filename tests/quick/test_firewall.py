@@ -206,6 +206,41 @@ with live_server(env={"MCP_ALLOWED_ORIGINS": "https://studio.example.com"}) as s
         ok(rpc2.request("tools/list", {}, extra_headers={"Origin": _origin}).status_code == 403,
            f"{_case} отбит и при заданном списке")
 
+print("== 9. Hostname туннеля в списке хостов — из двери туннеля: объявлен, нет объявления, битое ==")
+# Причина рождается в файле tunnel.yaml (копия боевых деклараций), следствие судится на двери: старт сервера и ответ
+# на Host туннеля. Hostname нужен и без --tunnel: cloudflared поднимают и отдельно.
+from tests.harness.live_server import LiveServerError, declarations_copy
+
+_TUNNEL_HOST = "tunnel.example.test"
+_TUNNEL_CASES = {
+    "объявлен": f"mode: named\nhostname: {_TUNNEL_HOST}\n",
+    "нет объявления": None,
+    "битое": "mode: named\nhostname: [\n",
+}
+for _case, _text in _TUNNEL_CASES.items():
+    _cfg9 = declarations_copy()
+    (_cfg9 / "tunnel.yaml").unlink(missing_ok=True)
+    if _text is not None:
+        (_cfg9 / "tunnel.yaml").write_text(_text, encoding="utf-8")
+    try:
+        with live_server(env={"MCP_CONFIG": str(_cfg9)}) as srv9:
+            _via_tunnel = srv9.rpc.request("tools/list", {}, extra_headers={"Host": _TUNNEL_HOST}).status_code
+            _loop = srv9.rpc.request("tools/list", {}).status_code
+        _start = ""
+    except LiveServerError as _e9:
+        _via_tunnel = _loop = 0
+        _start = str(_e9)
+    if _case == "объявлен":
+        ok(_via_tunnel == 200 and _loop == 200,
+           f"hostname из объявления туннеля пускается, петля тоже (туннель {_via_tunnel}, петля {_loop}, {_start[:80]})")
+    elif _case == "нет объявления":
+        ok(_via_tunnel == 403 and _loop == 200,
+           f"объявления нет — машина без туннеля: стартует, чужой Host 403, петля 200 ({_via_tunnel}, {_loop})")
+    else:
+        ok("ОТКАЗ СТАРТА: DECLARATION_INVALID · tunnel.yaml · " in _start and "yaml_syntax" in _start
+           and "(код 2)" in _start,
+           f"битое объявление туннеля — отказ старта с файлом и местом, а не сервер с 403 на туннель ({_start[-160:]})")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

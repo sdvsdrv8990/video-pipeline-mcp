@@ -256,23 +256,47 @@ ok(_tc.classify("succeeded") == "done" and _tc.classify("failed") == "failed"
    and _tc.classify("что_то_своё") == "running",
    "слова статусов берутся из декларации, неизвестное считается «ещё выполняется»")
 _seq = iter([{"status": "queued"}, {"status": "processing"}, {"status": "succeeded"}])
-_w = _tc.wait(lambda tid: next(_seq), "T1")
+_w = _tc.wait(lambda tid, within: next(_seq), "T1")
 ok(_w["outcome"] == "done" and _w["attempts"] == 3, f"ждём до готовности ({_w['attempts']} опроса)")
 ok(_w["unknown_status"] == ["processing", "queued"],
    "непонятые статусы копятся в отчёте, а не выдаются за успех и не обрывают ожидание")
 try:
-    _tc.wait(lambda tid: {"status": "failed", "error": "модерация"}, "T2")
+    _tc.wait(lambda tid, within: {"status": "failed", "error": "модерация"}, "T2")
     ok(False, "отказ провайдера должен падать")
 except TaskCycleError as e:
     ok(e.code == "PROVIDER_FAILED" and "модерация" in e.reason,
        "отказ провайдера → код реестра, причина провайдера сохранена")
 _stuck = iter([{"status": "крутится"}] * 500)
 try:
-    _tc.wait(lambda tid: next(_stuck), "T3")
+    _tc.wait(lambda tid, within: next(_stuck), "T3")
     ok(False, "вечная задача должна обрываться пределом")
 except TaskCycleError as e:
     ok(e.code == "PROVIDER_TIMEOUT" and "крутится" in e.reason,
        "предел ожидания срабатывает и называет последний статус, а не молчит")
+
+# Срок идёт вниз: опрос получает остаток poll.timeout_sec, пауза его не перешагивает, после срока опроса нет.
+_clock10 = {"now": 0.0, "asked": []}
+
+
+def _poll10(tid, within):
+    _clock10["asked"].append((round(_clock10["now"], 3), within))   # остаток как пришёл: не число — улика события
+    _clock10["now"] += 1.0                           # опрос занимает секунду
+    return {"status": "крутится"}
+
+
+_tc10 = TaskCycle(ROOT / "config" / "media_tasks.yaml",
+                  sleep=lambda s: _clock10.__setitem__("now", _clock10["now"] + s), now=lambda: _clock10["now"])
+_limit10 = float(yaml.safe_load((ROOT / "config" / "media_tasks.yaml").read_text(encoding="utf-8"))["poll"]["timeout_sec"])
+try:
+    _tc10.wait(_poll10, "T4")
+    _e10 = None
+except TaskCycleError as e:
+    _e10 = e
+ok(_e10 is not None and _e10.code == "PROVIDER_TIMEOUT"
+   and all(isinstance(within, float) and abs(at + within - _limit10) < 1e-3 for at, within in _clock10["asked"])
+   and all(at < _limit10 for at, _ in _clock10["asked"]) and _clock10["now"] <= _limit10 + 1e-6,
+   f"каждый опрос получил остаток срока ожидания, после срока опросов нет, ожидание кончилось в срок "
+   f"({len(_clock10['asked'])} опросов, последний {_clock10['asked'][-1:]}, конец {_clock10['now']} из {_limit10})")
 
 _dws = Path(tempfile.mkdtemp(prefix="dl_"))
 (_dws / "a.wav").write_bytes(b"12345")
@@ -639,7 +663,7 @@ class _FakeAsync:
         self._input = request.input
         return MediaOutcome(task_id="TASK-1")
 
-    def poll(self, task_id):
+    def poll(self, task_id, within=None):
         _FakeAsync.calls["poll"] += 1
         return ({"status": "processing"} if _FakeAsync.calls["poll"] < 3
                 else {"status": "succeeded", "url": "https://example.invalid/a.wav"})
@@ -661,7 +685,7 @@ class _FakeLink:
         from core.providers import MediaOutcome
         return MediaOutcome(task_id="TASK-2")
 
-    def poll(self, task_id):
+    def poll(self, task_id, within=None):
         return {"status": "succeeded", "audio_url": _FakeLink.url}
 
 
@@ -783,8 +807,9 @@ try:
                                            _Files13(_out.parent), _out.name, "t13")
     ok(False, "превышение предела должно падать")
 except _CE13 as e:
-    ok(e.code == "DOWNLOAD_TOO_LARGE" and e.facts == {"limit_mb": 0.001},
-       f"предел размера обрывает загрузку своим кодом ({e.code} {e.facts})")
+    ok(e.code == "DOWNLOAD_TOO_LARGE"
+       and e.facts == {"limit_mb": 0.001, "key": "config/media_tasks.yaml → download.fetch.max_bytes"},
+       f"предел размера обрывает загрузку своим кодом, рецепт называет ключ предела ({e.code} {e.facts})")
 ok(not _out.exists() and not list(_out.parent.iterdir()),
    "ни файла, ни остатка: недописанное убрано, а не выдано за результат")
 _srv_http.shutdown()
@@ -1270,98 +1295,118 @@ for _mod in ("tools/media/__init__.py", "core/providers/resolver.py", "core/prov
 print("== 17. Список моделей у САМОГО провайдера: реестр шлюза стареет, провайдер — нет ==")
 
 
-class _Models(_http.BaseHTTPRequestHandler):
-    """Двойник провайдера: отвечает как OpenAI /v1/models и запоминает, чем его звали."""
+import httpx as _httpx
 
-    seen_auth = ""
+from core.contracts import ContractError as _CE17
+
+
+class _Models:
+    """Двойник провайдера на подставном транспорте двери: отвечает как OpenAI /v1/models и запоминает, куда и чем его
+    звали (IP соединения, Host, ключ, кодировка). `script` — ответы до обычного: (код, тело, заголовки)."""
+
+    seen: list[dict] = []
+    script: list[tuple[int, bytes, dict]] = []
     # gpt-image-2 реестр шлюза знает; «gpt-image-99-preview» — заведомо нет, на нём и проверяем
     # поведение с моделью свежее реестра.
     payload = {"data": [{"id": "gpt-image-2"}, {"id": "gpt-image-99-preview"},
                         {"id": "gpt-4o-mini-tts"}, {"id": "gpt-5-chat"}, {"id": "whisper-1"}]}
 
-    def do_GET(self):
-        _Models.seen_auth = self.headers.get("Authorization", "")
-        if not _Models.seen_auth.endswith("RIGHT-KEY"):
-            self.send_response(401)
-            self.end_headers()
-            self.wfile.write(b'{"error":"invalid api key"}')
-            return
-        body = _json.dumps(_Models.payload).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, *a):
-        pass
+    @classmethod
+    def handle(cls, request):
+        cls.seen.append({"ip": request.url.host, "host": request.headers.get("host"),
+                         "auth": request.headers.get("authorization", ""),
+                         "accept_encoding": request.headers.get("accept-encoding")})
+        if cls.script:
+            status, body, headers = cls.script.pop(0)
+            return _httpx.Response(status, headers=headers, content=body)
+        if not cls.seen[-1]["auth"].endswith("RIGHT-KEY"):
+            return _httpx.Response(401, json={"error": "invalid api key"})
+        return _httpx.Response(200, json=cls.payload)
 
 
-_mserv = _http.HTTPServer(("127.0.0.1", 0), _Models)
-_thr.Thread(target=_mserv.serve_forever, daemon=True).start()
+_NAMES17 = {"models.twin.example": "52.7.7.7", "loop.twin.example": "127.0.0.1"}
 
-def _twin(scheme: str) -> Path:
-    """providers.yaml копии деклараций с двойником живого списка по `scheme`; боевой запрет цел."""
+
+def _twin(url: str) -> Path:
+    """providers.yaml копии деклараций с двойником списка по адресу `url`; боевая декларация цела."""
     return declarations_copy({"providers.yaml": {"online.live.Двойник": {
-        "url": f"{scheme}://127.0.0.1:{_mserv.server_port}/v1/models", "auth": "bearer", "items": "data",
-        "id_field": "id"}}}) / "providers.yaml"
+        "url": url, "auth": "bearer", "items": "data", "id_field": "id"}}}) / "providers.yaml"
+
+
+def _live17(url: str, key: str = "RIGHT-KEY", script=()) -> tuple[list, Exception | None]:
+    """Список двойника через `live` — (строки, отказ); журнал запросов — `_Models.seen`, заново на каждый вызов."""
+    _Models.seen.clear()
+    _Models.script = list(script)
+    try:
+        return _OC(_twin(url)).live("Двойник", key), None
+    except _CE17 as e:
+        return [], e
 
 
 from core.providers.catalog import OnlineCatalog as _OC
 
-# https обязателен с ключом — для двойника послабление объявлено в КОПИИ конфига.
-_oc = _OC(_twin("https"))
+_real_seams17 = (_OC.__dict__["transport"], _OC.__dict__["resolve"])
+_OC.transport = _httpx.MockTransport(_Models.handle)
+_OC.resolve = staticmethod(lambda host, port, *a, **k: [(2, 1, 6, "", (_NAMES17[host], port))])
 try:
-    _oc.live("Двойник", "ключ")
-    ok(False, "https-двойник без сертификата должен падать по сети, а не по проверке схемы")
-except ProviderError as e:
-    ok(e.code == "PROVIDER_FAILED", f"недоступный адрес → PROVIDER_FAILED, не молчание ({e.code})")
-
-# Тот же двойник по http: проверяем, что схема ловится ДО того, как ключ уйдёт в открытый канал.
-_oc2 = _OC(_twin("http"))
-try:
-    _oc2.live("Двойник", "ключ")
-    ok(False, "http с ключом должен отбиваться")
-except ProviderError as e:
-    ok(e.code == "DOWNLOAD_FORBIDDEN" and not _Models.seen_auth,
-       f"с ключом ходим только по https — запрос НЕ ушёл ({e.code})")
-    _said_live = _Eng(reactions=_REACTIONS).refusal(e).error.message
-    ok("127.0.0.1" in _said_live and "https" in _said_live,
+    # Схема судится до двери: с ключом ходим только по https.
+    _rows17, _e17 = _live17("http://models.twin.example/v1/models", key="ключ")
+    _said_live = _Eng(reactions=_REACTIONS).refusal(_e17).error.message if _e17 else ""
+    ok(_e17 is not None and _e17.code == "DOWNLOAD_FORBIDDEN" and not _Models.seen,
+       f"с ключом ходим только по https — запрос НЕ ушёл ({_e17 and _e17.code}, запросов {len(_Models.seen)})")
+    ok("models.twin.example" in _said_live and "https" in _said_live,
        f"клиент видит, какой адрес не пропущен и какая схема разрешена ({_said_live})")
 
-# Разрешаем http только в копии конфига, чтобы проверить сам разбор ответа живым запросом.
-import core.providers.catalog as _catmod
-_orig_live = _catmod.OnlineCatalog.live
+    # Имя провайдера ведёт во внутреннюю сеть: дверь отказывает до соединения (прежде — попытка TLS на петлю).
+    _rows17, _e17 = _live17("https://loop.twin.example/v1/models")
+    ok(_e17 is not None and _e17.code == "DOWNLOAD_FORBIDDEN"
+       and _e17.facts == {"host": "loop.twin.example", "address": "127.0.0.1"} and not _Models.seen,
+       f"имя списка ведёт на петлю — отказ двери до запроса, ключ не ушёл ({_e17 and (_e17.code, _e17.facts)})")
 
-
-def _live_http(self, provider, api_key, kind=""):
-    decl = (self.config.get("live") or {}).get(provider) or {}
-    if decl.get("url", "").startswith("http://127.0.0.1"):
-        decl = dict(decl, url=decl["url"].replace("http://", "https://", 1))
-        self._decl._data["online"]["live"][provider] = dict(decl, url=decl["url"])
-    return _orig_live(self, provider, api_key, kind)
-
-
-_rows_live = []
-try:
-    import httpx as _httpx
-    _resp = _httpx.get(f"http://127.0.0.1:{_mserv.server_port}/v1/models",
-                       headers={"Authorization": "Bearer RIGHT-KEY"}, timeout=10)
-    _rows_live = [{"id": m["id"], "provider": "Двойник", "kind": _oc2._kind_of(m["id"]),
-                   "source": "provider"} for m in _resp.json()["data"]]
-except Exception as e:
-    print(f"  ⚠ двойник не поднялся ({e}) — разбор ответа не проверен")
-
-if _rows_live:
+    _rows_live, _e17 = _live17("https://models.twin.example/v1/models")
+    _sent17 = _Models.seen[-1] if _Models.seen else {}
+    ok(_e17 is None and len(_Models.seen) == 1 and _sent17["ip"] == "52.7.7.7"
+       and _sent17["host"] == "models.twin.example" and _sent17["auth"] == "Bearer RIGHT-KEY"
+       and _sent17["accept_encoding"] == "identity",
+       f"список — дверью: соединение на судимый IP, имя в Host, ключ исходному хосту, без распаковки "
+       f"({_Models.seen}, {_e17 and (_e17.code, _e17.facts)})")
     ok({r["id"] for r in _rows_live if r["kind"] == "image"} == {"gpt-image-2", "gpt-image-99-preview"},
        "сырой список провайдера разложен по видам ресурса ПО ИМЕНИ — режима вызова он не сообщает")
-    _merged = _oc2.merge([r for r in _rows_live if r["kind"] == "image"], "image")
+    _merged = _OC(_twin("https://models.twin.example/v1/models")).merge(
+        [r for r in _rows_live if r["kind"] == "image"], "image")
     _by_id = {m["id"]: m for m in _merged}
-    ok(_by_id["gpt-image-99-preview"]["known_to_gateway"] is False,
+    ok(_by_id.get("gpt-image-99-preview", {}).get("known_to_gateway") is False,
        "модель, которой реестр не знает, НЕ выброшена, а помечена — иначе новинка была бы невидима")
-    ok(_by_id["gpt-image-2"]["known_to_gateway"] and _by_id["gpt-image-2"]["mode"] == "image_generation",
+    ok(_by_id.get("gpt-image-2", {}).get("known_to_gateway") and _by_id["gpt-image-2"]["mode"] == "image_generation",
        "знакомой реестр добавляет смысл: режим вызова и эндпоинт")
-_mserv.shutdown()
+
+    _rows17, _e17 = _live17("https://models.twin.example/v1/models", key="WRONG")
+    ok(_e17 is not None and _e17.code == "AUTH_FAILED" and "set_provider_key.py" in _e17.reason
+       and len(_Models.seen) == 1,
+       f"ключ отклонён (401) — AUTH_FAILED с рецептом ключа, без повтора "
+       f"({_e17 and (_e17.code, _e17.reason[:60])}, запросов {len(_Models.seen)})")
+
+    # Смена поведения: перегрузку списка дверь повторяет по online.answer (прежде — сразу PROVIDER_FAILED).
+    _rows17, _e17 = _live17("https://models.twin.example/v1/models", script=[(503, b"", {"Retry-After": "0"})])
+    ok(_e17 is None and len(_Models.seen) == 2 and len(_rows17) == len(_Models.payload["data"]),
+       f"503 на списке — повтор дверью, вторая попытка дала список ({len(_Models.seen)} запросов, "
+       f"{_e17 and (_e17.code, _e17.facts)})")
+
+    # Причина → следствие (TS-13): отказ двери доходит до клиента своим кодом, а не общим PROVIDER_FAILED.
+    for _case17, _script17, _code17, _facts17 in (
+            ("тело списка сверх 1 МБ", [(200, b"x" * (2**20 + 1), {})], "DOWNLOAD_TOO_LARGE",
+             {"limit_mb": 1.0, "key": "config/providers.yaml → online.answer.max_bytes"}),
+            ("сжатое вопреки identity", [(200, b"\x1f\x8b", {"content-encoding": "gzip"})], "PROVIDER_FAILED",
+             {"host": "models.twin.example", "status": "Content-Encoding gzip"}),
+            ("200 не JSON (прежде — трасса JSONDecodeError)", [(200, b"<html>", {})], "PROVIDER_FAILED",
+             {"host": "models.twin.example", "status": "ответ не JSON"})):
+        _rows17, _e17 = _live17("https://models.twin.example/v1/models", script=_script17)
+        _seen17 = _Eng(reactions=_REACTIONS).refusal(_e17) if _e17 else None
+        ok(_e17 is not None and _e17.code == _code17 and _e17.facts == _facts17
+           and _seen17 is not None and _seen17.error.code == _code17,
+           f"{_case17}: клиент видит {_code17} с фактами двери ({_e17 and (_e17.code, _e17.facts)})")
+finally:
+    _OC.transport, _OC.resolve = _real_seams17
 
 (_ws / "clean").mkdir(exist_ok=True)
 _no_key = _call("media_models", scope="online", kind="image", provider="OpenAI", table="clean", limit=3)
@@ -1829,6 +1874,10 @@ def _stand_request(method, url, **kw):
 def _stand_get(url, **kw):
     # Адреса — точно те, что стенд выдал в ответе задачи: подстрока узнала бы и не-адрес.
     _seen.setdefault("gets", []).append({"url": url, "headers": kw.get("headers") or {}})
+    if url == "https://api.replicate.com/v1/predictions/flaky":     # перегрузка на первом опросе, потом статус
+        _seen["flaky"] = _seen.get("flaky", 0) + 1
+        return _Resp(503, {"detail": "busy"}, headers={"Retry-After": "0"}) if _seen["flaky"] == 1 else \
+            _Resp(200, {"status": "processing"})
     if url == "https://queue.fal.run/req1/status":
         return _Resp(200, {"status": "COMPLETED"})
     if url == "https://api.replicate.com/v1/predictions/pred1":
@@ -1855,13 +1904,29 @@ def _stand_file(request):
     return _httpx.Response(200, content=_PNG)
 
 
+_CDN13 = {"replicate.delivery", "fal.media"}
+
+
+def _stand_wire(request):
+    """Сеть двери загрузчика: прозвонка и адрес результата — по контракту поставщика (`_stand_get`), файл — с CDN.
+    Журнал прозвонки — адрес по имени из Host и заголовки как ушли (ключ виден значением)."""
+    host = request.headers.get("host")
+    if host in _CDN13:
+        return _stand_file(request)
+    reply = _stand_get(f"https://{host}{request.url.raw_path.decode()}",
+                       headers={k.title(): v for k, v in request.headers.items()})
+    body = reply.content if reply._data is None else _json.dumps(reply._data).encode()
+    return _httpx.Response(reply.status_code, headers=reply.headers, content=body)
+
+
+from core.contracts import ContractError as _CE13
 from core.providers.img.http_image import HttpImageAPI as _HI13
 
 _real_seams13 = (_HI13.__dict__["transport"], _HI13.__dict__["resolve"])
-_HI13.transport = _httpx.MockTransport(_stand_file)
+_HI13.transport = _httpx.MockTransport(_stand_wire)
 _HI13.resolve = staticmethod(lambda host, port, *a, **k: [(2, 1, 6, "", ("151.101.1.1", port))])
-_httpx.request, _httpx.get, _httpx.stream = (
-    _stand_request, _stand_get, lambda method, url, **kw: _stand_get(url, **kw))
+# Прозвонка и результат идут дверью (транспорт выше); `httpx.get`/`stream` не подменены — запрос мимо двери ушёл бы в сеть.
+_httpx.request = _stand_request
 try:
     _rows13 = {"resource_type": "upscales", "provider": "Replicate", "fallback_provider": "",
                "daily_limit": 100, "current_usage": 0, "warning_threshold": -1,
@@ -1949,56 +2014,98 @@ try:
            f"{_e13k and _e13k.code} {_e13k and _e13k.facts}")
     _httpx.request = _stand_request
 
-    # Ответ статуса читается по ходу и не больше объявленного предела (download.answer.max_bytes, 1 МБ).
-    _httpx.request = lambda method, url, **kw: _Resp(201, {
-        "id": "h", "urls": {"get": "https://api.replicate.com/v1/predictions/huge"}})
-    _adh = _reg.load("Replicate", "upscales")
-    _taskh = _adh.generate(MediaRequest(input="pic/frame.png", params=_rows13, target=_ws / "h13.png",
-                                        models_dir=_reg.models_dir, source=_ws / "pic" / "frame.png",
-                                        api_key="k", provider="Replicate"))
-    try:
-        _adh.poll(_taskh.task_id)
-        _eh13 = None
-    except ProviderError as e:
-        _eh13 = e
-    ok(_eh13 is not None and _eh13.code == "DOWNLOAD_TOO_LARGE" and _eh13.facts == {"limit_mb": 1.0},
-       f"ответ статуса больше объявленного предела — DOWNLOAD_TOO_LARGE, а не простыня в памяти "
+    def _poll13(task: str, key: str = "k"):
+        """Задача Replicate с адресом прозвонки `task` стенда и один опрос — (ответ, отказ); журнал — `_seen["gets"]`."""
+        _httpx.request = lambda method, url, **kw: _Resp(201, {
+            "id": task, "urls": {"get": f"https://api.replicate.com/v1/predictions/{task}"}})
+        adapter = _reg.load("Replicate", "upscales")
+        made = adapter.generate(MediaRequest(input="pic/frame.png", params=_rows13, target=_ws / f"{task}13.png",
+                                             models_dir=_reg.models_dir, source=_ws / "pic" / "frame.png",
+                                             api_key=key, provider="Replicate"))
+        _seen["gets"].clear()
+        try:
+            return adapter.poll(made.task_id), None
+        except _CE13 as e:
+            return None, e
+        finally:
+            _httpx.request = _stand_request
+
+    # Причина → следствие (TS-13): ответ статуса сверх предела download.answer.max_bytes (1 МБ) — отказ двери доходит
+    # до клиента своим кодом, а не переписанным в PROVIDER_FAILED.
+    _ansh13, _eh13 = _poll13("huge")
+    _sawh13 = _Eng(reactions=_REACTIONS).refusal(_eh13) if _eh13 else None
+    ok(_eh13 is not None and _eh13.code == "DOWNLOAD_TOO_LARGE"
+       and _eh13.facts == {"limit_mb": 1.0, "key": "config/media_tasks.yaml → download.answer.max_bytes"}
+       and _sawh13 is not None and _sawh13.error.code == "DOWNLOAD_TOO_LARGE"
+       and "download.answer.max_bytes" in _sawh13.error.recovery.reason,
+       f"ответ статуса больше объявленного предела — клиент видит DOWNLOAD_TOO_LARGE, а не простыню в памяти "
        f"({_eh13 and (_eh13.code, _eh13.facts)})")
-    _httpx.request = lambda method, url, **kw: _Resp(201, {
-        "id": "g", "urls": {"get": "https://api.replicate.com/v1/predictions/gone"}})
-    _adg = _reg.load("Replicate", "upscales")
-    _taskg = _adg.generate(MediaRequest(input="pic/frame.png", params=_rows13, target=_ws / "g13.png",
-                                        models_dir=_reg.models_dir, source=_ws / "pic" / "frame.png",
-                                        api_key="k", provider="Replicate"))
-    try:
-        _ansg13, _eg13 = _adg.poll(_taskg.task_id), None
-    except ProviderError as e:
-        _ansg13, _eg13 = None, e
-    ok(_eg13 is not None and _eg13.code == "PROVIDER_FAILED" and "404" in _eg13.message,
-       f"отказ на прозвонке — кодом с ответом поставщика, а не тело отказа под видом статуса "
+    _ansg13, _eg13 = _poll13("gone")
+    ok(_eg13 is not None and _eg13.code == "PROVIDER_FAILED" and "404" in _eg13.message
+       and "prediction not found" in _eg13.message and len(_seen["gets"]) == 1,
+       f"отказ на прозвонке — кодом с ответом поставщика (тело прочитано дверью в пределе), без повтора "
        f"({_eg13 and (_eg13.code, _eg13.message[:60])}{'' if _eg13 else f', ответ {_ansg13}'})")
-    _httpx.request = lambda method, url, **kw: _Resp(201, {
-        "id": "m", "urls": {"get": "https://api.replicate.com/v1/predictions/moved"}})
-    _adm = _reg.load("Replicate", "upscales")
-    _taskm = _adm.generate(MediaRequest(input="pic/frame.png", params=_rows13, target=_ws / "m13.png",
-                                        models_dir=_reg.models_dir, source=_ws / "pic" / "frame.png",
-                                        api_key="secret-key", provider="Replicate"))
-    _seen["gets"].clear()
-    try:
-        _ansm13, _em13 = _adm.poll(_taskm.task_id), None
-    except ProviderError as e:
-        _ansm13, _em13 = None, e
+    _ansm13, _em13 = _poll13("moved", key="secret-key")
     _inner13 = [g["url"] for g in _seen["gets"] if "127.0.0.1" in g["url"]]
     ok(_em13 is not None and _em13.code == "PROVIDER_FAILED"
-       and _em13.facts == {"host": "api.replicate.com", "status": 302} and not _inner13,
-       f"прозвонка ответила 302 на внутренний адрес — отказ, по переходу с ключом не пошли "
+       and _em13.facts == {"host": "127.0.0.1", "status": "переходов больше 0"} and not _inner13
+       and len(_seen["gets"]) == 1,
+       f"прозвонка ответила 302 на внутренний адрес — отказ (download.answer.redirects 0), по переходу не пошли "
        f"({_em13 and (_em13.code, _em13.facts)}, запросы туда: {_inner13}{'' if _em13 else f', ответ {_ansm13}'})")
+    # Смена поведения: перегрузку на опросе повторяет дверь (прежде — отказ, обрывавший всё ожидание задачи).
+    _ansf13, _ef13 = _poll13("flaky")
+    ok(_ef13 is None and _ansf13 == {"status": "processing"} and len(_seen["gets"]) == 2,
+       f"503 на опросе — повтор дверью, вторая попытка дала статус ({len(_seen['gets'])} запросов, "
+       f"{_ef13 and (_ef13.code, _ef13.facts)})")
+    _HI13.resolve = staticmethod(lambda host, port, *a, **k: [(2, 1, 6, "", ("10.0.0.5", port))])
+    _ansi13, _ei13 = _poll13("pred1", key="secret-key")
+    _HI13.resolve = staticmethod(lambda host, port, *a, **k: [(2, 1, 6, "", ("151.101.1.1", port))])
+    ok(_ei13 is not None and _ei13.code == "DOWNLOAD_FORBIDDEN"
+       and _ei13.facts == {"host": "api.replicate.com", "address": "10.0.0.5"} and not _seen["gets"],
+       f"имя поставщика ведёт во внутреннюю сеть — отказ двери до запроса, ключ не ушёл "
+       f"({_ei13 and (_ei13.code, _ei13.facts)}, запросов {len(_seen['gets'])})")
+
+    # Срок идёт вниз сквозь цепочку (TS-13): цикл ожидания отдаёт опросу остаток, дверь опроса укладывает в него повторы.
+    # Часы одни на цикл и дверь; поставщик отвечает «processing», а с 240-й секунды статус молчит (фаза — тайм-аут).
+    _clock13 = {"now": 0.0}
+    _real_time13 = (_HI13.__dict__["clock"], _HI13.__dict__["sleep"], _HI13.__dict__["transport"])
+
+    def _late_wire(request):
+        if _clock13["now"] >= 240:
+            _clock13["now"] += request.extensions["timeout"]["connect"]
+            raise _httpx.ConnectTimeout("статус молчит")
+        _clock13["now"] += 0.1
+        return _httpx.Response(200, json={"status": "processing"})
+
+    def _ahead13(seconds):
+        _clock13["now"] += seconds
+
+    _limit13 = float(yaml.safe_load((ROOT / "config" / "media_tasks.yaml").read_text(encoding="utf-8"))["poll"]
+                     ["timeout_sec"])
+    _httpx.request = lambda method, url, **kw: _Resp(201, {
+        "id": "late", "urls": {"get": "https://api.replicate.com/v1/predictions/late"}})
+    _adl13 = _reg.load("Replicate", "upscales")
+    _taskl13 = _adl13.generate(MediaRequest(input="pic/frame.png", params=_rows13, target=_ws / "late13.png",
+                                            models_dir=_reg.models_dir, source=_ws / "pic" / "frame.png",
+                                            api_key="k", provider="Replicate"))
     _httpx.request = _stand_request
+    _HI13.clock, _HI13.sleep = staticmethod(lambda: _clock13["now"]), staticmethod(_ahead13)
+    _HI13.transport = _httpx.MockTransport(_late_wire)
+    try:
+        TaskCycle(ROOT / "config" / "media_tasks.yaml", sleep=_ahead13, now=lambda: _clock13["now"]).wait(
+            _adl13.poll, _taskl13.task_id)
+        _el13 = None
+    except _CE13 as e:
+        _el13 = e
+    finally:
+        _HI13.clock, _HI13.sleep, _HI13.transport = _real_time13
+    ok(_el13 is not None and _el13.code == "PROVIDER_FAILED" and _clock13["now"] <= _limit13 + 1e-6,
+       f"статус замолчал на 240-й секунде — опрос с повторами уложился в остаток ожидания, всё ожидание — в "
+       f"poll.timeout_sec ({_el13 and (_el13.code, _el13.facts)}, конец {_clock13['now']:.2f} из {_limit13:g} с)")
 
     # Синхронный бинарный ответ (RemoveBg): тип по формату строки, поток в остаток с пределом, обрыв POST — не повтор.
     import contextlib as _ctx13
     import core.providers.img.http_image as _him13
-    from core.contracts import ContractError as _CE13
     from core.providers.download import Fetcher as _F13
 
     _posts13: list = []
@@ -2129,25 +2236,104 @@ from core.providers import ModelSpec
 
 _ms = ModelSpec(_reg)
 
-# Адрес спеки объявлен не https — отказ до сети: ключ в открытый канал не уходит.
+# Адрес спеки объявлен не https — отказ до сети: ключ в открытый канал не уходит. Обновлено в доделке B2: запросы
+# считала подмена httpx.get, которую спека больше не зовёт (событие ослепло); теперь — журнал транспорта и разрешения
+# имён двери, реестр — настоящий над копией деклараций. Ожидание то же: отказ DOWNLOAD_FORBIDDEN, ни имени, ни запроса.
 import httpx as _hx14
-import types as _ty14
 
-_ms_http = ModelSpec(_ty14.SimpleNamespace(models_dir=_reg.models_dir, config={"capabilities": {"online": {
-    "Двойник": {"url": "http://spec.example/{model}", "auth": "bearer"}}}}))
-_asked14, _real_get14, _e14 = [], _hx14.get, None
-_hx14.get = lambda *a, **k: _asked14.append(a)
+from core.contracts import ContractError as _CE14
+from core.providers.catalog import OnlineCatalog as _OC14
+
+_http14 = declarations_copy({"providers.yaml": {"capabilities.online.Двойник": {
+    "url": "http://spec.example/{model}", "auth": "bearer", "schema_path": ""}}}) / "providers.yaml"
+_ms_http = ModelSpec(AdapterRegistry(_http14, ROOT))
+_asked14: list = []
+_e14 = None
+_real_seams14 = (_OC14.__dict__["transport"], _OC14.__dict__["resolve"])
+_OC14.transport = _hx14.MockTransport(lambda r: _asked14.append(str(r.url)) or _hx14.Response(200, json={}))
+_OC14.resolve = staticmethod(lambda host, port, *a, **k: _asked14.append(host) or [(2, 1, 6, "", ("52.9.9.9", port))])
 try:
     _ms_http.of("Двойник", "модель", api_key="ключ", refresh=True)
-except ProviderError as e:
+except _CE14 as e:
     _e14 = e
+except Exception as e:  # мутант или поломка — улика события, а не обрыв набора
+    _e14 = _CE14("НЕ_ОТКАЗ", facts={"exception": f"{type(e).__name__}: {e}"})
 finally:
-    _hx14.get = _real_get14
+    _OC14.transport, _OC14.resolve = _real_seams14
 _said14 = _Eng(reactions=_REACTIONS).refusal(_e14).error.message if _e14 else ""
 ok(_e14 is not None and _e14.code == "DOWNLOAD_FORBIDDEN" and not _asked14,
-   f"адрес спеки не https — отказ до сети, ключ не ушёл ({_e14 and _e14.code}, запросов {len(_asked14)})")
+   f"адрес спеки не https — отказ до сети, ни разрешения имени, ни запроса: ключ не ушёл "
+   f"({_e14 and (_e14.code, _e14.facts)}, сеть: {_asked14})")
 ok("spec.example" in _said14 and "https" in _said14,
    f"клиент видит, какой адрес спеки не пропущен и какая схема разрешена ({_said14})")
+
+# Спека у провайдера — дверью по одной политике ответов `online.answer` (та же, что у списка): сеть — подставной
+# транспорт OnlineCatalog. Спека необязательна: отказ двери или провайдера — запись в журнал с кодом, дальше справочник.
+import logging as _log14
+
+_doc14 = {"latest_version": {"openapi_schema": {"components": {"schemas": {"Input": {
+    "type": "object", "properties": {"scale": {"type": "integer", "minimum": 1, "maximum": 4}}}}}}}}
+_wire14: list[dict] = []
+_said_log14: list[str] = []
+_reply14: list = []
+
+
+def _spec_wire14(request):
+    _wire14.append({"ip": request.url.host, "host": request.headers.get("host"), "path": request.url.path,
+                    "auth": request.headers.get("authorization")})
+    return _reply14.pop(0) if _reply14 else _httpx.Response(200, json=_doc14)
+
+
+class _Journal14(_log14.Handler):
+    def emit(self, record):
+        _said_log14.append(record.getMessage())
+
+
+def _spec14(spec: ModelSpec, provider: str = "Replicate", model: str = "owner/m:v1", key: str = "SECRET14", reply=()):
+    """Спека у провайдера одним вызовом — (спека, отказ); журнал запросов — `_wire14`, записи журнала — `_said_log14`."""
+    _wire14.clear()
+    _said_log14.clear()
+    _reply14[:] = list(reply)
+    try:
+        return spec._from_provider(provider, model, key), None
+    except _CE14 as e:
+        return {}, e
+
+
+_journal14 = _Journal14()
+_log14.getLogger("core.providers.model_spec").addHandler(_journal14)
+_real_seams14 = (_OC14.__dict__["transport"], _OC14.__dict__["resolve"])
+_OC14.transport = _httpx.MockTransport(_spec_wire14)
+_OC14.resolve = staticmethod(lambda host, port, *a, **k: [(2, 1, 6, "", ("52.9.9.9", port))])
+try:
+    _got14, _e14 = _spec14(_ms)
+    ok(_e14 is None and _got14.get("source") == "provider" and "scale" in _got14["schema"]["properties"]
+       and [(w["ip"], w["host"], w["path"], w["auth"]) for w in _wire14]
+       == [("52.9.9.9", "api.replicate.com", "/v1/models/owner/m", "Bearer SECRET14")],
+       f"спека — дверью: соединение на судимый IP, имя в Host, модель без версии в пути, ключ исходному хосту "
+       f"({_wire14}, {_e14 and (_e14.code, _e14.facts)})")
+    for _case14, _reply_case14, _code14 in (
+            ("ключ отклонён (401)", [_httpx.Response(401, json={"detail": "Unauthenticated"})], "PROVIDER_FAILED"),
+            ("ответ сверх 1 МБ", [_httpx.Response(200, content=b"{" + b" " * 2**20)], "DOWNLOAD_TOO_LARGE")):
+        _got14, _e14 = _spec14(_ms, reply=_reply_case14)
+        ok(_e14 is None and _got14 == {} and len(_said_log14) == 1 and _code14 in _said_log14[0]
+           and "SECRET14" not in " ".join(_said_log14),
+           f"{_case14}: спеки нет, причина в журнале кодом {_code14}, ключа в журнале нет "
+           f"({_said_log14}, {_e14 and (_e14.code, _e14.facts)})")
+    _reply14[:] = [_httpx.Response(401, json={"detail": "Unauthenticated"})]
+    _fell14 = _ms.of("Replicate", "owner/m:v1", api_key="SECRET14", refresh=True)
+    ok(_fell14.get("source") != "provider" and _said_log14,
+       f"отказ провайдера не роняет вызов: спека взята из следующего источника ({_fell14.get('source')})")
+    _tmpl14 = declarations_copy({"providers.yaml": {"capabilities.online.Двойник": {
+        "url": "https://{model}.spec.example/schema", "auth": "none", "schema_path": ""}}}) / "providers.yaml"
+    _got14, _e14 = _spec14(ModelSpec(AdapterRegistry(_tmpl14, ROOT)), provider="Двойник", model="evil.example/x", key="")
+    ok(_e14 is not None and _e14.code == "DECLARATION_INVALID"
+       and "capabilities.online.Двойник.url (host_templated)" in _e14.facts.get("details", "") and not _wire14,
+       f"хост адреса спеки собран подстановкой — отказ декларации с путём ключа, не тишина и не запрос "
+       f"({_e14 and (_e14.code, _e14.facts)}, запросов {len(_wire14)})")
+finally:
+    _OC14.transport, _OC14.resolve = _real_seams14
+    _log14.getLogger("core.providers.model_spec").removeHandler(_journal14)
 
 # Локальная модель описывает себя сама — сетью для этого ходить незачем.
 # Веса вне git: на машине без них проверять нечего, и это ПРОПУСК с причиной, а не провал —
@@ -2539,6 +2725,101 @@ try:
 finally:
     _srv.CONFIG_PATH = _was17
     _aio.run(_eng17.call("media_runner", {"action": "stop"}))
+
+# Прозвонка раннера — дверью загрузчика по политике петли `local.runner.health` (B3): судья петли, молчание с
+# журналом, срок цикла готовности идёт вниз. Сеть, часы и сон — подставные, на классе супервизора.
+import logging as _log17r
+
+_wire17r: list = []
+_said17r: list[str] = []
+_clock17r = {"now": 0.0}
+_health17r = yaml.safe_load(CFG.read_text(encoding="utf-8"))["local"]["runner"]
+_ready17r = float(_health17r["ready_timeout_sec"])
+_phase17r = min(_health17r["health"]["timeout_sec"], _health17r["health"]["deadline_sec"] / 2)
+
+
+class _Journal17r(_log17r.Handler):
+    def emit(self, record):
+        _said17r.append(record.getMessage())
+
+
+class _Sleeper17r(_Sup17):
+    """Супервизор, чей «раннер» — процесс, который живёт и молчит: /health не отвечает никогда."""
+
+    def _command(self, mode, workspace):
+        return [sys.executable, "-c", "import time; time.sleep(30)"]
+
+
+def _runner17r(url: str, cls=_Sup17):
+    """Супервизор над копией деклараций с адресом раннера `url`; состояние и журнал — в своём корне."""
+    root = Path(tempfile.mkdtemp(prefix="runner_door_"))
+    cfg = declarations_copy({"providers.yaml": {"online.http.Local_runner.url": url,
+                                                "local.runner.state_file": "state.json",
+                                                "local.runner.log_file": "runner.log",
+                                                "local.models_dir": str(_reg.models_dir)}}, root=root)
+    return cls(AdapterRegistry(cfg / "providers.yaml", root), root)
+
+
+def _wire17r_reply(reply):
+    def handle(request):
+        _wire17r.append((request.url.host, request.headers.get("x-runner-token")))
+        if isinstance(reply, Exception):
+            raise reply
+        if reply == "hung":                         # молчит: фаза, которую дверь отдала транспорту, съедена целиком
+            _clock17r["now"] += request.extensions["timeout"]["connect"]
+            raise _hx17.ConnectTimeout("порт молчит")
+        return reply
+    return _hx17.MockTransport(handle)
+
+
+_seams17r = tuple(_Sup17.__dict__[s] for s in ("transport", "resolve", "clock", "sleep"))
+_journal17r = _Journal17r()
+_logger17r = _log17r.getLogger("core.runner.supervisor")
+_level17r = _logger17r.level
+_logger17r.addHandler(_journal17r)
+_logger17r.setLevel(_log17r.DEBUG)
+try:
+    _Sup17.clock = staticmethod(lambda: _clock17r["now"])
+    _Sup17.sleep = staticmethod(lambda s: _clock17r.__setitem__("now", _clock17r["now"] + s))
+    _Sup17.transport = _wire17r_reply(_hx17.Response(200, json={"ok": True}))
+    try:
+        _runner17r("http://10.0.0.5:8770/run")._probe()
+        _e17r = None
+    except _CE17 as e:
+        _e17r = e
+    ok(_e17r is not None and _e17r.code == "DOWNLOAD_FORBIDDEN" and _e17r.facts.get("host") == "10.0.0.5"
+       and not _wire17r,
+       f"смена поведения: block_private: false принят только при хосте-литерале петли — адрес раннера во внутренней "
+       f"сети: отказ до запроса (прежде http шёл на любой объявленный хост) ({_e17r and (_e17r.code, _e17r.facts)})")
+    _Sup17.transport = _wire17r_reply(_hx17.Response(200, json={"ok": True, "calls": 1}))
+    _h17r = _runner17r("http://127.0.0.1:8770/run")._probe("TOKEN-17")
+    ok(_h17r == {"ok": True, "calls": 1} and _wire17r == [("127.0.0.1", "TOKEN-17")],
+       f"законный: литерал петли — прозвонка дверью, токен исходному хосту ({_h17r}, {_wire17r})")
+    for _case17r, _reply17r, _code17r in (
+            ("порт не отвечает", _hx17.ConnectError("отказано"), "RUNNER_NOT_RUNNING"),
+            ("/health больше 1 МБ", _hx17.Response(200, content=b"{" + b" " * 2**20), "DOWNLOAD_TOO_LARGE")):
+        _said17r.clear()
+        _Sup17.transport = _wire17r_reply(_reply17r)
+        _h17r = _runner17r("http://127.0.0.1:8770/run")._probe()
+        ok(_h17r == {} and any(_code17r in s for s in _said17r),
+           f"{_case17r}: молчание — {{}}, а причина — в журнале кодом {_code17r} ({_said17r})")
+    _clock17r["now"], _wire17r[:] = 0.0, []
+    _Sup17.transport = _wire17r_reply("hung")
+    _sleeper17r = _runner17r("http://127.0.0.1:8770/run", cls=_Sleeper17r)
+    try:
+        _sleeper17r.start(_ws)
+        _e17r = None
+    except _CE17 as e:
+        _e17r = e
+    ok(_e17r is not None and _e17r.code == "PROVIDER_TIMEOUT" and len(_wire17r) > 2
+       and _clock17r["now"] <= _phase17r + _ready17r + 1e-6,
+       f"процесс жив, /health молчит — прозвонки готовности уложены в остаток ready_timeout_sec: конец "
+       f"{_clock17r['now']:.2f} с ≤ первая прозвонка состояния {_phase17r:g} + {_ready17r:g} "
+       f"({len(_wire17r)} прозвонок, {_e17r and _e17r.code})")
+finally:
+    _Sup17.transport, _Sup17.resolve, _Sup17.clock, _Sup17.sleep = _seams17r
+    _logger17r.removeHandler(_journal17r)
+    _logger17r.setLevel(_level17r)
 
 # ═══ §13 Транскрибация: локальный STT по умолчанию (stable-ts) ═══
 # Провайдер объявлен, а не импортирован: проверяем, что декларация доводит до класса и что
@@ -3052,9 +3333,10 @@ def _model_fetch(work: Path, records: list[str]) -> None:
         variant.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
         return refused(lambda: ModelCatalog(variant, models).install_policy())
 
-    ok(cat.silence_sec() == 60.0 and stale(60) == "DECLARATION_INVALID" and stale(61) == "",
-       f"простой не длиннее тишины загрузчика: 60 с (2 × timeout 30) — отказ двери, 61 с — раздел проходит "
-       f"({cat.silence_sec()}, {stale(60)})")
+    # Обновлено в доделке B2: тишина загрузчика включает срок сервера до retry_after_max_sec (120) — прежде 60 (2 × 30).
+    ok(cat.silence_sec() == 120.0 and stale(120) == "DECLARATION_INVALID" and stale(121) == "",
+       f"простой не длиннее тишины загрузчика: 120 с (срок сервера retry_after_max_sec) — отказ двери, 121 с — раздел "
+       f"проходит ({cat.silence_sec()}, {stale(120)})")
     info["org/away"] = repo(put("org/away", "model.onnx", b"a" * 100))
     away[("org/away", "model.onnx")] = "https://evil.example/org/away/model.onnx"
     w0 = len(wire)

@@ -243,7 +243,7 @@ DOWNLOAD_TOO_LARGE:
   class: integrity
   message_template: "Ответ больше объявленного предела {limit_mb} МБ — чтение оборвано, недописанное убрано."
   recovery:
-    reason: "Предел считается по ходу потока, а не после записи. Если такой размер штатный — подними предел в config/media_tasks.yaml: download.fetch.max_bytes для файла результата, download.answer.max_bytes для ответа статуса задачи."
+    reason: "Предел считается по ходу потока, а не после записи. Если такой размер штатный — подними предел {key}."
 
 DOWNLOAD_TOO_SLOW:
   class: server_recoverable

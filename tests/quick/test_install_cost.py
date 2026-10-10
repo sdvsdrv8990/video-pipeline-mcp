@@ -242,6 +242,37 @@ for _вердикт, _ждём, _что in (
         models._предупредить_о_расчёте(_к, _к.место_под("проба", "tts"))
     ok(("расчёт — нет" in _печать.getvalue()) is _ждём, f"{_что} ({_печать.getvalue().strip() or 'тишина'})")
 
+
+class _Список(_Каталог):
+    """Каталог списка `local`: одна строка и вердикт расчёта с объёмами `need_mb`/`available_mb` из события."""
+
+    def __init__(self, need_mb, available_mb):
+        super().__init__(1.0)
+        self._need, self._free = need_mb, available_mb
+
+    def available(self, kind, limit=0, language="", describe=False):
+        return [{"id": "проба", "mb": 2.5}]
+
+    def with_fit(self, rows, hardware=None):
+        return [{**rows[0], "fit": {"verdict": "unknown" if self._need is None else "yes", "need_mb": self._need,
+                                    "device": "видеокарта", "available_mb": self._free}}]
+
+
+_прежний_список = models._catalog
+for _need, _free, _ждём_строки, _что in (
+        (None, None, ("unknownне известно", "Вердикт считался по: видеокарта (не известно)"),
+         "объёмы неизвестны (ZU-2: null, а не 0) — печать «не известно», ни «None МБ», ни «0 МБ»"),
+        (0, 512, ("yes    0 МБ", "Вердикт считался по: видеокарта (512 МБ)"),
+         "законный: известный 0 и известный объём печатаются числами")):
+    models._catalog = lambda: _Список(_need, _free)
+    _печать = io.StringIO()
+    with contextlib.redirect_stdout(_печать):
+        _код = models.main(["models.py", "local", "--kind", "tts"])
+    _текст = _печать.getvalue()
+    ok(_код == 0 and all(s in _текст for s in _ждём_строки) and "None" not in _текст
+       and " 0 МБ" not in _текст.replace("yes    0 МБ", ""), f"{_что} ({_текст.strip()})")
+models._catalog = _прежний_список
+
 _прежний = models._catalog
 models._catalog = lambda: _Ставит(10 ** 9, отказ=ProviderError(
     "MODEL_NO_DISK_SPACE", facts={"model": "проба", "need_mb": 1000000000.0, "free_mb": 100000}))

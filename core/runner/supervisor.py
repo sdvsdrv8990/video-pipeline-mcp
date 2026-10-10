@@ -7,24 +7,40 @@ pid, порт и токен лежат в файле только для вла�
 уронить снова. Упал — это видно, а поднимает человек или ИИ той же командой.
 """
 
+import functools
 import json
+import logging
 import os
 import secrets
 import signal
+import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import ClassVar
 from urllib.parse import urlparse
 
+from core.contracts import ContractError
+from core.declaration import Declaration
+from core.declaration_schemas import RUNNER_HEALTH, ProviderUrl
 from core.paths import Files
+from core.providers.download import answers
 from core.providers.resolver import ProviderError
+
+log = logging.getLogger(__name__)
 
 TOKEN_ENV = "MCP_RUNNER_TOKEN"
 
 
 class RunnerSupervisor:
     """Жизненный цикл процесса раннера: поднять, прозвонить, остановить."""
+
+    # Сеть, часы и сон прозвонки (MF-16): None — настоящий транспорт; подмена — на классе, как у адаптеров.
+    transport: ClassVar = None
+    resolve: ClassVar = staticmethod(socket.getaddrinfo)
+    clock: ClassVar = staticmethod(time.monotonic)
+    sleep: ClassVar = staticmethod(time.sleep)
 
     def __init__(self, registry, project_root: str | Path):
         self.registry = registry
@@ -46,6 +62,12 @@ class RunnerSupervisor:
                 reason="Объяви его в config/providers.yaml: имя в local.runner.provider и блок с "
                        "адресом в online.http под тем же именем.")
         return decl
+
+    @functools.cached_property
+    def _decl(self) -> Declaration:
+        """Дверь `providers.yaml` для политики прозвонки (`local.runner.health`) — схемой, с путём ключа в отказе."""
+        return Declaration(self.registry.config_file, ProviderError, "провайдеров",
+                           "Заведи config/providers.yaml — раннер и его прозвонка объявлены там.")
 
     @property
     def base_url(self) -> str:
@@ -83,24 +105,26 @@ class RunnerSupervisor:
 
     # ═══ Прозвонка ═══
 
-    def _probe(self, token: str = "", timeout: float = 3.0) -> dict:
-        """Что отвечает `/health`. Молчание — это `{}`, а не исключение: молчание тоже ответ."""
-        import httpx
-
+    def _probe(self, token: str = "", within: float | None = None) -> dict:
+        """Что отвечает `/health` — дверью загрузчика по политике петли `local.runner.health`: хост — литерал петли из
+        объявленного адреса раннера, срок — её `deadline_sec` или остаток вызывающего `within`. Молчание — это `{}`, а
+        не исключение: молчание тоже ответ; отказ двери (не поднят, отказ ответа, чужое тело, срок) — в журнал с кодом."""
         headers = {}
         scheme = str(self.endpoint.get("auth") or "")
         if token and scheme.startswith("header:"):
             headers[scheme.split(":", 1)[1]] = token
+        declared = self.registry.need("online", "http", str(self.rules.get("provider") or ""), "url", kind=ProviderUrl)
+        fetcher = answers(self._decl, RUNNER_HEALTH, declared, transport=self.transport, resolve=self.resolve,
+                          clock=self.clock, sleep=self.sleep)
         try:
-            response = httpx.get(f"{self.base_url}/health", headers=headers, timeout=timeout)
-        except Exception:  # не поднят/не отвечает
+            health = fetcher.answer(f"{self.base_url}/health", headers, within=within)
+        except ContractError as e:
+            log.debug("раннер %s не ответил на /health: %s %s", self.base_url, e.code, e.facts)
             return {}
-        if response.status_code >= 400:
+        if not isinstance(health, dict):
+            log.debug("на порту раннера %s ответил не раннер: /health — не объект JSON", self.base_url)
             return {}
-        try:
-            return response.json()
-        except Exception:  # не наш ответ на порту
-            return {}
+        return health
 
     @staticmethod
     def _alive(pid: int) -> bool:
@@ -185,10 +209,11 @@ class RunnerSupervisor:
                  "workspace": str(workspace), "command": command}
         self._write(state)
 
-        deadline = time.time() + float(self.rules.get("ready_timeout_sec") or 60)
+        # Срок готовности идёт вниз: прозвонка получает остаток, пауза его не перешагивает (повтор — здесь, не в двери).
+        deadline = self.clock() + float(self.rules.get("ready_timeout_sec") or 60)
         pause = float(self.rules.get("poll_sec") or 0.3)
-        while time.time() < deadline:
-            if self._probe(token).get("ok"):
+        while (left := deadline - self.clock()) > 0:
+            if self._probe(token, within=left).get("ok"):
                 return {**self.status(), "already": False}
             if proc.poll() is not None:
                 # Умер, не начав отвечать: причина уже в журнале, и она важнее нашей догадки.
@@ -198,7 +223,7 @@ class RunnerSupervisor:
                     f"Раннер завершился при запуске (код {proc.returncode}).",
                     reason=f"Последнее, что он сказал:\n{self._log_tail()}\nЧастая причина — не "
                            "поставлена среда инференса: pip install -e \".[local]\".")
-            time.sleep(pause)
+            self.sleep(min(pause, max(deadline - self.clock(), 0.0)))
         self.stop()
         raise ProviderError(
             "PROVIDER_TIMEOUT", f"Раннер не ответил за {self.rules.get('ready_timeout_sec', 60)} с.",

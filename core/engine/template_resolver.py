@@ -23,7 +23,7 @@ class TemplateResolver:
 
     def server_dirs(self) -> dict:
         return {"workspace_dir": self.config / "templates" / WORKSPACE_SUBDIR,
-                "tables_dir": self.config / "templates" / TABLES_SUBDIR}
+                "tables_dir": server_tables(self.config)}
 
     def project_dir(self, target_path: str) -> Path | None:
         """Ближайший `.templates/` вверх от адреса создания, не выходя из workspace."""
@@ -63,3 +63,8 @@ class TemplateResolver:
         partial = [k for k in dirs if dirs[k] == server[k]]
         return {**dirs, "source": "project", "project_dir": found,
                 "fell_back": partial}
+
+
+def server_tables(config_path: str | Path) -> Path:
+    """Каталог книг сервера `config/templates/tables/` — одно место решения для резолвера и читателей книг."""
+    return Path(config_path) / "templates" / TABLES_SUBDIR

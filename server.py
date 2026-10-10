@@ -18,8 +18,6 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-import yaml
-
 # Добавляем корень проекта в путь
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -30,6 +28,7 @@ from core.engine import Engine
 from core.observability import Logs, wire
 from core.firewall import Firewall, FirewallRequest, FirewallDecision
 from core.transport import Transport
+from core.transport.tunnel import declared_hostname
 from core.reactions import Reactions
 from core.auth import (ENV_FILE, check_auth, digest_fingerprint, ensure_digest, rotate_token,
                        token_file_mode, token_fingerprint)
@@ -85,25 +84,16 @@ _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
 
 def _allowed_hosts() -> set:
-    """Кому разрешено называться нашим хостом: петля + объявленный туннель + явный список."""
+    """Кому разрешено называться нашим хостом: петля + объявленный туннель + явный список. Объявления туннеля нет —
+    машина без туннеля, его hostname нет; объявление битое — отказ двери туннеля с файлом и местом. Hostname нужен и без
+    `--tunnel`: cloudflared поднимают и отдельно (deploy_tunnel_server.sh)."""
     hosts = set(_LOOPBACK_HOSTS)
     hosts |= {h.strip().lower() for h in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",") if h.strip()}
     tunnel_cfg = CONFIG_PATH / "tunnel.yaml"
-    if tunnel_cfg.exists():
-        try:
-            import yaml as _yaml
-            declared = (_yaml.safe_load(tunnel_cfg.read_text(encoding="utf-8")) or {}).get("hostname", "")
-            if declared:
-                hosts.add(str(declared).strip().lower())
-        except (OSError, ValueError, yaml.YAMLError) as e:
-            # Сервер не роняем — петля остаётся разрешена. Но молчать нельзя: без hostname
-            # туннеля в allowlist каждый запрос ЧЕРЕЗ туннель получит 403, и причина не видна.
-            print(f"⚠️  [tunnel] {tunnel_cfg.name} не прочитан ({e!r}) — hostname туннеля НЕ в "
-                  f"allowlist: запросы через туннель будут отклоняться, пока конфиг битый")
+    declared = declared_hostname(tunnel_cfg if tunnel_cfg.exists() else None)
+    if declared:
+        hosts.add(str(declared).strip().lower())
     return hosts
-
-
-ALLOWED_HOSTS = _allowed_hosts()
 
 # Значения, о которых уже сообщили: чужая вкладка в цикле иначе забьёт консоль владельца.
 _REPORTED_ORIGINS: set = set()
@@ -253,6 +243,8 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
                 print("Выпусти ключ заново в терминале: server.py --rotate-key")
             print("─" * 60)
 
+    # Битое объявление туннеля — отказ старта: сервер, отвечающий 403 на каждый запрос через туннель, хуже неподнятого.
+    allowed_hosts = _allowed_hosts()
     engine, transport, firewall = create_server()
 
     print("=== MCP-сервер видеопайплайна ===")
@@ -299,8 +291,8 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
         host = (request.headers.get("Host") or "").strip().lower()
         # Запятая в Host — склейка двух заголовков посредником; разбирать первое значение
         # значит верить отправителю в выборе, какое из имён считать нашим.
-        if "," in host or (host.rsplit(":", 1)[0].strip("[]") not in {h.strip("[]") for h in ALLOWED_HOSTS}
-                           and host not in ALLOWED_HOSTS):
+        if "," in host or (host.rsplit(":", 1)[0].strip("[]") not in {h.strip("[]") for h in allowed_hosts}
+                           and host not in allowed_hosts):
             return _refuse("perimeter", -32002, "Forbidden host", 403, request)
 
         # Origin проверяется всегда, когда он есть. Отсутствие заголовка = не браузер:
@@ -493,6 +485,13 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
             print(f"   Локально сервер работает: http://{host}:{port}/mcp")
             tunnel = None
 
+    # Публичный адрес без ключа пускает любого, кто его узнает: Origin/Host и файрвол есть, идентификации нет.
+    if ALLOW_NO_AUTH and tunnel:
+        print()
+        print("⚠ АУТЕНТИФИКАЦИЯ ОТКЛЮЧЕНА (MCP_ALLOW_NO_AUTH=1)")
+        print("⚠ СЕРВЕР ОТКРЫТ ЧЕРЕЗ ТУННЕЛЬ — публичный адрес пустит любого, кто его узнает")
+        print("⚠ ЭТОТ РЕЖИМ — ТОЛЬКО ДЛЯ РАЗРАБОТКИ: для работы запускай без --no-auth, с ключом в коннекторе")
+
     # Статус готовности (по спецификации MCP SDK).
     print()
     print(f"Статус: ГОТОВ | Туннель: {tunnel_status_str}")
@@ -618,7 +617,13 @@ def main():
             print("Запуск не из терминала — значение не печатаем. Повтори ротацию в терминале.")
         return
 
-    asyncio.run(run_server(args.host, args.port, use_tunnel=args.tunnel))
+    try:
+        asyncio.run(run_server(args.host, args.port, use_tunnel=args.tunnel))
+    except ContractError as refused:
+        # Объявленный отказ при старте — код, файл и место одной строкой вместо трассировки: чинить файл, а не код.
+        said = (refused.facts.get("file"), refused.facts.get("details"), refused.message, refused.reason)
+        print(" · ".join([f"ОТКАЗ СТАРТА: {refused.code}", *(str(part) for part in said if part)]), file=sys.stderr)
+        raise SystemExit(2) from None
 
 
 if __name__ == "__main__":

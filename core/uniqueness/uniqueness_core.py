@@ -39,6 +39,11 @@ class UniquenessEngine:
         """Параметры расчёта. Битую декларацию не глушим — иначе она тихо перестанет работать."""
         return self._decl.data
 
+    @property
+    def declaration(self) -> Declaration:
+        """Дверь `uniqueness.yaml` — для суда ссылок этой декларации на другие (лист книги дефолта), а не второй двери."""
+        return self._decl
+
     # ═══ Похожесть текста ═══
 
     def shingles(self, text: str) -> set[tuple[str, ...]]:

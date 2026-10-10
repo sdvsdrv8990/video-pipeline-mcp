@@ -11,7 +11,9 @@
 """
 
 from core.contracts import Fact, ToolResult
+from core.declaration import Declaration
 from core.engine import Engine
+from core.engine.table_materializer import declared_rows
 from core.tables import TableError
 from core.uniqueness import UniquenessEngine
 from tools._context import ANNOTATIONS_MODIFY, ToolContext
@@ -32,8 +34,9 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         sheet_obj = snapshot.get(sheet) or {}
         return sheet_obj.get("rows") or {}
 
-    def _profile(table: str, spec: dict) -> tuple[list[dict], str]:
-        """Профиль фрагментов: сперва данные канала, иначе дефолт из декларации книги.
+    def _profile_rows(table: str, spec: dict, declaration: Declaration) -> tuple[list[dict], str]:
+        """Профиль фрагментов: сперва данные канала, иначе дефолт из декларации книги. Лист и книгу дефолта называет
+        uniqueness.yaml `sources.profile`, имя листа судит его дверь по листам книги.
 
         Источник называется в ответе: дефолт декларации — не то же самое, что настроенный
         владельцем профиль, и выдавать одно за другое нельзя.
@@ -41,18 +44,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         rows = _rows(table, spec.get("sheet", ""))
         if rows:
             return list(rows.values()), "project"
-        book = spec.get("fallback_book")
-        if not book:
-            return [], "none"
-        path = ctx.config_path / "templates" / "tables" / f"{book}.schema.yaml"
-        if not path.exists():
-            return [], "none"
-        import yaml
-        schema = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        for sheet in schema.get("sheets") or []:
-            if sheet.get("name") == spec.get("sheet"):
-                return list(sheet.get("rows") or []), "declaration"
-        return [], "none"
+        declared = declared_rows(ctx.config_path, declaration, "sources", "profile")
+        return declared, ("declaration" if declared else "none")
 
     def _compensation_history(table: str, spec: dict, scene_ref: str) -> int:
         """Сколько раз сцена проходила за счёт соседей — БЕЗ снятых решением записей.
@@ -139,7 +132,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 continue
             fragments.setdefault(str(ftype), []).append(r.get(frag_spec.get("id_column", "")))
 
-        profile_rows, profile_source = _profile(table, sources.get("profile") or {})
+        profile_rows, profile_source = _profile_rows(table, sources.get("profile") or {}, uniq.declaration)
 
         # Сколько раз эта сцена УЖЕ проходила за счёт соседей: приём разрешён, но накапливается.
         comp_spec = cfg.get("compensation") or {}

@@ -19,6 +19,7 @@ from pathlib import Path
 
 from core.contracts import ContractError, Fact, ToolResult
 from core.engine import Engine
+from core.engine.table_materializer import declared_rows
 from core.providers import (AdapterRegistry, MediaRequest, ModelSpec, ProviderError, ProviderResolver,
                             TaskCycle, UsageLedger)
 from core.paths import Files
@@ -45,25 +46,14 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         # Служебное поле с «_» не уходит в параметры вызова: фильтр резолвера его отбрасывает.
         return [{**row, "_row_id": row_id} for row_id, row in rows.items()]
 
-    def _declared(book: str, sheet: str) -> list[dict]:
-        """Дефолт из декларации книги, пока книга канала не заполнена."""
-        path = ctx.config_path / "templates" / "tables" / f"{book}.schema.yaml"
-        if not path.exists():
-            return []
-        import yaml
-        schema = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        for sh in schema.get("sheets") or []:
-            if sh.get("name") == sheet:
-                return list(sh.get("rows") or [])
-        return []
-
     def _source(table: str, resolver: ProviderResolver) -> tuple[list[dict], str, str]:
-        """Строки провайдеров + откуда они: данные канала или дефолт декларации."""
+        """Строки провайдеров + откуда они: данные канала или дефолт декларации. Лист и книгу дефолта называет
+        providers.yaml `source`, имя листа судит его дверь по листам книги."""
         sheet = resolver.sheet
         rows = _rows(table, sheet)
         if rows:
             return rows, "project", sheet
-        rows = _declared(resolver.fallback_book, sheet)
+        rows = declared_rows(ctx.config_path, resolver.declaration, "source")
         return rows, ("declaration" if rows else "none"), sheet
 
     def _key_state(table: str, provider: str, resource_type: str, registry) -> dict:

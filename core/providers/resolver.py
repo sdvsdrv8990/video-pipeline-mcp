@@ -30,6 +30,11 @@ class ProviderResolver:
     def config(self) -> dict:
         return self._decl.data
 
+    @property
+    def declaration(self) -> Declaration:
+        """Дверь `providers.yaml` — для суда ссылок этой декларации на другие (лист книги дефолта), а не второй двери."""
+        return self._decl
+
     # ═══ Объявленные имена ═══
     # Единственная дверь к именам столбцов: копия в вызывающем коде глушит опечатку в декларации.
 

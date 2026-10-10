@@ -47,10 +47,11 @@ class TaskCycle:
         return "running"
 
     def wait(self, poll, task_id: str) -> dict:
-        """Опрашивать `poll(task_id)` до готовности. Возвращает последний ответ + журнал попыток.
+        """Опрашивать `poll(task_id, остаток)` до готовности. Возвращает последний ответ + журнал попыток.
 
         Неизвестный статус НЕ обрывает ожидание и не выдаётся за успех: он копится в отчёте,
-        чтобы после таймаута было видно, что именно отвечал провайдер.
+        чтобы после таймаута было видно, что именно отвечал провайдер. Срок `timeout_sec` идёт вниз: опрос получает
+        остаток в секундах (повторяет сбой дверь опроса, а не цикл), пауза между опросами остатка не перешагивает.
         """
         p = self.config.get("poll") or {}
         interval = float(p.get("interval_sec", 3))
@@ -66,7 +67,7 @@ class TaskCycle:
         unknown: list[str] = []
         while True:
             attempts += 1
-            answer = poll(task_id) or {}
+            answer = poll(task_id, timeout - (self._now() - started)) or {}
             status = answer.get("status", "")
             kind = self.classify(status)
             if kind == "done":
@@ -80,16 +81,22 @@ class TaskCycle:
                             "смотри его журнал; повтор того же запроса даст тот же отказ."))
             if str(status).lower() not in known:
                 unknown.append(str(status))
-            if attempts >= max_attempts or (self._now() - started) >= timeout:
-                raise TaskCycleError(
-                    "PROVIDER_TIMEOUT",
-                    f"Задача '{task_id}' не завершилась за {attempts} опросов "
-                    f"({round(self._now() - started, 1)} с).",
-                    reason=("Подними timeout_sec/max_attempts в config/media_tasks.yaml, если задача "
-                            "штатно дольше, или проверь задачу на стороне провайдера. "
-                            f"Последний статус: '{status}'."))
-            self._sleep(interval)
+            left = timeout - (self._now() - started)
+            if attempts >= max_attempts or left <= 0:
+                raise self._overdue(task_id, attempts, started, status)
+            self._sleep(min(interval, left))
             interval = min(interval * backoff, max_interval)
+            if self._now() - started >= timeout:
+                raise self._overdue(task_id, attempts, started, status)
+
+    def _overdue(self, task_id: str, attempts: int, started: float, status: str) -> TaskCycleError:
+        """Срок ожидания задачи вышел: сколько опросов, сколько секунд и что провайдер ответил последним."""
+        return TaskCycleError(
+            "PROVIDER_TIMEOUT",
+            f"Задача '{task_id}' не завершилась за {attempts} опросов ({round(self._now() - started, 1)} с).",
+            reason=("Подними timeout_sec/max_attempts в config/media_tasks.yaml, если задача "
+                    "штатно дольше, или проверь задачу на стороне провайдера. "
+                    f"Последний статус: '{status}'."))
 
     # ═══ Приёмка загрузки ═══
 

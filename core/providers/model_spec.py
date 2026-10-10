@@ -8,13 +8,19 @@
 """
 
 import json
+import logging
 import time
 from typing import Any
 from pathlib import Path
 from urllib.parse import urlparse
 
+from core.contracts import ContractError
 from core.declaration import Declaration
+from core.declaration_schemas import ProviderUrl
+from .catalog import OnlineCatalog
 from .resolver import ProviderError
+
+log = logging.getLogger(__name__)
 
 
 class ModelSpec:
@@ -82,7 +88,9 @@ class ModelSpec:
         return spec
 
     def _from_provider(self, provider: str, model: str, api_key: str) -> dict:
-        """Спросить самого провайдера — у кого объявлен адрес спеки."""
+        """Спросить самого провайдера — у кого объявлен адрес спеки. Запрос — дверью загрузчика по одной политике ответов
+        провайдеров (`OnlineCatalog.fetcher`). Спека необязательна: отказ двери или провайдера — запись в журнал с кодом
+        и откат к справочнику; адрес не по https и битая декларация — отказ."""
         decl = ((self.rules.get("online") or {}).get(provider)) or {}
         url = str(decl.get("url") or "")
         if not url or not str(model).strip():
@@ -94,17 +102,13 @@ class ModelSpec:
         url = url.format_map({"model": str(model), "model_path": str(model).split(":", 1)[0]})
         if not url.lower().startswith("https://"):          # спека тянется только по https, с ключом тем более
             raise ProviderError("DOWNLOAD_FORBIDDEN", facts={"host": urlparse(url).hostname or url, "allowed": "https"})
+        fetcher = OnlineCatalog(self.registry.config_file).fetcher(
+            self.registry.need("capabilities", "online", provider, "url", kind=ProviderUrl))
+        headers = {"Authorization": f"Bearer {api_key}"} if auth == "bearer" else {}
         try:
-            import httpx
-            headers = {"Authorization": f"Bearer {api_key}"} if auth == "bearer" else {}
-            response = httpx.get(url, headers=headers, timeout=30, follow_redirects=False)
-        except Exception:  # сеть/таймаут
-            return {}                                       # спека необязательна: молча падать назад
-        if response.status_code >= 400:
-            return {}
-        try:
-            data = response.json()
-        except Exception:  # не JSON
+            data = fetcher.answer(url, headers)
+        except ContractError as e:
+            log.warning("спека %s у провайдера %s не спрошена — дальше справочник: %s %s", model, provider, e.code, e.facts)
             return {}
         schema = self._dig_schema(data, str(decl.get("schema_path") or ""))
         if not schema:

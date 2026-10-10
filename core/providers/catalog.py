@@ -17,9 +17,10 @@ from filelock import Timeout
 
 from core.contracts import ContractError
 from core.declaration import Declaration
-from core.declaration_schemas import MODEL_FETCH, MODEL_INSTALL, FetchPolicy, InstallPolicy
+from core.declaration_schemas import (MODEL_FETCH, MODEL_INSTALL, ONLINE_ANSWER, AnswerPolicy, FetchPolicy, InstallPolicy,
+                                      ProviderUrl)
 from core.paths import Files
-from .download import Fetcher, file_digest
+from .download import Fetcher, answers, file_digest
 from .resolver import ProviderError
 
 
@@ -639,7 +640,7 @@ class ModelCatalog:
         """Загрузчик весов по объявленной политике `local.install.fetch` — объект схемы двери: битый раздел — отказ
         кодом двери с путём ключа, а не умолчание."""
         return Fetcher(self._decl.section(*MODEL_FETCH.section, schema=MODEL_FETCH.schema), transport=self.transport,
-                       resolve=self.resolve, mark=mark)
+                       resolve=self.resolve, mark=mark, slot=MODEL_FETCH)
 
     def silence_sec(self) -> float:
         """Наибольшая тишина загрузчика весов между признаками работы — простой обязан быть длиннее (`Fetcher.silence_sec`)."""
@@ -832,6 +833,9 @@ class OnlineCatalog:
 
     MODES: ClassVar[dict[str, str]] = {
         "image": "image_generation", "tts": "audio_speech", "stt": "audio_transcription"}
+    # Сеть ответов провайдера (MF-16): None — настоящий транспорт; подмена — на классе, ею же ходит спека модели.
+    transport: ClassVar = None
+    resolve: ClassVar = staticmethod(socket.getaddrinfo)
 
     def __init__(self, config_file: str | Path | None = None):
         self.config_file = Path(config_file) if config_file else None
@@ -860,29 +864,12 @@ class OnlineCatalog:
                 "PROVIDER_ADAPTER_MISSING", f"Для '{provider}' не объявлено, где спрашивать список.",
                 reason=f"Объявлены: {known}. Добавь адрес в config/providers.yaml → online.live, "
                        "если нужен ещё один провайдер.")
-        url = str(decl.get("url") or "")
+        url = self._decl.need("online", "live", provider, "url", kind=ProviderUrl)
         if not url.lower().startswith("https://"):
             # Ключ в открытом канале виден любому посреднику — это отказ, а не предупреждение.
             raise ProviderError("DOWNLOAD_FORBIDDEN", facts={"host": urlparse(url).hostname or url, "allowed": "https"})
-        try:
-            import httpx
-            headers = self._auth_headers(str(decl.get("auth") or "bearer"), api_key)
-            response = httpx.get(url, headers=headers, timeout=30, follow_redirects=False)
-        except Exception as e:  # сеть/таймаут
-            raise ProviderError(
-                "PROVIDER_FAILED", f"Провайдер не ответил на запрос списка моделей: {e}",
-                reason="Сеть или сам провайдер недоступны. Список из реестра шлюза остаётся "
-                       "доступен без ключа.") from e
-        if response.status_code == 401 or response.status_code == 403:
-            raise ProviderError(
-                "AUTH_FAILED", f"Провайдер отклонил ключ при запросе списка ({response.status_code}).",
-                reason="Ключ недействителен или у него нет прав. Заменить может только владелец: "
-                       "python scripts/set_provider_key.py --channel <канал> --provider " + provider)
-        if response.status_code >= 400:
-            raise ProviderError(
-                "PROVIDER_FAILED", f"Провайдер ответил {response.status_code} на запрос списка.",
-                reason="Повтори позже; список из реестра шлюза доступен и без обращения к нему.")
-        items = response.json()
+        headers = self._auth_headers(str(decl.get("auth") or "bearer"), api_key)
+        items = self.fetcher(url).answer(url, headers, refused=lambda response: self._refused(response, provider))
         path = str(decl.get("items") or "")
         if path:
             items = items.get(path) or []
@@ -950,3 +937,21 @@ class OnlineCatalog:
     def providers(self, kind: str = "") -> list[str]:
         """Кто из провайдеров вообще умеет этот вид ресурса — прежде чем заводить ключ."""
         return sorted({r["provider"] for r in self.available(kind, limit=0) if r["provider"]})
+
+    def fetcher(self, url: str) -> Fetcher[AnswerPolicy]:
+        """Загрузчик ответа провайдера в память — одна политика `online.answer` для списка (`live`) и спеки модели
+        (`ModelSpec`); хост — хост объявленного адреса `url`."""
+        return answers(self._decl, ONLINE_ANSWER, url, transport=self.transport, resolve=self.resolve)
+
+    @staticmethod
+    def _refused(response, provider: str) -> ProviderError:
+        """Отказ провайдера на запрос списка его причиной (тело прочитано дверью в пределе): ключ отклонён — рецепт ключа,
+        иначе — код ответа; список из реестра шлюза остаётся и без обращения к нему."""
+        if response.status_code in (401, 403):
+            return ProviderError(
+                "AUTH_FAILED", f"Провайдер отклонил ключ при запросе списка ({response.status_code}).",
+                reason="Ключ недействителен или у него нет прав. Заменить может только владелец: "
+                       "python scripts/set_provider_key.py --channel <канал> --provider " + provider)
+        return ProviderError(
+            "PROVIDER_FAILED", f"Провайдер ответил {response.status_code} на запрос списка.",
+            reason="Повтори позже; список из реестра шлюза доступен и без обращения к нему.")

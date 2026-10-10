@@ -24,10 +24,10 @@ from typing import Any
 import httpx
 
 from core.contracts import ContractError
-from core.declaration import Declaration
+from core.declaration import Declaration, declarations_root
+from core.declaration_schemas import TUNNEL_PROBE
 
 ROOT = Path(__file__).resolve().parents[2]
-КАТАЛОГ = ROOT / "config" / "tunnel_diagnostics.yaml"
 
 ПРОШЛО, ОТКАЗ, НЕЧЕМ = "прошло", "отказ", "нечем"
 НЕПОЛНО = "неполно"
@@ -85,10 +85,8 @@ class Диагностика:
     """Прогон объявленных проверок по живому туннелю (или по его отсутствию — тоже улика)."""
 
     def __init__(self, tunnel: Any = None, конец: str = "client",
-                 каталог: str | Path = КАТАЛОГ, корень: Path = ROOT):
-        self._объявление = Declaration(
-            каталог, ContractError, "проверок туннеля",
-            "Заведи config/tunnel_diagnostics.yaml — набор проверок объявлен там.").data
+                 каталог: str | Path | None = None, корень: Path = ROOT):
+        self._объявление = каталог_проверок(каталог).data
         self.tunnel = tunnel
         self.конец = конец
         self.корень = корень
@@ -280,6 +278,13 @@ class Диагностика:
 def быстрая(tunnel: Any = None, конец: str = "client") -> Отчёт:
     """Соединение, компоненты, служба, конфигурация — без лишнего трафика."""
     return Диагностика(tunnel, конец).прогнать("быстрая")
+
+
+def каталог_проверок(каталог: str | Path | None = None) -> Declaration:
+    """Каталог проверок туннеля — одна дверь у диагностики и у прозвонки (`CloudflaredTunnel.probe`): без `каталог` —
+    `tunnel_diagnostics.yaml` в каталоге деклараций (`declarations_root`: `MCP_CONFIG` или `config/` рядом с кодом)."""
+    return Declaration(каталог or declarations_root() / TUNNEL_PROBE.file, ContractError, "проверок туннеля",
+                       "Заведи config/tunnel_diagnostics.yaml — проверки и прозвонка туннеля объявлены там.")
 
 
 def полная(tunnel: Any = None, конец: str = "client") -> Отчёт:

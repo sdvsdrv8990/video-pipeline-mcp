@@ -5,9 +5,13 @@
 Проверки между ключами одного файла живут здесь же и называют путь ключа; дверь — `core.declaration.Declared`.
 """
 
+import threading
+import warnings
 from collections.abc import Mapping
+from functools import cache
 from types import MappingProxyType
 from typing import Annotated, Generic, Literal, NamedTuple, TypeVar, get_args, get_origin
+from urllib.parse import urlsplit
 
 from pydantic import (AfterValidator, BaseModel, ConfigDict, Field, Strict, StrictBool, StrictFloat, StrictInt,
                       StrictStr, ValidationError, model_validator)
@@ -132,8 +136,9 @@ class RequestPolicy(BaseModel):
     @property
     def silence_sec(self) -> float:
         """Наибольшая законная тишина загрузчика между отметками работы: соединение и ожидание ответа (2 × timeout_sec,
-        httpx меряет их порознь) либо пауза перед повтором (backoff_max_sec × (1 + jitter)); попыток — `attempts`."""
-        return max(2 * self.timeout_sec, self.backoff_max_sec * (1 + self.jitter))
+        httpx меряет их порознь), своя пауза перед повтором (backoff_max_sec × (1 + jitter)) или срок, названный
+        сервером (до retry_after_max_sec); попыток — `attempts`."""
+        return max(2 * self.timeout_sec, self.backoff_max_sec * (1 + self.jitter), self.retry_after_max_sec)
 
 
 class FetchPolicy(RequestPolicy):
@@ -149,6 +154,53 @@ class ResultFetchPolicy(FetchPolicy):
     """`media_tasks.yaml` `download.fetch`: загрузка результатов поставщиков; плюс поля ответа, где искать ссылку на файл."""
 
     url_fields: Annotated[tuple[StrictStr, ...], Listed]
+
+
+class AddressedPolicy(RequestPolicy):
+    """Обращение к одному объявленному адресу: срок `deadline_sec` — на всё обращение вместе с повторами (срок
+    вызывающего его только сокращает). Хост списком не объявляется — он один, хост объявленного адреса
+    (`declared_host`); его ставит читатель `core.providers.download.answers`, явный ключ `hosts` — отказ схемы."""
+
+    deadline_sec: float = Field(gt=0)
+    hosts: Annotated[tuple[StrictStr, ...], Listed] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _host_derived(cls, data: object) -> object:
+        if isinstance(data, Mapping) and "hosts" in data:
+            raise ValidationError.from_exception_data(cls.__name__, [_gap(
+                "hosts_derived", "хост ответа — из объявленного адреса провайдера, списком не объявляется", ("hosts",))])
+        return data
+
+
+class AnswerPolicy(AddressedPolicy, FetchPolicy):
+    """Раздел `answer` потребителя, которому загрузчик отдаёт ответ API в память (`Fetcher.answer`): предел обязателен
+    (NI-06). Коды — как у приёма тела: pydantic собирает поля баз по полному набору каждой, и коды пути запроса из
+    `AddressedPolicy` иначе перекрыли бы коды приёма."""
+
+    max_bytes: int = Field(gt=0)
+    codes: FetchCodes
+
+
+class ProbePolicy(AddressedPolicy):
+    """Раздел прозвонки: код и заголовки ответа без тела (`Fetcher.status`) — ключей тела у неё нет."""
+
+
+def declared_host(url: str) -> str:
+    """Хост объявленного адреса провайдера. Подстановка `{…}` (значение пишет строка канала) законна в пути и запросе, а
+    хост, который она собирает, судить нечем, — отказ, как и адрес без хоста."""
+    parts = urlsplit(url)
+    if not parts.hostname or "{" in parts.netloc:
+        raise PydanticCustomError("host_templated", "хост адреса провайдера — объявленный, без подстановки {…}")
+    return parts.hostname
+
+
+def _declared_url(url: str) -> str:
+    declared_host(url)
+    return url
+
+
+ProviderUrl = Annotated[StrictStr, AfterValidator(_declared_url)]   # адрес провайдера: хост объявлен, а не подставлен
 
 
 class InstallProgress(BaseModel):
@@ -236,12 +288,40 @@ class BookColumn(BaseModel):
     on_empty: Cell | None = None
 
 
+def _xlsx_title(name: str) -> str:
+    """Имя листа годится для книги .xlsx — как его судит библиотека записи книги (openpyxl у цели): запретный знак — её
+    ValueError, длина за пределом формата — её предупреждение. Предела и знаков в нашем коде нет: судит тот, кто пишет."""
+    refusal = _title_refusal(name)
+    if refusal:
+        raise PydanticCustomError("xlsx_sheet_title", "{refusal}", {"refusal": refusal})
+    return name
+
+
+_TITLE_PROBE = threading.Lock()
+
+
+@cache
+def _title_refusal(name: str) -> str:
+    # Под замком: фильтр предупреждений глобален, две пробы разом смешали бы свои записи.
+    with _TITLE_PROBE, warnings.catch_warnings(record=True) as said:
+        warnings.simplefilter("always")
+        from openpyxl import Workbook       # по требованию: схемы деклараций импортируют и там, где книг нет
+        try:
+            Workbook().active.title = name
+        except ValueError as error:
+            return str(error)
+    return "; ".join(str(warning.message) for warning in said)
+
+
+SheetTitle = Annotated[StrictStr, Field(min_length=1), AfterValidator(_xlsx_title)]
+
+
 class BookSheet(BaseModel):
     """Лист книги: столбцы по порядку и стартовые строки (значения по именам столбцов, список — в ячейку через запятую)."""
 
     model_config = STRICT
 
-    name: StrictStr = Field(min_length=1)
+    name: SheetTitle
     columns: Annotated[tuple[BookColumn, ...], Listed] = Field(min_length=1)
     rows: Annotated[tuple[Annotated[Mapping[StrictStr, Cell | Annotated[tuple[Cell, ...], Listed]], ReadOnly], ...],
                     Listed] = ()
@@ -258,6 +338,14 @@ class BookSchema(BaseModel):
     source: StrictStr
     sheets: Annotated[tuple[BookSheet, ...], Listed] = Field(min_length=1)
     degrade: Annotated[Mapping[ColumnType, Cell], ReadOnly] = Field(default_factory=lambda: MappingProxyType({}))
+
+
+class BookDefaults(BaseModel):
+    """`config/templates/tables/_defaults.yaml`: общее правило деградации формул по типу столбца — под всеми книгами."""
+
+    model_config = STRICT
+
+    degrade: Annotated[Mapping[ColumnType, Cell], ReadOnly]
 
 
 M = TypeVar("M", bound=BaseModel)
@@ -277,7 +365,12 @@ PACKAGES = Slot("packages.yaml", (), PackagesDecl)
 MODEL_INSTALL = Slot("providers.yaml", ("local", "install"), InstallPolicy)
 MODEL_FETCH = Slot("providers.yaml", ("local", "install", "fetch"), FetchPolicy)
 RESULT_FETCH = Slot("media_tasks.yaml", ("download", "fetch"), ResultFetchPolicy)
-SLOTS = (RESOURCES, PACKAGES, MODEL_INSTALL, MODEL_FETCH, RESULT_FETCH)
+ONLINE_ANSWER = Slot("providers.yaml", ("online", "answer"), AnswerPolicy)
+RESULT_ANSWER = Slot("media_tasks.yaml", ("download", "answer"), AnswerPolicy)
+RUNNER_HEALTH = Slot("providers.yaml", ("local", "runner", "health"), AnswerPolicy)
+TUNNEL_PROBE = Slot("tunnel_diagnostics.yaml", ("прозвонка",), ProbePolicy)
+SLOTS = (RESOURCES, PACKAGES, MODEL_INSTALL, MODEL_FETCH, RESULT_FETCH, ONLINE_ANSWER, RESULT_ANSWER, RUNNER_HEALTH,
+         TUNNEL_PROBE)
 
 
 def registry_codes(model: BaseModel) -> frozenset[str]:

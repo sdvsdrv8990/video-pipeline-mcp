@@ -34,7 +34,7 @@ class SceneTemplate:
         spec = self.config[part]
         rows, _source, _owner = self.book._upward(table, spec["sheet"])
         if not rows:
-            rows = self.book._declared_rows(spec["fallback_book"], spec["sheet"])
+            rows = self.book._named_rows("templates", part)
         return [row for row in rows if str(row.get(spec["template_column"]) or "") == template_id]
 
     def names(self, table: str) -> list[str]:
@@ -43,7 +43,7 @@ class SceneTemplate:
         for part in ("elements", "audio"):
             spec = self.config[part]
             rows, _source, _owner = self.book._upward(table, spec["sheet"])
-            rows = rows or self.book._declared_rows(spec["fallback_book"], spec["sheet"])
+            rows = rows or self.book._named_rows("templates", part)
             found |= {str(row.get(spec["template_column"])) for row in rows
                       if row.get(spec["template_column"])}
         return sorted(found)

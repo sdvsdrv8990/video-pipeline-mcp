@@ -9,16 +9,19 @@
 import os
 import re
 import shutil
+import socket
 import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Literal, assert_never
-
-import httpx
+from typing import ClassVar, Literal, assert_never
+from urllib.parse import urlsplit
 
 from core.contracts import ContractError
 from core.declaration import Declaration
+from core.declaration_schemas import TUNNEL_PROBE
+from core.providers.download import answers
+from core.transport.diagnostics import каталог_проверок
 
 
 # Словарь событий лога cloudflared объявлен ОДИН раз: и производитель (`_classify_line`), и оба
@@ -83,7 +86,7 @@ class CloudflaredTunnel:
 
         self.port = int(cfg.get("local_port", port) or port)
         self.mode = cfg.get("mode", "quick")
-        self.hostname = cfg.get("hostname") or ""
+        self.hostname = declared_hostname(config_path)
         # named-режим подключается либо connector-токеном, либо локальными credentials.
         # Токен — секрет: приоритет у env MCP_TUNNEL_TOKEN, чтобы не держать его
         # в коммитимом config/tunnel.yaml.
@@ -468,6 +471,12 @@ class CloudflaredTunnel:
         """
         return "cloudflare" in сервер.lower() or (not сервер and код >= 500)
 
+    # Сеть, часы и сон прозвонки (MF-16): None — настоящий транспорт; подмена — на классе, как у адаптеров.
+    transport: ClassVar = None
+    resolve: ClassVar = staticmethod(socket.getaddrinfo)
+    clock: ClassVar = staticmethod(time.monotonic)
+    sleep: ClassVar = staticmethod(time.sleep)
+
     def probe(self, timeout: float = 8.0) -> dict:
         """Независимая улика: ДОЕЗЖАЕТ ли запрос по публичному адресу до нашего процесса.
 
@@ -477,23 +486,40 @@ class CloudflaredTunnel:
 
         Автор ответа определяется ЗАГОЛОВКОМ, а не кодом: `Server: cloudflare` — ответил край,
         свой заголовок — доехало до нас. Код 405 на GET нормален (наш транспорт принимает POST),
-        поэтому «дошло» и «ok» не одно и то же. Спрашивает `httpx`: адрес приходит СНАРУЖИ, а
-        `urlopen` открыл бы и `file://`, отдав содержимое диска за ответ сети.
+        поэтому «дошло» и «ok» не одно и то же. Спрашивает дверь загрузчика (`Fetcher.status`, политика
+        `tunnel_diagnostics.yaml` → `прозвонка`): код и заголовки без тела, хост — ровно хост своего публичного адреса
+        (`_probe_host`), внутренняя сеть закрыта, `file://` и чужая схема — отказ схемы. `timeout` — срок вызывающего
+        поверх срока политики. Отказ двери — улика «не дошло» с его причиной, а не исключение.
         """
         адрес = self._public_url or (self._named_url() if self.mode == "named" else "")
-        if not адрес or адрес.startswith("https://<"):
+        if not адрес or (self.mode == "named" and not self.hostname):     # без hostname у named — подпись, не адрес
             return {"дошло": False, "код": None, "кто": "адреса нет",
                     "текст": "публичный адрес неизвестен — спрашивать нечего"}
+        хост = self._probe_host(адрес)
+        if not хост:
+            return {"дошло": False, "код": None, "кто": "нет ответа",
+                    "текст": "адрес — не свой публичный адрес туннеля: его не спрашиваем"}
+        дверь = answers(каталог_проверок(), TUNNEL_PROBE, f"https://{хост}", transport=self.transport,
+                        resolve=self.resolve, clock=self.clock, sleep=self.sleep)
         try:
-            with httpx.Client(timeout=timeout) as клиент:
-                ответ = клиент.get(адрес, headers={"User-Agent": "vpm-tunnel-probe"})
-            код, кто = ответ.status_code, ответ.headers.get("Server", "")
-        except (httpx.HTTPError, httpx.InvalidURL) as beda:
-            return {"дошло": False, "код": None, "кто": "нет ответа", "текст": str(beda)}
+            код, заголовки = дверь.status(адрес, {"User-Agent": "vpm-tunnel-probe"}, within=timeout)
+        except ContractError as отказ:
+            return {"дошло": False, "код": None, "кто": "нет ответа", "текст": f"{отказ.code}: {отказ.facts}"}
+        кто = заголовки.get("server", "")
         край = self._край_ответил(код, кто)
         return {"дошло": not край, "код": код, "кто": кто or ("край" if край else "неизвестен"),
                 "текст": (f"край Cloudflare отвечает {код} — до нашего процесса запрос не доходит"
                           if край else f"ответил наш процесс ({код})")}
+
+    def _probe_host(self, адрес: str) -> str:
+        """Хост прозвонки — ровно хост своего публичного адреса: named — объявленный `hostname`, quick — разобранный хост
+        адреса целиком в зоне quick-туннеля (`_TRYCLOUDFLARE_RE` полным совпадением, а не поиском в строке); иначе пусто."""
+        хост = (urlsplit(адрес).hostname or "").lower()
+        if not хост:
+            return ""
+        if self.mode == "named":
+            return хост if хост == self.hostname.lower() else ""
+        return хост if _TRYCLOUDFLARE_RE.fullmatch(f"https://{хост}") else ""
 
     def status(self) -> dict:
         """Снимок здоровья туннеля (для мониторинга/логов сервера)."""
@@ -523,6 +549,12 @@ class CloudflaredTunnel:
             except subprocess.TimeoutExpired:
                 self._proc.kill()
         self._proc = None
+
+
+def declared_hostname(config_path: str | Path | None) -> str:
+    """Публичный hostname туннеля из его объявления; не объявлен или объявления нет — пусто. Одно решение для туннеля
+    (URL коннектора) и сервера (кому разрешено называться нашим хостом); дверь — та же, что у туннеля."""
+    return CloudflaredTunnel._load_config(config_path).get("hostname") or ""
 
 
 def main():

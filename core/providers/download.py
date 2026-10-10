@@ -1,4 +1,4 @@
-"""core/providers/download.py — один загрузчик сервера: части весов и результаты поставщиков по ссылке.
+"""core/providers/download.py — один загрузчик сервера: части весов, результаты поставщиков по ссылке, ответы API.
 
 Ссылку выдаёт источник, то есть она приходит ИЗВНЕ и проверяется как любой чужой ввод: схема и адрес — ДО
 запроса и на каждом переходе, иначе ссылка на служебный адрес облака или на петлю уводит сервер туда, куда
@@ -10,7 +10,9 @@ import contextlib
 import errno
 import hashlib
 import ipaddress
+import json
 import logging
+import math
 import os
 import random
 import re
@@ -19,11 +21,12 @@ import time
 import urllib.request
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from core.contracts import ContractError
 from core.declaration import Declaration
-from core.declaration_schemas import RESULT_FETCH, FetchPolicy, RequestPolicy, ResultFetchPolicy
+from core.declaration_schemas import (RESULT_FETCH, AddressedPolicy, AnswerPolicy, FetchPolicy, RequestPolicy,
+                                      ResultFetchPolicy, Slot, declared_host)
 from core.paths import Files, PathEscapeError
 from .task_cycle import TaskCycleError
 
@@ -41,6 +44,15 @@ def inner_address(raw: str) -> bool:
     ip = ipaddress.ip_address(raw)
     return (ip.is_private or ip.is_loopback or ip.is_link_local
             or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
+
+
+def _loopback(raw: str) -> bool:
+    """IP-литерал петли — единственный хост, которому политика может открыть внутреннюю сеть: имя подменило бы
+    разрешение, а соседний адрес внутренней сети петлёй не является."""
+    try:
+        return ipaddress.ip_address(raw).is_loopback
+    except ValueError:
+        return False
 
 
 def retry_after(value, ceiling: float, own: float) -> float:
@@ -84,6 +96,7 @@ class _Again(Exception):
 
 
 P = TypeVar("P", bound=RequestPolicy)
+A = TypeVar("A", bound=AddressedPolicy)
 
 
 class Fetcher(Generic[P]):
@@ -93,12 +106,13 @@ class Fetcher(Generic[P]):
     того сервера, что отдавал часть (MF-03): заметка остатка хранит ETag или Last-Modified и конечный хост. Адрес
     судится до каждого запроса и на каждом переходе, соединение идёт на тот IP, который судили (MF-15). Длина и
     отпечаток сверяются до того, как файл встанет под своё имя (MF-05, MF-06). Политика и коды отказов потребителя —
-    данные его декларации; транспорт, разрешение имён и сон внедряются (MF-16).
+    данные его декларации (`slot` — откуда она прочитана: путь ключа в рецепте отказа); транспорт, разрешение имён,
+    сон и часы внедряются (MF-16).
     """
 
     def __init__(self, policy: P, *, transport=None, resolve=socket.getaddrinfo, sleep=time.sleep,
                  rng: random.Random | None = None, proxies=urllib.request.getproxies_environment, mark=None,
-                 clock=time.monotonic):
+                 clock=time.monotonic, slot: Slot | None = None):
         self.policy = policy
         self.transport = transport
         self.resolve = resolve
@@ -106,7 +120,8 @@ class Fetcher(Generic[P]):
         self.rng = rng or random.Random()
         self.proxies = proxies
         self.mark = mark or (lambda: None)      # признак работы: переход, принятый кусок, начало паузы, блок сверки
-        self.clock = clock                      # мера скорости тела меряет окно этими часами; тест подставляет свои
+        self.clock = clock                      # мера скорости тела и срок обращения меряются этими часами
+        self.slot = slot
 
     def fetch(self, url: str, files: Files, path: str | Path, owner: str, *, size: int | None = None,
               digest: str = "", algo: str = "sha256", headers: dict | None = None) -> dict:
@@ -142,10 +157,36 @@ class Fetcher(Generic[P]):
             raise TypeError(f"приём тела требует FetchPolicy, а загрузчик построен с {type(self.policy).__name__}")
         return self.policy
 
-    def _retry(self, attempt):
+    def _memory(self) -> AnswerPolicy:
+        """Политика ответа в память: предел и срок обращения, хост — из объявленного адреса (читатель `answers`); иная —
+        ошибка кода вызывающего, проверка до первого запроса."""
+        if not (isinstance(self.policy, AnswerPolicy) and self.policy.hosts):
+            raise TypeError("ответ в память требует AnswerPolicy с хостом объявленного адреса (читатель answers), "
+                            f"а загрузчик построен с {type(self.policy).__name__}")
+        return self.policy
+
+    def _addressed(self) -> AddressedPolicy:
+        """Политика обращения к объявленному адресу (статус): срок обращения и хост из адреса (читатель `answers`)."""
+        if not (isinstance(self.policy, AddressedPolicy) and self.policy.hosts):
+            raise TypeError("статус требует AddressedPolicy с хостом объявленного адреса (читатель answers), "
+                            f"а загрузчик построен с {type(self.policy).__name__}")
+        return self.policy
+
+    def _deadline(self, policy: AddressedPolicy, within: float | None) -> float:
+        """Срок обращения по часам двери: `deadline_sec` политики, срок вызывающего `within` (секунды) его только
+        сокращает; бюджета нет — отказ до запроса."""
+        budget = policy.deadline_sec if within is None else min(policy.deadline_sec, within)
+        if budget <= 0:
+            raise self._failed(policy.hosts[0], "срок обращения исчерпан до запроса")
+        return self.clock() + budget
+
+    def _retry(self, attempt, deadline: float | None = None):
         """Попытка до исхода — один цикл повтора для всех приёмников двери. Повторимое (`_Again`) — пауза: своя растёт
-        вдвое от `backoff_sec` до `backoff_max_sec`, срок сервера не короче своей, разброс `jitter`; последний `_Again`
-        после `attempts` попыток — наружу: отказ это или «не узнано», решает приёмник."""
+        вдвое от `backoff_sec` до `backoff_max_sec` с разбросом `jitter`; срок сервера (Retry-After) не короче своей и до
+        `retry_after_max_sec`. Последний `_Again` уходит наружу — отказ это или «не узнано», решает приёмник — после
+        `attempts` попыток, а раньше, если сервер назвал срок длиннее `retry_after_max_sec` или пауза не оставляет
+        времени до срока обращения `deadline` (часы двери): названный сервером срок — в фактах отказа, повторять ли
+        позже, решает вызывающий."""
         cap, jitter = self.policy.backoff_max_sec, self.policy.jitter
         pause, left = self.policy.backoff_sec, self.policy.attempts
         while True:
@@ -153,10 +194,14 @@ class Fetcher(Generic[P]):
                 return attempt()
             except _Again as e:
                 left -= 1
-                if not left:
+                wait = max(pause * (1 + jitter * self.rng.random()), e.wait)
+                late = deadline is not None and self.clock() + wait >= deadline
+                if not left or e.wait > self.policy.retry_after_max_sec or late:
+                    if e.wait:
+                        e.refusal.with_facts(retry_after_sec=e.wait)
                     raise
                 self.mark()
-                self.sleep(min(max(pause, e.wait), cap) * (1 + jitter * self.rng.random()))
+                self.sleep(wait)
                 pause = min(pause * 2, cap)
 
     def _routes(self, stack: contextlib.ExitStack):
@@ -207,16 +252,22 @@ class Fetcher(Generic[P]):
             response.close()
         return host, restarted
 
-    def _status(self, response, host: str) -> int:
-        """Код ответа, судимый одинаково у всех приёмников: повторимый по `retry_on` — `_Again` со сроком сервера,
-        4xx и 5xx — отказ кодом потребителя, иначе код как есть."""
+    def _status(self, response, host: str, refuse=None) -> int:
+        """Код ответа, судимый одинаково у всех приёмников: повторимый по `retry_on` — `_Again` со сроком сервера как
+        назван (потолки судит `_retry`), 4xx и 5xx — отказ, иначе код как есть. Отказ переводит потребитель
+        (`refuse(ответ)`), если знает причины своего источника, иначе — код политики."""
         status = response.status_code
+        if status not in self.policy.retry_on and status < REFUSED_FROM:
+            return status
+        refusal = refuse(response) if refuse else self._failed(host, status)
         if status in self.policy.retry_on:
-            raise _Again(self._failed(host, status), retry_after(
-                response.headers.get("Retry-After"), self.policy.retry_after_max_sec, 0.0))
-        if status >= REFUSED_FROM:
-            raise self._failed(host, status)
-        return status
+            raise self._again(response, refusal)
+        raise refusal
+
+    @staticmethod
+    def _again(response, refusal: ContractError) -> _Again:
+        """Повторимый ответ: отказ на случай исчерпания и срок, названный сервером, как назван (потолки судит `_retry`)."""
+        return _Again(refusal, retry_after(response.headers.get("Retry-After"), math.inf, 0.0))
 
     @staticmethod
     def _append(files: Files, path, owner: str, part: Path) -> int:
@@ -231,13 +282,14 @@ class Fetcher(Generic[P]):
             raise PathEscapeError(files.name(part)) from e
 
     def _open(self, client, url: str, headers: dict | None, offset: int, validator: str, held: str, *,
-              method: str = "GET", stop: str = ""):
+              method: str = "GET", stop: str = "", deadline: float | None = None):
         """Запрос с переходами — (ответ потоком, конечный хост). Каждый адрес судится до запроса.
 
         Напрямую — соединение на судимый IP (`Host` и SNI — исходное имя); через прокси среды — по имени, его разрешает
         прокси, а суд схемы и хоста тот же. Заголовки потребителя (ключ) уходят только исходному хосту; `Range` с
         `If-Range` — только хосту, чей валидатор лежит в заметке: валидатор одного сервера другому ничего не говорит.
-        Ответ с заголовком `stop` возвращается, даже если это переход.
+        Ответ с заголовком `stop` возвращается, даже если это переход. При сроке обращения `deadline` срок фазы запроса
+        урезан до половины остатка: соединение и ответ вместе в него укладываются; остатка нет — запрос не уходит.
         """
         import httpx
 
@@ -251,12 +303,13 @@ class Fetcher(Generic[P]):
                 sent.update({"Range": f"bytes={offset}-", "If-Range": validator})
             # Файл — байты как пришли (NI-04): длина, предел и смещение Range — в одном представлении, без распаковки.
             sent.update({"Host": target.netloc.decode("ascii"), "Accept-Encoding": "identity"})
+            timeout = httpx.USE_CLIENT_DEFAULT if deadline is None else self._phase(target.host, deadline)
             route = client(proxy)
             if proxy:
-                request = route.build_request(method, target, headers=sent)
+                request = route.build_request(method, target, headers=sent, timeout=timeout)
             else:
                 request = route.build_request(method, target.copy_with(host=self._judge(target)), headers=sent,
-                                              extensions={"sni_hostname": target.host})
+                                              timeout=timeout, extensions={"sni_hostname": target.host})
             try:
                 self.mark()
                 response = route.send(request, stream=True)
@@ -268,6 +321,14 @@ class Fetcher(Generic[P]):
             response.close()
             url = str(target.join(location))
         raise self._failed(httpx.URL(url).host, f"переходов больше {self.policy.redirects}")
+
+    def _phase(self, host: str, deadline: float) -> float:
+        """Срок одной фазы запроса при сроке обращения: не больше `timeout_sec` и половины остатка; остатка нет — `_Again`
+        (повтор `_retry` уже не начнёт)."""
+        left = deadline - self.clock()
+        if left <= 0:
+            raise _Again(self._failed(host, "срок обращения исчерпан"))
+        return min(self.policy.timeout_sec, left / 2)
 
     def _proxy(self, target) -> str:
         """Прокси среды для адреса или пусто: схема и NO_PROXY — по правилам urllib, как у httpx с trust_env."""
@@ -339,52 +400,18 @@ class Fetcher(Generic[P]):
              offset: int = 0) -> int:
         """Тело открытого ответа — в остаток владельца без своего буфера: принятое до обрыва лежит на диске (MF-04).
         Длина — из состава или заявленная ответом; больше состава или предела `max_bytes` политики — остаток снят и отказ
-        кодом; обрыв или недобор — `_Again` с принятым. Сжатое тело вопреки `identity` — отказ до записи: распаковка
-        сломала бы длину, предел и отпечаток (NI-04). Мера работы (NI-01): кусок — признак работы, если с начала окна
-        принято не меньше предела × прошедшее; окно закрылось ниже предела — `_Again` с `DOWNLOAD_TOO_SLOW`, попытка
-        потрачена. Предел 0 — признак на каждом куске, обрыва по скорости нет (M4 как был)."""
-        import httpx
-
-        coding = str(response.headers.get("content-encoding") or "identity").strip().lower()
-        if coding != "identity":
-            raise self._failed(host, f"Content-Encoding {coding}")
-        part = files.remnant(path, owner)
-        expected = size if size is not None else self._length(response, offset)
-        body = self._body()
-        limit, over = body.max_bytes, ""
-        floor, window = body.speed_floor_bytes_per_sec, body.speed_window_sec
-        began, in_window = self.clock(), 0
-        with os.fdopen(self._append(files, path, owner, part), "ab") as fh:
-            try:
-                for chunk in response.iter_bytes():
-                    offset += len(chunk)
-                    if size is not None and offset > size:
-                        over = "size"
-                        break
-                    if limit and offset > limit:
-                        over = "limit"
-                        break
-                    fh.write(chunk)
-                    in_window += len(chunk)
-                    elapsed = self.clock() - began
-                    if in_window >= floor * elapsed:
-                        self.mark()
-                    if elapsed >= window:
-                        if in_window < floor * window:
-                            raise _Again(ContractError("DOWNLOAD_TOO_SLOW", facts={
-                                "host": host, "got": in_window, "window_sec": window, "floor": floor}))
-                        began, in_window = self.clock(), 0
-            except httpx.TransportError as e:
-                raise _Again(self._short(host, offset, expected)) from e
+        кодом; обрыв или недобор — `_Again` с принятым, мера работы — та же, что у ответа в память (`_pour`). Сжатое тело
+        вопреки `identity` — отказ до записи (`_identity`)."""
+        self._identity(response, host)
+        with os.fdopen(self._append(files, path, owner, files.remnant(path, owner)), "ab") as fh:
+            got, over = self._pour(response, fh.write, host=host, size=size, offset=offset, cut=self._short)
         if over:
             files.drop(path, owner)
             if over == "limit":
-                raise ContractError("DOWNLOAD_TOO_LARGE", facts={"limit_mb": round(limit / 2**20, 3)})
-            raise ContractError(body.codes.corrupt,
-                                facts={"part": files.name(files.place(path)), "expected": size, "got": offset})
-        if expected is not None and offset < expected:
-            raise _Again(self._short(host, offset, expected))
-        return offset
+                raise self._too_large()
+            raise ContractError(self._body().codes.corrupt,
+                                facts={"part": files.name(files.place(path)), "expected": size, "got": got})
+        return got
 
     def receive(self, response, files: Files, path, owner: str, *, accept) -> Path:
         """Тело уже открытого ответа API в файл через остаток владельца (адрес судил вызывающий): тип — из объявленных до
@@ -429,6 +456,125 @@ class Fetcher(Generic[P]):
             return None, f"HEAD {host}: нет {' и '.join(filter(None, (linked, 'Content-Length')))}"
         return int(told), f"HEAD {host}: {named}"
 
+    def status(self, url: str, headers: dict | None = None, *, within: float | None = None) -> tuple[int, dict]:
+        """Код ответа и его заголовки без тела — (код, заголовки с именами в нижнем регистре). Та же дверь (NI-09): суд
+        адреса до запроса, соединение на судимый IP, ключ — только исходному хосту, повтор и срок по политике
+        (`deadline_sec`, срок вызывающего `within`). Тело не читается: поток закрыт после заголовков. Код — ответ, а не
+        отказ: кто ответил — и есть улика; переход тоже возвращается как есть; повторяются только коды `retry_on`.
+        Отказ — только у самой двери: адрес, сеть, срок."""
+        deadline = self._deadline(self._addressed(), within)
+        with contextlib.ExitStack() as stack:
+            client = self._routes(stack)
+            try:
+                return self._retry(lambda: self._peek(client, url, headers, deadline), deadline)
+            except _Again as e:
+                raise e.refusal from e
+
+    def _peek(self, client, url: str, headers: dict | None, deadline: float) -> tuple[int, dict]:
+        """Одна попытка статуса — (код, заголовки); код из `retry_on` — `_Again` со сроком сервера."""
+        response, host = self._open(client, url, headers, 0, "", "", stop="location", deadline=deadline)
+        response.close()
+        if response.status_code in self.policy.retry_on:
+            raise self._again(response, self._failed(host, response.status_code))
+        return response.status_code, dict(response.headers.items())
+
+    def answer(self, url: str, headers: dict | None = None, *, refused=None, within: float | None = None) -> Any:
+        """JSON ответа API в память — та же дверь, что у файла (NI-09): суд адреса до запроса и на каждом переходе,
+        соединение на судимый IP, ключ — только исходному хосту, `identity`, повтор по политике. Тело — по ходу и не
+        больше `max_bytes` (NI-06), разбор — из байтов и только целого (NI-07). Всё обращение с повторами укладывается в
+        срок: `deadline_sec` политики, а если вызывающий передал свой остаток `within` (секунды) — меньший из двух.
+        Отказ источника (4xx, 5xx) переводит `refused(ответ с телом, прочитанным в пределе)`, если потребитель знает
+        причины своего источника; иначе — код политики. Отказы самой двери (адрес, предел, обрыв, срок) идут наверх как
+        есть. Политика не AnswerPolicy или без хоста — ошибка кода: ответ в память — только с объявленного хоста."""
+        deadline = self._deadline(self._memory(), within)
+        with contextlib.ExitStack() as stack:
+            client = self._routes(stack)
+            try:
+                body, host = self._retry(lambda: self._recall(client, url, headers, refused, deadline), deadline)
+            except _Again as e:
+                raise e.refusal from e
+        try:
+            return json.loads(body)
+        except ValueError as e:
+            raise self._failed(host, "ответ не JSON") from e
+
+    def _recall(self, client, url: str, headers: dict | None, refused, deadline: float) -> tuple[bytes, str]:
+        """Одна попытка ответа в память — (тело, конечный хост); повторимое — `_Again`, отказ источника — `_status`."""
+        import httpx
+
+        response, host = self._open(client, url, headers, 0, "", "", deadline=deadline)
+        try:
+            self._status(response, host, refused and (lambda r: refused(httpx.Response(
+                r.status_code, headers=r.headers, content=self._kept(r, host, deadline), request=r.request))))
+            return self._kept(response, host, deadline), host
+        finally:
+            response.close()
+
+    def _kept(self, response, host: str, deadline: float) -> bytes:
+        """Тело ответа в память: байты как пришли, не больше `max_bytes` и до срока обращения; обрыв — `_Again` с кодом
+        политики: остатка для докачки у ответа нет."""
+        self._identity(response, host)
+        body = bytearray()
+        _, over = self._pour(response, body.extend, host=host, size=None, offset=0, deadline=deadline,
+                             cut=lambda host, got, _expected: self._failed(host, f"ответ оборван на {got} байт"))
+        if over:
+            raise self._too_large()
+        return bytes(body)
+
+    def _identity(self, response, host: str) -> None:
+        """Тело — байты как пришли (NI-04): сжатое вопреки `identity` — отказ до приёма, распаковка сломала бы длину,
+        предел и отпечаток."""
+        coding = str(response.headers.get("content-encoding") or "identity").strip().lower()
+        if coding != "identity":
+            raise self._failed(host, f"Content-Encoding {coding}")
+
+    def _pour(self, response, write, *, host: str, size: int | None, offset: int, cut,
+              deadline: float | None = None) -> tuple[int, str]:
+        """Тело открытого ответа в сток `write` по ходу — (принятая длина, перебор): «size» — больше состава, «limit» —
+        больше `max_bytes` политики, пусто — нет; кусок сверх в сток не идёт. Приёмники двери различаются только стоком.
+
+        Мера работы (NI-01): кусок — признак работы, если с начала окна принято не меньше предела × прошедшее; окно
+        закрылось ниже предела — `_Again` с `DOWNLOAD_TOO_SLOW`, попытка потрачена; предел 0 — признак на каждом куске.
+        Обрыв или недобор до длины из состава или заявленной ответом — `_Again` с отказом `cut(хост, принято, ждали)`.
+        Кусок, пришедший после срока обращения `deadline`, не принимается — `_Again` с кодом политики.
+        """
+        import httpx
+
+        expected = size if size is not None else self._length(response, offset)
+        body = self._body()
+        limit, floor, window = body.max_bytes, body.speed_floor_bytes_per_sec, body.speed_window_sec
+        began, in_window = self.clock(), 0
+        try:
+            for chunk in response.iter_bytes():
+                if deadline is not None and self.clock() >= deadline:
+                    raise _Again(self._failed(host, f"срок обращения истёк на {offset} байт"))
+                offset += len(chunk)
+                if size is not None and offset > size:
+                    return offset, "size"
+                if limit and offset > limit:
+                    return offset, "limit"
+                write(chunk)
+                in_window += len(chunk)
+                elapsed = self.clock() - began
+                if in_window >= floor * elapsed:
+                    self.mark()
+                if elapsed >= window:
+                    if in_window < floor * window:
+                        raise _Again(ContractError("DOWNLOAD_TOO_SLOW", facts={
+                            "host": host, "got": in_window, "window_sec": window, "floor": floor}))
+                    began, in_window = self.clock(), 0
+        except httpx.TransportError as e:
+            raise _Again(cut(host, offset, expected)) from e
+        if expected is not None and offset < expected:
+            raise _Again(cut(host, offset, expected))
+        return offset, ""
+
+    def _too_large(self) -> ContractError:
+        """Перебор предела — с путём ключа предела в декларации (`slot`): рецепт реестра называет, что поднять."""
+        key = f"config/{self.slot.file} → {'.'.join((*self.slot.section, 'max_bytes'))}" if self.slot else "max_bytes"
+        return ContractError("DOWNLOAD_TOO_LARGE", facts={"limit_mb": round(self._body().max_bytes / 2**20, 3),
+                                                          "key": key})
+
 
 class Unreached(str):
     """Причина «длина не узнана» от `Fetcher.length`, когда дверь исчерпала повторы — хост не достигнут."""
@@ -438,4 +584,15 @@ def results(config_file: str | Path, **seams) -> Fetcher[ResultFetchPolicy]:
     """Загрузчик результатов поставщиков по `download.fetch` декларации задач; ссылки на файл (`url_fields`) — там же."""
     decl = Declaration(config_file, TaskCycleError, "ожидания",
                        "Заведи config/media_tasks.yaml — правила загрузки объявлены там.")
-    return Fetcher(decl.section(*RESULT_FETCH.section, schema=RESULT_FETCH.schema), **seams)
+    return Fetcher(decl.section(*RESULT_FETCH.section, schema=RESULT_FETCH.schema), slot=RESULT_FETCH, **seams)
+
+
+def answers(decl: Declaration, slot: Slot[A], url: str, **seams) -> Fetcher[A]:
+    """Загрузчик обращения к объявленному адресу (ответ в память, статус) по разделу `slot` декларации `decl`: хост —
+    хост объявленного адреса `url` (`ProviderUrl` — хост без подстановки `{…}`), списка хостов рядом с адресом нет.
+    Внутреннюю сеть политика открывает (`block_private: false`) только литералу петли — иначе отказ до запроса."""
+    policy = decl.section(*slot.section, schema=slot.schema)
+    host = declared_host(url)
+    if not policy.block_private and not _loopback(host):
+        raise ContractError("DOWNLOAD_FORBIDDEN", facts={"host": host, "allowed": "литерал петли (block_private: false)"})
+    return Fetcher(policy.model_copy(update={"hosts": (host,)}), slot=slot, **seams)

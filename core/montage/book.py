@@ -9,10 +9,10 @@
 from pathlib import Path
 from typing import Callable
 
-import yaml
 from pydantic import ValidationError
 
 from core.declaration import Declaration
+from core.engine.table_materializer import declared_rows
 from core.providers.ffmpeg import AudioTrack, Layer, RenderProfile, SceneSpec
 
 from .errors import MontageError
@@ -39,17 +39,6 @@ class SceneBook:
         snapshot = self.state.read_snapshot(table) or {}
         return ((snapshot.get(sheet) or {}).get("rows") or {})
 
-    def _declared_rows(self, book: str, sheet: str) -> list[dict]:
-        """Дефолт из декларации книги, пока книга проекта не заполнена."""
-        path = self.config_path / "templates" / "tables" / f"{book}.schema.yaml"
-        if not path.exists():
-            return []
-        schema = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        for declared in schema.get("sheets") or []:
-            if declared.get("name") == sheet:
-                return list(declared.get("rows") or [])
-        return []
-
     def _upward(self, table: str, sheet: str) -> tuple[list[dict], str, str]:
         """Лист у самой сущности или у ближайшего предка. Иерархия не зашита — идём по адресу."""
         node = str(table or "").strip("/")
@@ -61,6 +50,11 @@ class SceneBook:
                 return [], "none", ""
             node = node.rpartition("/")[0]
 
+    def _named_rows(self, *path: str) -> list[dict]:
+        """Дефолт из декларации книги, пока книга проекта не заполнена: лист и книгу называет montage.yaml по пути
+        `path`, имя листа судит его дверь по листам книги."""
+        return declared_rows(self.config_path, self._decl, *path)
+
     # ═══ Профиль рендера ═══
 
     def profile(self, table: str, profile_id: str = "") -> tuple[RenderProfile, dict]:
@@ -68,7 +62,7 @@ class SceneBook:
         spec = self.config["profile"]
         rows, source, owner = self._upward(table, spec["sheet"])
         if not rows:
-            rows, source, owner = self._declared_rows(spec["fallback_book"], spec["sheet"]), "declaration", ""
+            rows, source, owner = self._named_rows("profile"), "declaration", ""
         if not rows:
             raise MontageError(
                 "RENDER_PROFILE_INVALID", "Профилей рендера нет ни в книге канала, ни в декларации.",
@@ -117,7 +111,7 @@ class SceneBook:
         spec = self.config["scene"]["roles"]
         rows, _source, _owner = self._upward(table, spec["sheet"])
         if not rows:
-            rows = self._declared_rows(spec["fallback_book"], spec["sheet"])
+            rows = self._named_rows("scene", "roles")
         return {str(row.get(spec["type_column"])): bool(row.get(spec["fills_frame_column"]))
                 for row in rows}
 
@@ -127,7 +121,7 @@ class SceneBook:
         toggle = rig.get("toggle") or {}
         rows, _source, owner = self._upward(table, toggle["sheet"])
         if not rows:
-            rows = self._declared_rows(toggle["fallback_book"], toggle["sheet"])
+            rows = self._named_rows("rig", "toggle")
         enabled = next((bool(row.get(toggle["enabled_column"])) for row in rows
                         if row.get(toggle["type_column"]) == toggle["fragment_type"]), None)
         el_cfg = self.config["scene"]["elements"]
@@ -149,7 +143,7 @@ class SceneBook:
     def _rig_rows(self, table: str, part: str) -> list[dict]:
         spec = (self.config.get("rig") or {}).get(part) or {}
         rows, _source, _owner = self._upward(table, spec["sheet"])
-        return rows or self._declared_rows(spec["fallback_book"], spec["sheet"])
+        return rows or self._named_rows("rig", part)
 
     def slots(self, table: str) -> dict[str, dict]:
         """Слоты канала по идентификатору: чем крепится, куда и в какую рамку."""

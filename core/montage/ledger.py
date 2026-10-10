@@ -8,9 +8,8 @@
 
 from pathlib import Path
 
-import yaml
-
 from core.declaration import Declaration
+from core.engine.table_materializer import named_sheet
 
 from .errors import MontageError
 
@@ -67,18 +66,12 @@ class RenderLedger:
         return {"row_id": row_id, "sheet": spec["sheet"], "row": row}
 
     def _check_enums(self, table: str, sheet: str, row: dict) -> None:
-        """Значения перечислимых столбцов сверяются с объявлением книги, а не с верой в код."""
-        book = self.config["target"].get("book") or "video_data"
-        path = self.config_path / "templates" / "tables" / f"{book}.schema.yaml"
-        if not path.exists():
-            return
-        schema = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        declared = next((s for s in schema.get("sheets") or [] if s.get("name") == sheet), None)
-        for column in (declared or {}).get("columns") or []:
-            allowed = column.get("enum")
-            value = row.get(column["name"])
-            if allowed and value is not None and value not in allowed:
+        """Значения перечислимых столбцов сверяются с объявлением книги, а не с верой в код: лист и книгу называет
+        montage.yaml `target`, имя листа судит его дверь по листам книги — необъявленный лист не пропускает сверку."""
+        for column in named_sheet(self.config_path, self._decl, "target", book="book").columns:
+            value = row.get(column.name)
+            if column.enum and value is not None and value not in column.enum:
                 raise MontageError(
-                    "ENUM_VIOLATION", f"{sheet}.{column['name']}: `{value}` не из объявленных значений.",
-                    reason=f"Допустимо: {', '.join(map(str, allowed))}. Значение приходит из "
+                    "ENUM_VIOLATION", f"{sheet}.{column.name}: `{value}` не из объявленных значений.",
+                    reason=f"Допустимо: {', '.join(column.enum)}. Значение приходит из "
                            f"config/montage.yaml → target.")
