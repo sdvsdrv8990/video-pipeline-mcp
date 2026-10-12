@@ -13,11 +13,17 @@ on:
 
 jobs:
   lint:
-    name: lint (ruff + mypy)
-    runs-on: ubuntu-latest
+    name: lint (ruff + mypy) · ${{ matrix.os }} · ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    # Матрица = объявленные платформы pyproject (PT-01); красный одной ОС не снимает остальные.
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12"]
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v7
         with:
@@ -60,11 +66,16 @@ jobs:
         run: npm run build
 
   test:
-    name: test (in-process, script exit-code = gate)
-    runs-on: ubuntu-latest
+    name: test (in-process, script exit-code = gate) · ${{ matrix.os }} · ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12"]
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -77,8 +88,15 @@ jobs:
       # 2026-08-23: с бинарём 166 проверок в трёх наборах, без него 60 — то есть 106 (64%) в CI
       # не исполнялись вовсе, включая рендер, приёмку ffprobe, дорожки слотов и совместимость.
       # Это пакет менеджера пакетов, а не гигабайты весов модели, — ставится за секунды.
-      - name: install LibreOffice (formula recalc) + ffmpeg (montage)
+      - name: install LibreOffice (formula recalc) + ffmpeg (montage) · Linux
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-calc ffmpeg
+      - name: install LibreOffice (formula recalc) + ffmpeg (montage) · macOS
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg && brew install --cask libreoffice
+      - name: install LibreOffice (formula recalc) + ffmpeg (montage) · Windows
+        if: runner.os == 'Windows'
+        run: choco install -y --no-progress ffmpeg libreoffice-fresh
       # I7 T0: единый раннер вместо ручного перечисления файлов (забытая строка = тест вне гейта).
       # tests/test_suites.py находит все наборы сам и гоняет каждый подпроцессом (exit-код = вердикт).
       # Маркер `live` больше никого не отсекает — сервер поднимает харнесс.
@@ -102,13 +120,20 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: coverage-${{ matrix.python-version }}
+          name: coverage-${{ matrix.os }}-${{ matrix.python-version }}
           path: coverage.xml
           if-no-files-found: ignore
 
   conformance:
-    name: conformance (спека MCP, сторонний клиент)
-    runs-on: ubuntu-latest
+    name: conformance (спека MCP, сторонний клиент) · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7

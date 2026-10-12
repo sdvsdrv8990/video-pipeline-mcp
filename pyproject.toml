@@ -24,6 +24,12 @@ license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
 classifiers = [
     "Private :: Do Not Upload",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    # Объявленные платформы = матрица CI (.github/workflows/ci.yml): красный на ОС — мера переносимости, не повод снять ОС.
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
     "Framework :: AsyncIO",
 ]
 
