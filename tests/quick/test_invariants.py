@@ -6,6 +6,9 @@ tests/quick/test_invariants.py — сторож межфайловых инва�
 упоминание бинаря в комментарии), закреплены как регрессия.
 """
 
+import atexit
+import shutil
+import subprocess
 import sys
 
 import tempfile
@@ -41,6 +44,7 @@ from invariants import (
     declaration_loaded_privately,
     module_without_reader,
     muted_refusal,
+    provider_word_outside_catalog,
     record_field_mismatch,
     unfinished_in_server,
     unscripted_declaration_stale,
@@ -61,6 +65,7 @@ def ok(cond, msg):
 def make(files: dict[str, str]) -> Path:
     """Временный корень: сторожу пути приходят параметром, поэтому мусорить в репозитории не нужно."""
     root = Path(tempfile.mkdtemp(prefix="vpm-inv-"))
+    atexit.register(shutil.rmtree, root, ignore_errors=True)
     for rel, text in files.items():
         target = root / rel
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -824,6 +829,33 @@ except ScenarioError as сбой:
 
 ok(_resolve("--root ${live.path}", {"live": {"path": "/tmp/дерево"}}) == "--root /tmp/дерево",
    "разобранная ссылка подставляется как была — правило не мешает обычной работе")
+
+print("\n== имя поставщика туннеля вне его описания (T4a) ==")
+
+
+def в_git(files: dict[str, str]) -> Path:
+    """Подставное дерево под git: ось судит файлы проекта (индекс), а не всё, что лежит на диске."""
+    root = make(files)
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    return root
+
+
+_ноты = provider_word_outside_catalog(в_git({"server.py": 'help="Поднять Cloudflare-туннель"\n',
+                                             "README.md": "Работает через CloudFlare\n"}))
+ok([н.split(" — ")[0] for н in _ноты] == ["README.md:1", "server.py:1"],
+   "имя поставщика в справке сервера и в README — ноты с местами, регистр не прячет")
+ok(not provider_word_outside_catalog(в_git({
+    "core/transport/tunnel.py": "class CloudflaredTunnel: ...\n",
+    "config/tunnel_diagnostics.yaml": "бинари:\n  cloudflared: {в_дереве: bin/tunnel}\n",
+    "tests/quick/test_x.py": "cloudflared\n", "docs/старое.md": "Cloudflare\n",
+    "server.py": 'help="Поднять туннель"\n'})),
+   "имя поставщика только в коде туннеля, каталоге, тестах и истории — чисто")
+ok(not provider_word_outside_catalog(в_git({".gitignore": "config/tunnel.yaml\n",
+                                           "config/tunnel.yaml": "# cloudflared: режим named\n"})),
+   "машинная декларация владельца (вне git) не судится — потолок не зависит от машины")
+ok("git" in отказ(provider_word_outside_catalog, make({"server.py": "Cloudflare\n"})),
+   "дерево без git — отказ судить с причиной, а не «чисто»")
 
 if _fails:
     print("ПРОВАЛЫ:")

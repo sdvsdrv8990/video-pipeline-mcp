@@ -11,7 +11,7 @@ from pathlib import Path
 
 import yaml
 
-from core.declaration import declarations_root
+from core.declaration import declarations_root, instance_home
 
 
 def remove_path(srv, path: str) -> dict:
@@ -131,17 +131,18 @@ def seed_runner_token(srv, token: str) -> dict:
 
 
 def decoy_beyond_installs(srv, marker: str) -> dict:
-    """Приманка суда пути установки: файл состояния с меткой вне каталога установок сервера (в его рабочей области) и
-    id, которые к нему ведут, — относительный от каталога установок и абсолютный. Прочти сервер приманку — метка уйдёт
-    клиенту в статусе; каталог установок — как его строит сервер: `local.models_dir` от родителя деклараций."""
-    config = declarations_root({**os.environ, **srv.extra_env})
-    providers = yaml.safe_load((config / "providers.yaml").read_text(encoding="utf-8"))
-    installs = config.parent / providers["local"]["models_dir"] / "installs"
+    """Приманка суда пути установки: запись задания установки с меткой вне хранилища узла заданий сервера (в его рабочей
+    области) и id, которые к ней ведут, — относительный от хранилища и абсолютный. Прочти сервер приманку — метка уйдёт
+    клиенту в статусе; хранилище — как его строит сервер: `jobs.yaml` `store` от дома инстанса."""
+    environ = {**os.environ, **srv.extra_env}
+    config = declarations_root(environ)
+    store = instance_home(config, environ) / yaml.safe_load((config / "jobs.yaml").read_text(encoding="utf-8"))["store"]
     decoy = Path(srv.workspace) / "приманка"
     decoy.with_suffix(".json").write_text(json.dumps(
-        {"install_id": marker, "model_id": marker, "kind": "tts", "phase": "done", "started": 0, "heartbeat": 0},
+        {"tool": "media_model_install", "klass": "model_download", "created": 0, "heartbeat": 0, "finished": 0,
+         "task": {"task_id": marker, "status": "completed", "params": {"model_id": marker}, "result": {"path": marker}}},
         ensure_ascii=False), encoding="utf-8")
-    return {"ok": True, "data": {"relative": os.path.relpath(decoy, installs), "absolute": str(decoy)}}
+    return {"ok": True, "data": {"relative": os.path.relpath(decoy, store), "absolute": str(decoy)}}
 
 
 def task_node_ids(srv) -> dict:

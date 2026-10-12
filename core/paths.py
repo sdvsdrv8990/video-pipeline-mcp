@@ -99,7 +99,8 @@ class Files:
             SecretAccessError: путь ведёт в закрытый каталог
         """
         root = Path(self.root).resolve()
-        target = (root / path).resolve()
+        # realpath, а не Path.resolve: на 3.11–3.12 петля ссылок у resolve — RuntimeError, с 3.13 resolve — тот же realpath.
+        target = Path(os.path.realpath(root / path))
         if target != root and not target.is_relative_to(root):
             raise PathEscapeError(self.name(path))
         if not secrets and is_secret_path(target.relative_to(root) if target != root else ""):

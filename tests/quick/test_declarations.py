@@ -297,6 +297,48 @@ def main():
           first is None and said is not None and said.code == CODE and "index.fetch.codes.failed (registry_code)" in said.message,
           (first and first.message, said and said.message))
 
+    print("\n== связь двух деклараций: один отказ двери называет оба файла и путь ключа каждой стороны, без значений ==")
+    link_root = Path(tempfile.mkdtemp(prefix="decl-link-"))
+    (link_root / "jobs.yaml").write_text("stale_after_sec: 7171717\n", encoding="utf-8")
+    (link_root / "providers.yaml").write_text(
+        "local:\n  install:\n    fetch:\n      timeout_sec: 9191919\n      speed_window_sec: 8181818\n", encoding="utf-8")
+    prior = os.environ.get("MCP_CONFIG")
+    os.environ["MCP_CONFIG"] = str(link_root)
+    try:
+        jobs = Declaration(link_root / "jobs.yaml", ContractError, "заданий", "")
+        providers = Declaration(link_root / "providers.yaml", ContractError, "провайдеров", "")
+        fetch = [("local", "install", "fetch", key) for key in ("timeout_sec", "speed_window_sec")]
+
+        def refuse_link():
+            raise jobs.link_refused("link_greater", "простой задания дольше тишины загрузчика", [("stale_after_sec",)],
+                                    providers, fetch)
+        said, heard, _ = refusal_of(engine, refuse_link)
+        single, _, _ = refusal_of(engine, lambda: jobs.need("absent"))
+    finally:
+        if prior is None:
+            del os.environ["MCP_CONFIG"]
+        else:
+            os.environ["MCP_CONFIG"] = prior
+        shutil.rmtree(link_root, ignore_errors=True)
+    sides = [(x.get("file"), x["field"], x["rule"]) for x in (said.errors if said else [])]
+    check("связь: DECLARATION_INVALID, в facts.file оба файла, в errors — сторона каждого ключа",
+          said is not None and said.code == CODE and said.facts.get("file") == "jobs.yaml, providers.yaml"
+          and sides == [("jobs.yaml", "stale_after_sec", "link_greater"),
+                        ("providers.yaml", "local.install.fetch.timeout_sec", "link_greater"),
+                        ("providers.yaml", "local.install.fetch.speed_window_sec", "link_greater")],
+          said and (said.facts, sides))
+    check("связь: текст и подсказка называют оба файла, деталь — файл и путь ключа",
+          said is not None and "jobs.yaml: stale_after_sec (link_greater)" in said.message
+          and "providers.yaml: local.install.fetch.timeout_sec (link_greater)" in said.message
+          and "jobs.yaml" in said.recovery.reason and "providers.yaml" in said.recovery.reason,
+          said and (said.message[:200], said.recovery.reason[:120]))
+    check("связь: значений ключей нет ни в ответе, ни в журнале",
+          said is not None and not any(v in repr(said.model_dump()) or any(v in x for x in heard)
+                                       for v in ("7171717", "9191919", "8181818")), said and said.facts)
+    check("ошибка одного файла — прежняя форма: один файл, деталь без имени файла",
+          single is not None and single.facts.get("file") == "jobs.yaml" and single.facts.get("details") == "absent (missing)"
+          and all("file" not in x for x in single.errors), single and (single.facts, single.errors))
+
     print("\n== разрушительное: правка файла посреди работы ==")
     live = work / "live.yaml"
     write(live, real, 3_000_000_000)

@@ -23,6 +23,15 @@ for _noisy in ("torch.*", "transformers.*", "diffusers.*", "huggingface_hub.*"):
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+import atexit
+import shutil
+
+# Свой дом инстанса на прогон набора, а не общий дом прогона наборов: задания узла и ключи инстанса этого прогона не
+# видны следующему (повтор в окне AD-21 нашёл бы двойника прошлого прогона) и соседним наборам.
+_RUN_HOME = tempfile.mkdtemp(prefix="vpm_home_providers_")
+atexit.register(shutil.rmtree, _RUN_HOME, ignore_errors=True)
+os.environ["MCP_HOME"] = _RUN_HOME
+
 from core.providers import ProviderError, ProviderResolver
 
 CFG = ROOT / "config" / "providers.yaml"
@@ -580,18 +589,27 @@ else:
     _нет = "весов" if not _img_entry else "среды расчёта (torch/diffusers под карту машины)"
     print(f"  ⚠ живой прогон локальной генерации картинок пропущен: нет {_нет}")
 
-print("== 12a-2. Установка модели отказывает по МЕСТУ до фоновой загрузки ==")
+print("== 12a-2. Установка модели отказывает по МЕСТУ до задания ==")
 # Сценарием это недостижимо: чтобы вызвать отказ по-настоящему, нужен заполненный диск.
-# Здесь судится сам путь — что проверка стоит ДО потока и что поток не стартует.
+# Здесь судится сам путь — что проверка стоит ДО задания и что задание не заводится.
+import atexit as _atexit
+import shutil as _shutil
+from core.jobs import Tasks as _Задания
 from core.providers.installer import ModelInstaller as _Инсталлятор
 
 
 import threading as _потоки
 
 
+def _врем(prefix: str) -> Path:
+    """Временный каталог события; убирается при выходе процесса — после набора читателя у него нет."""
+    path = Path(tempfile.mkdtemp(prefix=prefix))
+    _atexit.register(_shutil.rmtree, path, ignore_errors=True)
+    return path
+
+
 class _КаталогМеста:
     def __init__(self, мб):
-        self.models_dir = _ws
         self._мб = мб
         self.ставил = False
         self.снимки, self.поставлено, self.готово = [], None, _потоки.Event()
@@ -603,36 +621,39 @@ class _КаталогМеста:
         свободно = 100.0
         if self._мб > свободно:                 # как у настоящего каталога: нехватку отказывает сам `место_под`
             raise ProviderError("MODEL_NO_DISK_SPACE", facts={"model": model_id, "need_mb": self._мб, "free_mb": свободно})
-        self.снимки.append({"нужно_мб": self._мб, "свободно_мб": свободно})
+        self.снимки.append({"нужно_мб": self._мб, "свободно_мб": свободно, "entry": {"id": model_id}, "plan": [],
+                            "force": force})
         return self.снимки[-1]
 
-    def install_planned(self, место, progress=None, mark=None, held=lambda: None):
+    def install_planned(self, место, progress=None, mark=None, held=lambda: None, pulse=None):
         held()                                  # замок модели взят — как у настоящего каталога
         self.ставил, self.поставлено = True, место
         self.готово.set()
         return {"id": "проба", "mb": self._мб, "path": "x"}
 
-    def silence_sec(self):
-        return 0.0                              # здесь судится место, а не тишина загрузчика
-
     def speed(self):
         return {"floor": 0, "window": 0}        # мера скорости выключена — судится место
 
+    def on_disk(self, место):
+        return 0
+
 
 _тесный = _КаталогМеста(10 ** 6)
+_узел12 = _Задания(_Eng(reactions=_REACTIONS), root=_врем("inst12_"))
 try:
-    _Инсталлятор(_тесный).start("проба", "tts")
+    _Инсталлятор(_тесный, heartbeat_sec=0.05).begin(_узел12, "media_model_install", "проба", "tts")
     ok(False, "установка при нехватке места обязана отказать, а не начать загрузку")
 except ProviderError as _отказ:
-    ok(_отказ.code == "MODEL_NO_DISK_SPACE", f"отказ каталога по месту доходит из start своим кодом ({_отказ.code})")
-ok(not _тесный.ставил,
-   "до скачивания дело не дошло: проверка стоит ДО фонового потока, а не после гигабайтов")
+    ok(_отказ.code == "MODEL_NO_DISK_SPACE", f"отказ каталога по месту доходит из вызова своим кодом ({_отказ.code})")
+ok(not _тесный.ставил and _узел12.status() == [],
+   "до скачивания дело не дошло: проверка стоит ДО задания — ни работы, ни записи в хранилище узла")
 _просторный = _КаталогМеста(1.0)
-_состояние = _Инсталлятор(_просторный).start("проба", "tts")
-ok(_состояние["status"] == "processing",
-   "когда места хватает, установка стартует обычным порядком — отказ не стал всегдашним")
+_состояние = _Инсталлятор(_просторный, heartbeat_sec=0.05).begin(_узел12, "media_model_install", "проба", "tts")
+ok(_состояние["status"] in ("pending", "processing") and _состояние["task_id"],
+   f"когда места хватает, установка стартует заданием — отказ не стал всегдашним ({_состояние['status']})")
 ok(_просторный.готово.wait(10) and len(_просторный.снимки) == 1 and _просторный.поставлено is _просторный.снимки[0],
-   "поток ставит по тому же снимку, по которому судили место: место спрошено один раз")
+   "задание ставит по тому же снимку, по которому судили место: место спрошено один раз")
+_узел12.settle(_состояние["task_id"], 10)
 
 print("== 12a-3. Отбор по машине: отсеянные посчитаны, а не потеряны ==")
 _все = _call("media_models", scope="installed")
@@ -1048,40 +1069,40 @@ _lst_on = _call("media_models", scope="online", kind="image", limit=5)
 ok(all(m["mode"] == "image_generation" for m in _lst_on.data["models"]),
    "и что умеет шлюз онлайн — с провайдером и эндпоинтом")
 
-print("== 16. Установка идёт долго: за ней наблюдают, и молчания нет ни в одном исходе ==")
+print("== 16. Установка — задание узла: за ней наблюдают, и молчания нет ни в одном исходе ==")
+import threading as _thr16
 import time as _time
+from core.jobs import Tasks as _Tasks16, stale as _stale16
 from core.providers.installer import ModelInstaller
+
+_JOBS16 = yaml.safe_load((ROOT / "config" / "jobs.yaml").read_text(encoding="utf-8"))
+_eng16 = _Eng(reactions=_REACTIONS)
 
 
 class _SlowCatalog:
-    """Двойник каталога: установка длится, чтобы прозвонка была не теорией."""
+    """Двойник каталога: установка ждёт ворот проверки — прозвонка посреди работы не теория — и кончается исходом
+    или отказом."""
 
-    def __init__(self, models_dir, seconds=0.6, fail=None):
-        self.models_dir = Path(models_dir)
-        self.config_file = CFG                  # реестр отказов лежит рядом с декларацией, как у сервера
-        self.seconds = seconds
+    def __init__(self, fail=None):
         self.fail = fail
-        self.install_rules = {}
+        self.gate = _thr16.Event()
 
     def installed_as(self, model_id, kind):
         return None                             # здесь судится прозвонка, а не «уже стоит»
 
     def место_под(self, model_id, kind, force=False):
         # Здесь судится прозвонка, а не диск: места заведомо больше, чем ляжет весов.
-        return {"нужно_мб": 0.002, "свободно_мб": 1e6, "entry": {"id": model_id, "kind": kind}}
+        return {"нужно_мб": 0.002, "свободно_мб": 1e6, "entry": {"id": model_id, "kind": kind}, "plan": [],
+                "marks": {}, "force": force}
 
-    def install_planned(self, место, progress=lambda _m: None, mark=None, held=lambda: None):
+    def install_planned(self, место, progress=lambda _m: None, mark=None, held=lambda: None, pulse=None):
         held()                                  # замок модели взят — как у настоящего каталога
         if mark:
             mark()                              # признак работы доходит от установщика до каталога
-        _time.sleep(self.seconds)
+        self.gate.wait(10)
         if self.fail:
             raise self.fail
-        (self.models_dir / "весы.onnx").write_bytes(b"x" * 2048)
         return {**место["entry"], "path": "весы.onnx", "mb": 0.002, "refused": []}
-
-    def silence_sec(self):
-        return 0.0                              # здесь судится прозвонка, а не тишина загрузчика
 
     def speed(self):
         return dict(self.measure)               # мера скорости: по умолчанию выключена, тик-проверки NI-01 задают свою
@@ -1094,62 +1115,95 @@ class _SlowCatalog:
     landed = 0
 
 
-_idir = Path(tempfile.mkdtemp(prefix="inst_"))
-_inst_ok = ModelInstaller(_SlowCatalog(_idir), heartbeat_sec=0.1, stale_after_sec=5)
-_st = _inst_ok.start("модель-1", "tts")
-try:
-    _seen_now = _inst_ok.status(_st["task_id"])[0]["status"]
-except ProviderError as e:
-    _seen_now = e.code
-ok(_seen_now == "processing",
-   f"установка видна прозвонкой сразу после ответа start — файл состояния лёг до ответа ({_seen_now})")
-ok(_st["status"] == "processing" and _st["task_id"] and _st["params"] == {"model_id": "модель-1", "kind": "tts"},
-   "установка запущена и вернула статус задачи с идентификатором, а не ждала гигабайты в одном вызове")
-for _ in range(50):
-    _cur = _inst_ok.status(_st["task_id"])[0]
-    if _cur["status"] != "processing":
-        break
-    _time.sleep(0.1)
-ok(_cur["status"] == "completed" and _cur["result"]["path"] == "весы.onnx",
-   f"успех виден прозвонкой, с путём результата ({_cur['status']})")
-ok(_cur["progress"]["elapsed_sec"] > 0, "видно, сколько заняла установка")
-ok(_st["task_id"] in _inst_ok._marks, "признак работы каталога доходит до наблюдателя установки (отметка по task_id)")
+def _install16(catalog, model: str, clock=_time.time):
+    """Установка заданием своего узла (часы — шов узла) с частым тиком наблюдения: узел и ответ запуска."""
+    node = _Tasks16(_eng16, root=_врем("inst16_"), clock=clock)
+    return node, ModelInstaller(catalog, heartbeat_sec=0.02).begin(node, "media_model_install", model, "tts")
 
-_inst_bad = ModelInstaller(
-    _SlowCatalog(Path(tempfile.mkdtemp(prefix="instf_")), seconds=0.2,
-                 fail=ProviderError("LOCAL_MODEL_MISSING", "источник оборвал соединение")),
-    heartbeat_sec=0.1, stale_after_sec=5)
-_bad_id = _inst_bad.start("модель-2", "tts")["task_id"]
-for _ in range(50):
-    _bad_state = _inst_bad.status(_bad_id)[0]
-    if _bad_state["status"] != "processing":
-        break
-    _time.sleep(0.1)
-ok(_bad_state["status"] == "failed" and _bad_state["error"]["code"] == "LOCAL_MODEL_MISSING"
-   and "оборвал" in _bad_state["error"]["message"] and _bad_state["params"]["model_id"] == "модель-2",
-   f"сбой посреди установки виден кодом и причиной, а не тишиной ({_bad_state['status']})")
 
-_inst_crash = ModelInstaller(
-    _SlowCatalog(Path(tempfile.mkdtemp(prefix="instc_")), seconds=0.2, fail=RuntimeError("сырой-текст-исключения")),
-    heartbeat_sec=0.1, stale_after_sec=5)
-_crash_id = _inst_crash.start("модель-4", "tts")["task_id"]
-for _ in range(50):
-    _crash_state = _inst_crash.status(_crash_id)[0]
-    if _crash_state["status"] != "processing":
-        break
-    _time.sleep(0.1)
-ok(_crash_state["status"] == "failed" and _crash_state["error"]["code"] == "INTERNAL_ERROR"
-   and _crash_state["error"]["facts"].get("event") and "сырой-текст" not in _json.dumps(_crash_state, ensure_ascii=False),
-   f"неожиданное падение — код с номером события, сырой текст исключения клиенту не уходит ({_crash_state['error']})")
+_ok_cat = _SlowCatalog()
+_node16, _st = _install16(_ok_cat, "модель-1")
+_seen_now = (_node16.status([_st["task_id"]])[0].get("task") or {}).get("status")
+ok(_seen_now in ("pending", "processing"),
+   f"установка видна прозвонкой сразу после ответа — запись задания легла до ответа ({_seen_now})")
+ok(_st["status"] in ("pending", "processing") and _st["task_id"]
+   and _st["params"] == {"model_id": "модель-1", "kind": "tts", "force": False},
+   "установка запущена заданием и вернула статус с идентификатором, а не ждала гигабайты в одном вызове")
+_ok_cat.gate.set()
+_cur = _node16.settle(_st["task_id"], 10).get("task") or {}
+ok(_cur.get("status") == "completed" and _cur["result"]["path"] == "весы.onnx",
+   f"успех виден прозвонкой, с путём результата ({_cur.get('status')})")
+ok({"bytes", "mb", "elapsed_sec", "step"} <= set(_cur.get("progress") or {}),
+   f"ход называет, сколько легло, сколько шло и на каком шаге ({_cur.get('progress')})")
 
-import threading as _thr16
+_bad_cat = _SlowCatalog(fail=ProviderError("LOCAL_MODEL_MISSING", "источник оборвал соединение"))
+_bad_cat.gate.set()
+_node_bad, _bad = _install16(_bad_cat, "модель-2")
+_bad_state = _node_bad.settle(_bad["task_id"], 10).get("task") or {}
+ok(_bad_state.get("status") == "failed" and _bad_state["error"]["code"] == "LOCAL_MODEL_MISSING"
+   and _bad_state["params"]["model_id"] == "модель-2",
+   f"сбой посреди установки виден кодом реестра, а не тишиной ({_bad_state.get('status')}, {_bad_state.get('error')})")
 
+_crash_cat = _SlowCatalog(fail=RuntimeError("сырой-текст-исключения"))
+_crash_cat.gate.set()
+_node_crash, _crash = _install16(_crash_cat, "модель-4")
+_crash_state = _node_crash.settle(_crash["task_id"], 10).get("task") or {}
+ok(_crash_state.get("status") == "failed" and _crash_state["error"]["code"] == "INTERNAL_ERROR"
+   and "событие" in _crash_state["error"]["message"]
+   and "сырой-текст" not in _json.dumps(_crash_state, ensure_ascii=False),
+   f"неожиданное падение — код с номером события, сырой текст исключения клиенту не уходит ({_crash_state.get('error')})")
+
+
+class _Counted(_SlowCatalog):
+    """Двойник: сколько раз работа дошла до загрузки и что она держала, пока шла."""
+
+    def __init__(self):
+        super().__init__()
+        self.runs, self.entered = 0, _thr16.Event()
+
+    def install_planned(self, место, progress=lambda _m: None, mark=None, held=lambda: None, pulse=None):
+        self.runs += 1
+        self.entered.set()
+        return super().install_planned(место, progress, mark, held, pulse)
+
+
+_twice_cat = _Counted()
+_node_twice, _first_twice = _install16(_twice_cat, "модель-6")
+_again_twice = ModelInstaller(_twice_cat, heartbeat_sec=0.02).begin(_node_twice, "media_model_install", "модель-6", "tts")
+_at_repeat = [(e["task_id"], (e.get("task") or {}).get("status"), ((e.get("task") or {}).get("error") or e.get("error")
+               or {}).get("code")) for e in _node_twice.status()]
+_twice_cat.gate.set()
+_node_twice.settle(_first_twice["task_id"], 10)
+_node_twice.settle(_again_twice["task_id"], 10)
+ok(_again_twice["task_id"] == _first_twice["task_id"] and _twice_cat.runs == 1,
+   f"повтор того же вызова, пока установка идёт, — тот же task_id и одна загрузка (AD-21) "
+   f"({_first_twice['task_id']}, {_again_twice['task_id']}, загрузок {_twice_cat.runs}; задания при повторе {_at_repeat})")
+
+_RES16 = _srv._load_resources(ROOT / "config" / "resources.yaml")
+_eng_res16 = _Eng(reactions=_REACTIONS, resources=_RES16)
+_node_res16 = _Tasks16(_eng_res16, root=_врем("inst16res_"))
+_busy_cat, _next_cat = _Counted(), _Counted()
+_busy16 = ModelInstaller(_busy_cat, heartbeat_sec=0.02).begin(_node_res16, "media_model_install", "модель-7", "tts")
+_busy_cat.entered.wait(10)
+_calls_free = [_eng_res16.slots.take("network") for _ in range(_RES16.classes["network"].max_concurrent)]
+for _taken in _calls_free:
+    if _taken:
+        _eng_res16.slots.give("network")
+_next16 = ModelInstaller(_next_cat, heartbeat_sec=0.02).begin(_node_res16, "media_model_install", "модель-8", "tts")
+_next_seen = (_node_res16.settle(_next16["task_id"], 0.2).get("task") or {}).get("status")
+_busy_cat.gate.set()
+_next_cat.gate.set()
+_node_res16.settle(_busy16["task_id"], 10)
+_next_done = (_node_res16.settle(_next16["task_id"], 10).get("task") or {}).get("status")
+ok(all(_calls_free) and _next_seen == "pending" and _next_done == "completed",
+   f"установка держит место своей работы (resources.yaml work model_download), а не места вызовов network: оба свободны "
+   f"({_calls_free}); вторая установка ждёт места pending, затем доделана ({_next_seen} → {_next_done})")
 
 class _LateTick(_SlowCatalog):
     """Двойник: тик наблюдателя прочёл «идёт» и держится в счёте, пока итог «failed» не ляжет на диск (не дольше 2 с)."""
 
-    def __init__(self, models_dir):
-        super().__init__(models_dir, seconds=0, fail=ProviderError("LOCAL_MODEL_MISSING", "оборвано"))
+    def __init__(self):
+        super().__init__(fail=ProviderError("LOCAL_MODEL_MISSING", "оборвано"))
         self.entered, self.state_file = _thr16.Event(), None
 
     def on_disk(self, место):
@@ -1160,99 +1214,102 @@ class _LateTick(_SlowCatalog):
             _time.sleep(0.05)
         return 7
 
-    def install_planned(self, место, progress=lambda _m: None, mark=None, held=lambda: None):
-        held()                                  # замок взят: файл состояния и наблюдатель уже есть
+    def install_planned(self, место, progress=lambda _m: None, mark=None, held=lambda: None, pulse=None):
+        held()                                  # замок взят: наблюдатель уже тикает
         self.entered.wait(2)
         raise self.fail
 
 
-_late = _LateTick(Path(tempfile.mkdtemp(prefix="instl_")))
-_inst_late = ModelInstaller(_late, heartbeat_sec=0.01, stale_after_sec=30)
-_late_id = _inst_late.start("модель-5", "tts")["task_id"]
-_late.state_file = _inst_late.state_dir / f"{_late_id}.json"
-for _ in range(100):
-    _late_state = _inst_late.status(_late_id)[0]
-    if _late_state["status"] != "processing":
-        break
-    _time.sleep(0.05)
-ok(_late_state["status"] == "failed" and _late_state["error"]["code"] == "LOCAL_MODEL_MISSING"
-   and _late_state["progress"]["bytes"] == 7,
-   f"итог отказа не затёрт последним тиком наблюдателя, а байты тика сохранены ({_late_state['status']}, "
-   f"{_late_state['progress']['bytes']})")
+_late = _LateTick()
+_node_late, _late_task = _install16(_late, "модель-5")
+_late.state_file = _node_late.record_file(_late_task["task_id"])
+_late_state = _node_late.settle(_late_task["task_id"], 10).get("task") or {}
+ok(_late_state.get("status") == "failed" and _late_state["error"]["code"] == "LOCAL_MODEL_MISSING"
+   and (_late_state.get("progress") or {}).get("bytes") == 7,
+   f"итог отказа не затёрт последним тиком наблюдателя, а байты тика сохранены ({_late_state.get('status')}, "
+   f"{_late_state.get('progress')})")
 
-# Простой — по признакам работы, а не по тику наблюдателя: живой поток при мёртвой сети — «прервано», а не вечное
-# «идёт». Тик судится с переданным «сейчас», без часов.
-_tick_cat = _SlowCatalog(Path(tempfile.mkdtemp(prefix="insts_")))
-_inst_tick = ModelInstaller(_tick_cat, heartbeat_sec=1, stale_after_sec=100)
-from core.jobs import issue as _issue16
-
-_id16 = _issue16()                                      # id формы узла заданий: его прозванивает status ниже
-_inst_tick._write({"install_id": _id16, "model_id": "модель-3", "kind": "tts", "phase": "running",
-                   "started": 1000.0, "heartbeat": 1000.0, "bytes": 0})
-_место16 = {"entry": {"id": "модель-3", "kind": "tts"}, "plan": []}
+# Простой — по признакам работы, а не по тику наблюдателя: живой поток при мёртвой сети — простой, а не вечное
+# «идёт». Шаг наблюдения судится с переданным «сейчас», без часов.
+_inst_tick = ModelInstaller(_SlowCatalog(), heartbeat_sec=1)
+_dead = {"bytes": 0, "tick": 1000.0, "work": 1000.0}
+_any_work = False
 for _now in range(1010, 1200, 10):                      # поток жив и тикает, байты не растут, загрузчик молчит
-    _inst_tick._tick(_id16, _место16, float(_now))
-_dead = _inst_tick._read(_id16)
-ok(_dead["heartbeat"] == 1000.0 and _inst_tick._stalled(_dead, now=1101.0) and not _inst_tick._stalled(_dead, now=1099.0),
-   f"сеть мертва, поток жив: тики не двигают «последнюю работу» — за пределом простой, до него идёт ({_dead['heartbeat']})")
-_tick_cat.landed = 4096
-_inst_tick._tick(_id16, _место16, 1200.0)
-_grown = _inst_tick._read(_id16)
-ok(_grown["heartbeat"] == 1200.0 and _grown["bytes"] == 4096,
-   f"рост байтов плана двигает «последнюю работу» на время тика ({_grown['heartbeat']}, {_grown['bytes']})")
-_inst_tick._marks[_id16] = 1250.0                       # отметка загрузчика: пауза повтора или блок сверки
-_inst_tick._tick(_id16, _место16, 1290.0)
-_marked = _inst_tick._read(_id16)
-ok(_marked["heartbeat"] == 1250.0 and not _inst_tick._stalled(_marked, now=1340.0),
-   f"законный: долгая пауза или сверка с отметками по ходу — «идёт», хотя байты не растут ({_marked['heartbeat']})")
-_inst_tick._write({"install_id": "t16a", "model_id": "модель-a", "kind": "tts", "phase": "running",
-                   "started": 2000.0, "heartbeat": 2000.0, "bytes": 4096})
-_inst_tick._marks["t16b"] = 2100.0                      # отметка соседней установки другой модели, у t16a отметок нет
-_inst_tick._tick("t16a", _место16, 2150.0)
-_alone = _inst_tick._read("t16a")
-ok(_alone["heartbeat"] == 2000.0 and _inst_tick._stalled(_alone, now=2101.0),
-   f"отметка соседней установки не двигает «последнюю работу» этой: мёртвая сеть — простой ({_alone['heartbeat']})")
-_inst_tick._write({"install_id": "t16c", "model_id": "модель-c", "kind": "tts", "phase": "running",
-                   "started": 3000.0, "heartbeat": 3000.0, "bytes": 4096})
-_tick_cat.landed = 0                                    # остаток снят (отпечаток разошёлся) — байты плана упали
-_inst_tick._tick("t16c", _место16, 3010.0)
-_dropped = _inst_tick._read("t16c")
-_tick_cat.landed = 1024
-_inst_tick._tick("t16c", _место16, 3020.0)
-_regrown = _inst_tick._read("t16c")
-ok(_dropped["bytes"] == 0 and _regrown["heartbeat"] == 3020.0 and _regrown["bytes"] == 1024,
-   f"байты упали и растут заново ниже прежнего пика — это работа, «последняя работа» движется "
-   f"({_dropped['bytes']} → {_regrown['bytes']}, {_regrown['heartbeat']})")
+    _dead, _working = _inst_tick._step(_dead, 0, 0.0, float(_now))
+    _any_work = _any_work or _working
+ok(_dead["work"] == 1000.0 and not _any_work,
+   f"сеть мертва, поток жив: тики не двигают «последнюю работу» ({_dead['work']})")
+_grown, _working = _inst_tick._step(_dead, 4096, 0.0, 1200.0)
+ok(_working and _grown["work"] == 1200.0 and _grown["bytes"] == 4096,
+   f"рост байтов плана двигает «последнюю работу» на время тика ({_grown})")
+_marked, _working = _inst_tick._step(_grown, 4096, 1250.0, 1290.0)   # отметка загрузчика: пауза повтора, блок сверки
+ok(_working and _marked["work"] == 1290.0,
+   f"законный: долгая пауза или сверка с отметками по ходу — работа, хотя байты не растут ({_marked})")
+_dropped, _working_drop = _inst_tick._step({"bytes": 4096, "tick": 3000.0, "work": 3000.0}, 0, 0.0, 3010.0)
+_regrown, _working = _inst_tick._step(_dropped, 1024, 0.0, 3020.0)   # остаток снят (отпечаток разошёлся) и растёт заново
+ok(not _working_drop and _dropped["bytes"] == 0 and _working and _regrown["work"] == 3020.0,
+   f"байты упали и растут заново ниже прежнего пика — это работа ({_dropped} → {_regrown})")
 # NI-01: рост — работа, только если не медленнее меры загрузчика (байт/с) с прошлого тика; капля работой не считается.
-_drip_cat = _SlowCatalog(Path(tempfile.mkdtemp(prefix="instd_")))
+_drip_cat = _SlowCatalog()
 _drip_cat.measure = {"floor": 100, "window": 30}
-_inst_drip = ModelInstaller(_drip_cat, heartbeat_sec=1, stale_after_sec=100)
-_inst_drip._write({"install_id": "t16d", "model_id": "модель-d", "kind": "tts", "phase": "running",
-                   "started": 4000.0, "heartbeat": 4000.0, "bytes": 0})
+_inst_drip = ModelInstaller(_drip_cat, heartbeat_sec=1)
+_drip = {"bytes": 0, "tick": 4000.0, "work": 4000.0}
+_any_work = False
 for _i, _now in enumerate(range(4010, 4200, 10), 1):    # 10 байт за 10 с — 1 байт/с при мере 100
-    _drip_cat.landed = _i * 10
-    _inst_drip._tick("t16d", _место16, float(_now))
-_drip = _inst_drip._read("t16d")
-ok(_drip["heartbeat"] == 4000.0 and _drip["bytes"] == 190 and _inst_drip._stalled(_drip, now=4101.0),
-   f"капля ниже меры: байты растут, а «последняя работа» стоит со старта — за пределом простой "
-   f"({_drip['heartbeat']}, {_drip['bytes']})")
-_drip_cat.landed = 190 + 1000                           # 1000 байт за 10 с — ровно мера
-_inst_drip._tick("t16d", _место16, 4200.0)
-_paced = _inst_drip._read("t16d")
-ok(_paced["heartbeat"] == 4200.0 and _paced["bytes"] == 1190,
-   f"законный: рост не медленнее меры с прошлого тика двигает «последнюю работу» ({_paced['heartbeat']})")
+    _drip, _working = _inst_drip._step(_drip, _i * 10, 0.0, float(_now))
+    _any_work = _any_work or _working
+ok(_drip["work"] == 4000.0 and _drip["bytes"] == 190 and not _any_work,
+   f"капля ниже меры: байты растут, а «последняя работа» стоит со старта ({_drip})")
+_paced, _working = _inst_drip._step(_drip, 190 + 1000, 0.0, 4200.0)  # 1000 байт за 10 с — ровно мера
+ok(_working and _paced["work"] == 4200.0 and _paced["bytes"] == 1190,
+   f"законный: рост не медленнее меры с прошлого тика двигает «последнюю работу» ({_paced})")
+
+
+class _Silent(_SlowCatalog):
+    """Двойник: загрузка стоит у ворот без отметок и без роста байтов — живой поток при мёртвой сети."""
+
+    def __init__(self):
+        super().__init__()
+        self.entered = _thr16.Event()
+
+    def install_planned(self, место, progress=lambda _m: None, mark=None, held=lambda: None, pulse=None):
+        held()
+        self.entered.set()                      # работа идёт: запись уже processing
+        self.gate.wait(10)
+        return {**место["entry"], "path": "весы.onnx", "mb": 0.002, "refused": []}
+
+
+_S16 = _JOBS16["stale_after_sec"]
+_clock16 = [7000.0]
+_silent = _Silent()
+_node_silent, _silent_task = _install16(_silent, "модель-3", clock=lambda: _clock16[0])
+_silent.entered.wait(10)
+_calm16 = (_node_silent.status([_silent_task["task_id"]])[0].get("task") or {}).get("status")
+_clock16[0] += _S16 + 1
+_stale_state = _node_silent.status([_silent_task["task_id"]])[0].get("task") or {}
+ok(_calm16 in ("pending", "processing") and _stale_state.get("status") == "failed"
+   and (_stale_state.get("error") or {}).get("code") == "TASK_STALLED"
+   and _stale_state["error"].get("reaction_class") == "server_recoverable"
+   and _stale_state["error"].get("facts") == {"task_id": _silent_task["task_id"], "tool": "media_model_install",
+                                               "seconds": _S16 + 1},
+   f"замершая установка — простой узла TASK_STALLED (jobs.yaml stale_after_sec), с id, инструментом и секундами "
+   f"({_calm16} → {_stale_state.get('error')})")
+ok("INSTALL_STALLED" not in _json.dumps(_stale_state, ensure_ascii=False) and _stale16(_S16 + 1) and not _stale16(_S16),
+   "своего кода простоя у установки нет: один суд и один срок узла")
+_silent.gate.set()
+ok((_node_silent.settle(_silent_task["task_id"], 10).get("task") or {}).get("status") == "completed",
+   "простой — не приговор: загрузка дошла — completed")
 
 
 from core.declaration import Declaration as _Decl16
 from core.declaration_schemas import MODEL_INSTALL as _MI16
 
 
-def _built(stale_after: float) -> str:
-    """Раздел local.install с окном меры 150 с — связь простоя с тишиной загрузчика судит схема у двери."""
+def _section16(change) -> str:
+    """Раздел local.install копии `providers.yaml` с правкой `change` — исход двери: пусто или отказ с путями."""
     data = yaml.safe_load(CFG.read_text(encoding="utf-8"))
-    data["local"]["install"]["fetch"]["speed_window_sec"] = 150
-    data["local"]["install"]["progress"]["stale_after_sec"] = stale_after
-    path = Path(tempfile.mkdtemp(prefix="install_decl_")) / "providers.yaml"
+    change(data["local"]["install"])
+    path = _врем("install_decl_") / "providers.yaml"
     path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
     try:
         _Decl16(path, _CE13, "провайдеров", "").section(*_MI16.section, schema=_MI16.schema)
@@ -1261,37 +1318,60 @@ def _built(stale_after: float) -> str:
         return f"{e.code}: {e.facts.get('details', '')}"
 
 
-ok(_built(150).startswith("DECLARATION_INVALID") and "local.install.progress.stale_after_sec" in _built(150)
-   and _built(151) == "",
-   f"простой не длиннее окна меры: 150 с — отказ двери с путём ключа, 151 с — раздел проходит ({_built(150)[:80]})")
+_second_key = _section16(lambda install: install["progress"].__setitem__("stale_after_sec", 300))
+ok(_second_key.startswith("DECLARATION_INVALID") and "local.install.progress.stale_after_sec" in _second_key
+   and _section16(lambda install: None) == "",
+   f"второй ключ простоя у установки не возвращается тихо — отказ двери с путём; без него раздел проходит "
+   f"({_second_key[:90]})")
+import subprocess as _sp16
+from core.declaration_schemas import MODEL_FETCH as _MF16
+from tests.harness.live_server import declarations_copy as _decl_copy16
+
+_LINK16 = ("import json, sys\nfrom pathlib import Path\nfrom core.contracts import ContractError\n"
+           "from core.declaration import declarations_root\nfrom core.providers.catalog import ModelCatalog\n"
+           "from core.providers.installer import ModelInstaller\n"
+           "catalog = ModelCatalog(declarations_root() / 'providers.yaml', Path(sys.argv[1]))\n"
+           "try:\n    ModelInstaller(catalog, heartbeat_sec=1).linked()\n    print(json.dumps({'ok': True}))\n"
+           "except ContractError as e:\n    print(json.dumps({'code': e.code, 'facts': e.facts}, ensure_ascii=False))\n")
 
 
-def _without_revisions() -> str:
-    """Раздел local.install без `revisions`: незакреплённость объявляется явно, отсутствие ключа — отказ двери."""
-    data = yaml.safe_load(CFG.read_text(encoding="utf-8"))
-    data["local"]["install"].pop("revisions")
-    path = Path(tempfile.mkdtemp(prefix="install_decl_")) / "providers.yaml"
-    path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+def _linked16(stale_after: int) -> dict:
+    """Суд связи установщика в чистом процессе на копии деклараций с `jobs.yaml stale_after_sec` — исход или отказ."""
+    config = _decl_copy16({"jobs.yaml": {"stale_after_sec": stale_after}})
+    env = {k: v for k, v in os.environ.items() if k not in ("VPM_FIXTURES", "MCP_CONFIG")}
+    done = _sp16.run([sys.executable, "-c", _LINK16, str(_врем("link16_"))], cwd=ROOT,
+                     env={**env, "MCP_CONFIG": str(config)}, capture_output=True, text=True)
     try:
-        _Decl16(path, _CE13, "провайдеров", "").section(*_MI16.section, schema=_MI16.schema)
-        return ""
-    except _CE13 as e:
-        return f"{e.code}: {e.facts.get('details', '')}"
+        return _json.loads(done.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        return {"crash": done.stderr[-400:]}
 
 
-ok(_without_revisions().startswith("DECLARATION_INVALID") and "local.install.revisions" in _without_revisions(),
-   f"закреплённые ревизии не объявлены — отказ двери с путём, а не «не закреплено» молча ({_without_revisions()[:90]})")
-_drip_cat.measure = {"floor": 100, "window": 30}
-_stale_state = _inst_tick.status(_id16)[0]
-ok(_stale_state["status"] == "failed" and _stale_state["error"]["code"] == "INSTALL_STALLED"
-   and "Повтори" in _stale_state["error"]["recovery"]["reason"],
-   f"замершая установка — отказ кодом простоя и зовёт повторить ({_stale_state['status']}, {_stale_state['error']})")
-ok("докачается с места обрыва, если источник не сменил файл" in _json.dumps(_stale_state, ensure_ascii=False),
-   "статус обещает докачку с условием: остаток постоянен по модели, If-Range с валидатором ответившего сервера (M3c)")
+_fetch16 = _Decl16(CFG, _CE13, "провайдеров", "").section(*_MF16.section, schema=_MF16.schema)
+_quiet16 = int(max(_fetch16.silence_sec, _fetch16.speed_window_sec))
+_link_bad, _link_ok = _linked16(_quiet16), _linked16(_quiet16 + 1)
+ok(_link_bad.get("code") == "DECLARATION_INVALID"
+   and _link_bad.get("facts", {}).get("file") == "jobs.yaml, providers.yaml"
+   and "jobs.yaml: stale_after_sec" in _link_bad["facts"].get("details", "")
+   and "providers.yaml: local.install.fetch" in _link_bad["facts"]["details"]
+   and str(_quiet16) not in _json.dumps(_link_bad, ensure_ascii=False) and _link_ok == {"ok": True},
+   f"простой не длиннее тишины загрузчика ({_quiet16} с) — отказ двери с путями обоих файлов, без значений; на секунду "
+   f"дольше — проходит ({_link_bad}, {_link_ok})")
+_without_revisions = _section16(lambda install: install.pop("revisions"))
+ok(_without_revisions.startswith("DECLARATION_INVALID") and "local.install.revisions" in _without_revisions,
+   f"закреплённые ревизии не объявлены — отказ двери с путём, а не «не закреплено» молча ({_without_revisions[:90]})")
 
+from core.jobs import issue as _issue16
+
+_broken16 = _issue16()
+_store16 = _instance_home(_srv.CONFIG_PATH) / _JOBS16["store"]
+_store16.mkdir(parents=True, exist_ok=True)
+(_store16 / f"{_broken16}.json").write_text("{битая запись", encoding="utf-8")
 _status_all = _call("media_install_status")
-ok(_status_all.status == "success" and isinstance(_status_all.data["installs"], list),
-   "инструмент показывает все установки разом — не нужно помнить идентификаторы")
+ok(_status_all.status == "success" and isinstance(_status_all.data["installs"], list)
+   and [(u["task_id"], u["error"]["code"]) for u in _status_all.data["unreadable"]] == [(_broken16, "TASK_RECORD_INVALID")],
+   f"инструмент показывает все установки разом — не нужно помнить идентификаторы; запись, которую не прочесть, названа "
+   f"отказом своего элемента, а не пропущена ({_status_all.data.get('unreadable') if _status_all.data else _status_all.error})")
 
 print("== 16b. Чем исполнять — сервер СОВЕТУЕТ, а решает канал ==")
 _adv_res = _call("media_provider_status", table="ch")
@@ -3165,7 +3245,7 @@ def _model_fetch(work: Path, records: list[str]) -> None:
             "deny_suffixes": [".bin", ".ckpt", ".pt"],
             "max_total_mb": 1,
             "prefer_files": ["*model.onnx"],
-            "progress": {"heartbeat_sec": 0.05, "stale_after_sec": 300},
+            "progress": {"heartbeat_sec": 0.05},
             "fetch": {"schemes": ["https"], "hosts": ["huggingface.co", "us.aws.cdn.hf.co"], "block_private": True,
                       "max_bytes": 0, "timeout_sec": 30, "redirects": 5, "attempts": 1, "backoff_sec": 1,
                       "backoff_max_sec": 60, "retry_after_max_sec": 120, "jitter": 0,
@@ -3179,6 +3259,7 @@ def _model_fetch(work: Path, records: list[str]) -> None:
                           "org/headed": "rev-headed", "org/told": "rev-told", "org/astray": "rev-astray",
                           "org/moved": "rev-moved", "org/cut": "rev-cut", "org/away": "rev-away",
                           "org/twice": "rev-twice", "org/held": "rev-held", "org/slow": "rev-slow",
+                          "org/quiet": "rev-quiet", "org/grow": "rev-grow",
                           "org/foo": "rev-foo", "other/foo": "rev-other-foo", "third/foo": "rev-third-foo"},
         },
     }}, allow_unicode=True), encoding="utf-8")
@@ -3406,12 +3487,11 @@ def _model_fetch(work: Path, records: list[str]) -> None:
     part_file = models / "bg/cut/model.onnx.bg_removal-cut.part"
     ok(part_file.is_file() and part_file.stat().st_size == 384 and cat.on_disk(first) == 384,
        f"остаток владельца модели — ровно принятые байты, и счёт плана видит их ({cat.on_disk(first)})")
-    watcher = Watcher(cat)
-    watcher._write({"install_id": "w19r", "model_id": "org/cut", "kind": "bg_removal", "phase": "running",
-                    "started": 0, "heartbeat": 0, "bytes": 0})
+    pulses: list = []
     once = iter([False, True])
-    watcher._watch("w19r", first, _ty19.SimpleNamespace(wait=lambda _t: next(once)))
-    ok(watcher._read("w19r")["bytes"] == 384, "наблюдение установки растёт по остатку части, а не по кэшу загрузчика")
+    Watcher(cat, heartbeat_sec=1)._observe(first, lambda progress=None, working=True: pulses.append(progress), 0.0,
+                                           [""], [0.0], _ty19.SimpleNamespace(wait=lambda _t: next(once)))
+    ok(pulses and pulses[-1]["bytes"] == 384, "наблюдение установки растёт по остатку части, а не по кэшу загрузчика")
     w0 = len(wire)
     second = cat.место_под("org/cut", "bg_removal")
     second_marks: list = []
@@ -3429,19 +3509,10 @@ def _model_fetch(work: Path, records: list[str]) -> None:
     marks: list = []
     ok(cat.judge(second["entry"], deep=True, mark=lambda: marks.append(1))["verdict"] == "ready" and marks,
        f"суд по отпечатку отмечает работу по ходу чтения, а не одной отметкой до ({len(marks)} отметок)")
-    def stale(seconds: int) -> str:
-        """Та же декларация с другим простоем — связь с тишиной загрузчика судит схема раздела у двери."""
-        data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
-        data["local"]["install"]["progress"]["stale_after_sec"] = seconds
-        variant = work / f"stale_{seconds}" / "providers.yaml"
-        variant.parent.mkdir(exist_ok=True)
-        variant.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
-        return refused(lambda: ModelCatalog(variant, models).install_policy())
-
     # Обновлено в доделке B2: тишина загрузчика включает срок сервера до retry_after_max_sec (120) — прежде 60 (2 × 30).
-    ok(cat.silence_sec() == 120.0 and stale(120) == "DECLARATION_INVALID" and stale(121) == "",
-       f"простой не длиннее тишины загрузчика: 120 с (срок сервера retry_after_max_sec) — отказ двери, 121 с — раздел "
-       f"проходит ({cat.silence_sec()}, {stale(120)})")
+    ok(cat.silence_sec() == 120.0,
+       f"тишина загрузчика — срок сервера retry_after_max_sec, 120 с; связь с простоем узла судит установщик (§16) "
+       f"({cat.silence_sec()})")
     info["org/away"] = repo(put("org/away", "model.onnx", b"a" * 100))
     away[("org/away", "model.onnx")] = "https://evil.example/org/away/model.onnx"
     w0 = len(wire)
@@ -3818,9 +3889,11 @@ def _model_fetch(work: Path, records: list[str]) -> None:
         ok("не прочитано" in said, f"клиент видит, что место не прочитано ({said})")
         hw_mod.probe = lambda *a, **k: {**real_probe(*a, **k), "disk_free_mb": 0}
         mark = len(calls)
-        ok(outcome(lambda: ModelInstaller(cat).start("org/space", "bg_removal")) == "MODEL_NO_DISK_SPACE"
-           and not downloads(mark),
-           "места меньше плана — каталог отказывает MODEL_NO_DISK_SPACE до потока и до первого запроса весов")
+        node_space = _Tasks16(_Eng(reactions=_REACTIONS), root=_врем("inst19o_"))
+        ok(outcome(lambda: ModelInstaller(cat, heartbeat_sec=0.02).begin(
+               node_space, "media_model_install", "org/space", "bg_removal")) == "MODEL_NO_DISK_SPACE"
+           and not downloads(mark) and node_space.status() == [],
+           "места меньше плана — каталог отказывает MODEL_NO_DISK_SPACE до задания и до первого запроса весов")
         said = delivered(lambda: cat.место_под("org/space", "bg_removal"))
         ok("0.4 МБ" in said and "свободно 0 МБ" in said and "org/space" in said,
            f"клиент видит модель и оба числа — нужное и свободное ({said})")
@@ -3867,16 +3940,12 @@ def _model_fetch(work: Path, records: list[str]) -> None:
             return _ty19.SimpleNamespace(sha=shas[repo_id])
 
     def finished(tool, answer):
-        """Итог ответа установки: исход без задачи — как есть; задача — прозвоном до конца (ожидание событием с потолком)."""
+        """Итог ответа установки: исход без задачи — как есть; задание — его конец событием узла (с потолком), затем
+        статус прозвонкой инструмента."""
         if answer.status != "success" or answer.data.get("task_id") is None:
             return answer.data if answer.status == "success" else {"status": "failed", "result": None}
-        pause = threading.Event()
-        for _ in range(100):
-            state = tool("media_install_status", install_id=answer.data["task_id"]).data["installs"][0]
-            if state["status"] != "processing":
-                return state
-            pause.wait(0.05)
-        return state
+        _Tasks16(tool_eng).settle(answer.data["task_id"], 30)
+        return tool("media_install_status", install_id=answer.data["task_id"]).data["installs"][0]
 
     was, real_api, real_digest = _srv.CONFIG_PATH, _hf19.HfApi, ModelCatalog.__dict__["_digest"]
     tool_eng = _Eng(reactions=_REACTIONS, state_manager=_sm)
@@ -3888,8 +3957,7 @@ def _model_fetch(work: Path, records: list[str]) -> None:
         def tool(name, **params):
             return _aio.run(tool_eng.call(name, params))
 
-        installs = models / "installs"
-        before_files, mark, read = set(installs.glob("*.json")) if installs.is_dir() else set(), len(calls), []
+        before_tasks, mark, read = len(_Tasks16(tool_eng).status()), len(calls), []
         ModelCatalog._digest = staticmethod(lambda path, algo: read.append(path) or real_digest.__func__(path, algo))
         same = tool("media_model_install", model_id="org/bg", kind="bg_removal", confirm=True)
         ModelCatalog._digest = real_digest
@@ -3897,21 +3965,25 @@ def _model_fetch(work: Path, records: list[str]) -> None:
            and same.data["result"]["outcome"] == "already_installed"
            and same.data["result"]["checked"] == "по длине, ревизия закреплена",
            f"поставленная модель — исход «уже стоит» сразу, задача не заводится ({same.data if same.status == 'success' else same.error})")
-        ok(not calls[mark:] and not read and (set(installs.glob("*.json")) if installs.is_dir() else set()) == before_files
+        ok(not calls[mark:] and not read and len(_Tasks16(tool_eng).status()) == before_tasks
            and any(f.type == "CreationSkipped" for f in same.facts),
-           f"ни источника, ни чтения весов, ни файла задачи — только исход ({calls[mark:]}, {len(read)} чтений)")
+           f"ни источника, ни чтения весов, ни записи задания — только исход ({calls[mark:]}, {len(read)} чтений)")
 
         mark = len(calls)
         again = tool("media_model_install", model_id="org/bg", kind="bg_removal", confirm=True, force=True)
         state = finished(tool, again)
-        ok(again.data["status"] == "processing" and state["status"] == "completed"
+        ok(again.data["status"] in ("pending", "processing") and state["status"] == "completed"
            and state["result"]["outcome"] == "reinstalled" and downloads(mark),
-           f"явный force — задача и перекачка, исход «перекачано» ({state.get('result')})")
+           f"явный force — задание и перекачка, исход «перекачано» ({state.get('result')})")
+        ok("докачается с места обрыва, если источник не сменил файл" in again.data.get("next", "")
+           and f"task_status(task_ids=['{again.data['task_id']}'])" in again.data["next"],
+           f"ответ запуска обещает докачку с условием и называет прозвонку task_status — у общего кода простоя такого "
+           f"обещания нет (M3c) ({again.data.get('next')})")
 
         (models / "img/sd/unet/diffusion.fp16.safetensors").unlink()
         half = tool("media_model_install", model_id="org/sd", kind="image", confirm=True)
         state = finished(tool, half)
-        ok(half.data["status"] == "processing" and state["result"]["outcome"] == "installed",
+        ok(half.data["status"] in ("pending", "processing") and state["result"]["outcome"] == "installed",
            "половина модели на диске — не «уже стоит», а обычная установка")
 
         info["org/float"] = repo(put("org/float", "model.onnx", b"F" * 200))
@@ -3924,7 +3996,7 @@ def _model_fetch(work: Path, records: list[str]) -> None:
         shas["org/float"] = "c2"
         moved = tool("media_model_install", model_id="org/float", kind="bg_removal", confirm=True)
         state = finished(tool, moved)
-        ok(moved.data["status"] == "processing" and state["status"] == "completed",
+        ok(moved.data["status"] in ("pending", "processing") and state["status"] == "completed",
            "у источника новый коммит — не «уже стоит», а установка новой ревизии")
 
         cli._catalog = lambda: cat
@@ -3947,84 +4019,153 @@ def _model_fetch(work: Path, records: list[str]) -> None:
         except TimeoutError:
             return True
 
-    installs = models / "installs"
+    _t19.sleep = _real19[1]                     # ожидание замка (filelock) спит по-настоящему, а не крутит пустой цикл
+    clock19 = [50000.0]
+    node19 = _Tasks16(_Eng(reactions=_REACTIONS), root=_врем("inst19s_"), clock=lambda: clock19[0])
+    installer19 = ModelInstaller(cat, heartbeat_sec=0.02)
 
-    def tasks() -> list:
-        return sorted(installs.glob("*.json")) if installs.is_dir() else []
+    def waiting(место: dict, reached: threading.Event) -> str:
+        """Работа установки по снимку заданием узла §19s; `reached` — работа дошла до ожидания чужого замка."""
+        def step(message: str) -> None:
+            if message.startswith("жду замок"):
+                reached.set()
+
+        return node19.begin("media_model_install", {"model": место["entry"]["id"]}, "любой",
+                            lambda pulse: installer19.work(место, pulse, progress=step), fresh=True)["task_id"]
+
+    def held_by_other(model: str, data: bytes, remnant_bytes: bytes):
+        """Модель источника, её снимок места, остаток владельца и другой процесс, который держит замок модели дверью
+        слоя файлов (выходит, когда закрыт его stdin)."""
+        info[model] = repo(put(model, "model.onnx", data))
+        space = cat.место_под(model, "bg_removal")
+        owner = ModelCatalog.owner(space["entry"])
+        remnant = Files(models).remnant(ModelCatalog.landing(space["entry"], space["plan"][0]), owner)
+        remnant.parent.mkdir(parents=True, exist_ok=True)
+        remnant.write_bytes(remnant_bytes)
+        holder = _sp19.Popen(
+            [sys.executable, "-c", "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
+             "from core.paths import Files; lock = Files(Path(sys.argv[2])).lock(sys.argv[3]); lock.acquire(); "
+             "print('держу', flush=True); sys.stdin.read()", str(ROOT), str(models), owner],
+            stdin=_sp19.PIPE, stdout=_sp19.PIPE, text=True)
+        return space, remnant, holder
 
     info["org/twice"] = repo(put("org/twice", "model.onnx", b"t" * 500))
     twice = cat.место_под("org/twice", "bg_removal")
-    seen: dict = {"tasks": tasks()}
-
-    def second_start() -> None:
-        try:
-            ModelInstaller(cat).start("org/twice", "bg_removal")
-        except ProviderError as e:
-            seen["error"] = engine.refusal(e).error
-        seen["after"] = tasks()
-
-    during[("org/twice", "model.onnx")] = second_start
+    seen: dict = {}
+    during[("org/twice", "model.onnx")] = lambda: seen.update(
+        task=installer19.begin(node19, "media_model_install", "org/twice", "bg_removal"))
+    mark = len(calls)
     try:
         first = cat.install_planned(twice)
     except Exception as e:                      # две установки в один остаток: порча байтов или чужой publish снял его
         first = {"disk": {"verdict": getattr(e, "code", type(e).__name__)}}
-    error = seen.get("error")
-    ok(error is not None and error.code == "MODEL_INSTALL_BUSY" and seen["after"] == seen["tasks"],
-       f"вторая установка той же модели, пока первая пишет её часть, — отказ из start, файла задачи нет ({error})")
-    ok(error is not None and "twice" in error.message and error.recovery.suggested_tool == "media_install_status",
-       f"клиент видит, какая модель уже ставится, и чем прозвонить идущую ({error})")
-    ok(first["disk"]["verdict"] == "ready" and (models / "bg/twice/model.onnx").read_bytes() == b"t" * 500,
-       f"первая установка отказом второй не задета — часть совпала с источником ({first['disk']['verdict']})")
+    second = (node19.settle(seen["task"]["task_id"], 30).get("task") or {}) if seen.get("task") else {}
+    twice_gets = [c for c in downloads(mark) if c[1] == "org/twice"]
+    ok((seen.get("task") or {}).get("status") in ("pending", "processing") and second.get("status") == "completed",
+       f"вторая установка той же модели, пока первая пишет её часть, — задание: ждёт замок и кончается успехом, а не "
+       f"отказом MODEL_INSTALL_BUSY ({seen.get('task')}, {second.get('error')})")
+    ok(len(twice_gets) == 1 and first["disk"]["verdict"] == "ready"
+       and (models / "bg/twice/model.onnx").read_bytes() == b"t" * 500,
+       f"дождавшись замка, задание пересудило план: часть, поставленную первой, второй раз не качало ({len(twice_gets)} "
+       f"загрузок части); первая не задета ({first['disk']['verdict']})")
 
-    info["org/held"] = repo(put("org/held", "model.onnx", b"h" * 300))
-    held_space = cat.место_под("org/held", "bg_removal")
-    owner = ModelCatalog.owner(held_space["entry"])
-    remnant = Files(models).remnant(ModelCatalog.landing(held_space["entry"], held_space["plan"][0]), owner)
-    remnant.parent.mkdir(parents=True, exist_ok=True)
-    remnant.write_bytes(b"h" * 100)
+    held_space, remnant, holder = held_by_other("org/held", b"h" * 300, b"h" * 100)
     before = (remnant.read_bytes(), remnant.stat().st_ino)
-    holder = _sp19.Popen(
-        [sys.executable, "-c", "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
-         "from core.paths import Files; lock = Files(Path(sys.argv[2])).lock(sys.argv[3]); lock.acquire(); "
-         "print('держу', flush=True); sys.stdin.read()", str(ROOT), str(models), owner],
-        stdin=_sp19.PIPE, stdout=_sp19.PIPE, text=True)
+    reached, cli_waiting, cli_done = threading.Event(), threading.Event(), {}
+    real_planned = cat.install_planned
+
+    def spied(место, progress=lambda _m: None, **kw):
+        """Тот же каталог; шаг «жду замок» CLI-установки виден проверке."""
+        def tee(message: str) -> None:
+            if message.startswith("жду замок") and threading.current_thread().name == "cli19":
+                cli_waiting.set()
+            progress(message)
+        return real_planned(место, progress=tee, **kw)
+
+    cat.install_planned = spied
+    cli._catalog = lambda: cat
     try:
         ok(holder.stdout.readline().strip() == "держу", "другой процесс взял замок модели дверью слоя файлов")
         mark = len(calls)
-        ok(outcome(lambda: cat.install_planned(held_space)) == "MODEL_INSTALL_BUSY"
+        held_id = waiting(held_space, reached)
+        cli_run = threading.Thread(name="cli19", target=lambda: cli_done.update(
+            code=cli.main(["models.py", "install", "org/held", "--kind", "bg_removal"])))
+        cli_run.start()
+        ok(reached.wait(10) and cli_waiting.wait(10)
+           and (node19.status([held_id])[0].get("task") or {}).get("status") == "processing"
            and (remnant.read_bytes(), remnant.stat().st_ino) == before and not downloads(mark),
-           "замок держит другой процесс — отказ до первой записи: остаток не тронут, к источнику ни запроса")
-        cli._catalog = lambda: cat
-        printed = _io19.StringIO()
-        with _ctx19.redirect_stdout(printed):
-            code = cli.main(["models.py", "install", "org/held", "--kind", "bg_removal"])
-        ok(code == 2 and "MODEL_INSTALL_BUSY" in printed.getvalue(),
-           f"CLI ставит тем же путём и упирается в тот же замок — отказ кодом, а не вторая загрузка ({code})")
+           "замок держит другой процесс — задание и CLI ждут его, а не отказывают: остаток не тронут, к источнику ни "
+           "запроса")
     finally:
         holder.stdin.close()
         holder.wait()
-    ok(outcome(lambda: cat.install_planned(held_space)) == "" and not remnant.exists()
-       and (models / "bg/held/model.onnx").read_bytes() == b"h" * 300,
-       "держатель вышел — его замок сняло ядро, установка прошла")
+    held_task = node19.settle(held_id, 30).get("task") or {}
+    cli_run.join(30)
+    del cat.install_planned
+    held_gets = [c for c in downloads(mark) if c[1] == "org/held"]
+    ok(held_task.get("status") == "completed" and cli_done.get("code") == 0 and len(held_gets) == 1
+       and not remnant.exists() and (models / "bg/held/model.onnx").read_bytes() == b"h" * 300,
+       f"держатель вышел — его замок сняло ядро: задание и CLI дождались, часть легла одной загрузкой ({len(held_gets)}), "
+       f"второй пересудил план ({held_task.get('status')}, CLI {cli_done.get('code')})")
+
+    quiet_space, quiet_remnant, quiet_holder = held_by_other("org/quiet", b"q" * 200, b"q" * 50)
+    quiet_before, reached_quiet = (quiet_remnant.read_bytes(), quiet_remnant.stat().st_ino), threading.Event()
+    try:
+        quiet_holder.stdout.readline()
+        mark = len(calls)
+        quiet_id = waiting(quiet_space, reached_quiet)
+        reached_quiet.wait(10)
+        clock19[0] += _S16 + 1
+        quiet_task = node19.settle(quiet_id, 10).get("task") or {}
+    finally:
+        quiet_holder.stdin.close()
+        quiet_holder.wait()
+    ok(quiet_task.get("status") == "failed" and (quiet_task.get("error") or {}).get("code") == "TASK_STALLED"
+       and quiet_task["error"].get("facts", {}).get("tool") == "media_model_install"
+       and (quiet_remnant.read_bytes(), quiet_remnant.stat().st_ino) == quiet_before and not downloads(mark),
+       f"держатель замка молчит дольше срока простоя — задание кончается простоем узла, а не ждёт вечно: остаток не "
+       f"тронут, к источнику ни запроса ({quiet_task.get('error')})")
+
+    grow_space, grow_remnant, grow_holder = held_by_other("org/grow", b"g" * 400, b"g" * 10)
+    reached_grow, grown_seen = threading.Event(), 0
+    try:
+        grow_holder.stdout.readline()
+        grow_id = waiting(grow_space, reached_grow)
+        reached_grow.wait(10)
+        clock19[0] += _S16 // 2
+        with grow_remnant.open("ab") as fh:
+            fh.write(b"g" * 90)                 # держатель растит общий остаток части
+        deadline = _t19.monotonic() + 5
+        while grown_seen < 100 and _t19.monotonic() < deadline:
+            grown_seen = ((node19.status([grow_id])[0].get("task") or {}).get("progress") or {}).get("bytes", 0)
+            _t19.sleep(0.01)
+        clock19[0] += _S16 // 2 + 1
+        grow_alive = node19.status([grow_id])[0].get("task") or {}
+    finally:
+        grow_holder.stdin.close()
+        grow_holder.wait()
+    grow_done = node19.settle(grow_id, 30).get("task") or {}
+    _t19.sleep = pauses.append
+    ok(grown_seen == 100 and grow_alive.get("status") == "processing" and grow_done.get("status") == "completed"
+       and (models / "bg/grow/model.onnx").read_bytes() == b"g" * 400,
+       f"держатель растит общий остаток — ждущее задание видит рост как работу: от старта дольше срока простоя, а "
+       f"простоя нет; держатель вышел — задание доделало ({grown_seen}, {grow_alive.get('status')}, "
+       f"{grow_done.get('status')})")
 
     info["org/slow"] = repo(put("org/slow", "model.onnx", b"w" * 400))
-    slow, at_fetch, finished = ModelInstaller(cat), {}, threading.Event()
-    real_write = slow._write
-
-    def write(state: dict) -> None:
-        real_write(state)
-        if state.get("phase") != "running":
-            finished.set()
-
-    slow._write = write
+    slow, at_fetch = ModelInstaller(cat, heartbeat_sec=0.02), {}
+    node_slow = _Tasks16(_Eng(reactions=_REACTIONS), root=_врем("inst19slow_"))
     during[("org/slow", "model.onnx")] = lambda: at_fetch.update(
-        status=[s["status"] for s in slow.status() if s["params"]["model_id"] == "org/slow"],
+        status=[(e.get("task") or {}).get("status") for e in node_slow.status(tool="media_model_install")
+                if ((e.get("task") or {}).get("params") or {}).get("model_id") == "org/slow"],
         landed=(models / "bg/slow/model.onnx").exists())
-    begun_task = slow.start("org/slow", "bg_removal")
-    finished.wait()
-    ok(begun_task["status"] == "processing" and at_fetch == {"status": ["processing"], "landed": False},
+    _t19.sleep = _real19[1]                     # ожидание замка (filelock) спит по-настоящему, а не крутит пустой цикл
+    begun_task = slow.begin(node_slow, "media_model_install", "org/slow", "bg_removal")
+    node_slow.settle(begun_task["task_id"], 30)
+    _t19.sleep = pauses.append
+    ok(begun_task["status"] in ("pending", "processing") and at_fetch == {"status": ["processing"], "landed": False},
        f"настоящий каталог: пока источник отдаёт часть, установка уже видна прозвонкой, а части под именем нет — "
-       f"ответ start не ждал загрузки ({at_fetch})")
+       f"ответ запуска не ждал загрузки ({at_fetch})")
 
     real_inventory, probed = cat.inventory, []
     cat.inventory = lambda: probed.append(busy(Files(cat.inventory_file.parent).lock(cat.inventory_file.name))) \
@@ -4044,13 +4185,16 @@ def _model_fetch(work: Path, records: list[str]) -> None:
     ok(small == [True] and "ru_RU-test-low" in voices,
        f"малый файл источника качается под замком файла: остаток владельца source один на писателя ({small})")
 
-    Files(installs).note("w.json", "чужой", {"etag": "x"})
+    from core.jobs import issue as _issue19
+
+    store19 = node_slow.record_file(_issue19()).parent
+    Files(store19).note("w.json", "чужой", {"etag": "x"})
     try:
-        listed = [s["task_id"] for s in ModelInstaller(cat).status()]
+        listed = [entry["task_id"] for entry in node_slow.status()]
     except Exception as e:
         listed = [type(e).__name__]
-    ok(listed and all((installs / f"{i}.json").is_file() for i in listed),
-       f"заметка остатка (*.part.json) в каталоге задач — не задача: список не падает и её не выдаёт ({listed})")
+    ok(listed and all((store19 / f"{i}.json").is_file() for i in listed),
+       f"заметка остатка (*.part.json) в хранилище узла — не задание: список не падает и её не выдаёт ({listed})")
 
     print("== 19t. Ревизию источник не назвал — отказ кодом причины, а не «адрес не пропущен» ==")
     from huggingface_hub.errors import GatedRepoError, HfHubHTTPError, RepositoryNotFoundError
@@ -4115,7 +4259,7 @@ def _model_fetch(work: Path, records: list[str]) -> None:
 
     ran_in: dict = {}
     loop_thread = threading.get_ident()             # `_aio.run` крутит цикл событий в этом же потоке
-    real_probe_tool, real_start, real_status = media_tools.probe, ModelInstaller.start, ModelInstaller.status
+    real_probe_tool, real_start, real_status = media_tools.probe, ModelInstaller.begin, _Tasks16.status
 
     def where(name, fn):
         def wrapped(*a, **k):
@@ -4129,15 +4273,15 @@ def _model_fetch(work: Path, records: list[str]) -> None:
         _srv.CONFIG_PATH = cfg.parent
         _register(declared, _IDG(), _sm)
         media_tools.probe = where("media_models", real_probe_tool)
-        ModelInstaller.start = where("media_model_install", real_start)
-        ModelInstaller.status = where("media_install_status", real_status)
+        ModelInstaller.begin = where("media_model_install", real_start)
+        _Tasks16.status = where("media_install_status", real_status)
         for name, params in (("media_models", {"scope": "installed"}),
                              ("media_model_install", {"model_id": "org/bg", "kind": "bg_removal", "confirm": True}),
                              ("media_install_status", {})):
             _aio.run(declared.call(name, params))
     finally:
         _srv.CONFIG_PATH = was_cfg
-        media_tools.probe, ModelInstaller.start, ModelInstaller.status = real_probe_tool, real_start, real_status
+        media_tools.probe, ModelInstaller.begin, _Tasks16.status = real_probe_tool, real_start, real_status
     ok(set(ran_in) == {"media_models", "media_model_install", "media_install_status"}
        and loop_thread not in ran_in.values(),
        f"снимок железа, запуск установки и прозвонка — не в потоке цикла событий ({ran_in}, цикл {loop_thread})")

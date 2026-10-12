@@ -26,6 +26,7 @@ import httpx
 from core.contracts import ContractError
 from core.declaration import Declaration, declarations_root
 from core.declaration_schemas import TUNNEL_PROBE
+from core.environment import child_environ
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -237,15 +238,12 @@ class Диагностика:
     # ── Мелочь ──────────────────────────────────────────────────────────────
 
     def _бинарь(self, имя: str) -> str | None:
-        объявлен = self._объявление["бинари"].get(имя, {})
-        в_дереве = Path(объявлен.get("в_дереве", ""))
-        путь = в_дереве if в_дереве.is_absolute() else self.корень / в_дереве
-        return str(путь) if путь.exists() else shutil.which(имя)
+        return путь_бинаря(self._объявление, имя, self.корень)
 
     def _версия(self, путь: str, имя: str) -> str:
         флаги = self._объявление["бинари"].get(имя, {}).get("версия", ["--version"])
         try:
-            done = subprocess.run([путь, *флаги], capture_output=True, text=True, timeout=10)
+            done = subprocess.run([путь, *флаги], capture_output=True, text=True, timeout=10, env=child_environ())
         except (OSError, subprocess.SubprocessError):
             return "версия не отвечает"
         строки = (done.stdout or done.stderr).strip().splitlines()
@@ -278,6 +276,14 @@ class Диагностика:
 def быстрая(tunnel: Any = None, конец: str = "client") -> Отчёт:
     """Соединение, компоненты, служба, конфигурация — без лишнего трафика."""
     return Диагностика(tunnel, конец).прогнать("быстрая")
+
+
+def путь_бинаря(объявление: dict, имя: str, корень: Path = ROOT) -> str | None:
+    """Где бинарь конца туннеля: путь каталога (`бинари.<имя>.в_дереве`, от корня проекта) раньше PATH; нет нигде — None.
+    Одно решение у диагностики и у туннеля: путь в дереве объявлен в каталоге, а не литералом у каждого."""
+    в_дереве = объявление["бинари"].get(имя, {}).get("в_дереве", "")
+    путь = Path(в_дереве) if Path(в_дереве).is_absolute() else корень / в_дереве
+    return str(путь) if в_дереве and путь.is_file() else shutil.which(имя)
 
 
 def каталог_проверок(каталог: str | Path | None = None) -> Declaration:

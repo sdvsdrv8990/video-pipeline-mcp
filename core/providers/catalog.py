@@ -538,7 +538,8 @@ class ModelCatalog:
         # Что лежало под именами частей до загрузки (inode): вставшую часть `publish` кладёт новым inode — без часов.
         marks = {rel: (files.place(rel).stat().st_ino if files.place(rel).is_file() else None)
                  for rel in (self.landing(entry, p) for p in plan)}
-        return {"нужно_мб": нужно, "свободно_мб": float(свободно), "entry": entry, "plan": plan, "marks": marks}
+        return {"нужно_мб": нужно, "свободно_мб": float(свободно), "entry": entry, "plan": plan, "marks": marks,
+                "force": force}
 
     def with_fit(self, rows: list[dict], hardware: dict | None = None) -> list[dict]:
         """Дописать к строкам вердикт «влезет ли на эту машину»."""
@@ -594,7 +595,7 @@ class ModelCatalog:
         disk = self.judge(entry, deep=True)
         plan = entry["parts"] if force else disk["plan"]
         if plan:
-            return self._install(entry, plan, progress)
+            return self._install(entry, plan, progress, force=force)
         if fresh:
             self._remember(entry)
         return {**entry, "disk": disk, "fetched": []}
@@ -603,18 +604,28 @@ class ModelCatalog:
         """Источник вида разрешён декларацией — до первого запроса к источнику."""
         self.check_repo(self.source(kind).get("repo") or "huggingface.co")
 
-    def _install(self, entry: dict, parts: list[dict], progress, mark=None, held=lambda: None) -> dict:
+    def _install(self, entry: dict, parts: list[dict], progress, mark=None, held=lambda: None, pulse=None,
+                 force: bool = False) -> dict:
         """Скачать части плана, записать состав в опись и судить по отпечатку: расхождение — отказ кодом причины.
 
-        Модель ставит одна установка на все процессы (MF-10): замок по владельцу её остатков, занят — MODEL_INSTALL_BUSY
-        до первой записи; `held()` — замок взят. Порядок замков: модель → опись.
-        Состав ложится в опись и при отказе загрузчика: `pull` знает, что чинить, и докачивает свой остаток (MF-04).
-        `mark()` — признак работы для наблюдателя: загрузка и сверка отмечают себя по ходу, а не одной отметкой до.
+        Модель ставит одна установка на все процессы (MF-10): замок по владельцу её остатков. Занят — ждём, пока держатель
+        не отпустит; с `pulse` — пока работа не молчит дольше объявленного (`pulse.quiet`, суд узла заданий), иначе
+        отказ простоя (`pulse.stall`). Дождались — план пересуживается под замком по длине, как в `место_под`: части,
+        поставленные держателем, второй раз не качаются (`force` — все части). `held()` — замок взят. Порядок замков:
+        модель → опись. Состав ложится в опись и при отказе загрузчика: `pull` знает, что чинить, и докачивает свой
+        остаток (MF-04). `mark()` — признак работы для наблюдателя: загрузка и сверка отмечают себя по ходу.
         """
+        lock = Files(self.models_dir).lock(self.owner(entry))
         try:
-            hold = Files(self.models_dir).lock(self.owner(entry)).acquire(timeout=0)
+            hold = lock.acquire(timeout=0)
         except Timeout:
-            raise ProviderError("MODEL_INSTALL_BUSY", facts={"model": entry["id"]}) from None
+            progress("жду замок модели: её ставит другая установка")
+            try:
+                hold = lock.acquire(timeout=-1, cancel_check=pulse.quiet if pulse else None)
+            except Timeout:
+                raise pulse.stall() from None
+            if not force:
+                parts = self.judge(entry)["plan"]
         with hold:
             held()
             try:
@@ -650,6 +661,11 @@ class ModelCatalog:
         """Мера работы тела из политики загрузчика весов (NI-01): та же пара судит приём и простой установки."""
         policy = self.fetcher().policy
         return {"floor": policy.speed_floor_bytes_per_sec, "window": policy.speed_window_sec}
+
+    @property
+    def declaration(self) -> Declaration:
+        """Дверь `providers.yaml` каталога — для отказа связи с ключами другой декларации (судит потребитель обоих)."""
+        return self._decl
 
     def install_policy(self) -> InstallPolicy:
         """Раздел `local.install` — объект схемы двери: простой длиннее законной тишины загрузчика судит схема, битый
@@ -784,13 +800,14 @@ class ModelCatalog:
                 "params_by_dtype": dict(getattr(st, "parameters", None) or {}),
                 "params_active": self._active_params(info)}
 
-    def install_planned(self, место: dict, progress=lambda _m: None, mark=None, held=lambda: None) -> dict:
+    def install_planned(self, место: dict, progress=lambda _m: None, mark=None, held=lambda: None, pulse=None) -> dict:
         """Поставить модель по снимку `место_под`: скачать его план, записать состав в опись и судить по отпечатку.
 
-        Источник заново не спрашивается: качаются ровно та ревизия и тот план, по которым судили место. План снят до
-        замка модели: закончившаяся между ними установка той же модели даст повторную загрузку, а не порчу.
+        Источник заново не спрашивается: качаются ровно та ревизия и тот план, по которым судили место. Замок модели
+        держит другая установка — план после ожидания пересуживается под замком (`_install`), её части не качаются
+        второй раз; `pulse` — суд тишины ожидания.
         """
-        return self._install(место["entry"], место["plan"], progress, mark, held)
+        return self._install(место["entry"], место["plan"], progress, mark, held, pulse=pulse, force=место["force"])
 
     def _part_sizes(self, repo: str, info, names: list[str]) -> tuple[dict[str, int | None], dict[str, str]]:
         """Длина частей `names` по ступеням (MS-04): названная ответом `model_info(files_metadata)`, иначе HEAD без тела

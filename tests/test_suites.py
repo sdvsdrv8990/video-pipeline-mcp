@@ -80,9 +80,11 @@ def test_suite_passes(suite: Path, repo_root: Path, suite_env: dict[str, str], o
 
 @pytest.fixture(scope="session")
 def suite_env(tmp_path_factory) -> dict[str, str]:
-    """Среда наборов: свой корень журналов и свой дом инстанса. Сторож последней линии к двери `tests/harness/inprocess.py`."""
+    """Среда наборов: свой корень журналов и свой дом инстанса. Сторож последней линии к двери `tests/harness/inprocess.py`.
+    UTF-8 Mode (PEP 540): вывод набора уходит в канал, а у канала Windows кодировка локали — cp1252, и русский print
+    ронял набор. Сервер свой вывод решает сам (`server.py` main), его событие идёт без этой переменной."""
     return {**os.environ, "MCP_LOGS": os.environ.get("MCP_LOGS") or str(tmp_path_factory.mktemp("logs")),
-            "MCP_HOME": os.environ.get("MCP_HOME") or str(tmp_path_factory.mktemp("home"))}
+            "MCP_HOME": os.environ.get("MCP_HOME") or str(tmp_path_factory.mktemp("home")), "PYTHONUTF8": "1"}
 
 
 @pytest.fixture(scope="session")

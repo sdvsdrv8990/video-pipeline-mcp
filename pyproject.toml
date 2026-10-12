@@ -13,11 +13,11 @@ name = "video-pipeline-mcp"
 # 0.x — ранняя стадия: продукт (видео-пайплайн) ещё в заглушках (см. docs/roadmap/00_reality_check.md).
 # Внутренняя версия протокола сервера (v2.x в history_*) — отдельная от версии пакета.
 version = "0.1.0"
-description = "MCP-сервер управления видеопайплайном; работает с Claude AI Web через cloudflared-туннель."
+description = "MCP-сервер управления видеопайплайном; работает с Claude AI Web через туннель."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "sdvsdrv8990" }]
-keywords = ["mcp", "claude", "video-pipeline", "cloudflared"]
+keywords = ["mcp", "claude", "video-pipeline", "tunnel"]
 license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
 # PolyForm Noncommercial 1.0.0 (source-available, некоммерческое использование). Файл: LICENSE.
 # PEP 639: при `license = "<SPDX>"` классификатор `License :: *` запрещён (setuptools>=77 роняет сборку).
@@ -73,7 +73,7 @@ dependencies = [
     "psutil>=7.2",
     # Подпись артефактов и ключ инстанса (core/integrity): без неё подпись молча отключается.
     "cryptography>=42.0",
-    # NB: cloudflared — бинарь, НЕ pip-пакет (ставится install.sh).
+    # NB: бинарь туннеля — НЕ pip-пакет (ставится install.sh).
 ]
 
 [project.optional-dependencies]
@@ -118,7 +118,7 @@ local = [
     "transformers>=4.44",
     # Распознавание речи исполняет тот же transformers, что и картинки: отдельной библиотеки
     # для этого не нужно. Звук декодирует ffmpeg — СИСТЕМНЫЙ бинарь, не пакет pip (как
-    # cloudflared): его отсутствие адаптер называет отдельным отказом.
+    # бинарь туннеля): его отсутствие адаптер называет отдельным отказом.
     # safetensors не объявляем: он транзитивно у diffusers/transformers.
     # torch и accelerate ЗДЕСЬ НЕ ОБЪЯВЛЕНЫ, хотя нужны диффузии и распознаванию речи, — замер
     # 2026-09-10: с ними `pip install -e ".[local]"` тянул 20+ колёс nvidia-*/cuda-* (~12 ГБ)
@@ -201,7 +201,11 @@ exclude = ["workspace", ".venv", "docs", "node_modules"]
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "W"]
 # Глушитель правила, которого набор не проверяет, объясняет тишину, которой нет, — и его причину копируют.
-extend-select = ["RUF100"]
+# PLW1514: текст без явной кодировки читается и пишется кодировкой локали — на Windows cp1252 (PT-07).
+extend-select = ["RUF100", "PLW1514"]
+# PLW1514 в ruff — правило preview; preview включает только явно выбранные правила (вывод гейта по дереву тот же).
+preview = true
+explicit-preview-rules = true
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["E402", "E701", "E702", "E731", "F841"]

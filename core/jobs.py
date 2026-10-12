@@ -16,7 +16,7 @@ import logging
 import secrets
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -26,7 +26,7 @@ from pydantic import BaseModel, ValidationError
 from core.contracts import ContractError, ErrorDetail, TaskStatus
 from core.contracts.error_detail import redact
 from core.contracts.task_status import TaskEntry
-from core.declaration import Declared, declarations_root, instance_home
+from core.declaration import Declaration, Declared, declarations_root, instance_home
 from core.declaration_schemas import JOBS
 from core.paths import Files
 
@@ -40,8 +40,6 @@ _BEGIN = threading.Lock()                       # поиск двойника и
 _DONE: dict[str, threading.Event] = {}          # конец работы исполнителя этого процесса — его ждёт `settle`
 log = logging.getLogger(__name__)
 
-Beat = Callable[..., None]
-
 
 def issue() -> str:
     """Новый id задания объявленной формы; знаки — из криптографического источника: чужой id перебором не угадать."""
@@ -53,6 +51,20 @@ def issued(task_id: object) -> bool:
     """Мог ли id выдать узел: объявленная длина и только знаки алфавита. Есть ли такое задание — дело хранилища."""
     shape = _DECLARED.model.id
     return isinstance(task_id, str) and len(task_id) == shape.length and set(task_id) <= set(shape.alphabet)
+
+
+def stale(silent: float) -> bool:
+    """Молчит ли работа дольше объявленного `stale_after_sec` — одно правило простоя для читателя записи, работы, которая
+    ждёт чужое, и установки из CLI."""
+    return silent > _DECLARED.model.stale_after_sec
+
+
+def outlasts(quiet: float, other: Declaration, theirs: Sequence[tuple[str, ...]]) -> None:
+    """Срок простоя длиннее законной тишины работы из другой декларации (`theirs` — пути её ключей), иначе живая работа
+    станет простоем: нарушение — отказ двери на оба файла. Судит потребитель обоих, отказ собирает дверь."""
+    if _DECLARED.model.stale_after_sec <= quiet:
+        raise _DECLARED.link_refused("link_greater", "простой задания дольше законной тишины работы",
+                                     [("stale_after_sec",)], other, theirs)
 
 
 def _fingerprint(tool: str, key: dict) -> str:
@@ -88,6 +100,24 @@ class _Record(BaseModel):
     outputs: list[_Artifact] = []
 
 
+class Pulse:
+    """Что узел отдаёт работе задания: `pulse(progress, working=True)` — ход и признак работы в запись (`working=False`
+    — ход без признака: простой не отодвигается); `quiet()` — молчит ли задание дольше объявленного; `stall()` — отказ
+    простоя с теми же фактами, что видит читатель."""
+
+    def __init__(self, node: Tasks, record: _Record):
+        self._node, self.record = node, record
+
+    def __call__(self, progress: dict | None = None, working: bool = True) -> None:
+        self.record = self._node._save(self.record, alive=working, progress=progress)
+
+    def quiet(self) -> bool:
+        return stale(self._node.clock() - self.record.heartbeat)
+
+    def stall(self) -> ContractError:
+        return self._node._stall(self.record)
+
+
 class Tasks:
     """Узел заданий над движком: задание — запись в хранилище и поток-исполнитель; статус — чтение записей."""
 
@@ -96,12 +126,12 @@ class Tasks:
         self.files = Files(root or instance_home(declarations_root()))
         self.clock = clock
 
-    def begin(self, tool: str, params: dict, klass: str, work: Callable[[Beat], dict], *,
+    def begin(self, tool: str, params: dict, klass: str, work: Callable[[Pulse], dict], *,
               key: dict | None = None, fresh: bool = False) -> dict:
-        """Задание в фоне: статус сразу, работа — когда у класса есть место (до того — pending). `work(beat)` отдаёт
-        результат; `beat(progress, working=True)` — ход и признак работы, по признаку судится простой (`working=False`
-        — ход без признака). Повтор вызова (`tool` и `key`, по умолчанию `params`) в окне `dedupe_window_sec` — элемент
-        того же задания, если оно не кончилось отказом; `fresh` — новое задание."""
+        """Задание в фоне: статус сразу, работа — когда у класса есть место (до того — pending). `work(pulse)` отдаёт
+        результат; `pulse` — ход и признак работы, по признаку судится простой (`Pulse`). Повтор вызова (`tool` и `key`,
+        по умолчанию `params`) в окне `dedupe_window_sec` — элемент того же задания, если оно не кончилось отказом;
+        `fresh` — новое задание."""
         mark = _fingerprint(tool, params if key is None else key)
         with _BEGIN:
             twin = None if fresh else self._twin(mark)
@@ -122,15 +152,18 @@ class Tasks:
             done.wait(within)
         return self._view(task_id)
 
-    def status(self, task_ids: list[str] | None = None) -> list[dict]:
-        """Статусы названных заданий; без id — всех в хранилище, конченые старше `retain_sec` убираются."""
-        return [self._view(task_id) for task_id in (task_ids or [found for found, _ in self._records()])]
+    def status(self, task_ids: list[str] | None = None, tool: str | None = None) -> list[dict]:
+        """Статусы названных заданий; без id — всех в хранилище (с `tool` — заданий этого инструмента и битых записей:
+        их инструмент не прочесть, молча они не пропадают), конченые старше `retain_sec` убираются."""
+        found = task_ids or [task_id for task_id, record in self._records()
+                             if tool is None or record is None or record.tool == tool]
+        return [self._view(task_id) for task_id in found]
 
     def record_file(self, task_id: str) -> Path:
         """Настоящий путь записи задания — для обвязки, которая готовит хранилище (засев сценария)."""
         return self.files.place(self._path(task_id))
 
-    def _run(self, task_id: str, tool: str, params: dict, klass: str, work: Callable[[Beat], dict], mark: str,
+    def _run(self, task_id: str, tool: str, params: dict, klass: str, work: Callable[[Pulse], dict], mark: str,
              fresh: bool, written: threading.Event) -> None:
         path = self._path(task_id)
         try:
@@ -143,19 +176,15 @@ class Tasks:
                 finally:
                     written.set()
                 self.engine.slots.wait(klass)
+                pulse = Pulse(self, record)
                 try:
-                    record = self._save(record, status="processing")
-
-                    def beat(progress: dict | None = None, working: bool = True) -> None:
-                        nonlocal record
-                        record = self._save(record, alive=working, progress=progress)
-
-                    done: dict = {"status": "completed", "result": work(beat)}
+                    pulse.record = self._save(record, status="processing")
+                    done: dict = {"status": "completed", "result": work(pulse)}
                 except Exception as e:
                     done = {"status": "failed", "error": self.engine.failure(tool, e).error}
                 finally:
                     self.engine.slots.give(klass)
-                self._save(record, finished=True, **done)
+                self._save(pulse.record, finished=True, **done)
         finally:
             _DONE.pop(task_id).set()
 
@@ -192,24 +221,27 @@ class Tasks:
         return None
 
     def _records(self) -> list[tuple[str, _Record | None]]:
-        """Записи хранилища по порядку имени: id и запись (битая — None); конченые старше `retain_sec` убираются с их
-        замком. Битая запись остаётся: её статус называет порчу, а не молчит."""
+        """Записи хранилища по порядку id: id и запись (битая — None); конченые старше `retain_sec` убираются с их
+        замком. Битая запись остаётся: её статус называет порчу, а не молчит. id берутся и по замку записи: имя записи
+        под `os.replace` обход каталога может не увидеть (btrfs), а замок создаётся до первой записи и не подменяется."""
         store, now, retain = self._store(), self.clock(), _DECLARED.model.retain_sec
+        named = {Path(entry.path).name for entry in self.files.walk(store) if entry.kind == "file"}
+        ids = sorted({name.removesuffix(".lock").removesuffix(".json") for name in named
+                      if name.endswith((".json", ".json.lock"))})
         found: list[tuple[str, _Record | None]] = []
-        for entry in self.files.walk(store):
-            name = Path(entry.path).name
-            task_id = name.removesuffix(".json")
-            if entry.kind != "file" or not name.endswith(".json") or not issued(task_id):
-                continue
+        for task_id in filter(issued, ids):
+            path = self._path(task_id)
             try:
-                record = self._load(entry.path)
+                record = self._load(path)
+            except FileNotFoundError:           # замок есть, записи ещё нет или она уже убрана
+                continue
             except ValueError:
                 found.append((task_id, None))
                 continue
             if record.finished is not None and now - record.finished > retain:
-                self.files.remove(entry.path)
-                if self.files.place(f"{entry.path}.lock").exists():
-                    self.files.remove(f"{entry.path}.lock")
+                self.files.remove(path)
+                if self.files.place(f"{path}.lock").exists():
+                    self.files.remove(f"{path}.lock")
                 continue
             found.append((task_id, record))
         return found
@@ -221,11 +253,9 @@ class Tasks:
         try:
             lock.acquire(timeout=0)
         except Timeout:
-            silent = self.clock() - record.heartbeat
-            if record.task.status != "processing" or silent <= _DECLARED.model.stale_after_sec:
+            if record.task.status != "processing" or not stale(self.clock() - record.heartbeat):
                 return record
-            error = self._error(record.tool, "TASK_STALLED", task_id=record.task.task_id, tool=record.tool,
-                                seconds=int(silent))
+            error = self._translated(record.tool, self._stall(record))
             return record.model_copy(update={"task": self._task(record.task, status="failed", error=error)})
         try:
             current = self._load(path)          # исполнитель мог дописать запись между чтением и замком
@@ -249,9 +279,18 @@ class Tasks:
         """Новый статус через проверку контракта (инвариант status ↔ result/error), а не копией без суда."""
         return TaskStatus.model_validate({**task.model_dump(), **changes})
 
+    def _stall(self, record: _Record) -> ContractError:
+        """Простой живого исполнителя с фактами записи: его видит читатель, им же кончается работа, заметившая свою
+        тишину."""
+        return ContractError("TASK_STALLED", facts={"task_id": record.task.task_id, "tool": record.tool,
+                                                    "seconds": int(self.clock() - record.heartbeat)})
+
     def _error(self, name: str, code: str, /, **facts) -> ErrorDetail:
+        return self._translated(name, ContractError(code, facts=facts))
+
+    def _translated(self, name: str, e: ContractError) -> ErrorDetail:
         """Отказ задания — тем же переводом сервера, что отказ вызова (`Engine.failure`)."""
-        error = self.engine.failure(name, ContractError(code, facts=facts)).error
+        error = self.engine.failure(name, e).error
         assert error is not None
         return error
 

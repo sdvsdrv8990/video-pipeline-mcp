@@ -14,14 +14,18 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import ClassVar, Literal, assert_never
+from typing import Annotated, ClassVar, Literal, assert_never
 from urllib.parse import urlsplit
+
+from pydantic import AfterValidator
+from pydantic_core import PydanticCustomError
 
 from core.contracts import ContractError
 from core.declaration import Declaration
 from core.declaration_schemas import TUNNEL_PROBE
+from core.environment import child_environ
 from core.providers.download import answers
-from core.transport.diagnostics import каталог_проверок
+from core.transport.diagnostics import каталог_проверок, путь_бинаря
 
 
 # Словарь событий лога cloudflared объявлен ОДИН раз: и производитель (`_classify_line`), и оба
@@ -43,6 +47,7 @@ _DISCONNECTED_RE = re.compile(r"unregistered tunnel connection|lost connection w
 _FATAL_MARKERS = (
     "token is invalid",
     "provided tunnel token is invalid",
+    "token is not valid",
     "failed to parse",
     "couldn't start tunnel",
     "not authorized",
@@ -56,9 +61,14 @@ _FATAL_MARKERS = (
 )
 
 _INSTALL_HINT = (
-    "cloudflared не найден в PATH. Установи его (см. install.sh) или бинарь "
-    "проекта ./bin/cloudflared"
+    "Бинарь туннеля не найден ни по пути каталога (config/tunnel_diagnostics.yaml, `бинари`), ни в PATH. "
+    "Поставь его: ./install.sh"
 )
+
+# Имена среды, по которым cloudflared берёт личность туннеля (`tunnel run --help`): каждое главнее объявленного файла
+# учётных данных, поэтому из наследства сервера ребёнку они не идут; токен ставится только своим именем.
+_IDENTITY_ENV = ("TUNNEL_TOKEN", "TUNNEL_TOKEN_FILE", "TUNNEL_CRED_FILE", "TUNNEL_CRED_CONTENTS")
+_TOKEN_ENV = "TUNNEL_TOKEN"
 
 
 class TunnelError(RuntimeError):
@@ -87,17 +97,15 @@ class CloudflaredTunnel:
         self.port = int(cfg.get("local_port", port) or port)
         self.mode = cfg.get("mode", "quick")
         self.hostname = declared_hostname(config_path)
-        # named-режим подключается либо connector-токеном, либо локальными credentials.
-        # Токен — секрет: приоритет у env MCP_TUNNEL_TOKEN, чтобы не держать его
-        # в коммитимом config/tunnel.yaml.
-        self.tunnel_token = os.environ.get("MCP_TUNNEL_TOKEN") or cfg.get("tunnel_token") or ""
+        # named-режим подключается либо connector-токеном, либо локальными credentials; токен — только из среды
+        # сервера: в файле декларации его читает любой локальный пользователь, и там он — отказ двери (`_load_config`).
+        self.tunnel_token = os.environ.get("MCP_TUNNEL_TOKEN") or ""
         self.tunnel_id = cfg.get("tunnel_id") or ""
         self.tunnel_name = cfg.get("tunnel_name") or ""
         self.credentials_file = cfg.get("credentials_file") or ""
 
-        # Бинарь: сначала локальный ./bin/cloudflared, затем PATH.
-        local_bin = Path(__file__).resolve().parents[2] / "bin" / "cloudflared"
-        self.binary = str(local_bin) if local_bin.exists() else "cloudflared"
+        # Бинарь — путь каталога (`бинари.cloudflared.в_дереве`, одно решение с диагностикой), затем PATH.
+        self.binary = путь_бинаря(каталог_проверок().data, "cloudflared") or "cloudflared"
 
         # Параметры повторов (backoff), чтобы не упереться в лимиты Cloudflare.
         self.retry_base = float(cfg.get("retry_base_seconds", 2))     # старт паузы
@@ -132,12 +140,16 @@ class CloudflaredTunnel:
     @staticmethod
     def _load_config(config_path: str | Path | None) -> dict:
         """Путь НЕ задан — режим без объявления (quick), это решение вызывающего. Путь задан, а
-        файла нет — промах: молча поднятый на дефолтах туннель не соответствует ничему."""
+        файла нет — промах: молча поднятый на дефолтах туннель не соответствует ничему. Непустой `tunnel_token` —
+        отказ двери с путём ключа и без значения: токен живёт в среде сервера."""
         if not config_path:
             return {}
-        return Declaration(
+        дверь = Declaration(
             config_path, ContractError, "туннеля",
-            "Заведи config/tunnel.yaml — режим, порт и hostname объявлены там.").data
+            "Заведи config/tunnel.yaml — режим, порт и hostname объявлены там.")
+        if "tunnel_token" in дверь.data:
+            дверь.need("tunnel_token", kind=_БЕЗ_СЕКРЕТА)
+        return дверь.data
 
     def _binary_available(self) -> bool:
         return self.binary.startswith("/") and Path(self.binary).exists() \
@@ -147,26 +159,26 @@ class CloudflaredTunnel:
         """Собирает команду cloudflared под выбранный режим.
 
         named — два пути (по требованиям Cloudflare):
-          • token: `cloudflared tunnel run --token <TOKEN>` — дашбордовый туннель;
+          • token: `cloudflared tunnel run` — дашбордовый туннель; токен уходит средой ребёнка
+            (`_child_env`), а не аргументом: argv процесса читает любой локальный пользователь;
             ingress (домен → 127.0.0.1:port) настроен на стороне Cloudflare.
           • credentials: `cloudflared tunnel run --url <url> <id|name>` c
             --credentials-file — локально управляемый туннель, DNS-маршрут привязан
             к домену командой `cloudflared tunnel route dns <name> <hostname>`.
 
-        Токен читается из env (MCP_TUNNEL_TOKEN), НЕ из config/tunnel.yaml.
-        Env-приоритет: env > yaml. yaml используется ТОЛЬКО для не-секретных полей.
+        Токен — только из среды сервера (MCP_TUNNEL_TOKEN); yaml — только не-секретные поля.
         """
         url = f"http://127.0.0.1:{self.port}"
         if self.mode == "named":
             # Путь 1: connector-токен (ID+секрет внутри токена).
-            if self.tunnel_token:
-                return [self.binary, "tunnel", "--no-autoupdate", "run", "--token", self.tunnel_token]
+            if self._by_token():
+                return [self.binary, "tunnel", "--no-autoupdate", "run"]
             # Путь 2: локальные credentials + UUID/имя туннеля.
             ref = self.tunnel_id or self.tunnel_name
             if not ref:
                 raise ValueError(
-                    "mode=named требует tunnel_token ЛИБО (tunnel_id/tunnel_name + credentials_file) "
-                    "в config/tunnel.yaml. Получи их в дашборде Cloudflare после привязки домена."
+                    "mode=named требует токен в среде сервера (MCP_TUNNEL_TOKEN) ЛИБО tunnel_id/tunnel_name "
+                    "(+ credentials_file) в config/tunnel.yaml. Получи их в дашборде Cloudflare после привязки домена."
                 )
             cmd = [self.binary, "tunnel", "--no-autoupdate"]
             if self.credentials_file:
@@ -363,6 +375,7 @@ class CloudflaredTunnel:
         self._proc_started = time.time()
         return subprocess.Popen(
             self._build_command(),
+            env=self._child_env(),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -550,6 +563,18 @@ class CloudflaredTunnel:
                 self._proc.kill()
         self._proc = None
 
+    def _by_token(self) -> bool:
+        """Режим токена — одно решение для argv и среды ребёнка."""
+        return self.mode == "named" and bool(self.tunnel_token)
+
+    def _child_env(self) -> dict[str, str]:
+        """Среда ребёнка решается здесь, а не наследуется: любое имя `_IDENTITY_ENV` главнее объявленного файла
+        учётных данных и подняло бы не тот туннель; токен уходит средой, а не argv, который читает любой (`ps`)."""
+        среда = {k: v for k, v in child_environ().items() if k not in _IDENTITY_ENV}
+        if self._by_token():
+            среда[_TOKEN_ENV] = self.tunnel_token
+        return среда
+
 
 def declared_hostname(config_path: str | Path | None) -> str:
     """Публичный hostname туннеля из его объявления; не объявлен или объявления нет — пусто. Одно решение для туннеля
@@ -557,9 +582,20 @@ def declared_hostname(config_path: str | Path | None) -> str:
     return CloudflaredTunnel._load_config(config_path).get("hostname") or ""
 
 
+def _секрет_не_здесь(значение: str) -> str:
+    """Секрет в файле декларации (права чтения для всех) — отказ двери; пустой ключ — законная пустота."""
+    if значение:
+        raise PydanticCustomError(
+            "secret_in_declaration", "токен туннеля — в среде сервера (MCP_TUNNEL_TOKEN), не в файле декларации")
+    return значение
+
+
+_БЕЗ_СЕКРЕТА = Annotated[str, AfterValidator(_секрет_не_здесь)]
+
+
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Cloudflare-туннель для MCP-сервера")
+    parser = argparse.ArgumentParser(description="Туннель для MCP-сервера")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--config", default=str(Path(__file__).resolve().parents[2] / "config" / "tunnel.yaml"))
     args = parser.parse_args()

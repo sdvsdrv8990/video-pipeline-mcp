@@ -53,6 +53,10 @@ def _broken() -> str:
     return task_id
 
 
+_unset = [name for name in ("MCP_HOME", "MCP_LOGS") if not os.environ.get(name)]
+if _unset:
+    raise SystemExit(f"task_node: не задано {', '.join(_unset)} — засев лёг бы в дом инстанса по умолчанию (живое дерево "
+                     "проекта); приспособление ставят только со своим домом и журналом: сервер сценария или набор")
 journal = Path(os.environ["MCP_LOGS"]) / "task_node.jsonl"
 journal.parent.mkdir(parents=True, exist_ok=True)
 with journal.open("a", encoding="utf-8") as fh:

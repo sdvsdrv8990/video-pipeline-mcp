@@ -86,7 +86,7 @@ _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 def _allowed_hosts() -> set:
     """Кому разрешено называться нашим хостом: петля + объявленный туннель + явный список. Объявления туннеля нет —
     машина без туннеля, его hostname нет; объявление битое — отказ двери туннеля с файлом и местом. Hostname нужен и без
-    `--tunnel`: cloudflared поднимают и отдельно (deploy_tunnel_server.sh)."""
+    `--tunnel`: туннель поднимают и отдельно (deploy_tunnel_server.sh)."""
     hosts = set(_LOOPBACK_HOSTS)
     hosts |= {h.strip().lower() for h in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",") if h.strip()}
     tunnel_cfg = CONFIG_PATH / "tunnel.yaml"
@@ -219,7 +219,7 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
     Args:
         host: Хост
         port: Порт
-        use_tunnel: Поднять Cloudflare-туннель вместе с сервером
+        use_tunnel: Поднять туннель вместе с сервером
     """
     global MCP_AUTH_DIGEST
     if not ALLOW_NO_AUTH:
@@ -433,9 +433,9 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
         tunnel = CloudflaredTunnel(port=port, config_path=CONFIG_PATH / "tunnel.yaml")
         try:
             public_url = tunnel.start()
-            # Статус спрашивается ДВАЖДЫ и у разных свидетелей: лог cloudflared говорит, что ребро
+            # Статус спрашивается ДВАЖДЫ и у разных свидетелей: лог туннеля говорит, что ребро
             # поднялось, а проба — доходит ли запрос снаружи до нашего процесса. Одного лога мало:
-            # край Cloudflare отдаёт 530 при живом с виду туннеле.
+            # край поставщика отдаёт 530 при живом с виду туннеле.
             st = tunnel.status()
             улика = tunnel.probe()
             if st["connected"] and улика["дошло"]:
@@ -446,7 +446,7 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
             elif st["connected"]:
                 tunnel_status_str = f"ребро есть, снаружи НЕ отвечает ({улика['текст']})"
                 print()
-                print("⚠️  ПУБЛИЧНОГО АДРЕСА НЕТ: cloudflared соединился, но снаружи запрос не "
+                print("⚠️  ПУБЛИЧНОГО АДРЕСА НЕТ: туннель соединился, но снаружи запрос не "
                       "доходит.")
                 print(f"   проверено: {улика['текст']}")
                 print(f"   локально сервер работает: http://{host}:{port}/mcp")
@@ -471,7 +471,7 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
                 print("   • named + credentials: нужен домен + credentials файл")
         except TunnelCancelled as e:
             # Отмена оператора, а не поломка: Ctrl+C ушёл всей группе процессов и до нас дошёл
-            # позже, чем до cloudflared. Продолжать запуск и объявлять «ГОТОВ» после этого значит
+            # позже, чем до процесса туннеля. Продолжать запуск и объявлять «ГОТОВ» после этого значит
             # переработать стоп в поломку чужого механизма.
             print(f"\n⏹  Остановка: туннель получил тот же сигнал, что и сервер ({e}).")
             try:
@@ -507,7 +507,7 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
         # Хот-релоад декларативного config без рестарта: следим за mtime файлов.
         # firewall.yaml → firewall.reload() (fail-closed), server_reactions.yaml →
         # reactions.load(). tunnel.yaml НЕ входит: смена режима/порта требует
-        # рестарта cloudflared (честно). Код handlers/core тоже требует рестарта.
+        # рестарта туннеля (честно). Код handlers/core тоже требует рестарта.
         reactions = getattr(engine, "reactions", None)
         watched = {
             CONFIG_PATH / "firewall.yaml": "firewall",
@@ -579,17 +579,18 @@ def main():
     # по умолчанию БЛОЧНО буферизует stdout — статусные сообщения (URL туннеля,
     # подключение Claude) зависают в буфере и не видны. line_buffering=True флашит
     # на каждой строке: буфер сохраняется (быстрый вывод), но сообщения не теряются.
+    # Кодировка — utf-8, а не локаль: у канала Windows она cp1252, и первый русский print ронял сервер.
     # Не трогаем при отсутствии reconfigure (заглушки stdout в тестах/встраивании).
     for stream in (sys.stdout, sys.stderr):
         with contextlib.suppress(AttributeError, ValueError):
-            stream.reconfigure(line_buffering=True)
+            stream.reconfigure(line_buffering=True, encoding="utf-8")
 
     from core.environment import epilog
     parser = argparse.ArgumentParser(description="MCP-сервер видеопайплайна", epilog=epilog(),
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--host", default=HOST, help="Хост (по умолчанию: %(default)s)")
     parser.add_argument("--port", type=int, default=PORT, help="Порт (по умолчанию: %(default)s)")
-    parser.add_argument("--tunnel", action="store_true", help="Поднять Cloudflare-туннель вместе с сервером (D11)")
+    parser.add_argument("--tunnel", action="store_true", help="Поднять туннель вместе с сервером (D11)")
     parser.add_argument("--rotate-key", action="store_true", help="Перевыпустить ключ доступа и выйти (S1)")
     parser.add_argument("--re-adopt", action="store_true", help="Присвоить рабочую область этому серверу после переноса (S9)")
     args = parser.parse_args()

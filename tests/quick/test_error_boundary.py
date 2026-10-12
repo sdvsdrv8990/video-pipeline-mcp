@@ -62,7 +62,7 @@ async def main():
 
     async def refusal_over_cause():
         try:
-            open(SECRET)
+            open(SECRET, "rb")
         except OSError as exc:
             raise ContractError("RECONCILE_ROLLED_BACK", "Reconcile откачен: ни одна сущность не сдвинута") from exc
 

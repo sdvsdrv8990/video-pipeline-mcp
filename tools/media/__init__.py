@@ -20,6 +20,7 @@ from pathlib import Path
 from core.contracts import ContractError, Fact, ToolResult
 from core.engine import Engine
 from core.engine.table_materializer import declared_rows
+from core.jobs import Tasks
 from core.providers import (AdapterRegistry, MediaRequest, ModelSpec, ProviderError, ProviderResolver,
                             TaskCycle, UsageLedger)
 from core.paths import Files
@@ -478,13 +479,16 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         registry = AdapterRegistry(ctx.config_path / "providers.yaml", ctx.config_path.parent)
         return RunnerSupervisor(registry, ctx.config_path.parent)
 
+    tasks = Tasks(engine)
+
     def _installer() -> ModelInstaller:
-        """Наблюдатель за установками: пределы прозвонки — из раздела `local.install`, связь простоя с тишиной
-        загрузчика судит схема у двери."""
+        """Установщик моделей на узле заданий: тик наблюдения — раз в `local.install.progress.heartbeat_sec`, простой
+        судит узел (`jobs.yaml` `stale_after_sec`), связь срока простоя с тишиной загрузчика — до задания."""
         registry = AdapterRegistry(ctx.config_path / "providers.yaml", ctx.config_path.parent)
         catalog = ModelCatalog(ctx.config_path / "providers.yaml", registry.models_dir)
-        progress = catalog.install_policy().progress
-        return ModelInstaller(catalog, heartbeat_sec=progress.heartbeat_sec, stale_after_sec=progress.stale_after_sec)
+        installer = ModelInstaller(catalog, heartbeat_sec=catalog.install_policy().progress.heartbeat_sec)
+        installer.linked()
+        return installer
 
     async def media_model_install(model_id: str, kind: str, confirm: bool = False,
                                   force: bool = False) -> "ToolResult":
@@ -499,7 +503,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 "CONFIRM_REQUIRED", f"Установка '{model_id}' скачает веса на диск сервера.",
                 "Это гигабайты и внешний источник — операция подтверждается явно: повтори с "
                 "confirm=true. Сначала посмотри, что ставишь: media_models(scope='local').")
-        ok, task = ctx.safe(lambda: _installer().start(model_id, kind, force=force))
+        ok, task = ctx.safe(lambda: _installer().begin(tasks, "media_model_install", model_id, kind, force=force))
         if not ok:
             return task
         if task["task_id"] is None:
@@ -508,25 +512,38 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 "checked": task["result"]["checked"]})])
         return ToolResult(status="success", data={
             **task,
-            "next": ("Установка идёт в фоне — гигабайты качаются минутами. Прозвони её: "
-                     f"media_install_status(install_id='{task['task_id']}'). Отвалившийся "
-                     "клиент установку не теряет и не спасает: она продолжается, статус "
-                     "прозванивается заново."),
+            "next": ("Установка идёт заданием сервера — гигабайты качаются минутами. Прозвони её: "
+                     f"task_status(task_ids=['{task['task_id']}']). Отвалившийся клиент установку не теряет и "
+                     "не спасает: она продолжается, статус прозванивается заново. Оборвалась (простой, сбой сети) — "
+                     "повтори установку: целые части в план не войдут, а оборванная докачается с места обрыва, "
+                     "если источник не сменил файл."),
         }, facts=[Fact(type="ModelInstallStarted", data={
             "install_id": task["task_id"], "model_id": model_id, "kind": kind})])
 
     async def media_install_status(install_id: str = "") -> "ToolResult":
-        """Что с установками моделей — статус задачи каждой (`TaskStatus`): идёт, готово или отказ.
+        """Что с установками моделей — статус задания каждой (`TaskStatus` узла заданий): ждёт места, идёт, готово или
+        отказ. Обёртка над `task_status` на время перевода: тот же статус, отбор по установкам.
 
-        Прогресс считается по диску, а не по отчёту загрузчика: он способен отрапортовать и
-        оборваться. Если байты не растут дольше объявленного срока — это отказ INSTALL_STALLED, а не «идёт».
+        Ход считается по диску, а не по отчёту загрузчика: он способен отрапортовать и оборваться. Признаков работы
+        нет дольше объявленного — отказ простоя TASK_STALLED, а не «идёт». Одна установка, которой нет, — отказ вызова;
+        в списке запись, которую не прочесть, названа отказом своего элемента (`unreadable`), а не пропущена.
         """
-        ok, rows = ctx.safe(lambda: _installer().status(install_id))
+        def installs() -> list[dict]:
+            entries = tasks.status([install_id] if install_id else None, tool="media_model_install")
+            refused = entries[0].get("error") if install_id else None
+            if refused:
+                raise ContractError(refused["code"], facts=refused.get("facts"))
+            return entries
+
+        ok, entries = ctx.safe(installs)
         if not ok:
-            return rows
+            return entries
+        rows = [entry["task"] for entry in entries if entry.get("task")]
         return ToolResult(status="success", data={
             "installs": rows,
             "running": [r["task_id"] for r in rows if r["status"] == "processing"],
+            "unreadable": [{"task_id": entry["task_id"], "error": entry["error"]} for entry in entries
+                           if entry.get("error")],
         }, facts=[Fact(type="ModelInstallStatus", data={
             "total": len(rows), "done": [r["params"]["model_id"] for r in rows if r["status"] == "completed"],
             "failed": [{"model": r["params"]["model_id"], "code": r["error"]["code"]}
@@ -611,8 +628,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         title="Медиа: поставить локальную модель",
         description=(
             "Начинает загрузку весов локальной модели на диск сервера. Гигабайты качаются "
-            "минутами, поэтому установка идёт В ФОНЕ и возвращает статус задачи с task_id — ход "
-            "прозванивается через media_install_status, который скажет и об успехе, и об обрыве. "
+            "минутами, поэтому установка идёт ЗАДАНИЕМ сервера и возвращает статус задачи с task_id — ход "
+            "прозванивается через task_status, который скажет и об успехе, и об обрыве. Повтор того же "
+            "вызова, пока установка идёт или недавно кончилась, отдаёт тот же task_id, второй загрузки нет; "
+            "другая установка той же модели (другой процесс) дожидается, а не падает. "
             "Модель уже стоит той же ревизией и цела — исход «уже стоит» сразу (task_id=null, "
             "result.outcome=already_installed), без загрузки; force=true — перекачать. По завершении "
             "модель попадает в опись, и канал может исполнять ею (table_update по столбцу model). "
@@ -633,10 +652,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         name="media_install_status",
         title="Медиа: как идёт установка модели",
         description=(
-            "Показывает ход установок весов: идёт, готово, отказ с причиной или прервано. "
-            "Прогресс меряется по диску (сколько байт реально легло), а не по отчёту загрузчика — "
-            "он способен отрапортовать и оборваться. Если байты не растут дольше объявленного "
-            "срока, установка честно называется прерванной, а не остаётся вечным «идёт». "
+            "Показывает ход установок весов — те же задания, что task_status, только установки: ждёт места, "
+            "идёт, готово, отказ с причиной или прервано. Прогресс меряется по диску (сколько байт реально "
+            "легло), а не по отчёту загрузчика — он способен отрапортовать и оборваться. Если признаков работы "
+            "нет дольше объявленного срока, установка честно называется простоем, а не остаётся вечным «идёт». "
             "Прерванную можно просто повторить: скачанное не выбрасывается."),
         input_schema={"type": "object", "properties": {
             "install_id": {"type": "string",

@@ -63,6 +63,14 @@
       читатель: facts_without_emitter
       потолок: fact_emitters_baseline.txt
       совет: "Тип обещан контрактом (или наблюдателем), а сервер его не шлёт: либо путь, который шлёт, либо снять строку из KNOWN_FACT_TYPES / tests/harness/observations.yaml"
+    # Слова поставщиков — поле оси, пока нет каталога поставщиков (T2): тогда ось читает их из каталога.
+    - заголовок: "имя поставщика туннеля вне его описания"
+      читатель: provider_word_outside_catalog
+      потолок: provider_word_baseline.txt
+      совет: "Текст для людей и путь в дереве говорят «туннель»; имя поставщика — в каталоге (config/tunnel_diagnostics.yaml) и в коде туннеля до одного супервизора (T3). Новое упоминание — нейтральное слово или строка каталога; потолок опускают T2–T4 (--bless)"
+      слова: [cloudflare]
+      судит: ["server.py", "run.sh", "install.sh", "README.md", "pyproject.toml", ".gitignore", "core/*.py", "tools/*.py", "scripts/*.py", "scripts/*.sh", "config/*.yaml"]
+      свои: ["core/transport/tunnel.py", "config/tunnel_diagnostics.yaml"]
   жёсткие:
     - заголовок: "код отказа мимо реестра"
       читатель: codes_outside_registry

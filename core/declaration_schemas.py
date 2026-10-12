@@ -236,19 +236,19 @@ ProviderUrl = Annotated[StrictStr, AfterValidator(_declared_url)]   # адрес
 
 
 class InstallProgress(BaseModel):
-    """Наблюдение за установкой: как часто пересчитывать легшие байты и сколько тишины — уже простой."""
+    """Наблюдение за установкой: как часто пересчитывать легшие байты. Простой судит узел заданий — один ключ
+    `jobs.yaml` `stale_after_sec`."""
 
     model_config = STRICT
 
     heartbeat_sec: float = Field(gt=0)
-    stale_after_sec: float = Field(gt=0)
 
 
 class InstallPolicy(BaseModel):
-    """`providers.yaml` `local.install`: откуда и что ставить, сколько места, как тянуть и как судить простой.
+    """`providers.yaml` `local.install`: откуда и что ставить, сколько места, как тянуть и как часто смотреть на ход.
 
     `revisions` — закреплённая ревизия модели (репозиторий → коммит): часть происхождения, пустое отображение — явное
-    «не закреплено». Простой (`progress.stale_after_sec`) длиннее законной тишины загрузчика и окна меры скорости.
+    «не закреплено».
     """
 
     model_config = STRICT
@@ -261,22 +261,6 @@ class InstallPolicy(BaseModel):
     prefer_files: Annotated[tuple[StrictStr, ...], Listed]
     progress: InstallProgress
     revisions: Annotated[Mapping[StrictStr, StrictStr], ReadOnly]
-
-    @model_validator(mode="after")
-    def _coherent(self) -> "InstallPolicy":
-        gaps = _install_gaps(self)
-        if gaps:
-            raise ValidationError.from_exception_data(type(self).__name__, gaps)
-        return self
-
-
-def _install_gaps(policy: InstallPolicy) -> list[InitErrorDetails]:
-    """Связь разделов установки: простой длиннее наибольшей законной тишины загрузчика и окна меры скорости."""
-    quiet = max(policy.fetch.silence_sec, policy.fetch.speed_window_sec)
-    if policy.progress.stale_after_sec <= quiet:
-        return [_gap("stale_within_silence", f"простой длиннее законной тишины загрузчика и окна меры ({quiet:g} с)",
-                     ("progress", "stale_after_sec"))]
-    return []
 
 
 def _fetch_gaps(policy: RequestPolicy) -> list[InitErrorDetails]:

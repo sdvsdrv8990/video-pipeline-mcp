@@ -5,8 +5,11 @@
 Истина об открытиях — аудит-хук `open` этого процесса (только пути файлов личности, без содержимого); дом живого сервера —
 ключ, рождённый в его временном корне. У владельца без переменных дом — родитель каталога деклараций, как до узла.
 """
+import asyncio
+import atexit
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,6 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+import server
 from core.declaration import declarations_root, instance_home, workspace_root
 from core.engine import Engine
 from core.ids import IDGenerator
@@ -22,7 +26,7 @@ from core.ids.link_registry import REGISTRY_FILE
 from core.integrity import KEY_FILE, InstanceIdentity
 from core.secrets import BOX_KEY_FILE, fingerprint
 from core.state import StateManager
-from tests.harness.inprocess import register_basic_tools
+from tests.harness.inprocess import create_server, register_basic_tools
 from tests.harness.live_server import live_server
 
 _checks = 0
@@ -66,6 +70,7 @@ check("дом и рабочая область независимы: задан 
 print("== 2. Дверь наборов: сборка в процессе выпускает и читает личность в доме набора ==")
 os.environ.pop("MCP_HOME", None)                   # прямой запуск: дом даёт дверь, а не гейт
 _ws = Path(tempfile.mkdtemp(prefix="home_ws_")) / "workspace"
+atexit.register(shutil.rmtree, _ws.parent, ignore_errors=True)
 _ws.mkdir(parents=True)
 _sm = StateManager(_ws)
 register_basic_tools(Engine(state_manager=_sm), IDGenerator(), _sm)
@@ -103,6 +108,7 @@ check("сервер видит ключ, внесённый скриптом: т
 
 print("== 5. --re-adopt присваивает рабочую область личности своего дома ==")
 _home5 = Path(tempfile.mkdtemp(prefix="readopt_home_"))
+atexit.register(shutil.rmtree, _home5, ignore_errors=True)      # в доме — закрытый ключ прогона
 _ws5 = _home5 / "workspace"
 _ws5.mkdir()
 adopted = subprocess.run([sys.executable, str(ROOT / "server.py"), "--re-adopt"], cwd=ROOT, capture_output=True, text=True,
@@ -115,6 +121,26 @@ check("--re-adopt подписал реестр рабочей области к
       adopted.returncode == 0 and registry.get("_seal")
       and own.verify({"entities": registry.get("entities", {})}, registry["_seal"]) == "",
       (adopted.returncode, adopted.stderr[-300:], registry.get("_seal")))
+
+print("== 6. Дверь create_server: рабочая область набора, а не владельца ==")
+# Оракул — файловая система: в workspace/ владельца нет ничего новее метки, запись легла под MCP_WORKSPACE набора.
+os.environ.pop("MCP_WORKSPACE", None)              # прямой запуск: рабочую область даёт дверь
+_mark = Path(tempfile.mkdtemp(prefix="ws_mark_"))
+atexit.register(shutil.rmtree, _mark, ignore_errors=True)
+_owner_ws = (ROOT / "workspace").resolve()
+_engine, _, _ = create_server()
+_wrote = asyncio.run(_engine.call("fs_write_file", {"path": "проба-двери/запись.txt", "content": "набор"}))
+_suite_ws = Path(os.environ.get("MCP_WORKSPACE", "")).resolve()
+_newer = sorted(str(p.relative_to(ROOT)) for p in (_owner_ws, *_owner_ws.rglob("*"))
+                 if p.stat().st_mtime > _mark.stat().st_mtime) if _owner_ws.is_dir() else []
+check("дверь дала рабочую область вне workspace/ владельца, и сервер пишет в неё",
+      os.environ.get("MCP_WORKSPACE") and not _suite_ws.is_relative_to(_owner_ws)
+      and server.WORKSPACE_PATH.resolve() == _suite_ws, (os.environ.get("MCP_WORKSPACE"), server.WORKSPACE_PATH))
+check("запись инструмента легла в рабочую область набора",
+      _wrote.status == "success" and (_suite_ws / "проба-двери" / "запись.txt").is_file(),
+      _wrote.error.code if _wrote.error else "")
+check("в workspace/ владельца ничего новее старта двери", not _newer and not (_owner_ws / "проба-двери").exists(),
+      _newer[:5])
 
 print(f"\nРЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

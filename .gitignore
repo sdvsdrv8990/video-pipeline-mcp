@@ -52,16 +52,16 @@ instance_key.pem
 # ═══ Техническая документация ═══
 docs/dev/
 
-# ═══ Туннель (cloudflared) ═══
+# ═══ Туннель ═══
 # ВНИМАНИЕ: в .gitignore инлайн-комментарии НЕ работают — '#' в середине строки
 # становится частью паттерна. Комментарии только на ОТДЕЛЬНОЙ строке.
-# локальный бинарь туннеля
-bin/cloudflared
+# локальный бинарь туннеля (путь — config/tunnel_diagnostics.yaml, `бинари`)
+bin/tunnel
 # credentials именованного туннеля
 *.cloudflared.json
 # креды/конфиг cloudflared
 .cloudflared/
-# Может содержать tunnel_token — НЕ коммитить
+# Машинная декларация туннеля (режим, hostname, id); секрета в ней нет — токен в среде сервера, MCP_TUNNEL_TOKEN
 config/tunnel.yaml
 tests/.journal/
 

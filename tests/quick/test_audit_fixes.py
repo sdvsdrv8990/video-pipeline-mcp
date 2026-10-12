@@ -53,7 +53,7 @@ async def main():
           r.error.code if r.error else "")
     r2 = await engine.call("fs_read_file", {"path": "../server.py"})
     check("traversal ../server.py blocked", r2.status == "error" and r2.error.code == "PATH_ESCAPE")
-    # Рабочая область настоящая и переживает прогон: запись, а не создание (создание по занятому пути — FILE_EXISTS).
+    # Рабочая область — набора (дверь inprocess), не владельца; запись, а не создание: с MCP_WORKSPACE она переживает прогон.
     await engine.call("fs_write_file", {"path": "ok/inside.txt", "content": "hi"})
     r3 = await engine.call("fs_read_file", {"path": "ok/inside.txt"})
     check("legit path inside workspace works",
@@ -69,7 +69,7 @@ async def main():
     _rs = await engine.call("fs_create_python_script", {"path": "gen/evil.py", "description": _evil_desc})
     check("создание скрипта с враждебным описанием не отказывает", _rs.status == "success",
           _rs.error.code if _rs.error else "")
-    _src = (ROOT / "workspace" / "gen" / "evil.py").read_text(encoding="utf-8")
+    _src = (S.WORKSPACE_PATH / "gen" / "evil.py").read_text(encoding="utf-8")
     _ns: dict = {}
     exec(compile(_src, "gen", "exec"), _ns)  # проверяем инертность
     check("описание не закрывает докстринг: побочного действия нет", not _marker.exists())
@@ -177,7 +177,7 @@ async def main():
     from core.search.fs_searcher import FsSearcher, FsSearchTask
     from core.contracts import ContractError as _Refusal
     from pathlib import Path as _P
-    _ws = _P("workspace").resolve(); _ws.mkdir(exist_ok=True)
+    _ws = _P(S.WORKSPACE_PATH).resolve(); _ws.mkdir(exist_ok=True)
     _fs = FsSearcher(_ws, read_bytes=_decl_fw["file_limits"]["read_bytes"])
     def _esc(root):
         try:
@@ -266,7 +266,7 @@ async def main():
 
     # QueryPlanner._match_filter на разнотипном (str vs num в gt) не должен ронять TypeError.
     from core.search.query_planner import QueryPlanner as _QP
-    _qp = _QP(table_engine=None, workspace=str(ROOT / "workspace"))
+    _qp = _QP(table_engine=None, workspace=str(S.WORKSPACE_PATH))
     try:
         _f42_match = _qp._match_filter({"x": "abc"}, {"x": {"gt": 5}})
         _f42_sorted = _qp._apply_sort([{"v": "abc"}, {"v": 3}, {"v": None}], {"column": "v"})
@@ -293,7 +293,7 @@ async def main():
     # validate_formulas ПЕРЕСЧИТЫВАЕТ формулы (LibreOffice headless) → ловит =1/0.
     from core.excel import ExcelEngine
     import shutil as _sh2
-    _xe = ExcelEngine(str(ROOT / "workspace"))
+    _xe = ExcelEngine(str(S.WORKSPACE_PATH))
     _xp = "test_f29_probe/b.xlsx"
     _xe.create_workbook(_xp, "S1")
     _xe.insert_formula(_xp, "S1", "A1", "=1/0", True)
@@ -303,7 +303,7 @@ async def main():
               f"ok={_vres['ok']} errors={len(_vres['errors'])}")
     else:
         print("[SKIP F29] LibreOffice недоступен — recalc-валидацию не проверяем (CI ставит libreoffice-calc)")
-    _sh2.rmtree(ROOT / "workspace" / "test_f29_probe", ignore_errors=True)
+    _sh2.rmtree(S.WORKSPACE_PATH / "test_f29_probe", ignore_errors=True)
 
     # Санитайзер маскирует секреты в raw_response (регрессия — должно быть ЗЕЛЁНО).
     from core.contracts import ErrorDetail as _ED, Recovery as _Rec
@@ -413,7 +413,7 @@ async def main():
     # это INTERNAL_ERROR вместо объявленной реакции.
     import yaml as _yml
     from core.contracts.error_detail import KNOWN_ERROR_CODES as _codes
-    _declared = set(_yml.safe_load(open(ROOT / "config" / "server_reactions.yaml")))
+    _declared = set(_yml.safe_load((ROOT / "config" / "server_reactions.yaml").read_text(encoding="utf-8")))
     _lost = sorted(_declared - _codes)
     check(f"каждый код из server_reactions.yaml есть в KNOWN_ERROR_CODES (выпали{_lost or '—'})",
           not _lost)

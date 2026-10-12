@@ -1,6 +1,6 @@
 # Video Pipeline MCP Server
 
-MCP-сервер для управления видеопайплайном. Работает с Claude AI Web через cloudflared-туннель.
+MCP-сервер для управления видеопайплайном. Работает с Claude AI Web через туннель.
 
 > **Статус (2026-07):** реализован слой управления данными (файлы, таблицы/Excel, структура каналов,
 > поиск) + файрвол + транспорт. Продуктовый видео-пайплайн (озвучка/транскрибация/картинки/монтаж) —
@@ -13,7 +13,7 @@ MCP-сервер для управления видеопайплайном. Р�
 video_pipeline_mcp/
 ├── server.py              ✅ точка входа: MCP-эндпоинт + туннель; регистрация инструментов
 ├── pyproject.toml         ✅ сборка/зависимости (PEP 621) — единственный файл зависимостей
-├── install.sh · run.sh    ✅ установка (.venv + cloudflared) · запуск (--tunnel)
+├── install.sh · run.sh    ✅ установка (.venv + бинарь туннеля) · запуск (--tunnel)
 │
 ├── config/                ✅ декларации (поведение, НЕ код)
 │   │                          (конфиг канала с S22 — не файл, а 7 листов channel_data.xlsx:
@@ -21,7 +21,7 @@ video_pipeline_mcp/
 │   │                           METADATA_DEFAULTS, AUTOMATION_RULES, SCENE_PROFILE, RENDER_CONFIG)
 │   ├── server_reactions.yaml  ✅ реестр реакций (коды → класс + recovery)
 │   ├── firewall.yaml          ✅ правила файрвола
-│   ├── tunnel.yaml            ✅ конфиг туннеля (gitignored — секрет)
+│   ├── tunnel.yaml            ✅ конфиг туннеля (gitignored — машинный; токен — в среде, MCP_TUNNEL_TOKEN)
 │   └── templates/
 │       ├── workspace/         ✅ 6 шаблонов: niche/network/channel/video/competitor_channel/competitor_video
 │       └── tables/            🔲 схемы книг (*.schema.yaml) — воркстрим A1′
@@ -58,7 +58,7 @@ video_pipeline_mcp/
 ## Установка
 
 ```bash
-./install.sh          # .venv + зависимости (pyproject) + cloudflared
+./install.sh          # .venv + зависимости (pyproject) + бинарь туннеля
 ```
 
 ## Запуск
@@ -82,7 +82,7 @@ dev-инструменты — `pip install -e ".[dev]"` (агрегат зон 
 | httpx · aiohttp | HTTP-клиент/поллинг внешних MCP |
 | litellm · stable-ts · torch · ffmpeg-python | провайдеры media (в разработке) |
 
-cloudflared — бинарь (не pip), ставится `install.sh`.
+Бинарь туннеля — не pip-пакет: ставится `install.sh` в путь каталога (`config/tunnel_diagnostics.yaml`, `бинари`).
 
 ## Разработка
 

@@ -80,7 +80,8 @@ def file_digest(path: Path, algo: str, mark=None) -> str:
 
     `mark()` — на каждый прочитанный блок: долгая сверка большой части на медленном диске подаёт признаки работы.
     """
-    digest = hashlib.sha1(f"blob {path.stat().st_size}\0".encode()) if algo == "git-blob-sha1" else hashlib.new(algo)
+    digest = (hashlib.sha1(f"blob {path.stat().st_size}\0".encode(), usedforsecurity=False) if algo == "git-blob-sha1"
+              else hashlib.new(algo))
     with path.open("rb") as f:
         for block in iter(lambda: f.read(DIGEST_BLOCK), b""):
             digest.update(block)

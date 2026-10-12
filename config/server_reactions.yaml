@@ -336,26 +336,12 @@ MODEL_SIZE_UNKNOWN:
     suggested_tool: media_models
     reason: "Без длины каждой части место не проверить, а качать вслепую сервер не станет. Выбери модель, размер которой источник называет (media_models, scope='local'); иначе решает владелец — проверяет место сам и ставит модель вручную."
 
-INSTALL_STALLED:
-  class: ai_recoverable
-  message_template: "Установка '{model}' не подаёт признаков работы дольше {seconds} с: байты не растут, загрузчик молчит."
-  recovery:
-    suggested_tool: media_model_install
-    reason: "Сеть встала, сервер перезапустили или загрузка зависла. Повтори установку: целые части в план не войдут, а оборванная часть докачается с места обрыва, если источник не сменил файл (докачку подтверждает валидатор ответившего сервера); сменил — часть качается заново."
-
-MODEL_INSTALL_BUSY:
-  class: ai_recoverable
-  message_template: "Модель '{model}' уже ставится: её части сейчас пишет другая установка — в этом сервере или в другом процессе (scripts/models.py)."
-  recovery:
-    suggested_tool: media_install_status
-    reason: "Две установки одной модели пишут один остаток части и портят его, поэтому вторая не начинается. Прозвони идущую (media_install_status) и дождись её исхода; не поставила — повтори установку: целые части в план не войдут, оборванная докачается."
-
 TASK_NOT_FOUND:
   class: ai_recoverable
   message_template: "Задание «{task_id}» не найдено."
   recovery:
-    suggested_tool: media_install_status
-    reason: "Идентификатор задания выдаёт его запуск (task_id в ответе): сегодня это установка модели. media_install_status без параметров покажет все установки."
+    suggested_tool: task_status
+    reason: "Идентификатор задания выдаёт его запуск (task_id в ответе). task_status без параметров покажет все живые и недавние задания."
 
 TASK_INTERRUPTED:
   class: server_recoverable

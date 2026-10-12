@@ -5,8 +5,10 @@
 меняет выдачу, битая декларация — отказ двери с путём ключа. Каждый род — парой с законным.
 """
 import asyncio
+import atexit
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,12 +24,19 @@ import yaml
 from core.contracts import ContractError, ToolResult
 from core.declaration_schemas import Resources
 from core.engine.engine import Engine
-from core.jobs import Tasks, issue, issued
+from core.jobs import Tasks, issue, issued, stale
 from core.reactions import Reactions
 from tests.harness.live_server import declarations_copy
 
 _checks = 0
 _fails: list[str] = []
+
+
+def scratch(prefix: str) -> Path:
+    """Временный каталог события; убирается при выходе процесса — после набора читателя у него нет."""
+    path = Path(tempfile.mkdtemp(prefix=prefix))
+    atexit.register(shutil.rmtree, path, ignore_errors=True)
+    return path
 
 
 def check(label, cond, detail=""):
@@ -118,7 +127,7 @@ check("отдать невзятое место — ошибка кода, а н
 print("== 4. Узел: занято — pending; отказ работы — в задании; прерванное, простой; плохой id и битая — в элементе ==")
 JOBS = yaml.safe_load((ROOT / "config" / "jobs.yaml").read_text(encoding="utf-8"))
 now = [1000.0]
-root = Path(tempfile.mkdtemp(prefix="tasks_"))
+root = scratch("tasks_")
 store = root / JOBS["store"]
 reng = Engine(reactions=Reactions(ROOT / "config" / "server_reactions.yaml"), resources=RES)
 reng.register("занятой", "проба счёта", {"type": "object", "properties": {}}, _quick)
@@ -149,7 +158,9 @@ a = settle(a_id, {"processing"})
 check("законный: задание взяло место — processing; секрет параметров замаскирован",
       a.get("status") == "processing" and "секрет-канарейка" not in json.dumps(a, ensure_ascii=False), a)
 b = node.begin("проба", {"шаг": "второе"}, "пробный", held(gate_b, {"ok": "b"}))
-check("N+1 при пределе N=1 — второе задание pending, а не отказ", b.get("task", {}).get("status") == "pending", b)
+b_waited = (node.settle(b["task_id"], 0.2).get("task") or {}).get("status")
+check("N+1 при пределе N=1 — второе задание pending и через 0,2 с (ждёт места), а не отказ и не работа",
+      b.get("task", {}).get("status") == "pending" and b_waited == "pending", (b, b_waited))
 held_call = asyncio.run(reng.call("занятой", {}))
 check("место держит задание узла — вызов движка того же класса RESOURCE_BUSY: счёт один",
       held_call.status == "error" and held_call.error.code == "RESOURCE_BUSY", held_call.error and held_call.error.code)
@@ -233,10 +244,10 @@ SEEDED = ("import json, os\nfrom pathlib import Path\nfrom core.declaration impo
           "ids = json.loads((Path(os.environ['MCP_LOGS']) / 'task_node.jsonl').read_text().splitlines()[-1])\n"
           "node = Tasks(Engine(reactions=Reactions(declarations_root() / 'server_reactions.yaml')))\n"
           "print(json.dumps({k: node.status([v])[0] for k, v in ids.items()}, ensure_ascii=False))\n")
-logs = Path(tempfile.mkdtemp(prefix="task_node_"))
-env = {k: v for k, v in os.environ.items() if k not in ("VPM_FIXTURES", "MCP_LOGS", "MCP_CONFIG")}
+logs = scratch("task_node_")
+env = {k: v for k, v in os.environ.items() if k not in ("VPM_FIXTURES", "MCP_LOGS", "MCP_CONFIG", "MCP_HOME")}
 env.update(PYTHONPATH=str(ROOT / "tests" / "harness" / "fixtures"), VPM_FIXTURES="task_node",
-           MCP_CONFIG=str(declarations_copy()), MCP_LOGS=str(logs))
+           MCP_CONFIG=str(declarations_copy()), MCP_LOGS=str(logs), MCP_HOME=str(scratch("task_node_home_")))
 done = subprocess.run([sys.executable, "-c", SEEDED], cwd=ROOT, env=env, capture_output=True, text=True)
 try:
     seeded = json.loads(done.stdout.strip().splitlines()[-1])
@@ -250,7 +261,7 @@ check("засев: прерванное — TASK_INTERRUPTED, молчун — T
 
 print("== 6. Повтор того же вызова — то же задание (AD-21); конец работы — событием; ход без признака работы ==")
 now6 = [5000.0]
-node6 = Tasks(reng, root=Path(tempfile.mkdtemp(prefix="tasks6_")), clock=lambda: now6[0])
+node6 = Tasks(reng, root=scratch("tasks6_"), clock=lambda: now6[0])
 runs: list[str] = []
 
 
@@ -368,6 +379,99 @@ check("окно повтора длиннее срока хранения — DE
       wide.get("code") == "DECLARATION_INVALID" and "dedupe_window_sec" in wide.get("facts", {}).get("details", ""), wide)
 edge = child(declarations_copy({"jobs.yaml": {"dedupe_window_sec": JOBS["retain_sec"]}}))
 check("законный: окно равно сроку хранения — декларация проходит", edge.get("own") is True, edge)
+
+print("== 7. Работа ждёт чужое: простой судит одно правило узла; список по инструменту; место класса work — у задания ==")
+check("правило простоя — объявленный срок: ровно stale_after_sec — ещё работа, на секунду дольше — простой",
+      not stale(JOBS["stale_after_sec"]) and stale(JOBS["stale_after_sec"] + 1))
+now7 = [9000.0]
+root7 = scratch("tasks7_")
+node7 = Tasks(reng, root=root7, clock=lambda: now7[0])
+waiting7 = threading.Event()
+
+
+def awaiting(pulse):
+    """Работа ждёт чужое и спрашивает суд тишины узла, как установка у чужого замка модели (cancel_check)."""
+    waiting7.set()
+    deadline = time.monotonic() + 5
+    while not pulse.quiet() and time.monotonic() < deadline:
+        threading.Event().wait(0.005)
+    raise pulse.stall()
+
+
+w7 = node7.begin("ожидание", {"x": 1}, "любой", awaiting)["task_id"]
+waiting7.wait(5)
+calm = node7.status([w7])[0]["task"]
+check("законный: ждёт в пределах срока — processing, не простой", calm.get("status") == "processing", calm)
+now7[0] += JOBS["stale_after_sec"] // 2
+half7 = node7.settle(w7, 0.2).get("task") or {}
+check("законный: молчит полсрока — работа ещё ждёт: срок — объявленный stale_after_sec, а не свой",
+      half7.get("status") == "processing", half7)
+now7[0] += JOBS["stale_after_sec"] - JOBS["stale_after_sec"] // 2 + 1
+over = node7.settle(w7, 5).get("task") or {}
+check("ждёт дольше срока — работа кончилась TASK_STALLED с теми же фактами, что видит читатель",
+      (over.get("error") or {}).get("code") == "TASK_STALLED" and over.get("status") == "failed"
+      and over["error"].get("facts") == {"task_id": w7, "tool": "ожидание", "seconds": JOBS["stale_after_sec"] + 1},
+      over)
+node7.settle(node7.begin("другой", {"x": 2}, "любой", lambda pulse: {"ok": 1})["task_id"], 5)
+broken7 = issue()
+(root7 / JOBS["store"] / f"{broken7}.json").write_text("{битая запись", encoding="utf-8")
+by_tool = {entry["task_id"] for entry in node7.status(tool="ожидание")}
+check("список по инструменту — его задания и битые записи (их инструмент не прочесть), чужого инструмента — нет",
+      by_tool == {w7, broken7}, sorted(by_tool))
+check("законный: без инструмента — все записи", len(node7.status()) == 3, len(node7.status()))
+class Hiding:
+    """Дверь файлов, чей обход не видит одно имя — так прячет имя записи `os.replace` на btrfs; остальное — прежней."""
+
+    def __init__(self, files, hidden: str):
+        self._files, self._hidden = files, hidden
+
+    def walk(self, path=""):
+        return [entry for entry in self._files.walk(path) if Path(entry.path).name != self._hidden]
+
+    def __getattr__(self, name):
+        return getattr(self._files, name)
+
+
+gate_hidden = threading.Event()
+hidden7 = node7.begin("скрытая", {"x": 3}, "любой", held(gate_hidden, {"ok": 1}))["task_id"]
+files7 = node7.files
+node7.files = Hiding(files7, f"{hidden7}.json")
+twin7 = node7.begin("скрытая", {"x": 3}, "любой", held(threading.Event(), {"ok": 2}))["task_id"]
+listed7 = {entry["task_id"] for entry in node7.status(tool="скрытая")}
+node7.files = files7
+gate_hidden.set()
+node7.settle(hidden7, 5)
+check("обход каталога не увидел имя записи живого задания (так прячет его os.replace на btrfs) — задание найдено по "
+      "замку записи: повтор — тот же id (AD-21), список его называет", twin7 == hidden7 and hidden7 in listed7,
+      (hidden7, twin7, sorted(listed7)))
+
+RES7 = Resources.model_validate({
+    "default": "пробный", "classes": {"пробный": {"offload": True, "max_concurrent": 1, "retry_after_sec": 7}},
+    "tools": {"занятой": "пробный"}, "work": {"загрузка": {"max_concurrent": 1}}})
+eng7 = Engine(reactions=Reactions(ROOT / "config" / "server_reactions.yaml"), resources=RES7)
+eng7.register("занятой", "проба счёта", {"type": "object", "properties": {}}, _quick)
+node7b = Tasks(eng7, root=scratch("tasks7b_"))
+began7, gate7 = threading.Event(), threading.Event()
+
+
+def loading(pulse):
+    began7.set()
+    gate7.wait(5)
+    return {"ok": "загрузка"}
+
+
+one7 = node7b.begin("установка", {"m": 1}, "загрузка", loading)["task_id"]
+began7.wait(5)
+two7 = node7b.begin("установка", {"m": 2}, "загрузка", lambda pulse: {"ok": "вторая"})
+waited7 = (node7b.settle(two7["task_id"], 0.2).get("task") or {}).get("status")
+check("класс work с одним местом — вторая работа того же класса ждёт места (pending и через 0,2 с, хотя её работа "
+      "мгновенна): место ждёт задание, а не вызов", waited7 == "pending", waited7)
+check("место работы не занимает места вызовов: вызов своего класса идёт, пока загрузка держит своё",
+      asyncio.run(eng7.call("занятой", {})).status == "success")
+gate7.set()
+check("первая отдала место — вторая доделана",
+      (node7b.settle(one7, 5).get("task") or {}).get("status") == "completed"
+      and (node7b.settle(two7["task_id"], 5).get("task") or {}).get("result") == {"ok": "вторая"}, two7["task_id"])
 
 print(f"\nРЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

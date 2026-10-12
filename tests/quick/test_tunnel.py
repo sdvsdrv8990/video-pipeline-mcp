@@ -7,6 +7,9 @@
 токена, поэтому ни сети, ни процессов здесь нет.
 """
 
+import os
+import secrets
+import shutil
 import sys
 import tempfile
 import time
@@ -36,7 +39,8 @@ def test_command_building():
     check("cmd quick", t._build_command()[1:] == ["tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:8080"])
 
     t2 = CloudflaredTunnel(port=8080); t2.mode = "named"; t2.tunnel_token = "TOK"
-    check("cmd named token", t2._build_command()[1:] == ["tunnel", "--no-autoupdate", "run", "--token", "TOK"])
+    check("cmd named token: токена в argv нет — он уходит средой ребёнка",
+          t2._build_command()[1:] == ["tunnel", "--no-autoupdate", "run"], t2._build_command()[1:])
 
     t3 = CloudflaredTunnel(port=8080); t3.mode = "named"; t3.tunnel_token = ""; t3.tunnel_id = "uuid-123"; t3.credentials_file = "/x/cred.json"
     check("cmd named credentials",
@@ -70,12 +74,17 @@ def test_readiness_event_driven():
     except TunnelError:
         check("quick: URL without connection is NOT ready", True)
 
-    t3 = CloudflaredTunnel(port=8080); t3.mode = "named"; t3.tunnel_token = "BAD"
-    try:
-        t3._await_ready(iter(['ERR Couldn\'t start tunnel error="provided Tunnel token is invalid"\n']), exited)
-        check("named: bad token -> adequate error", False)
-    except TunnelError as e:
-        check("named: bad token -> adequate error", "token is invalid" in str(e).lower(), str(e)[:60])
+    # Второй образец — текст cloudflared 2026.5.0 (`TUNNEL_TOKEN=мусор cloudflared tunnel run`, код 255): прежний набор
+    # знал только первый, и отказ установленной версии выходил без причины.
+    for образец in ('ERR Couldn\'t start tunnel error="provided Tunnel token is invalid"\n',
+                    "Provided Tunnel token is not valid.\n"):
+        t3 = CloudflaredTunnel(port=8080); t3.mode = "named"; t3.tunnel_token = "BAD"
+        try:
+            t3._await_ready(iter([образец]), exited)
+            check(f"named: bad token -> adequate error ({образец[:24]}…)", False)
+        except TunnelError as e:
+            check(f"named: bad token -> adequate error ({образец[:24]}…)",
+                  "отказал" in str(e) and "token is" in str(e).lower(), str(e)[:60])
 
     t4 = CloudflaredTunnel(port=8080); t4.mode = "named"
     try:
@@ -223,6 +232,7 @@ def test_first_attempt_retries():
     t = CloudflaredTunnel(port=8080); t.mode = "named"; t.first_attempts = 3
     t._sleep_interruptible = lambda _: None          # паузы в наборе не ждём
     t.stop = lambda: None
+    t._binary_available = lambda: True               # попытка подменена — бинарь не порождается, его наличие не судим
     попытки = []
 
     def падает_дважды():
@@ -240,7 +250,7 @@ def test_first_attempt_retries():
           поднят == "https://mcp.example.com" and len(попытки) == 3, f"{поднят} / {len(попытки)}")
 
     t2 = CloudflaredTunnel(port=8080); t2.mode = "named"; t2.first_attempts = 3
-    t2._sleep_interruptible = lambda _: None; t2.stop = lambda: None
+    t2._sleep_interruptible = lambda _: None; t2.stop = lambda: None; t2._binary_available = lambda: True
     было = []
 
     def неверный_токен():
@@ -254,7 +264,7 @@ def test_first_attempt_retries():
         check("непоправимое не молотится повторами", len(было) == 1, len(было))
 
     t3 = CloudflaredTunnel(port=8080); t3.mode = "named"; t3.first_attempts = 3
-    t3._sleep_interruptible = lambda _: None; t3.stop = lambda: None
+    t3._sleep_interruptible = lambda _: None; t3.stop = lambda: None; t3._binary_available = lambda: True
     отмен = []
 
     def отменён():
@@ -286,11 +296,11 @@ def test_probe_names_the_responder():
 
 def test_probe_refuses_foreign_scheme():
     """Публичный адрес приходит СНАРУЖИ — схему выбирает транспорт, а не доверие к строке."""
-    подложка = Path(tempfile.mkdtemp()) / "секрет.txt"
-    подложка.write_text("СОДЕРЖИМОЕ ДИСКА", encoding="utf-8")
-
-    t = CloudflaredTunnel(port=8080); t.mode = "quick"; t._public_url = подложка.as_uri()
-    улика = t.probe()
+    with tempfile.TemporaryDirectory() as tmp:
+        подложка = Path(tmp) / "секрет.txt"
+        подложка.write_text("СОДЕРЖИМОЕ ДИСКА", encoding="utf-8")
+        t = CloudflaredTunnel(port=8080); t.mode = "quick"; t._public_url = подложка.as_uri()
+        улика = t.probe()
     check("чужая схема — «нет ответа», а не ответ сети",
           улика["дошло"] is False and улика["кто"] == "нет ответа", улика)
     check("содержимое диска не выдаётся за ответ сети",
@@ -397,23 +407,51 @@ def _нет_остатков():
 
 
 def test_приёмка_не_считает_непроверенное_пройденным():
+    """Бинарь клиентского конца — двойник по пути каталога (`бинари.cloudflared.в_дереве`) в копии деклараций: вердикт
+    приёмки не зависит от того, стоит ли cloudflared на машине прогона (CI его не ставит)."""
     from core.transport.diagnostics import НЕПОЛНО, ОТКАЗ, ПРОШЛО, быстрая, полная
-    без = быстрая(конец="client")
-    check("нет туннеля → НЕПОЛНО, а не ПРОШЛО", без.вердикт == НЕПОЛНО, без.вердикт)
-    check("непройденное названо и получило следующий шаг",
-          any(и.исход == "нечем" and и.дальше for и in без.итоги))
-    с_туннелем = полная(_Живой(), конец="client")
-    check("живой туннель + поток → ПРОШЛО", с_туннелем.вердикт == ПРОШЛО, с_туннелем.вердикт)
+    двойники = Path(tempfile.mkdtemp(prefix="vpm-bin-"))
+    копия = declarations_copy({"tunnel_diagnostics.yaml": {"бинари.cloudflared.в_дереве": _бинарь_версии(двойники)}})
+    прежний = os.environ.get("MCP_CONFIG")
+    os.environ["MCP_CONFIG"] = str(копия)
+    try:
+        без = быстрая(конец="client")
+        check("нет туннеля → НЕПОЛНО, а не ПРОШЛО", без.вердикт == НЕПОЛНО, без.вердикт)
+        check("непройденное названо и получило следующий шаг",
+              any(и.исход == "нечем" and и.дальше for и in без.итоги))
+        с_туннелем = полная(_Живой(), конец="client")
+        check("живой туннель + поток → ПРОШЛО", с_туннелем.вердикт == ПРОШЛО, с_туннелем.вердикт)
 
-    class Край(_Живой):
-        def probe(self):
-            return {"дошло": False, "текст": "край Cloudflare отвечает 530"}
+        class Край(_Живой):
+            def probe(self):
+                return {"дошло": False, "текст": "край Cloudflare отвечает 530"}
 
-    край = быстрая(Край(), конец="client")
-    check("край отвечает вместо нас → ОТКАЗ", край.вердикт == ОТКАЗ, край.вердикт)
-    соединение = [и for и in край.итоги if и.проверка.id == "соединение"][0]
-    check("отказ называет ТОЧКУ и следующий шаг",
-          "530" in соединение.причина and bool(соединение.дальше), соединение)
+        край = быстрая(Край(), конец="client")
+        check("край отвечает вместо нас → ОТКАЗ", край.вердикт == ОТКАЗ, край.вердикт)
+        соединение = [и for и in край.итоги if и.проверка.id == "соединение"][0]
+        check("отказ называет ТОЧКУ и следующий шаг",
+              "530" in соединение.причина and bool(соединение.дальше), соединение)
+
+        from core.transport.diagnostics import Диагностика, путь_бинаря
+        двойник = str(двойники / "cloudflared")
+        туннель, диагностика = CloudflaredTunnel(port=8080).binary, Диагностика(_Живой())._бинарь("cloudflared")
+        check("путь бинаря — один узел каталога: туннель и диагностика называют путь `в_дереве`",
+              туннель == диагностика == двойник, (туннель, диагностика))
+        check("пустой `в_дереве` не делает бинарём каталог проекта",
+              путь_бинаря({"бинари": {"нет-такого": {}}}, "нет-такого") is None,
+              путь_бинаря({"бинари": {"нет-такого": {}}}, "нет-такого"))
+    finally:
+        _вернуть({"MCP_CONFIG": прежний})
+        shutil.rmtree(копия.parent, ignore_errors=True)
+        shutil.rmtree(двойники, ignore_errors=True)
+
+
+def _бинарь_версии(каталог: Path) -> str:
+    """Исполняемый двойник бинаря туннеля для проверки «компоненты»: отвечает строкой версии и выходит."""
+    путь = каталог / "cloudflared"
+    путь.write_text(f"#!{sys.executable}\nprint('cloudflared version двойник')\n", encoding="utf-8")
+    путь.chmod(0o700)
+    return str(путь)
 
 
 def test_приёмка_поток_и_уборка():
@@ -500,6 +538,150 @@ def test_каталог_одна_дверь():
           улика["дошло"] is False and улика["текст"].startswith("PROVIDER_TIMEOUT"), улика)
 
 
+def test_secret_reaches_child_by_env():
+    """Токен туннеля уходит ребёнку средой, а не аргументом; унаследованная личность туннеля ребёнку не идёт.
+
+    Оракул — ядро: `/proc/<pid>/cmdline` и `/proc/<pid>/environ` живого ребёнка-двойника. В режиме credentials
+    cloudflared 2026.5.0 ставит унаследованные TUNNEL_TOKEN/TUNNEL_TOKEN_FILE выше объявленного файла (`tunnel run
+    --help`, проба без сети) и молча поднимает другой туннель."""
+    if not Path("/proc/self/environ").exists():
+        print("── не судится: в ОС нет /proc — argv и среду ребёнка спросить не у кого")
+        return
+    секрет, чужой = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
+    наследство = {"TUNNEL_TOKEN": чужой, "TUNNEL_TOKEN_FILE": "/нет/токена", "TUNNEL_CRED_FILE": "/нет/учётных.json",
+                  "TUNNEL_CRED_CONTENTS": "{}"}
+    случаи = (
+        ("токен: в argv его нет, в среде ребёнка — свой, а не унаследованный", "named",
+         {"MCP_TUNNEL_TOKEN": секрет, **наследство}, {}, ["tunnel", "--no-autoupdate", "run"], {"TUNNEL_TOKEN": секрет}),
+        ("credentials: унаследованная личность туннеля ребёнку не идёт", "named", наследство,
+         {"tunnel_id": "uuid-123", "credentials_file": "/x/cred.json"},
+         ["tunnel", "--no-autoupdate", "--credentials-file", "/x/cred.json", "run", "--url", "http://127.0.0.1:8080",
+          "uuid-123"], {}),
+        ("quick: унаследованная личность туннеля ребёнку не идёт", "quick", наследство, {},
+         ["tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:8080"], {}),
+    )
+    прежние = {имя: os.environ.get(имя) for имя in ("MCP_TUNNEL_TOKEN", *наследство)}
+    with tempfile.TemporaryDirectory() as tmp:
+        двойник = _двойник(Path(tmp))
+        for случай, режим, среда, поля, хвост, ждём in случаи:
+            _вернуть(dict.fromkeys(прежние))
+            os.environ.update(среда)
+            t = CloudflaredTunnel(port=8080); t.mode = режим; t.binary = двойник
+            for поле, значение in поля.items():
+                setattr(t, поле, значение)
+            try:
+                t.start()
+                argv, у_ребёнка = _глазами_ядра(t._proc.pid)
+            except (TunnelError, RuntimeError, OSError) as сбой:
+                check(случай, False, f"двойник не поднялся: {сбой}")
+                continue
+            finally:
+                t.stop()
+                _вернуть(прежние)
+            личность = {k: v for k, v in у_ребёнка.items() if k in наследство}
+            видно = [a.replace(секрет, "<секрет>").replace(чужой, "<чужой>") for a in argv[2:]]
+            check(f"{случай} (argv и среда — /proc ребёнка)",
+                  argv[-len(хвост):] == хвост and not any(секрет in a or чужой in a for a in argv) and личность == ждём,
+                  {"argv": видно, "личность": {k: "<секрет>" if v == секрет else "<чужое>" for k, v in личность.items()}})
+
+        # Бинаря нет — отказ до порождения: процесса, которому ушёл бы токен, нет вовсе.
+        os.environ["MCP_TUNNEL_TOKEN"] = секрет
+        try:
+            t = CloudflaredTunnel(port=8080); t.mode = "named"; t.binary = str(Path(tmp) / "нет-бинаря")
+            t.start()
+            check("бинаря нет → отказ до порождения", False, "туннель поднялся")
+        except RuntimeError as отказ:
+            check("бинаря нет → отказ до порождения", t._proc is None and секрет not in str(отказ), str(отказ)[:60])
+        finally:
+            _вернуть(прежние)
+
+
+def _двойник(каталог: Path) -> str:
+    """Исполняемый двойник cloudflared: печатает адрес quick и событие соединения, затем ждёт сигнала остановки."""
+    путь = каталог / "cloudflared"
+    путь.write_text(f"#!{sys.executable}\nimport signal\n"
+                    "print('INF |  https://dvoinik.trycloudflare.com  |', flush=True)\n"
+                    "print('INF Registered tunnel connection connIndex=0', flush=True)\n"
+                    "signal.pause()\n", encoding="utf-8")
+    путь.chmod(0o700)
+    return str(путь)
+
+
+def _глазами_ядра(pid: int) -> tuple[list[str], dict[str, str]]:
+    """argv и среда живого процесса из /proc: argv (права 444) видит `ps` любого пользователя, среду — только владелец."""
+    argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")[:-1]
+    пары = (x.split(b"=", 1) for x in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0") if b"=" in x)
+    return [a.decode() for a in argv], {k.decode(): v.decode() for k, v in пары}
+
+
+def _вернуть(прежние: dict[str, str | None]) -> None:
+    for имя, значение in прежние.items():
+        if значение is None:
+            os.environ.pop(имя, None)
+        else:
+            os.environ[имя] = значение
+
+
+def test_secret_in_declaration_refused():
+    """Токен в tunnel.yaml (файл с правами чтения для всех) — отказ двери с путём ключа и без значения; пустой ключ (так
+    он лежит в машинном файле владельца) проходит. `declared_hostname` — та же дверь: старт сервера (`_allowed_hosts`)
+    получает тот же отказ."""
+    from core.contracts import ContractError
+    from core.transport.tunnel import declared_hostname
+    секрет = secrets.token_urlsafe(24)
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Path(tmp) / "tunnel.yaml"
+        cfg.write_text(f"mode: named\nhostname: mcp.example.com\ntunnel_token: {секрет}\n", encoding="utf-8")
+        for кто, вызов in (("туннель", lambda: CloudflaredTunnel(port=8080, config_path=cfg)),
+                           ("declared_hostname — старт сервера", lambda: declared_hostname(cfg))):
+            try:
+                вызов()
+                check(f"секрет в tunnel.yaml → отказ двери: {кто}", False, "отказа нет")
+            except ContractError as отказ:
+                check(f"секрет в tunnel.yaml → отказ двери: {кто}",
+                      отказ.code == "DECLARATION_INVALID"
+                      and отказ.facts.get("details") == "tunnel_token (secret_in_declaration)",
+                      (отказ.code, отказ.facts.get("details")))
+                след = repr((str(отказ), отказ.message, отказ.reason, отказ.facts, отказ.errors))
+                check(f"значения секрета в отказе нет: {кто}", секрет not in след, "текст, message, reason, facts, errors")
+        cfg.write_text("mode: named\nhostname: mcp.example.com\ntunnel_token: ''\n", encoding="utf-8")
+        try:
+            CloudflaredTunnel(port=8080, config_path=cfg)
+            check("пустой tunnel_token проходит дверь (машинный файл владельца)",
+                  declared_hostname(cfg) == "mcp.example.com", declared_hostname(cfg))
+        except ContractError as отказ:
+            check("пустой tunnel_token проходит дверь (машинный файл владельца)", False, (отказ.code, отказ.facts))
+
+
+def test_real_binary_takes_token_from_env():
+    """Настоящий cloudflared, если стоит: неверный токен из среды ребёнка — его собственный отказ, непоправимый с первой
+    попытки. Сети нет: токен разбирается до соединения с краем. Без токена в среде бинарь сказал бы другое («requires
+    the ID or name»), поэтому текст отказа и есть улика, что среда дошла."""
+    бинарь = shutil.which("cloudflared")
+    if not бинарь:
+        print("── не судится: cloudflared не установлен — отказ настоящего бинаря спросить не у кого")
+        return
+    t = CloudflaredTunnel(port=8080); t.mode = "named"; t.binary = бинарь; t.first_attempts = 2
+    t.tunnel_token = "не-токен-" + secrets.token_hex(4)
+    t._sleep_interruptible = lambda _: None
+    порождено = []
+    порождать = t._spawn
+
+    def считая():
+        порождено.append(1)
+        return порождать()
+    t._spawn = считая
+    try:
+        t.start()
+        check("настоящий cloudflared: неверный токен из среды — отказ", False, "туннель поднялся")
+    except TunnelError as e:
+        check("настоящий cloudflared прочёл токен из среды ребёнка и отказал своим текстом",
+              "отказал" in str(e) and "token is" in str(e).lower(), str(e)[:90])
+        check("неверный токен непоправим: одна попытка из двух", len(порождено) == 1, len(порождено))
+    finally:
+        t.stop()
+
+
 def main():
     test_command_building()
     test_readiness_event_driven()
@@ -515,6 +697,9 @@ def main():
     test_приёмка_каталог_и_исполнители()
     test_приёмка_концы_и_бинари()
     test_каталог_одна_дверь()
+    test_secret_reaches_child_by_env()
+    test_secret_in_declaration_refused()
+    test_real_binary_takes_token_from_env()
     print()
     passed, total = sum(results), len(results)
     print(f"ИТОГО: {passed}/{total} проверок пройдено")

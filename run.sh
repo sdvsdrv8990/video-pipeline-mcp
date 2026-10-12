@@ -13,7 +13,7 @@ fi
 source .venv/bin/activate
 
 # Запуск сервера + туннеля ОДНОЙ командой.
-# --tunnel поднимает cloudflared вместе с сервером; сервер слушает 127.0.0.1.
+# --tunnel поднимает туннель вместе с сервером; сервер слушает 127.0.0.1.
 #   ./run.sh --no-tunnel   только локально, без публичного URL
 #   ./run.sh --no-auth     цикл разработки: коннектор подцепляется без ключа
 TUNNEL="--tunnel"
@@ -28,18 +28,21 @@ done
 
 PORT="${VPM_PORT:-8080}"
 
-# Аварийная остановка. Цели ищутся ТРЕМЯ независимыми уликами, потому что одна отказывает:
-# порт молчит при упавшем сервере, имя не находит переименованное, id туннеля пуст в quick-режиме.
-# Вердикт выносится по СОСТОЯНИЮ (порт свободен, процессов нет), а не по факту отправки сигнала.
+# Аварийная остановка. Цели ищутся НЕСКОЛЬКИМИ независимыми уликами, потому что одна отказывает:
+# порт молчит при упавшем сервере, имя не находит переименованное, родство теряет сироту упавшего сервера,
+# id туннеля пуст в quick-режиме. Вердикт выносится по СОСТОЯНИЮ (порт свободен, процессов нет).
 targets() {
-    local tid
+    local tid srv pid
     tid=$(grep -oP 'tunnel_id:\s*"\K[^"]+' config/tunnel.yaml 2>/dev/null || true)
+    srv=$({ ss -ltnp 2>/dev/null | grep ":$PORT " | grep -oP 'pid=\K[0-9]+'
+            pgrep -f "python3? .*server\.py" 2>/dev/null || true; } | sort -un)
     {
-        ss -ltnp 2>/dev/null | grep ":$PORT " | grep -oP 'pid=\K[0-9]+'
-        pgrep -f "python3? .*server\.py" 2>/dev/null || true
+        echo "$srv"
+        # Дети сервера — туннель по родству, а не по имени: бинарь в дереве назван нейтрально (bin/tunnel).
+        for pid in $srv; do pgrep -P "$pid" 2>/dev/null || true; done
         pgrep -f "cloudflared.*${tid:-127\.0\.0\.1:$PORT}" 2>/dev/null || true
         pgrep -f "cloudflared.*127\.0\.0\.1:$PORT" 2>/dev/null || true
-    } | sort -un | grep -v "^$$\$"
+    } | grep -v "^$" | sort -un | grep -v "^$$\$"
 }
 
 stop_all() {

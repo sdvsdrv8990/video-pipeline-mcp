@@ -7,7 +7,7 @@
 """
 
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from functools import cache
 from pathlib import Path
 from typing import Generic, TypeVar, overload
@@ -49,13 +49,15 @@ class Declaration:
         return self._data
 
     def _invalid(self, errors: list[dict]) -> Exception:
-        """Единственный отказ на битую декларацию — битый YAML, нет ключа, не тот тип, схема: путь ключа и правило,
-        без пришедших значений. Файл назван от каталога деклараций; файл вне него — только имя: путь хоста в ответ не идёт."""
-        root, file = declarations_root(), self.config_file.resolve()
+        """Единственный отказ на битую декларацию — битый YAML, нет ключа, не тот тип, схема, связь с другой декларацией:
+        путь ключа и правило, без пришедших значений. Ошибка связи несёт файл своей стороны (`file`): отказ называет все
+        файлы, а деталь — файл и путь ключа; ошибка одного файла — прежняя форма."""
+        files = list(dict.fromkeys(x.get("file") or self._named() for x in errors))
         return self._error(
             "DECLARATION_INVALID", errors=errors,
-            facts={"file": file.relative_to(root).as_posix() if file.is_relative_to(root) else file.name,
-                   "details": "; ".join(f"{x['field'] or '—'} ({x['rule']})" for x in errors)})
+            facts={"file": ", ".join(files),
+                   "details": "; ".join((f"{x['file']}: " if "file" in x else "") + f"{x['field'] or '—'} ({x['rule']})"
+                                        for x in errors)})
 
     def optional(self) -> dict:
         """Декларация, отсутствие которой — решение вызывающего, а не отказ.
@@ -114,6 +116,18 @@ class Declaration:
         if gaps:
             raise self._invalid(_schema_errors(ValidationError.from_exception_data(type(model).__name__, gaps), path))
         return model
+
+    def link_refused(self, rule: str, expected: str, own: Sequence[tuple[str, ...]], other: "Declaration",
+                     theirs: Sequence[tuple[str, ...]]) -> Exception:
+        """Связь ключей двух деклараций нарушена — тот же отказ двери: файл и путь ключа каждой стороны, правило связи, без
+        значений. Схема одной двери связь двух файлов не видит: судит её потребитель обоих, а отказ собирает дверь."""
+        return self._invalid([{"file": door._named(), "field": ".".join(path), "rule": rule, "expected": expected}
+                              for door, paths in ((self, own), (other, theirs)) for path in paths])
+
+    def _named(self) -> str:
+        """Файл от каталога деклараций; файл вне него — только имя: путь хоста в ответ не идёт."""
+        root, file = declarations_root(), self.config_file.resolve()
+        return file.relative_to(root).as_posix() if file.is_relative_to(root) else file.name
 
 
 class Declared(Declaration, Generic[M]):

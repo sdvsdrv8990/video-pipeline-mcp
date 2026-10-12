@@ -58,16 +58,21 @@ if [ "$MCP" = "true" ]; then
     fi
 fi
 
-# 9. Клиентский конец туннеля — cloudflared.
+# 9. Клиентский конец туннеля — его бинарь. Путь в дереве (bin/tunnel) объявлен в config/tunnel_diagnostics.yaml
+# (`бинари`): там его ищут туннель и диагностика; имя в PATH и источник загрузки — свойства поставщика.
 case "$TUNNEL_END" in
     client|both)
-        echo "Проверка cloudflared..."
+        # Переезд прежнего пути в дереве на нейтральный.
+        if [ -x "./bin/cloudflared" ] && [ ! -e "./bin/tunnel" ]; then
+            mv ./bin/cloudflared ./bin/tunnel
+        fi
+        echo "Проверка бинаря туннеля..."
         if command -v cloudflared &> /dev/null; then
-            echo "✓ cloudflared: $(cloudflared --version 2>/dev/null | head -n 1)"
-        elif [ -x "./bin/cloudflared" ]; then
-            echo "✓ cloudflared: ./bin/cloudflared"
+            echo "✓ бинарь туннеля: $(cloudflared --version 2>/dev/null | head -n 1)"
+        elif [ -x "./bin/tunnel" ]; then
+            echo "✓ бинарь туннеля: ./bin/tunnel"
         else
-            echo "Загрузка cloudflared..."
+            echo "Загрузка бинаря туннеля..."
             mkdir -p bin
             case "$(uname -m)" in
                 x86_64|amd64) CF_ARCH="amd64" ;;
@@ -75,12 +80,12 @@ case "$TUNNEL_END" in
                 *) CF_ARCH="" ;;
             esac
             CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}"
-            if [ -n "$CF_ARCH" ] && { curl -fsSL "$CF_URL" -o bin/cloudflared 2>/dev/null \
-                                      || wget -q "$CF_URL" -O bin/cloudflared 2>/dev/null; }; then
-                chmod +x bin/cloudflared
-                echo "✓ cloudflared: ./bin/cloudflared"
+            if [ -n "$CF_ARCH" ] && { curl -fsSL "$CF_URL" -o bin/tunnel 2>/dev/null \
+                                      || wget -q "$CF_URL" -O bin/tunnel 2>/dev/null; }; then
+                chmod +x bin/tunnel
+                echo "✓ бинарь туннеля: ./bin/tunnel"
             else
-                echo "✗ не удалось загрузить cloudflared — установите его вручную"
+                echo "✗ не удалось загрузить бинарь туннеля — установите его вручную"
             fi
         fi
         ;;

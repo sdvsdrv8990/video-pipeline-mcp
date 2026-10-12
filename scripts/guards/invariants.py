@@ -11,8 +11,10 @@ from __future__ import annotations
 import ast
 import json
 import re
+import subprocess
 import sys
 from collections.abc import Set as AbstractSet
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import TypeGuard
 import yaml
@@ -1399,6 +1401,36 @@ def axis_undeclared(root: Path = ROOT) -> list[str]:
             notes.append(f"invariants.py:{узел.lineno} ось `{узел.name}` не объявлена в "
                          f"evidence.yaml (`оси`) — она не судит ничего")
     return notes
+
+
+def provider_word_outside_catalog(root: Path = ROOT) -> list[str]:
+    """Имя поставщика туннеля вне его описания (T4a): текст для людей и путь в дереве говорят «туннель», имя поставщика
+    живёт в каталоге и в коде туннеля до одного супервизора (T3). Слова, маски того, что судим, и свои места — поля оси
+    (`evidence.yaml`); судятся файлы проекта (`git ls-files`), а не машинные декларации владельца рядом с ними."""
+    ось = _своя_ось("provider_word_outside_catalog")
+    слова = [str(слово).lower() for слово in ось.get("слова") or ()]
+    if not слова:
+        raise НетУлики("у оси не объявлены слова поставщиков (`слова` в evidence.yaml)")
+    listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True)
+    if listed.returncode != 0:
+        raise НетУлики("дерево без git: файлов проекта не отличить от машинных")
+    маски, свои = ось.get("судит") or (), set(ось.get("свои") or ())
+    notes = []
+    for rel in sorted(filter(None, listed.stdout.decode("utf-8", "surrogateescape").split("\0"))):
+        if rel in свои or not any(fnmatch(rel, маска) for маска in маски) or not (root / rel).is_file():
+            continue
+        for n, line in enumerate((root / rel).read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            слово = next((w for w in слова if w in line.lower()), None)
+            if слово:
+                notes.append(f"{rel}:{n} — «{слово}» вне описания поставщика: {line.strip()[:90]}")
+    return notes
+
+
+def _своя_ось(читатель: str) -> dict:
+    """Объявление оси по имени её читателя: поля сверх обязательных — политика оси, а не литералы читателя."""
+    import _evidence
+    return next((ось for группа in _evidence.оси().values() for ось in группа or ()
+                 if ось.get("читатель") == читатель), {})
 
 
 def _реестр_осей() -> dict:

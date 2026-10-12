@@ -8,6 +8,7 @@
 меняются отдельным решением, а не попутно с правкой обёртки.
 """
 
+import os
 import posixpath
 import re
 from pathlib import Path
@@ -171,7 +172,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """Перемещение файла или каталога без затирания (реестр переезжает вместе с диском)."""
         files = Files(ctx.workspace_path)
         src, dst = files.named(source), files.named(destination)  # дверь судит оба пути до всего остального
-        if not src.exists(follow_symlinks=False):
+        if not os.path.lexists(src):  # Path.exists(follow_symlinks=) — только с 3.12, requires-python >=3.11
             return ctx.err("FILE_NOT_FOUND", f"Source not found: {source}")
         # Адрес цели считается ДО переноса — ИИ видит, куда сущность попадёт.
         ok, plan = ctx.safe(lambda: ctx.chain_resolver.resolve(str(Path(destination).parent)))
@@ -193,7 +194,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """Переименование файла или каталога без затирания."""
         files = Files(ctx.workspace_path)
         src, dst = files.named(path), files.named(str(Path(path).parent / new_name))  # дверь судит оба пути первой
-        if not src.exists(follow_symlinks=False):
+        if not os.path.lexists(src):  # Path.exists(follow_symlinks=) — только с 3.12, requires-python >=3.11
             return ctx.err("FILE_NOT_FOUND", f"Not found: {path}")
         # Та же лазейка через переименование (notes.md → notes.sh) закрыта политикой двери переноса.
         ok, moved_to = ctx.safe(lambda: files.move(src, dst, policy=ctx.write_policy))
@@ -211,7 +212,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """Удаление файла, каталога или ссылки — самой ссылки, а не того, на что она указывает."""
         files = Files(ctx.workspace_path)
         target = files.named(path)
-        if not target.exists(follow_symlinks=False):
+        if not os.path.lexists(target):
             return ctx.err("FILE_NOT_FOUND", f"Not found: {path}")
         # Удаление необратимо → подтверждение обязательно ВСЕГДА, а не только для непустых
         # каталогов. Инъекция в файле не должна оборачиваться тихой потерей данных.

@@ -1,215 +1,102 @@
-"""core/providers/installer.py — установка модели идёт долго, поэтому за ней наблюдают.
+"""core/providers/installer.py — установка модели идёт долго, поэтому она — задание узла заданий, и за ней наблюдают.
 
-Гигабайты не укладываются в один синхронный вызов: он упёрся бы в таймаут клиента или замолчал бы
-неотличимо от смерти. Прогресс меряется ПО ДИСКУ, а не по проценту загрузчика — тот может
-отчитаться и оборваться; отсюда же «залежалось»: байты не растут дольше объявленного срока, а не
-вечное «идёт». Планировщика нет (решение владельца): поток живёт ровно эту установку, между
-запросами ничего не тикает. Файл состояния — хранилище хода и исхода (код и факты, без текста); статус
-наружу — `TaskStatus` ядра, собранный на чтении, отказ — сборщиком реестра.
+Гигабайты не укладываются в один синхронный вызов: он упёрся бы в таймаут клиента или замолчал бы неотличимо от смерти.
+Ход меряется ПО ДИСКУ, а не по проценту загрузчика — тот может отчитаться и оборваться: признак работы — рост байтов
+плана не медленнее меры загрузчика или его отметка, а не тик наблюдателя. Запись, статус, простой и перевод отказа — у
+узла заданий (`core/jobs.py`); планировщика нет (решение владельца): поток живёт ровно эту установку. Замок модели
+держит другая установка — работа ждёт, пока та подаёт признаки работы (остаток части у них общий), а не отказывает.
 """
 
-import functools
-import json
 import logging
 import threading
 import time
-import uuid
-from pathlib import Path
 
 from core import jobs
-from core.contracts import ContractError, TaskStatus
-from core.paths import Files, PathRefused
-from core.reactions import Reactions
-
-from .resolver import ProviderError
+from core.contracts import TaskStatus
+from core.declaration_schemas import MODEL_FETCH
 
 log = logging.getLogger(__name__)
+PLACE = "model_download"        # класс места работы установки: число мест — resources.yaml `work`
 
 
 class ModelInstaller:
-    """Фоновая установка модели + наблюдение за ней по состоянию на диске."""
+    """Установка модели заданием узла и наблюдение за ней по диску."""
 
-    def __init__(self, catalog, heartbeat_sec: float = 2.0, stale_after_sec: float = 120.0):
+    def __init__(self, catalog, heartbeat_sec: float):
         self.catalog = catalog
         self.heartbeat = float(heartbeat_sec)
-        self.stale_after = float(stale_after_sec)    # простой длиннее законной тишины — судит схема `local.install`
         self.floor = float(catalog.speed()["floor"])
-        self._marks: dict[str, float] = {}     # install_id → время последнего признака работы загрузчика или сверки
 
-    # ═══ Состояние ═══
+    def linked(self) -> None:
+        """Связь двух деклараций: срок простоя узла (`jobs.yaml`) длиннее законной тишины загрузчика весов и окна его меры
+        скорости (`providers.yaml` `local.install.fetch`) — иначе живая загрузка станет простоем. Судит потребитель обоих
+        файлов, отказ на оба файла собирает дверь."""
+        jobs.outlasts(max(self.catalog.silence_sec(), self.catalog.speed()["window"]), self.catalog.declaration,
+                      [MODEL_FETCH.section])
 
-    @property
-    def state_dir(self) -> Path:
-        return Path(self.catalog.models_dir) / "installs"
+    def begin(self, tasks: jobs.Tasks, tool: str, model_id: str, kind: str, force: bool = False) -> dict:
+        """Начать установку заданием узла — статус задачи (`TaskStatus`) с идентификатором для прозвонки.
 
-    @staticmethod
-    def _unknown(install_id: str) -> ProviderError:
-        """Задачи с таким id нет: узел заданий его не выдавал, он уводит из каталога установок или состояния нет."""
-        return ProviderError("TASK_NOT_FOUND", facts={"task_id": install_id})
-
-    def _file(self, install_id: str) -> Path:
-        """Файл состояния через дверь путей: id, который уводит из каталога установок, — задачи с таким id нет."""
-        try:
-            return Files(self.state_dir).place(f"{install_id}.json")
-        except PathRefused:
-            raise self._unknown(install_id) from None
-
-    def _write(self, state: dict) -> None:
-        """Замена файла состояния целиком через дверь слоя: читатель видит старый или новый, не половину (FS-06)."""
-        Files(self.state_dir).replace(f"{state['install_id']}.json", json.dumps(state, ensure_ascii=False))
-
-    def _read(self, install_id: str) -> dict:
-        path = self._file(install_id)
-        if not path.is_file():
-            raise self._unknown(install_id)
-        return json.loads(path.read_text(encoding="utf-8"))
-
-    # ═══ Запуск ═══
-
-    def start(self, model_id: str, kind: str, force: bool = False) -> dict:
-        """Начать установку в фоне — статус задачи (`TaskStatus`) с идентификатором для прозвонки.
-
-        Модель уже стоит той же ревизией и цела — исход сразу, задача не заводится (`task_id=None`): ни потока, ни
-        файла состояния, ни загрузки (MF-17). Явный `force` — перекачать все части с исходом «перекачано».
-        Ответ ждёт, пока поток возьмёт замок модели: отказ до замка (MODEL_INSTALL_BUSY — её уже ставят) поднимается здесь.
+        Модель уже стоит той же ревизией и цела — исход сразу, задание не заводится (`task_id=None`): ни потока, ни
+        записи, ни загрузки (MF-17). Место на диске судится до задания: нехватка — отказ вызова, а не задание, которое
+        упадёт гигабайтами позже. Повтор того же вызова в окне узла — то же задание, второй загрузки нет (AD-21); явный
+        `force` — перекачать все части с исходом «перекачано».
         """
+        params = {"model_id": model_id, "kind": kind, "force": force}
         already = None if force else self.catalog.installed_as(model_id, kind)
         if already:
-            return TaskStatus(task_id=None, status="completed", params={"model_id": model_id, "kind": kind},
-                              result=already).model_dump()
-        # Место спрашивается ДО фонового потока (нехватка — отказ `место_под`): кончившийся диск обрывает загрузку
-        # общим исключением, и клиент узнаёт об этом гигабайтами позже, без числа и без причины.
+            return TaskStatus(task_id=None, status="completed", params=params, result=already).model_dump()
         место = self.catalog.место_под(model_id, kind, force=force)
-        state = {"install_id": jobs.issue(), "model_id": model_id, "kind": kind,
-                 "phase": "running", "started": time.time(), "heartbeat": time.time(), "bytes": 0, "force": force}
-        begun = threading.Event()
-        refused: list[BaseException] = []
-        threading.Thread(target=self._run, args=(state, место, begun, refused), daemon=True).start()
-        begun.wait()
-        if refused:
-            raise refused[0]
-        return self._task(state)
+        return tasks.begin(tool, params, PLACE, lambda pulse: self.work(место, pulse))["task"]
 
-    def _run(self, state: dict, место: dict, begun: threading.Event, refused: list) -> None:
-        """Ставит по снимку `место_под`: качается тот же план той же ревизии, по которому судили место.
+    def work(self, место: dict, pulse, progress=lambda _m: None) -> dict:
+        """Работа установки по снимку `место_под`: наблюдатель — с первого шага, до замка модели (рост чужой загрузки той
+        же модели — тоже работа: остаток части у них общий), чужой замок ждётся, пока работа не молчит дольше
+        объявленного (`pulse.quiet`). Итог — после того, как наблюдатель остановлен и дождан: его последний тик не ляжет
+        поверх итога. `pulse` — признак работы задания узла или установки из CLI."""
+        steps, marks, stop, started = [""], [0.0], threading.Event(), time.time()
 
-        Файл состояния и наблюдатель появляются, когда каталог взял замок модели (`held`); отказ до замка уходит в
-        `refused` и поднимается в `start`. `begun` ставится на любом пути — `start` не ждёт вечно.
-        Итог пишется после того, как наблюдатель остановлен и дождан: его последний тик читал «идёт» и иначе мог лечь
-        поверх итога — клиент видел бы «идёт» до простоя.
-        """
-        install_id, stop = state["install_id"], threading.Event()
-        watcher = threading.Thread(target=self._watch, args=(install_id, место, stop), daemon=True)
+        def step(message: str) -> None:
+            steps.append(message)
+            progress(message)
 
-        def held() -> None:
-            self._write(state)
-            watcher.start()
-            begun.set()
-
-        outcome: dict = {"phase": "failed", "failure": {"code": "INTERNAL_ERROR"}}
+        watcher = threading.Thread(target=self._observe, args=(место, pulse, started, steps, marks, stop), daemon=True)
+        watcher.start()
         try:
-            entry = self.catalog.install_planned(
-                место, mark=lambda: self._marks.__setitem__(install_id, time.time()), held=held)
-            outcome = {"phase": "done", "path": entry["path"], "mb": entry["mb"], "refused": entry.get("refused") or []}
-        except Exception as e:
-            if not begun.is_set():              # до замка: файла состояния нет, отказ поднимает `start`
-                refused.append(e)
-                return
-            if isinstance(e, ContractError):
-                outcome = {"phase": "failed", "failure": {
-                    "code": e.code, "message": e.message, "facts": e.facts, "errors": e.errors}}
-            else:  # неожиданное: причина с трассой — в журнал, наружу — номер события
-                event = uuid.uuid4().hex[:8]
-                log.error("установка %s (%s), событие %s", install_id, место.get("entry", {}).get("id"), event,
-                          exc_info=e)
-                outcome = {"phase": "failed", "failure": {"code": "INTERNAL_ERROR", "facts": {"event": event}}}
+            entry = self.catalog.install_planned(место, progress=step, mark=lambda: marks.append(time.time()),
+                                                 held=lambda: step("замок модели взят"), pulse=pulse)
         finally:
-            if begun.is_set():
-                stop.set()
-                watcher.join()
-                final = self._read(install_id)
-                final.update({**outcome, "heartbeat": time.time(), "finished": time.time()})
-                self._write(final)
-            begun.set()
+            stop.set()
+            watcher.join()
+        pulse(self._progress(self.catalog.on_disk(место), started, time.time(), steps[-1]))
+        return {"outcome": "reinstalled" if место["force"] else "installed", "path": entry["path"], "mb": entry["mb"],
+                "refused": entry.get("refused") or []}
 
-    def _watch(self, install_id: str, место: dict, stop: threading.Event) -> None:
-        """Пока идёт загрузка — тик наблюдения раз в `heartbeat_sec`; часы — только здесь, тик судится без них."""
+    def _observe(self, место: dict, pulse, started: float, steps: list, marks: list, stop: threading.Event) -> None:
+        """Пока идёт работа — тик раз в `heartbeat_sec`: ход и признак работы в `pulse`; часы — только здесь."""
+        seen = {"bytes": 0, "tick": started, "work": started}
         while not stop.wait(self.heartbeat):
             try:
-                if not self._tick(install_id, место, time.time()):
-                    return
+                now = time.time()
+                seen, working = self._step(seen, self.catalog.on_disk(место), marks[-1], now)
+                pulse(self._progress(int(seen["bytes"]), started, now, steps[-1]), working=working)
             except Exception:  # наблюдение не роняет установку, но причина остановки тиков — в журнале сервера
-                log.exception("наблюдение установки %s остановлено: признак работы больше не обновляется", install_id)
+                _stopped(место["entry"].get("id"))
                 return
 
-    def _tick(self, install_id: str, место: dict, now: float) -> bool:
-        """«Сколько байт плана легло» и «последний признак работы» (`heartbeat`): двигается ростом байтов или отметкой
-        загрузчика и сверки, а не самим тиком — живой поток при мёртвой сети не выглядит работающим. False — не идёт."""
-        state = self._read(install_id)
-        if state["phase"] != "running":
-            return False
-        landed, mark = self.catalog.on_disk(место), self._marks.get(install_id, 0.0)
-        grown = landed - int(state.get("bytes", 0))
-        # Рост — работа, если не медленнее меры загрузчика с прошлого тика или старта (NI-01); мера 0 — любой рост.
-        if grown > 0 and grown >= self.floor * (now - float(state.get("tick", state.get("started", now)))):
-            state["heartbeat"] = now
-        elif mark > float(state.get("heartbeat", 0)):
-            state["heartbeat"] = mark
-        state["bytes"], state["tick"] = landed, now
-        self._write(state)
-        return True
+    def _step(self, seen: dict, landed: int, mark: float, now: float) -> tuple[dict, bool]:
+        """Шаг наблюдения без часов: сколько байт плана легло и была ли с прошлого шага работа — рост байтов не медленнее
+        меры загрузчика (NI-01; мера 0 — любой рост) или отметка загрузчика и сверки позже прошлой работы. Живой поток
+        при мёртвой сети работой не выглядит; байты, упавшие и растущие заново, — работа."""
+        grown = landed - seen["bytes"]
+        working = (grown > 0 and grown >= self.floor * (now - seen["tick"])) or mark > seen["work"]
+        return {"bytes": landed, "tick": now, "work": now if working else seen["work"]}, working
 
-    # ═══ Прозвонка ═══
+    @staticmethod
+    def _progress(landed: int, started: float, now: float, step: str) -> dict:
+        return {"bytes": landed, "mb": round(landed / 1e6, 1), "elapsed_sec": round(now - started, 1), "step": step}
 
-    def status(self, install_id: str = "") -> list[dict]:
-        """Что с установками — `TaskStatus` каждой: идёт, готово, отказ (простой тоже). Молчания нет ни в одном случае.
-        id, которого узел заданий не выдавал (форма `jobs.yaml`), — TASK_NOT_FOUND до того, как из него строится путь."""
-        if install_id and not jobs.issued(install_id):
-            raise self._unknown(install_id)
-        return [self._task(s) for s in ([self._read(install_id)] if install_id else self._states())]
 
-    def _states(self) -> list[dict]:
-        """Файлы состояния установок, свежие первыми; остаток записи с заметкой (`*.part.json`) и нечитаемый файл
-        пропускаются."""
-        if not self.state_dir.is_dir():
-            return []
-        rows = []
-        for entry in Files(self.state_dir).walk():
-            if entry.kind != "file" or not entry.path.endswith(".json"):
-                continue
-            try:
-                rows.append(json.loads(entry.real.read_text(encoding="utf-8")))
-            except (json.JSONDecodeError, OSError):
-                continue
-        rows.sort(key=lambda r: r.get("started", 0), reverse=True)
-        return rows
-
-    def _stalled(self, state: dict, now: float | None = None) -> bool:
-        """Идёт, а признаков работы (рост байтов, отметка загрузчика) нет дольше объявленного срока: сеть встала, сервер
-        перезапустили или поток умер."""
-        now = time.time() if now is None else now
-        return state.get("phase") == "running" and now - state.get("heartbeat", now) > self.stale_after
-
-    def _task(self, state: dict) -> dict:
-        """Статус установки формой ядра (`TaskStatus`): ход — из файла состояния, исход — сборщиком реестра."""
-        now, failure = time.time(), state.get("failure")
-        if self._stalled(state):
-            failure = {"code": "INSTALL_STALLED", "facts": {"model": state["model_id"], "seconds": round(self.stale_after)}}
-        elif state.get("phase") == "failed" and not failure:      # файл состояния до TaskStatus: код без фактов
-            failure = {"code": state.get("code") or "INTERNAL_ERROR"}
-        done = state.get("phase") == "done" and not failure
-        error = failure and self._reactions.get_error(
-            failure["code"], failure.get("message", ""), facts=failure.get("facts"), errors=failure.get("errors"))
-        return TaskStatus(
-            task_id=state["install_id"], status="failed" if failure else "completed" if done else "processing",
-            params={"model_id": state["model_id"], "kind": state["kind"]},
-            progress={"bytes": state.get("bytes", 0), "mb": round(state.get("bytes", 0) / 1e6, 1),
-                      "elapsed_sec": round((state.get("finished") or now) - state.get("started", now), 1),
-                      "heartbeat": state.get("heartbeat")},
-            result={"outcome": "reinstalled" if state.get("force") else "installed", "path": state.get("path", ""),
-                    "mb": state.get("mb", 0), "refused": state.get("refused") or []} if done else None,
-            error=error or None).model_dump()
-
-    @functools.cached_property
-    def _reactions(self) -> Reactions:
-        return Reactions(Path(self.catalog.config_file).parent / "server_reactions.yaml")
+def _stopped(model: object) -> None:
+    """Наблюдение установки остановлено: признак работы больше не обновляется — причина с трассой в журнал сервера."""
+    log.exception("наблюдение установки %s остановлено: признак работы больше не обновляется", model)
