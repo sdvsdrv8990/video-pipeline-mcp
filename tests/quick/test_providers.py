@@ -210,7 +210,9 @@ _sm = _SM(_ws)
 # Движок — с реестром реакций, как его собирает сервер (server.py): набор судит тот отказ, что получает клиент.
 _REACTIONS = _Reactions(ROOT / "config" / "server_reactions.yaml")
 _eng = _Eng(reactions=_REACTIONS, state_manager=_sm)
-_srv.register_basic_tools(_eng, _IDG(), _sm)
+from core.declaration import instance_home as _instance_home
+from tests.harness.inprocess import register_basic_tools as _register
+_register(_eng, _IDG(), _sm)
 (_ws / "ch").mkdir()
 
 
@@ -735,7 +737,7 @@ _cfg_was = _srv.CONFIG_PATH
 try:
     _srv.CONFIG_PATH = _acfg_dir
     _eng_a = _Eng(reactions=_REACTIONS, state_manager=_sm)
-    _srv.register_basic_tools(_eng_a, _IDG(), _sm)
+    _register(_eng_a, _IDG(), _sm)
     _ga = _aio.run(_eng_a.call("media_generate", {
         "table": "a", "resource_type": "tts_characters", "input": "пять!",
         "scene_id": "s1", "video_slug": "demo"}))
@@ -901,13 +903,23 @@ class _FakeKeyed:
 
     def generate(self, request):
         from core.providers import MediaOutcome
-        _FakeKeyed.seen = request.api_key
+        _FakeKeyed.seen = self.key = request.api_key
         if request.input == "отказ":
             raise ProviderError("PROVIDER_FAILED",
                                 f"провайдер ответил: invalid api key '{request.api_key}'",
                                 reason=f"ключ {request.api_key} отклонён")
+        if request.input in ("отказ прозвонки", "отказ забора"):
+            return MediaOutcome(task_id=request.input)
         request.target.write_bytes(b"RIFF" + b"audio")
         return MediaOutcome(files=[request.target])
+
+    def poll(self, task_id, within=None):
+        if task_id == "отказ прозвонки":
+            raise ProviderError("PROVIDER_FAILED", f"статус задачи: invalid api key '{self.key}'")
+        return {"status": "succeeded"}
+
+    def fetch(self, answer, target):
+        raise ProviderError("PROVIDER_FAILED", f"забор результата: ключ {self.key} отклонён")
 
 
 _fake._FakeKeyed = _FakeKeyed
@@ -925,7 +937,7 @@ try:
     _klog = Path(tempfile.mkdtemp(prefix="klog_")) / "session.md"
     _sm_k = _SM(_ws, journal=_Journal(_klog, 1 << 20, 1))
     _eng_k = _Eng(reactions=_REACTIONS, state_manager=_sm_k)
-    _srv.register_basic_tools(_eng_k, _IDG(), _sm_k)
+    _register(_eng_k, _IDG(), _sm_k)
     _kcall = lambda tool, **p: _aio.run(_eng_k.call(tool, p))  # локальный хелпер
 
     _nokey = _kcall("media_generate", table="k", resource_type="tts_characters",
@@ -941,7 +953,7 @@ try:
     ok(_kstate["required"] and not _kstate["present"] and "set_provider_key" in _kstate["how_to_set"],
        f"в статусе видно: ключ нужен, его нет, и чем его вносят ({_kstate['required']}/{_kstate['present']})")
 
-    ChannelSecrets(_ws, _kcfg_dir.parent).set("k", "Обл_ключ", _KEY)
+    ChannelSecrets(_ws, _instance_home(_kcfg_dir)).set("k", "Обл_ключ", _KEY)
     _withkey = _kcall("media_generate", table="k", resource_type="tts_characters",
                       input="текст", scene_id="s1", video_slug="demo")
     ok(_withkey.status == "success" and _FakeKeyed.seen == _KEY,
@@ -957,6 +969,13 @@ try:
                      input="отказ", scene_id="s2", video_slug="demo")
     ok(_KEY not in _json.dumps(_reject.error.model_dump(), ensure_ascii=False),
        "провайдер процитировал ключ в тексте отказа — наружу он не ушёл (последний рубеж redact)")
+    for _stage in ("отказ прозвонки", "отказ забора"):
+        _late = _kcall("media_generate", table="k", resource_type="tts_characters",
+                       input=_stage, scene_id="s3", video_slug="demo")
+        _late_dump = _json.dumps(_late.error.model_dump() if _late.error else {}, ensure_ascii=False)
+        ok(_late.status == "error" and _late.error.code == "PROVIDER_FAILED" and _KEY not in _late_dump
+           and fingerprint(_KEY) in _late_dump,
+           f"{_stage}: ключ в тексте провайдера — в ответе только его отпечаток ({_late_dump[:160]})")
 finally:
     _srv.CONFIG_PATH = _cfg_was
 
@@ -1165,22 +1184,25 @@ ok(_late_state["status"] == "failed" and _late_state["error"]["code"] == "LOCAL_
 # «идёт». Тик судится с переданным «сейчас», без часов.
 _tick_cat = _SlowCatalog(Path(tempfile.mkdtemp(prefix="insts_")))
 _inst_tick = ModelInstaller(_tick_cat, heartbeat_sec=1, stale_after_sec=100)
-_inst_tick._write({"install_id": "t16", "model_id": "модель-3", "kind": "tts", "phase": "running",
+from core.jobs import issue as _issue16
+
+_id16 = _issue16()                                      # id формы узла заданий: его прозванивает status ниже
+_inst_tick._write({"install_id": _id16, "model_id": "модель-3", "kind": "tts", "phase": "running",
                    "started": 1000.0, "heartbeat": 1000.0, "bytes": 0})
 _место16 = {"entry": {"id": "модель-3", "kind": "tts"}, "plan": []}
 for _now in range(1010, 1200, 10):                      # поток жив и тикает, байты не растут, загрузчик молчит
-    _inst_tick._tick("t16", _место16, float(_now))
-_dead = _inst_tick._read("t16")
+    _inst_tick._tick(_id16, _место16, float(_now))
+_dead = _inst_tick._read(_id16)
 ok(_dead["heartbeat"] == 1000.0 and _inst_tick._stalled(_dead, now=1101.0) and not _inst_tick._stalled(_dead, now=1099.0),
    f"сеть мертва, поток жив: тики не двигают «последнюю работу» — за пределом простой, до него идёт ({_dead['heartbeat']})")
 _tick_cat.landed = 4096
-_inst_tick._tick("t16", _место16, 1200.0)
-_grown = _inst_tick._read("t16")
+_inst_tick._tick(_id16, _место16, 1200.0)
+_grown = _inst_tick._read(_id16)
 ok(_grown["heartbeat"] == 1200.0 and _grown["bytes"] == 4096,
    f"рост байтов плана двигает «последнюю работу» на время тика ({_grown['heartbeat']}, {_grown['bytes']})")
-_inst_tick._marks["t16"] = 1250.0                       # отметка загрузчика: пауза повтора или блок сверки
-_inst_tick._tick("t16", _место16, 1290.0)
-_marked = _inst_tick._read("t16")
+_inst_tick._marks[_id16] = 1250.0                       # отметка загрузчика: пауза повтора или блок сверки
+_inst_tick._tick(_id16, _место16, 1290.0)
+_marked = _inst_tick._read(_id16)
 ok(_marked["heartbeat"] == 1250.0 and not _inst_tick._stalled(_marked, now=1340.0),
    f"законный: долгая пауза или сверка с отметками по ходу — «идёт», хотя байты не растут ({_marked['heartbeat']})")
 _inst_tick._write({"install_id": "t16a", "model_id": "модель-a", "kind": "tts", "phase": "running",
@@ -1260,7 +1282,7 @@ def _without_revisions() -> str:
 ok(_without_revisions().startswith("DECLARATION_INVALID") and "local.install.revisions" in _without_revisions(),
    f"закреплённые ревизии не объявлены — отказ двери с путём, а не «не закреплено» молча ({_without_revisions()[:90]})")
 _drip_cat.measure = {"floor": 100, "window": 30}
-_stale_state = _inst_tick.status("t16")[0]
+_stale_state = _inst_tick.status(_id16)[0]
 ok(_stale_state["status"] == "failed" and _stale_state["error"]["code"] == "INSTALL_STALLED"
    and "Повтори" in _stale_state["error"]["recovery"]["reason"],
    f"замершая установка — отказ кодом простоя и зовёт повторить ({_stale_state['status']}, {_stale_state['error']})")
@@ -1908,13 +1930,21 @@ _CDN13 = {"replicate.delivery", "fal.media"}
 
 
 def _stand_wire(request):
-    """Сеть двери загрузчика: прозвонка и адрес результата — по контракту поставщика (`_stand_get`), файл — с CDN.
-    Журнал прозвонки — адрес по имени из Host и заголовки как ушли (ключ виден значением)."""
+    """Сеть двери загрузчика: вызов провайдера (POST) — по контракту поставщика (`_stand13["post"]`), прозвонка и адрес
+    результата — `_stand_get`, файл — с CDN. Журналы — адрес по имени из Host и заголовки как ушли (ключ виден
+    значением); у вызова ещё тело (JSON разобран). Ответ стенда — `_Resp` или готовый `httpx.Response` (поток с обрывом)."""
     host = request.headers.get("host")
     if host in _CDN13:
         return _stand_file(request)
-    reply = _stand_get(f"https://{host}{request.url.raw_path.decode()}",
-                       headers={k.title(): v for k, v in request.headers.items()})
+    url, headers = f"https://{host}{request.url.raw_path.decode()}", {k.title(): v for k, v in request.headers.items()}
+    if request.method == "POST":
+        sent = request.read()
+        reply = _stand13["post"]("POST", url, headers=headers, content=sent,
+                                 json=_json.loads(sent) if "json" in request.headers.get("content-type", "") else None)
+    else:
+        reply = _stand_get(url, headers=headers)
+    if isinstance(reply, _httpx.Response):
+        return reply
     body = reply.content if reply._data is None else _json.dumps(reply._data).encode()
     return _httpx.Response(reply.status_code, headers=reply.headers, content=body)
 
@@ -1925,8 +1955,17 @@ from core.providers.img.http_image import HttpImageAPI as _HI13
 _real_seams13 = (_HI13.__dict__["transport"], _HI13.__dict__["resolve"])
 _HI13.transport = _httpx.MockTransport(_stand_wire)
 _HI13.resolve = staticmethod(lambda host, port, *a, **k: [(2, 1, 6, "", ("151.101.1.1", port))])
-# Прозвонка и результат идут дверью (транспорт выше); `httpx.get`/`stream` не подменены — запрос мимо двери ушёл бы в сеть.
-_httpx.request = _stand_request
+# Вызов, прозвонка и результат идут дверью (транспорт выше), POST отвечает `_stand13["post"]` (обновлено в B4: прежде
+# вызов шёл мимо двери, и стенд подменял httpx.request). Обход двери — растяжка: записан и отказан, а не отвечен стендом.
+_stand13 = {"post": _stand_request}
+
+
+def _bypass13(*args, **kw):
+    _seen.setdefault("bypass", []).append(args[:2])
+    raise AssertionError("запрос мимо двери загрузчика")
+
+
+_httpx.request = _httpx.stream = _httpx.get = _bypass13
 try:
     _rows13 = {"resource_type": "upscales", "provider": "Replicate", "fallback_provider": "",
                "daily_limit": 100, "current_usage": 0, "warning_threshold": -1,
@@ -1993,7 +2032,7 @@ try:
              "api.replicate.com.evil.example"),
             ("результат очереди на чужом хосте", True, "https://evil.example/req1", "evil.example")):
         _seen["gets"].clear()
-        _httpx.request = (lambda u: lambda method, url, **kw: _Resp(201, {
+        _stand13["post"] = (lambda u: lambda method, url, **kw: _Resp(201, {
             "id": "p", "request_id": "req1", "urls": {"get": u},
             "status_url": "https://queue.fal.run/req1/status", "response_url": u}))(_foreign13)
         _prov13 = "Fal" if _fal13 else "Replicate"
@@ -2004,7 +2043,7 @@ try:
         try:
             _ad.fetch(_ad.poll(_task.task_id), _ws / "k13.png") if _fal13 else _ad.poll(_task.task_id)
             _e13k = None
-        except ProviderError as e:
+        except _CE13 as e:              # отказ двери — ContractError, отказ провайдера — его наследник
             _e13k = e
         _leaked13 = [g["url"] for g in _seen["gets"] if "secret-key" in str(g["headers"])
                      and not g["url"].startswith("https://queue.fal.run/")]
@@ -2012,23 +2051,26 @@ try:
            and _e13k.facts == {"host": _host13, "allowed": "queue.fal.run" if _fal13 else "api.replicate.com"},
            f"{_case13}: ключ не ушёл ({_leaked13 or 'запросов с ключом нет'}), отказ "
            f"{_e13k and _e13k.code} {_e13k and _e13k.facts}")
-    _httpx.request = _stand_request
+    _stand13["post"] = _stand_request
 
     def _poll13(task: str, key: str = "k"):
-        """Задача Replicate с адресом прозвонки `task` стенда и один опрос — (ответ, отказ); журнал — `_seen["gets"]`."""
-        _httpx.request = lambda method, url, **kw: _Resp(201, {
+        """Задача Replicate с адресом прозвонки `task` стенда и один опрос — (ответ, отказ создания или опроса); журналы —
+        `_seen["gets"]` и `_seen["requests"]` (вызов создания, B4: он тоже идёт дверью)."""
+        _stand13["post"] = lambda method, url, **kw: _stand_request(method, url, **kw) and _Resp(201, {
             "id": task, "urls": {"get": f"https://api.replicate.com/v1/predictions/{task}"}})
         adapter = _reg.load("Replicate", "upscales")
-        made = adapter.generate(MediaRequest(input="pic/frame.png", params=_rows13, target=_ws / f"{task}13.png",
-                                             models_dir=_reg.models_dir, source=_ws / "pic" / "frame.png",
-                                             api_key=key, provider="Replicate"))
         _seen["gets"].clear()
+        _seen["requests"].clear()
         try:
+            made = adapter.generate(MediaRequest(input="pic/frame.png", params=_rows13, target=_ws / f"{task}13.png",
+                                                 models_dir=_reg.models_dir, source=_ws / "pic" / "frame.png",
+                                                 api_key=key, provider="Replicate"))
+            _seen["gets"].clear()
             return adapter.poll(made.task_id), None
         except _CE13 as e:
             return None, e
         finally:
-            _httpx.request = _stand_request
+            _stand13["post"] = _stand_request
 
     # Причина → следствие (TS-13): ответ статуса сверх предела download.answer.max_bytes (1 МБ) — отказ двери доходит
     # до клиента своим кодом, а не переписанным в PROVIDER_FAILED.
@@ -2061,9 +2103,11 @@ try:
     _ansi13, _ei13 = _poll13("pred1", key="secret-key")
     _HI13.resolve = staticmethod(lambda host, port, *a, **k: [(2, 1, 6, "", ("151.101.1.1", port))])
     ok(_ei13 is not None and _ei13.code == "DOWNLOAD_FORBIDDEN"
-       and _ei13.facts == {"host": "api.replicate.com", "address": "10.0.0.5"} and not _seen["gets"],
-       f"имя поставщика ведёт во внутреннюю сеть — отказ двери до запроса, ключ не ушёл "
-       f"({_ei13 and (_ei13.code, _ei13.facts)}, запросов {len(_seen['gets'])})")
+       and _ei13.facts == {"host": "api.replicate.com", "address": "10.0.0.5"} and not _seen["gets"]
+       and not _seen["requests"],
+       f"имя поставщика ведёт во внутреннюю сеть — отказ двери до запроса уже на создании задачи (B4: вызов идёт дверью; "
+       f"прежде — только на опросе), ни тела, ни ключа туда ({_ei13 and (_ei13.code, _ei13.facts)}, "
+       f"запросов {len(_seen['gets'])}, вызовов {len(_seen['requests'])})")
 
     # Срок идёт вниз сквозь цепочку (TS-13): цикл ожидания отдаёт опросу остаток, дверь опроса укладывает в него повторы.
     # Часы одни на цикл и дверь; поставщик отвечает «processing», а с 240-й секунды статус молчит (фаза — тайм-аут).
@@ -2082,13 +2126,13 @@ try:
 
     _limit13 = float(yaml.safe_load((ROOT / "config" / "media_tasks.yaml").read_text(encoding="utf-8"))["poll"]
                      ["timeout_sec"])
-    _httpx.request = lambda method, url, **kw: _Resp(201, {
+    _stand13["post"] = lambda method, url, **kw: _Resp(201, {
         "id": "late", "urls": {"get": "https://api.replicate.com/v1/predictions/late"}})
     _adl13 = _reg.load("Replicate", "upscales")
     _taskl13 = _adl13.generate(MediaRequest(input="pic/frame.png", params=_rows13, target=_ws / "late13.png",
                                             models_dir=_reg.models_dir, source=_ws / "pic" / "frame.png",
                                             api_key="k", provider="Replicate"))
-    _httpx.request = _stand_request
+    _stand13["post"] = _stand_request
     _HI13.clock, _HI13.sleep = staticmethod(lambda: _clock13["now"]), staticmethod(_ahead13)
     _HI13.transport = _httpx.MockTransport(_late_wire)
     try:
@@ -2104,15 +2148,15 @@ try:
        f"poll.timeout_sec ({_el13 and (_el13.code, _el13.facts)}, конец {_clock13['now']:.2f} из {_limit13:g} с)")
 
     # Синхронный бинарный ответ (RemoveBg): тип по формату строки, поток в остаток с пределом, обрыв POST — не повтор.
-    import contextlib as _ctx13
     import core.providers.img.http_image as _him13
     from core.providers.download import Fetcher as _F13
 
     _posts13: list = []
 
     def _stream13(chunks, kind="image/png", cut=None):
-        @_ctx13.contextmanager
-        def stream(method, url, **kw):
+        """Ответ стенда на POST — тело кусками `chunks` с типом `kind`, обрыв соединения после `cut` байт; журнал —
+        метод и Accept-Encoding, с которыми вызов дошёл до провайдера."""
+        def answer(method, url, **kw):
             _posts13.append((method, (kw.get("headers") or {}).get("Accept-Encoding")))
 
             def body():
@@ -2122,9 +2166,8 @@ try:
                         raise _httpx.ReadError("соединение оборвано")
                     sent += len(chunk)
                     yield chunk
-            yield _httpx.Response(200, headers={"content-type": kind}, content=body(),
-                                  request=_httpx.Request(method, url))
-        return stream
+            return _httpx.Response(200, headers={"content-type": kind}, content=body())
+        return answer
 
     _adrb = _reg.load("RemoveBg", "bg_removals")
 
@@ -2143,45 +2186,48 @@ try:
     def _left13(target) -> bool:
         return target.exists() or _him13.Files(target.parent).remnant(target.name, "result").exists()
 
-    _real_stream13, _real_results13 = _httpx.stream, _him13.results
+    _real_results13 = _him13.results
     _png13 = b"\x89PNG\r\n\x1a\n" + b"p" * 3000
     _parts13 = [_png13[:1024], _png13[1024:2048], _png13[2048:]]
     try:
-        _httpx.stream = _stream13(_parts13)
+        _stand13["post"] = _stream13(_parts13)
         _e13b = _remove_bg(_ws / "rb13.png")
         ok(_e13b is None and (_ws / "rb13.png").read_bytes() == _png13 and not _him13.Files(_ws).remnant(
            "rb13.png", "result").exists() and _posts13 == [("POST", "identity")],
            f"бинарный ответ встал под имя целиком, остатка нет, POST один и без распаковки ({_e13b}, {_posts13})")
         _stale13 = _him13.Files(_ws).remnant("rb13s.png", "result")
         _stale13.write_bytes(b"STALE-TAIL" * 50)          # хвост прерванного прошлого приёма
-        _httpx.stream = _stream13(_parts13)
+        _stand13["post"] = _stream13(_parts13)
         _e13b = _remove_bg(_ws / "rb13s.png")
         ok(_e13b is None and (_ws / "rb13s.png").read_bytes() == _png13 and not _stale13.exists(),
            f"чужой хвост в остатке перед приёмом — под именем ровно новое тело, байт в байт ({_e13b})")
-        _httpx.stream = _stream13(_parts13, kind="text/html")
+        _stand13["post"] = _stream13(_parts13, kind="text/html")
         _e13b = _remove_bg(_ws / "rb13h.png")
-        ok(_e13b is not None and _e13b.code == "PROVIDER_FAILED" and _e13b.facts.get("status") == "Content-Type text/html"
-           and not _left13(_ws / "rb13h.png"), f"HTML вместо картинки — отказ до записи, файла нет ({_e13b and _e13b.facts})")
+        ok(_e13b is not None and _e13b.code == "PROVIDER_FAILED"
+           and _e13b.facts == {"host": "api.remove.bg", "status": "Content-Type text/html"}
+           and not _left13(_ws / "rb13h.png"),
+           f"HTML вместо картинки — отказ до записи с именем хоста, а не судимым IP; файла нет ({_e13b and _e13b.facts})")
         _him13.results = lambda cfg, **seams: _F13(
             _real_results13(cfg, **seams).policy.model_copy(update={"max_bytes": 1024}), **seams)
-        _httpx.stream = _stream13(_parts13)
+        _stand13["post"] = _stream13(_parts13)
         _e13b = _remove_bg(_ws / "rb13l.png")
         ok(_e13b is not None and _e13b.code == "DOWNLOAD_TOO_LARGE" and not _left13(_ws / "rb13l.png"),
            f"тело сверх предела загрузчика результатов — отказ, ни файла, ни остатка ({_e13b and _e13b.code})")
         _him13.results = _real_results13
-        _httpx.stream = _stream13(_parts13, cut=1024)
+        _stand13["post"] = _stream13(_parts13, cut=1024)
         _e13b = _remove_bg(_ws / "rb13c.png")
-        ok(_e13b is not None and _e13b.code == "DOWNLOAD_INCOMPLETE" and _e13b.facts.get("got") == 1024
+        ok(_e13b is not None and _e13b.code == "PROVIDER_OUTCOME_UNKNOWN" and _e13b.facts.get("got") == 1024
            and len(_posts13) == 1 and not _left13(_ws / "rb13c.png"),
-           f"обрыв посреди тела POST — «не дочитан» без повтора, ни файла, ни остатка "
+           f"обрыв посреди тела POST — исход неизвестен без повтора, ни файла, ни остатка "
            f"({_e13b and (_e13b.code, _e13b.facts)}, POST: {len(_posts13)})")
         _e13b = _remove_bg(_ws / "rb13t.png", fmt="tiff")
         ok(_e13b is not None and _e13b.code == "SCHEMA_INVALID" and not _posts13,
            f"формат строки без объявленного типа — отказ объявления до запроса ({_e13b and _e13b.code}, POST: {_posts13})")
     finally:
-        _httpx.stream, _him13.results = _real_stream13, _real_results13
+        _stand13["post"], _him13.results = _stand_request, _real_results13
 
-    # Повтор: перегрузку повторяем, отказ по ключу — нет (иначе жжём платный лимит).
+    # Повтор: 429 у Replicate — «не применён» по источнику провайдера (call.unprocessed): POST повторяется по столбцу
+    # retry_count; отказ по ключу — нет (иначе жжём платный лимит).
     _tries = {"n": 0}
 
     def _flaky(method, url, **kw):
@@ -2189,21 +2235,25 @@ try:
         return _Resp(429, {"detail": "rate limited"}, headers={"Retry-After": "0"}) if _tries["n"] == 1 \
             else _stand_request(method, url, **kw)
 
-    _httpx.request = _flaky
+    _stand13["post"] = _flaky
     _ad13r = _reg.load("Replicate", "upscales")
-    _ad13r.generate(MediaRequest(input="pic/frame.png", params={**_rows13, "retry_count": 2},
-                                 target=_ws / "up13r.png", models_dir=_reg.models_dir,
-                                 source=_ws / "pic" / "frame.png", api_key="k", provider="Replicate"))
-    ok(_tries["n"] == 2, f"перегрузка (429) повторена по столбцу retry_count строки канала ({_tries['n']})")
+    try:
+        _ad13r.generate(MediaRequest(input="pic/frame.png", params={**_rows13, "retry_count": 2},
+                                     target=_ws / "up13r.png", models_dir=_reg.models_dir,
+                                     source=_ws / "pic" / "frame.png", api_key="k", provider="Replicate"))
+        _e13r = None
+    except _CE13 as e:              # отказ — улика проверки, а не обрыв набора
+        _e13r = e
+    ok(_tries["n"] == 2 and _e13r is None,
+       f"перегрузка (429) повторена по столбцу retry_count строки канала ({_tries['n']}, {_e13r and _e13r.code})")
 
-    _httpx.request = lambda method, url, **kw: _Resp(401, {"detail": "bad token"})
     _calls401 = {"n": 0}
 
     def _count401(method, url, **kw):
         _calls401["n"] += 1
         return _Resp(401, {"detail": "bad token"})
 
-    _httpx.request = _count401
+    _stand13["post"] = _count401
     try:
         _reg.load("Replicate", "upscales").generate(MediaRequest(
             input="pic/frame.png", params={**_rows13, "retry_count": 3}, target=_ws / "x.png",
@@ -2213,6 +2263,8 @@ try:
     except ProviderError as _e401:
         ok(_e401.code == "AUTH_FAILED" and _calls401["n"] == 1,
            f"отказ по ключу не повторяется — платный лимит не жжём ({_e401.code}, попыток {_calls401['n']})")
+    _stand13["post"] = _stand_request
+    ok(not _seen.get("bypass"), f"ни одного запроса мимо двери загрузчика за весь §13 ({_seen.get('bypass')})")
 finally:
     _httpx.request, _httpx.get, _httpx.stream = _real["request"], _real["get"], _real["stream"]
     _HI13.transport, _HI13.resolve = _real_seams13
@@ -2536,29 +2588,77 @@ import httpx as _hx17
 from core.providers.img.http_image import HttpImageAPI as _HTTP17
 from core.runner import RunnerSupervisor as _Sup17
 
-# Послабление на петлю объявлено ДАННЫМИ и действует только на объявленный хост: чужой адрес по
-# http обязан остаться отказом, иначе «разрешили раннер» означало бы «разрешили открытый канал».
-_api17 = _HTTP17(_reg)
-_loop17 = {"url": "http://127.0.0.1:8770/run", "allow_insecure_host": "127.0.0.1"}
-ok(_api17._url(_loop17, {}) == "http://127.0.0.1:8770/run", "петлевой http пропускается по объявлению")
-for _case17, _decl17 in (
-        ("чужой хост по http", {"url": "http://example.com/run", "allow_insecure_host": "127.0.0.1"}),
-        ("соседняя петля", {"url": "http://127.0.0.2:8770/run", "allow_insecure_host": "127.0.0.1"}),
-        ("петля без объявления", {"url": "http://127.0.0.1:8770/run"})):
-    try:
-        _api17._url(_decl17, {})
-        ok(False, f"{_case17} должен отбиваться")
-    except ProviderError as e:
-        ok(e.code == "DOWNLOAD_FORBIDDEN", f"{_case17} → DOWNLOAD_FORBIDDEN ({e.code})")
+# Послабление на петлю объявлено ДАННЫМИ: схема — из политики вызова провайдера (call.schemes), а открытый канал и
+# внутренняя сеть — одно решение загрузчика (`addressed`): только литералу петли. Иначе «разрешили раннер» означало бы
+# «разрешили открытый канал». Обновлено в B4: прежде — ключ allow_insecure_host у адаптера (любой объявленный хост).
+from core.providers.download import addressed as _addr17
 
-# Занят ≠ не поднят. Долгий расчёт не должен отправлять ИИ поднимать то, что и так работает.
-_runner_decl17 = yaml.safe_load(CFG.read_text(encoding="utf-8"))["online"]["http"]["Local_runner"]
-ok(_api17._unreachable(_runner_decl17, "Local_runner", _hx17.ConnectError("отказано")).code
-   == "RUNNER_NOT_RUNNING", "молчащий порт → «подними раннер», кодом из объявления")
-ok(_api17._unreachable(_runner_decl17, "Local_runner", _hx17.ReadTimeout("долго")).code
-   == "PROVIDER_TIMEOUT", "не успел за отведённое → «не успел», а не «не поднят»")
-ok(float(_runner_decl17["timeout_sec"]) > 120,
-   f"предел ожидания объявлен под локальный расчёт, а не общий ({_runner_decl17['timeout_sec']} с)")
+_api17 = _HTTP17(_reg)
+_api17._decl("Local_runner")
+_rslot17, _rpolicy17 = _api17._section("Local_runner")
+try:
+    _u17 = _api17._url({"url": "http://127.0.0.1:8770/run"}, {}, _rpolicy17.schemes)
+except ProviderError as e:      # отказ — улика проверки, а не обрыв набора
+    _u17 = e.code
+ok(_u17 == "http://127.0.0.1:8770/run",
+   f"петлевой http пропускается по схеме из политики вызова раннера ({_rslot17.section} schemes {_rpolicy17.schemes}, {_u17})")
+try:
+    _api17._url({"url": "http://127.0.0.1:8770/run"}, {}, ("https",))
+    _e17 = None
+except ProviderError as e:
+    _e17 = e
+ok(_e17 is not None and _e17.code == "DOWNLOAD_FORBIDDEN", f"http без объявленной схемы — отказ до сети и на петле ({_e17})")
+for _case17, _url17, _over17, _allowed17 in (
+        ("законный: литерал петли", "http://127.0.0.1:8770/run", {}, None),
+        ("законный: литерал петли IPv6", "http://[::1]:8770/run", {}, None),
+        ("чужой хост по http", "http://example.com/run", {}, "литерал петли (block_private: false, http)"),
+        ("чужой хост по http и при block_private: true — открытый канал всё равно только петле",
+         "http://example.com/run", {"block_private": True}, "литерал петли (http)"),
+        ("имя localhost — не литерал: разрешение подменило бы адрес", "http://localhost:8770/run", {},
+         "литерал петли (block_private: false, http)"),
+        ("адрес внутренней сети — не петля", "http://10.0.0.5:8770/run", {}, "литерал петли (block_private: false, http)")):
+    try:
+        _addr17(_rpolicy17.model_copy(update=_over17), _rslot17, _url17)
+        _got17 = None
+    except _CE17 as e:
+        _got17 = e.code == "DOWNLOAD_FORBIDDEN" and e.facts.get("allowed")
+    ok(_got17 == _allowed17, f"{_case17} → {'принят' if _allowed17 is None else 'DOWNLOAD_FORBIDDEN до запроса'} ({_got17})")
+
+# Занят ≠ не поднят. Долгий расчёт не должен отправлять ИИ поднимать то, что и так работает. Обновлено в B4: вызов
+# раннера — дверью загрузчика; «не ушёл» и «не успел» — коды политики вызова раннера (call.codes), а не адаптера.
+_runner_req17 = MediaRequest(input="pic/frame.png", params={}, target=_ws / "pic" / "r17.png", models_dir=_reg.models_dir,
+                             source=_ws / "pic" / "frame.png", api_key="t", provider="Local_runner",
+                             resource_type="bg_removals", workspace=_ws)
+
+
+def _runner_refusal17(error) -> tuple[str, list]:
+    """Отказ вызова раннера, когда сеть бросает `error`, — (код, ушедшие запросы)."""
+    sent: list = []
+
+    def wire(request):
+        sent.append(request.method)
+        raise error
+    real = _HTTP17.__dict__["transport"]
+    _HTTP17.transport = _hx17.MockTransport(wire)
+    try:
+        _HTTP17(_reg).generate(_runner_req17)
+        return "успех", sent
+    except _CE17 as e:
+        return e.code, sent
+    finally:
+        _HTTP17.transport = real
+
+
+ok(_runner_refusal17(_hx17.ConnectError("отказано")) == ("RUNNER_NOT_RUNNING", ["POST"]),
+   f"молчащий порт → «подними раннер», кодом из объявления ({_runner_refusal17(_hx17.ConnectError('отказано'))})")
+ok(_runner_refusal17(_hx17.ReadTimeout("долго")) == ("PROVIDER_TIMEOUT", ["POST"]),
+   f"не успел за отведённое → «не успел», а не «не поднят»; запрос мог дойти — без повтора "
+   f"({_runner_refusal17(_hx17.ReadTimeout('долго'))})")
+_api17._decl("RemoveBg")
+_cpolicy17 = _api17._section("RemoveBg")[1]
+ok(_rpolicy17.timeout_sec > _cpolicy17.timeout_sec and _rpolicy17.deadline_sec >= 2 * _rpolicy17.timeout_sec,
+   f"предел ожидания объявлен под локальный расчёт, а не общий: фаза {_rpolicy17.timeout_sec} с против "
+   f"{_cpolicy17.timeout_sec} с раздела online.call, весь вызов {_rpolicy17.deadline_sec} с")
 
 # Запуск в контейнере проверяется по СОБРАННОЙ команде: набор не должен требовать ни Docker, ни
 # образа на 5–10 ГБ, а свойства, ради которых контейнер и заводился, живут именно в этой команде.
@@ -2595,7 +2695,7 @@ _was17 = _srv.CONFIG_PATH
 try:
     _srv.CONFIG_PATH = _cfg17
     _eng17 = _Eng(reactions=_REACTIONS, state_manager=_sm)
-    _srv.register_basic_tools(_eng17, _IDG(), _sm)
+    _register(_eng17, _IDG(), _sm)
 
     def _c17(tool, **params):
         return _aio.run(_eng17.call(tool, params))
@@ -3043,9 +3143,14 @@ def _model_fetch(work: Path, records: list[str]) -> None:
 
     models = work / "vendor" / "models"
     cfg = declarations_copy(root=work) / "providers.yaml"   # боевые декларации проекта `work`, своя — поверх
-    retry = {"idempotent_methods": ["GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE"],
-             "retry_after_max_sec": 30, "backoff_max_sec": 60, "backoff_jitter_ratio": 0}
-    cfg.write_text(yaml.safe_dump({"online": {"retry": retry}, "local": {
+    # Вызов провайдера (B4): политика — живой раздел online.call с потолком срока сервера 30 с и без разброса; провайдер `p`
+    # повторяет 503 и 504 по коду, `pj` — тот же с разбросом паузы 0.1.
+    call_decl = {**yaml.safe_load((ROOT / "config" / "providers.yaml").read_text(encoding="utf-8"))["online"]["call"],
+                 "retry_after_max_sec": 30, "jitter": 0}
+    provider = {"url": "https://p.invalid/run", "auth": "bearer", "send_mode": "json_base64", "file_field": "image",
+                "response": "json", "send": {}, "call": {**call_decl, "retry_on": [503, 504]}}
+    cfg.write_text(yaml.safe_dump({"online": {"call": call_decl, "http": {
+        "p": provider, "pj": {**provider, "call": {**provider["call"], "jitter": 0.1}}}}, "local": {
         "models_dir": "vendor/models",
         "hand_placed": "by_presence",
         "sources": {
@@ -3344,98 +3449,130 @@ def _model_fetch(work: Path, records: list[str]) -> None:
        and "evil.example" not in [h for h, _ in wire[w0:]],
        f"resolve ведёт на необъявленный хост — DOWNLOAD_FORBIDDEN, к нему ни запроса ({wire[w0:]})")
 
-    print("== 19j. Вызов провайдера: повтор только объявленного, пауза — по слову провайдера ==")
+    print("== 19j. Вызов провайдера дверью: повтор только непримененного, пауза — по слову провайдера ==")
+    # Обновлено в B4: вызов идёт дверью загрузчика (`Fetcher.call`), а не своим циклом `_request`; сеть, разрешение имён и
+    # сон — швы класса адаптера. Провайдер `p` объявлен в декларации события (503 и 504 в retry_on; «не применён» — 408 и
+    # 503 раздела online.call). Повтор GET (идемпотентный метод) — в test_fetcher §20: адаптер шлёт только POST.
+    frame = work / "frame.png"
+    frame.write_bytes(b"\x89PNG\r\n\x1a\n" + b"p" * 100)
 
-    class Resp:
-        def __init__(self, status, headers=None):
-            self.status_code, self.headers, self.text = status, headers or {}, "ответ провайдера"
+    def replies(*queue):
+        """Сеть вызова — очередь ответов (код, заголовки) или исключений; возвращает журнал ушедших методов."""
+        queue, sent = list(queue), []
 
-        def json(self):
-            raise ValueError("не JSON")
-
-    def answers(*queue):
-        """Подменяет httpx.request очередью ответов (исключение — бросается); возвращает список ушедших методов."""
-        queue = list(queue)
-        sent: list[str] = []
-
-        def fake(method, url, **_kw):
-            sent.append(method)
+        def wire(request):
+            sent.append(request.method)
             answer = queue.pop(0)
             if isinstance(answer, Exception):
                 raise answer
-            return answer
-        _hx19.request = fake
+            status, headers = answer
+            return _hx19.Response(status, headers=headers,
+                                  json={"ok": True} if status < 400 else {"detail": "ответ провайдера"})
+        HttpImageAPI.transport = _hx19.MockTransport(wire)
         return sent
 
+    def call(params: dict, adapter=None, provider: str = "p") -> tuple[object, str]:
+        """Вызов провайдера со строкой канала `params` — (JSON ответа или отказ, код отказа или пусто)."""
+        adapter = adapter or api
+        request = MediaRequest(input="x", params=params, target=work / "o.png", models_dir=models, api_key="k",
+                               provider=provider, source=frame)
+        try:
+            return adapter._call(adapter._decl(provider), request), ""
+        except ContractError as e:
+            return e, e.code
+
+    seams = tuple(HttpImageAPI.__dict__[name] for name in ("transport", "resolve", "sleep"))
+    HttpImageAPI.resolve = staticmethod(lambda host, port, *a, **k: [
+        (_sock19.AF_INET, _sock19.SOCK_STREAM, 6, "", ("52.9.9.9", port))])
+    HttpImageAPI.sleep = staticmethod(pauses.append)
     api = HttpImageAPI(AdapterRegistry(cfg, work))
-    url = "https://p.invalid/run"
-    req = MediaRequest(input="x", params={"retry_count": 1}, target=work / "o.png", models_dir=models,
-                       api_key="k", provider="p")
-    sent = answers(Resp(200))
-    ok(api._request({"retry_on": [503]}, "POST", url, req).status_code == 200 and len(sent) == 1,
-       "успех с первой попытки — один запрос")
-    sent = answers(Resp(400), Resp(200))
-    ok(refused(lambda: api._request({"retry_on": [503]}, "POST", url, req)) == "PROVIDER_FAILED"
-       and len(sent) == 1, "код вне объявленных к повтору — отказ сразу")
-    pauses.clear()
-    sent = answers(Resp(503, {"Retry-After": "2"}), Resp(200))
-    ok(api._request({"retry_on": [503]}, "POST", url, req).status_code == 200 and len(sent) == 2
-       and pauses == [2.0], f"перегрузка повторяется с паузой, названной провайдером ({pauses})")
-    detail_body = {"code": "PATH_ESCAPE", "message": "m", "facts": {"path": "../x"},
-                   "errors": [{"field": "target", "rule": "required"}]}
-    answer = _ty19.SimpleNamespace(json=lambda: detail_body)
-    api._decl_cache = {"Local_runner": {"error_detail": True}}
-    named = api._named_refusal(answer)
-    ok(named is not None and named.code == "PATH_ESCAPE" and named.facts == {"path": "../x"}
-       and named.errors == [{"field": "target", "rule": "required"}],
-       f"ответ формой сервера (ErrorDetail) переходит в отказ с кодом, фактами и ошибками ввода ({named and named.facts})")
-    api._decl_cache = {"Fal": {}}
-    ok(api._named_refusal(answer) is None,
-       "адресат, не объявленный отвечающим формой сервера, кодом сервера не говорит — даже если в теле код")
-    api._decl_cache = {}
+    try:
+        sent = replies((200, {}))
+        got, code = call({"retry_count": 1})
+        ok(got == {"ok": True} and sent == ["POST"], f"успех с первой попытки — один запрос ({got}, {sent})")
+        sent = replies((400, {}), (200, {}))
+        got, code = call({"retry_count": 1})
+        ok(code == "PROVIDER_FAILED" and "ответ провайдера" in got.message and sent == ["POST"],
+           f"код вне объявленных к повтору — отказ сразу, причина — цитатой ответа ({code}, {sent})")
+        pauses.clear()
+        sent = replies((503, {"Retry-After": "2"}), (200, {}))
+        got, code = call({"retry_count": 1})
+        ok(got == {"ok": True} and sent == ["POST", "POST"] and pauses == [2.0],
+           f"503 — запрос не применён (RFC 9110 §15.6.4): POST повторён с паузой, названной провайдером ({pauses}, {sent})")
+        pauses.clear()
+        sent = replies((504, {"Retry-After": "7"}), (200, {}))
+        got, code = call({"retry_count": 1})
+        ok(code == "PROVIDER_FAILED" and got.facts.get("retry_after_sec") == 7.0 and sent == ["POST"] and not pauses,
+           f"смена поведения B4: 504 без ключа идемпотентности — задача могла создаться, POST не повторяется; срок "
+           f"провайдера — в фактах отказа ({code}, {got.facts if code else got}, {sent})")
+        detail_body = {"code": "PATH_ESCAPE", "message": "m", "facts": {"path": "../x"},
+                       "errors": [{"field": "target", "rule": "required"}]}
+        answer = _ty19.SimpleNamespace(json=lambda: detail_body)
+        api._decl_cache = {"Local_runner": {"error_detail": True}}
+        named = api._named_refusal(answer)
+        ok(named is not None and named.code == "PATH_ESCAPE" and named.facts == {"path": "../x"}
+           and named.errors == [{"field": "target", "rule": "required"}],
+           f"ответ формой сервера (ErrorDetail) переходит в отказ с кодом, фактами и ошибками ввода ({named and named.facts})")
+        api._decl_cache = {"Fal": {}}
+        ok(api._named_refusal(answer) is None,
+           "адресат, не объявленный отвечающим формой сервера, кодом сервера не говорит — даже если в теле код")
+        api._decl_cache = {}
 
-    print("== 19k. Retry-After: секунды или HTTP-дата, потолок; нечитаемое — своя пауза и запись в журнал ==")
-    own = MediaRequest(input="x", params={"retry_count": 1, "retry_delay": 1}, target=work / "o.png",
-                       models_dir=models, api_key="k", provider="p")
-    pauses.clear()
-    answers(Resp(503, {"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"}), Resp(200))
-    got = answered(lambda: api._request({"retry_on": [503]}, "POST", url, own))
-    ok(got == 200 and pauses == [1.0], f"HTTP-дата в прошлом — без падения разбора, пауза своя ({got}, {pauses})")
-    pauses.clear()
-    answers(Resp(503, {"Retry-After": "Fri, 01 Jan 2100 00:00:00 GMT"}), Resp(200))
-    got = answered(lambda: api._request({"retry_on": [503]}, "POST", url, own))
-    ok(got == 200 and pauses == [30.0],
-       f"HTTP-дата далеко впереди — пауза не больше объявленного потолка ({got}, {pauses})")
-    pauses.clear()
-    answers(Resp(503, {"Retry-After": "скоро"}), Resp(200))
-    got = answered(lambda: api._request({"retry_on": [503]}, "POST", url, own))
-    ok(got == 200 and pauses == [1.0] and any("Retry-After" in r for r in records),
-       f"нечитаемый срок — своя пауза и запись в журнал ({got}, {pauses}, {records})")
-    pauses.clear()
-    jittered = HttpImageAPI(api.registry, rng=_ty19.SimpleNamespace(random=lambda: 0.5))
-    api.registry.need = lambda *p, kind=None: {**retry, "backoff_jitter_ratio": 0.1}[p[-1]]
-    answers(Resp(503, {"Retry-After": "2"}), Resp(200))
-    jittered._request({"retry_on": [503]}, "POST", url, req)
-    del api.registry.need
-    ok([round(p, 6) for p in pauses] == [2.1], f"разброс паузы — от переданного генератора ({pauses})")
+        print("== 19k. Retry-After: секунды или HTTP-дата; длиннее потолка — повтора нет; нечитаемое — своя пауза ==")
+        pauses.clear()
+        replies((503, {"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"}), (200, {}))
+        got, code = call({"retry_count": 1, "retry_delay": 1})
+        ok(got == {"ok": True} and pauses == [1.0], f"HTTP-дата в прошлом — без падения разбора, пауза своя ({code}, {pauses})")
+        pauses.clear()
+        sent = replies((503, {"Retry-After": "Fri, 01 Jan 2100 00:00:00 GMT"}), (200, {}))
+        got, code = call({"retry_count": 1, "retry_delay": 1})
+        ok(code == "PROVIDER_FAILED" and got.facts.get("retry_after_sec", 0) > 30 and not pauses and sent == ["POST"],
+           f"смена поведения B4 (одна дверь, как у ответов с B2): HTTP-дата далеко впереди, срок длиннее "
+           f"retry_after_max_sec — повтора нет, срок в фактах; прежде — пауза потолком 30 с и повтор ({code}, {pauses})")
+        pauses.clear()
+        replies((503, {"Retry-After": "soon"}), (200, {}))         # заголовок — ASCII (httpx), значение нечитаемо
+        got, code = call({"retry_count": 1, "retry_delay": 1})
+        ok(got == {"ok": True} and pauses == [1.0] and any("Retry-After" in r for r in records),
+           f"нечитаемый срок — своя пауза и запись в журнал ({code}, {pauses}, {records})")
+        pauses.clear()
+        jittered = HttpImageAPI(api.registry, rng=_ty19.SimpleNamespace(random=lambda: 0.5))
+        replies((503, {}), (200, {}))
+        got, code = call({"retry_count": 1, "retry_delay": 2}, jittered, provider="pj")
+        ok([round(p, 6) for p in pauses] == [2.1], f"разброс паузы — от переданного генератора ({pauses}, {code})")
 
-    print("== 19l. Неидемпотентный запрос не повторяется после ошибки, при которой провайдер мог его получить ==")
-    sent = answers(_hx19.ReadTimeout("ответ не пришёл"), Resp(200))
-    ok(refused(lambda: api._request({"retry_on": [503]}, "POST", url, req)) == "PROVIDER_TIMEOUT"
-       and sent == ["POST"], f"POST после таймаута чтения — один запрос и код ({sent})")
-    sent = answers(_hx19.ConnectError("порт закрыт"), Resp(200))
-    ok(api._request({"retry_on": [503]}, "POST", url, req).status_code == 200
-       and sent == ["POST", "POST"], f"POST после ошибки соединения — запрос не ушёл, повтор ({sent})")
-    sent = answers(_hx19.ReadTimeout("ответ не пришёл"), Resp(200))
-    ok(api._request({"retry_on": [503]}, "GET", url, req).status_code == 200
-       and sent == ["GET", "GET"], f"GET после таймаута чтения — идемпотентен, повтор ({sent})")
-    bare = work / "bare" / "providers.yaml"
-    bare.parent.mkdir()
-    bare.write_text(yaml.safe_dump({"local": {"models_dir": "vendor/models"}}), encoding="utf-8")
-    sent = answers(Resp(200))
-    ok(refused(lambda: HttpImageAPI(AdapterRegistry(bare, work))._request(
-        {"retry_on": [503]}, "POST", url, req)) == "DECLARATION_INVALID" and sent == [],
-       "нет объявления повторов — отказ декларации до запроса, умолчания в коде нет")
+        print("== 19l. Неидемпотентный вызов не повторяется после ошибки, при которой провайдер мог его получить ==")
+        sent = replies(_hx19.ReadTimeout("ответ не пришёл"), (200, {}))
+        got, code = call({"retry_count": 1})
+        ok(code == "PROVIDER_TIMEOUT" and sent == ["POST"], f"POST после таймаута чтения — один запрос и код ({code}, {sent})")
+        sent = replies(_hx19.ConnectError("порт закрыт"), (200, {}))
+        got, code = call({"retry_count": 1})
+        ok(got == {"ok": True} and sent == ["POST", "POST"], f"POST после ошибки соединения — запрос не ушёл, повтор ({sent})")
+        sent = replies(_hx19.ReadError("соединение оборвано"), (200, {}))
+        got, code = call({"retry_count": 1})
+        ok(code == "PROVIDER_OUTCOME_UNKNOWN" and got.facts == {"host": "p.invalid", "got": 0, "expected": "—"}
+           and sent == ["POST"],
+           f"обрыв после отправки POST — исход неизвестен (запрос мог примениться), без повтора "
+           f"({code}, {got.facts if code else got}, {sent})")
+        for column, value, field, rule in (
+                ("retry_count", "два", "retry_count", "int_type"),
+                ("retry_count", -2, "retry_count", "greater_than_equal"),
+                ("retry_delay", 100, "retry_delay", "backoff_over_ceiling"),
+                ("timeout", 200, "online.http.p.call.deadline_sec", "deadline_under_attempt")):
+            sent = replies((200, {}))
+            got, code = call({column: value})
+            ok(code == "BOOK_ROW_INVALID" and got.errors == [{"field": field, "rule": rule}] and sent == [],
+               f"смена поведения B4: столбец {column}={value!r} не годен политике вызова — отказ строки с полем {field} "
+               f"до запроса, а не молчаливая обрезка ({code}, {code and got.errors}, {sent})")
+        bare = work / "bare" / "providers.yaml"
+        bare.parent.mkdir()
+        bare.write_text(yaml.safe_dump({"local": {"models_dir": "vendor/models"}, "online": {"http": {
+            "p": {k: v for k, v in provider.items() if k != "call"}}}}), encoding="utf-8")
+        sent = replies((200, {}))
+        got, code = call({}, HttpImageAPI(AdapterRegistry(bare, work)))
+        ok(code == "DECLARATION_INVALID" and sent == [],
+           f"нет раздела online.call — отказ декларации до запроса, умолчания в коде нет ({code}, {sent})")
+    finally:
+        HttpImageAPI.transport, HttpImageAPI.resolve, HttpImageAPI.sleep = seams
 
     print("== 19m. Готовность к подъёму: состав по длине, отказ кодом причины, руками положенное — по политике ==")
     reg = AdapterRegistry(cfg, work)
@@ -3509,6 +3646,24 @@ def _model_fetch(work: Path, records: list[str]) -> None:
        "/health судит только по длине и называет ступень — отпечатка на каждый вызов нет")
     bare_body = _json.loads(_aio.run(svc.health(_ty19.SimpleNamespace(headers={}))).text)
     ok("models" not in bare_body, "без токена готовность моделей не видна — только живость")
+    denied = _aio.run(svc.run(_ty19.SimpleNamespace(headers={svc.token_header: "wrong-token"})))
+    denied_body = _json.loads(denied.text)
+    ok(denied.status == 401 and denied_body["code"] == "RUNNER_TOKEN_REJECTED"
+       and denied_body["facts"] == {"header": svc.token_header},
+       f"чужой токен на /run — 401 и RUNNER_TOKEN_REJECTED с именем заголовка ({denied.status}, {denied_body.get('code')})")
+    for value, why in (("чужой-токен-ё", "не-ASCII"), ("\udcff\udcfe", "недопустимые байты UTF-8 (суррогаты)")):
+        try:
+            got = _aio.run(svc.run(_ty19.SimpleNamespace(headers={svc.token_header: value})))
+            said = (got.status, _json.loads(got.text).get("code"))
+        except Exception as e:  # падение сравнения — красная строка с именем исключения, а не трасса набора
+            said = (type(e).__name__, "")
+        ok(said == (401, "RUNNER_TOKEN_REJECTED"), f"{why} в токене /run — 401 RUNNER_TOKEN_REJECTED, а не 500 ({said})")
+        try:
+            alive = _aio.run(svc.health(_ty19.SimpleNamespace(headers={svc.token_header: value})))
+            seen = (alive.status, sorted(_json.loads(alive.text)))
+        except Exception as e:
+            seen = (type(e).__name__, [])
+        ok(seen == (200, ["ok", "uptime_sec"]), f"{why} в токене /health — живость отвечает, содержимое закрыто ({seen})")
 
     print("== 19o. Место по плану: нужно — сумма частей плана, неизвестное — отказ кодом, качают тот же снимок ==")
     import core.providers.hardware as hw_mod
@@ -3728,7 +3883,7 @@ def _model_fetch(work: Path, records: list[str]) -> None:
     try:
         _srv.CONFIG_PATH = cfg.parent
         _hf19.HfApi = FakeApi
-        _srv.register_basic_tools(tool_eng, _IDG(), _sm)
+        _register(tool_eng, _IDG(), _sm)
 
         def tool(name, **params):
             return _aio.run(tool_eng.call(name, params))
@@ -3972,7 +4127,7 @@ def _model_fetch(work: Path, records: list[str]) -> None:
     declared = _Eng(reactions=_REACTIONS, state_manager=_sm, resources=_srv._load_resources(cfg.parent / "resources.yaml"))
     try:
         _srv.CONFIG_PATH = cfg.parent
-        _srv.register_basic_tools(declared, _IDG(), _sm)
+        _register(declared, _IDG(), _sm)
         media_tools.probe = where("media_models", real_probe_tool)
         ModelInstaller.start = where("media_model_install", real_start)
         ModelInstaller.status = where("media_install_status", real_status)
@@ -4007,6 +4162,78 @@ finally:
     _hlog19.removeHandler(_catch19)
     sys.path.remove(str(ROOT / "scripts"))
     _sh19.rmtree(_work19, ignore_errors=True)
+
+print("== 20. Худшее время вызова провайдера на подставных часах (B4): висящее соединение, молчание, капля тела ==")
+# Политики — живые (online.call и блоки провайдеров), строка Fal — из книги-шаблона канала. Сеть двигает часы на фазу,
+# которую дверь отдала транспорту (как httpx: фаза кончается тайм-аутом); капля — кусок на каждой половине фазы.
+import httpx as _hx20
+from core.providers.img.http_image import HttpImageAPI as _HI20
+
+_seams20 = tuple(_HI20.__dict__[name] for name in ("transport", "resolve", "clock", "sleep"))
+_clock20 = {"now": 0.0, "posts": 0}
+
+
+def _phase20(request) -> float:
+    _clock20["posts"] += 1
+    return request.extensions["timeout"]["connect"]
+
+
+def _hung20(request):
+    _clock20["now"] += _phase20(request)
+    raise _hx20.ConnectTimeout("соединение висит")
+
+
+def _silent20(request):
+    _clock20["now"] += _phase20(request)
+    raise _hx20.ReadTimeout("сервер молчит")
+
+
+def _drip20(request):
+    half = _phase20(request) / 2
+
+    def chunks():
+        while _clock20["now"] < _clock20["cap"]:          # предел события: без срока у двери капля не висит вечно
+            _clock20["now"] += half
+            yield b" "
+    return _hx20.Response(200, headers={"content-type": "image/png"}, content=chunks())
+
+
+_book20 = yaml.safe_load((ROOT / "config" / "templates" / "tables" / "channel_data.schema.yaml").read_text(encoding="utf-8"))
+_fal_row20 = next(row for sheet in _book20["sheets"] if sheet["name"] == "RESOURCE_LIMITS" for row in sheet.get("rows", [])
+                  if row.get("provider") == "Fal")
+_cases20 = (("RemoveBg", {"response_format": "png"}), ("Bria", {}), ("Replicate", {"model": "owner/m:v"}),
+            ("Fal", {"model": "fal-ai/m"}), ("Fal", _fal_row20), ("Local_runner", {}))
+_HI20.resolve = staticmethod(lambda host, port, *a, **k: [
+    (2, 1, 6, "", (host if host == "127.0.0.1" else "151.101.1.1", port))])
+_HI20.clock = staticmethod(lambda: _clock20["now"])
+_HI20.sleep = staticmethod(lambda seconds: _clock20.__setitem__("now", _clock20["now"] + seconds))
+try:
+    for _name20, _params20 in _cases20:
+        _req20 = MediaRequest(input="pic/frame.png", params=_params20, target=_ws / "pic" / "w20.png",
+                              models_dir=_reg.models_dir, source=_ws / "pic" / "frame.png", api_key="k", provider=_name20,
+                              resource_type="bg_removals", workspace=_ws)
+        _api20 = _HI20(_reg)
+        _api20._decl(_name20)
+        _policy20 = _api20._policy(_req20)[1]
+        _deadline20, _phase_sec20 = _policy20.deadline_sec, _policy20.timeout_sec
+        _ends20 = {}
+        for _kind20, _wire20 in (("висит", _hung20), ("молчит", _silent20), ("капля", _drip20)):
+            _clock20.update(now=0.0, posts=0, cap=4 * (_deadline20 + _phase_sec20))
+            _HI20.transport = _hx20.MockTransport(_wire20)
+            try:
+                _HI20(_reg).generate(_req20)
+                _code20 = "успех"
+            except _CE13 as e:              # отказ двери — ContractError, отказ провайдера — его наследник
+                _code20 = e.code
+            _ends20[_kind20] = (_clock20["now"], _clock20["posts"], _code20)
+        _row20 = "строка книги" if _params20 is _fal_row20 else "без столбцов строки"
+        ok(_ends20["висит"][0] <= _deadline20 and _ends20["молчит"][:2] == (_phase_sec20, 1)
+           and _ends20["капля"][0] <= _deadline20 + _phase_sec20 and _ends20["капля"][1] == 1
+           and all(code != "успех" for _, _, code in _ends20.values()),
+           f"{_name20} ({_row20}): худшее время POST ≤ deadline_sec {_deadline20:g} + фаза {_phase_sec20:g} — "
+           + ", ".join(f"{k} {t:g} с ({n} POST, {c})" for k, (t, n, c) in _ends20.items()))
+finally:
+    _HI20.transport, _HI20.resolve, _HI20.clock, _HI20.sleep = _seams20
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

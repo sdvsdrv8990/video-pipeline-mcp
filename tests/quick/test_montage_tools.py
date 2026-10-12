@@ -19,12 +19,12 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-import server
 from core.engine import Engine
 from core.ids import IDGenerator
 from core.montage import MontageError, RenderLedger, SceneBook
 from core.providers.ffmpeg import AudioTrack, FfmpegEngine, Layer
 from core.state import StateManager
+from tests.harness.inprocess import register_basic_tools
 
 CONFIG = ROOT / "config"
 MONTAGE = yaml.safe_load((CONFIG / "montage.yaml").read_text(encoding="utf-8"))
@@ -229,7 +229,7 @@ else:
 
     SM = StateManager(WS)
     ENG = Engine(state_manager=SM)
-    server.register_basic_tools(ENG, IDGenerator(), SM)
+    register_basic_tools(ENG, IDGenerator(), SM)
 
     def call(tool, **params):
         return asyncio.run(ENG.call(tool, params))

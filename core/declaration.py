@@ -15,7 +15,7 @@ from typing import Generic, TypeVar, overload
 import yaml
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from core.declaration_schemas import STRICT
+from core.declaration_schemas import REACTIONS, STRICT, registry_codes, unregistered_codes
 
 T = TypeVar("T")
 M = TypeVar("M", bound=BaseModel)
@@ -96,9 +96,24 @@ class Declaration:
         с путём ключа от корня файла. Схема — модель со своей строгостью, поэтому без `_adapter`."""
         node = self.need(*path)
         try:
-            return schema.model_validate(node)
+            model = schema.model_validate(node)
         except ValidationError as e:
             raise self._invalid(_schema_errors(e, path)) from None
+        return self._registered(model, path)
+
+    def _registered(self, model: M, path: tuple[str, ...] = ()) -> M:
+        """Поле-код схемы называет код реестра; чужой код — тот же отказ двери с путём ключа. Реестр — каталога, где
+        лежит декларация; у файла вне каталога деклараций (временная декларация прогона) — каталога деклараций прогона:
+        им сервер и переводит код в ответ. Реестр читается, только когда у схемы есть поля-коды."""
+        if not registry_codes(model):
+            return model
+        own = self.config_file.parent / REACTIONS
+        registry = own if own.exists() else declarations_root() / REACTIONS
+        known = {code for code, entry in _reactions(registry, self._error).data.items() if isinstance(entry, dict)}
+        gaps = unregistered_codes(model, known)
+        if gaps:
+            raise self._invalid(_schema_errors(ValidationError.from_exception_data(type(model).__name__, gaps), path))
+        return model
 
 
 class Declared(Declaration, Generic[M]):
@@ -124,7 +139,7 @@ class Declared(Declaration, Generic[M]):
                 # Без цепочки причины: текст ValidationError несёт пришедшие значения, а журнал отказа пишет причину.
                 raise self._invalid(_schema_errors(e)) from None
             self._model, self._model_mtime = model, self._mtime
-        return self._model
+        return self._registered(self._model)       # реестр правят отдельно от декларации: сверка — на каждом чтении
 
 
 def _schema_errors(error: ValidationError, prefix: tuple[str, ...] = ()) -> list[dict]:
@@ -146,6 +161,13 @@ def _missing(path: tuple[str, ...]) -> list[dict]:
 
 
 @cache
+def _reactions(path: Path, error_cls) -> Declaration:
+    """Дверь реестра реакций — одна на путь и класс отказа: разбор реестра дорог для каждого чтения раздела, а
+    перечитывает файл по mtime она сама."""
+    return Declaration(path, error_cls, "реакций сервера", f"Заведи {REACTIONS} в каталоге деклараций — коды отказа объявлены там.")
+
+
+@cache
 def _adapter(kind: type) -> TypeAdapter:
     """Проверка типа значения тем же строгим режимом, что у схем деклараций: «5» не число, bool не число."""
     return TypeAdapter(kind, config=STRICT)
@@ -155,3 +177,15 @@ def declarations_root(environ: Mapping[str, str] = os.environ) -> Path:
     """Каталог деклараций: `MCP_CONFIG` (прогон рядом с боевым) или `config/` рядом с кодом сервера — одно решение
     для сервера, установщика, подсказки отказа и харнесса, который поднимает сервер со своей средой."""
     return Path(environ.get("MCP_CONFIG") or (Path(__file__).resolve().parents[1] / "config")).resolve()
+
+
+def instance_home(config_dir: Path, environ: Mapping[str, str] = os.environ) -> Path:
+    """Дом инстанса — его личность и ключ шифрования (вне рабочей области): `MCP_HOME` (прогон рядом с боевым) или
+    родитель каталога деклараций — одно решение для сервера, инструментов, скрипта ключей и харнесса."""
+    return Path(environ.get("MCP_HOME") or Path(config_dir).parent).resolve()
+
+
+def workspace_root(environ: Mapping[str, str] = os.environ) -> Path:
+    """Рабочая область — данные каналов: `MCP_WORKSPACE` (прогон рядом с боевым) или `workspace/` рядом с кодом сервера —
+    одно решение для сервера, раннера и скрипта ключей; от дома инстанса не выводится, как и дом от неё."""
+    return Path(environ.get("MCP_WORKSPACE") or (Path(__file__).resolve().parents[1] / "workspace")).resolve()

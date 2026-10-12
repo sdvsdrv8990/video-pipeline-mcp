@@ -2,11 +2,16 @@
 
 import ast
 import json
+import os
 import re
 import socket
 import threading
 import time
 from pathlib import Path
+
+import yaml
+
+from core.declaration import declarations_root
 
 
 def remove_path(srv, path: str) -> dict:
@@ -81,6 +86,73 @@ def busy_server_still_answers(srv, heavy: str, heavy_args: dict,
         "overlapped": light_end < marks.get("heavy_end", 0.0),
         "within_budget": (light_end - started) < budget_sec,
     }}
+
+
+def busy_while_held(srv, tool: str, args: dict | None = None) -> dict:
+    """Второй вызов того же класса, пока первый держит место (приспособление `hold_slot`), — исход шага; после снятия
+    флага место свободно. Флаг снимается всегда (`finally`), держатель живёт не дольше сервера сценария."""
+    flag = srv.workspace / ".hold" / tool
+    held = flag.parent / f"{tool}.held"
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    flag.touch()
+    holder = threading.Thread(target=srv.rpc.call_tool, args=(tool, args or {}))
+    answer: dict = {}
+    caller = threading.Thread(target=lambda: answer.update(srv.rpc.call_tool(tool, args or {})))
+    holder.start()
+    try:
+        for _ in range(600):
+            if held.exists():
+                break
+            time.sleep(0.05)
+        caller.start()
+        caller.join(30)       # «занято» приходит сразу; дольше ждёт только сервер, который место не судит
+    finally:
+        flag.unlink(missing_ok=True)
+        holder.join()
+        if caller.ident:
+            caller.join()
+    second = answer
+    after = srv.rpc.call_tool(tool, args or {})
+    return {"ok": not second["is_error"], "code": second["code"],
+            "data": {"held": held.exists(), "freed_after": after["code"] != second["code"]}}
+
+
+def seed_runner_token(srv, token: str) -> dict:
+    """Токен «живого раннера» в его файле состояния (`local.runner.state_file` от корня проекта) — у копии деклараций
+    сервера сценария; без копии (`MCP_CONFIG`) отказ: файл состояния лёг бы в рабочее дерево проекта."""
+    config = srv.extra_env.get("MCP_CONFIG")
+    if not config:
+        return {"ok": False, "code": "SCHEMA_INVALID", "message": "засев токена раннера — только у сервера с копией деклараций"}
+    providers = yaml.safe_load((Path(config) / "providers.yaml").read_text(encoding="utf-8"))
+    state = Path(config).parent / providers["local"]["runner"]["state_file"]
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({"token": token}), encoding="utf-8")
+    return {"ok": True, "data": {"state_file": state.name}}
+
+
+def decoy_beyond_installs(srv, marker: str) -> dict:
+    """Приманка суда пути установки: файл состояния с меткой вне каталога установок сервера (в его рабочей области) и
+    id, которые к нему ведут, — относительный от каталога установок и абсолютный. Прочти сервер приманку — метка уйдёт
+    клиенту в статусе; каталог установок — как его строит сервер: `local.models_dir` от родителя деклараций."""
+    config = declarations_root({**os.environ, **srv.extra_env})
+    providers = yaml.safe_load((config / "providers.yaml").read_text(encoding="utf-8"))
+    installs = config.parent / providers["local"]["models_dir"] / "installs"
+    decoy = Path(srv.workspace) / "приманка"
+    decoy.with_suffix(".json").write_text(json.dumps(
+        {"install_id": marker, "model_id": marker, "kind": "tts", "phase": "done", "started": 0, "heartbeat": 0},
+        ensure_ascii=False), encoding="utf-8")
+    return {"ok": True, "data": {"relative": os.path.relpath(decoy, installs), "absolute": str(decoy)}}
+
+
+def task_node_ids(srv) -> dict:
+    """id заданий, которые засеяло приспособление `task_node` в хранилище узла сервера сценария: последняя строка его
+    журнала `MCP_LOGS/task_node.jsonl` — {interrupted, stalled, broken}. Журнала нет — отказ: приспособление не стояло."""
+    journal = Path(srv.logs) / "task_node.jsonl"
+    lines = journal.read_text(encoding="utf-8").splitlines() if journal.is_file() else []
+    if not lines:
+        return {"ok": False, "code": "SCHEMA_INVALID",
+                "message": f"журнала приспособления task_node нет ({journal.name}) — в given.fixtures нет task_node"}
+    return {"ok": True, "data": json.loads(lines[-1])}
 
 
 def trail_says(srv, tool: str = "", level: str = "", code: str = "") -> dict:
@@ -287,6 +359,8 @@ def снимок_источника(srv, источник: str, куда: str, �
 STEPS = {"remove_path": remove_path, "branch_state": branch_state,
          "снимок_источника": снимок_источника,
          "workspace_path": workspace_path,
-         "busy_server_still_answers": busy_server_still_answers,
+         "busy_server_still_answers": busy_server_still_answers, "busy_while_held": busy_while_held,
+         "seed_runner_token": seed_runner_token, "decoy_beyond_installs": decoy_beyond_installs,
+         "task_node_ids": task_node_ids,
          "trail_says": trail_says, "speak_garbage": speak_garbage,
          "hold_connections": hold_connections}

@@ -84,9 +84,9 @@ INVALID_EXTENSION:
 
 PROVIDER_FAILED:
   class: server_recoverable
-  message_template: "Внешний провайдер недоступен."
+  message_template: "Внешний провайдер не дал годного ответа."
   recovery:
-    reason: "Повтор с задержкой (retry_count/retry_delay) и переход на fallback_provider — всё из строки листа провайдеров книги канала; при исчерпании цепочки — человек."
+    reason: "Причина — в тексте и фактах отказа (хост, код ответа провайдера). Что провайдер не применил (запрос не ушёл, ответ 408/503 или объявленный провайдером), сервер уже повторил сам по retry_count/retry_delay строки канала. Запрос, который мог выполниться (создание задачи), сервер не повторяет — задача могла создаться и списаться: проверь её у провайдера, повтор — не раньше retry_after_sec из фактов, если он назван. Иначе — fallback_provider строки листа провайдеров книги канала; при исчерпании цепочки — человек."
 
 CONTENT_REJECTED:
   class: ai_recoverable
@@ -223,15 +223,27 @@ RESOURCE_BUSY:
 
 PROVIDER_TIMEOUT:
   class: server_recoverable
-  message_template: "Задача провайдера не завершилась за отведённое время."
+  message_template: "Провайдер не ответил за отведённое время."
   recovery:
-    reason: "Подними timeout_sec/max_attempts в config/media_tasks.yaml, если задача штатно дольше, либо проверь задачу на стороне провайдера. Повтор без изменения предела даст тот же результат."
+    reason: "Какой предел истёк — в тексте и фактах отказа. Ожидание задачи — poll.timeout_sec/max_attempts в config/media_tasks.yaml; вызов провайдера — timeout_sec (фаза) и deadline_sec (весь вызов) в config/providers.yaml → online.call или в блоке call провайдера, либо столбец timeout строки канала; подъём раннера — local.runner.ready_timeout_sec. Подними предел, если работа штатно дольше. Вызов, оборванный по сроку после отправки, мог выполниться: проверь задачу на стороне провайдера. Повтор без изменения предела даст тот же результат."
 
 DOWNLOAD_INCOMPLETE:
   class: server_recoverable
-  message_template: "Файл с «{host}» не загружен полностью: на диске {got} байт из {expected}."
+  message_template: "Ответ «{host}» принят не полностью: {got} байт из {expected}."
   recovery:
-    reason: "Ответ 200 не означает загрузку — файла нет, он пуст или размер не сошёлся с обещанным. Оборванная часть лежит остатком: повтор той же установки докачает её с места обрыва; при повторе проверь ссылку и место на диске."
+    reason: "Ответ 200 не означает загрузку — тело оборвалось или короче обещанного. Загрузка файла по ссылке (веса, результат): оборванная часть лежит остатком, повтор той же загрузки докачает её с места обрыва; проверь ссылку и место на диске. Ответ на вызов провайдера (создание задачи, файл телом ответа): остатка нет, а запрос мог выполниться и списаться — сначала проверь задачу у провайдера, потом повторяй."
+
+PROVIDER_OUTCOME_UNKNOWN:
+  class: human_required
+  message_template: "Исход вызова «{host}» неизвестен: ответ оборван после отправки ({got} байт из {expected})."
+  recovery:
+    reason: "Запрос мог исполниться и списаться. Проверь задачу у провайдера; повтор вслепую спишет второй раз. Когда появится ключ операции (AD-21), повтор — с ним."
+
+REQUEST_HEADER_INVALID:
+  class: human_required
+  message_template: "Заголовок «{header}» для «{host}» не отправлен: в значении есть символы, которых HTTP не несёт (не ASCII, перевод строки, NUL). Значение не показано — это может быть секрет."
+  recovery:
+    reason: "Запрос не ушёл, задачи у провайдера нет. Если «{header}» несёт ключ провайдера — владелец вносит ключ заново (scripts/set_provider_key.py); если токен раннера — перезапуск раннера (media_runner) выдаёт новый; иначе значение задано объявлением — поправь заголовок в config/providers.yaml."
 
 DOWNLOAD_RANGE_INVALID:
   class: server_recoverable
@@ -297,6 +309,20 @@ RUNNER_NOT_RUNNING:
     suggested_params: {action: start}
     reason: "Раннер поднимается явной командой и сам не стартует (демона на сервере нет). Подними его — media_runner(action='start') — либо переключи строку канала на провайдера, который считает в самом сервере (table_update). Молчаливого отката в процесс нет намеренно: он скрыл бы, что изоляции больше нет."
 
+RUNNER_PORT_TAKEN:
+  class: human_required
+  message_template: "Порт раннера «{url}» занят посторонним процессом: на /health отвечают, а наш раннер не запущен."
+  recovery:
+    reason: "Второй раннер на тот же порт не встанет. Останови процесс, который слушает «{url}», или смени адрес раннера в config/providers.yaml → online.http (адрес Local_runner)."
+
+RUNNER_TOKEN_REJECTED:
+  class: server_recoverable
+  message_template: "Раннер не принял токен сервера в заголовке «{header}»."
+  recovery:
+    suggested_tool: media_runner
+    suggested_params: {action: stop}
+    reason: "Токен в файле состояния сервера не совпал с токеном раннера: раннер поднят не этим сервером или файл состояния переписан. Останови раннер (media_runner, action=stop) и подними снова (action=start) — сервер выдаст и запишет новый токен."
+
 DISK_SPACE_UNKNOWN:
   class: human_required
   message_template: "Хватит ли места под веса '{model}', не определить: свободное место в {dir} не прочитано."
@@ -323,6 +349,31 @@ MODEL_INSTALL_BUSY:
   recovery:
     suggested_tool: media_install_status
     reason: "Две установки одной модели пишут один остаток части и портят его, поэтому вторая не начинается. Прозвони идущую (media_install_status) и дождись её исхода; не поставила — повтори установку: целые части в план не войдут, оборванная докачается."
+
+TASK_NOT_FOUND:
+  class: ai_recoverable
+  message_template: "Задание «{task_id}» не найдено."
+  recovery:
+    suggested_tool: media_install_status
+    reason: "Идентификатор задания выдаёт его запуск (task_id в ответе): сегодня это установка модели. media_install_status без параметров покажет все установки."
+
+TASK_INTERRUPTED:
+  class: server_recoverable
+  message_template: "Задание «{task_id}» ({tool}) прервано: исполнителя нет — сервер перезапущен или его процесс умер."
+  recovery:
+    reason: "Повтори вызов {tool} с теми же параметрами — задание начнётся заново."
+
+TASK_STALLED:
+  class: server_recoverable
+  message_template: "Задание «{task_id}» ({tool}) не подаёт признаков работы дольше {seconds} с."
+  recovery:
+    reason: "Исполнитель жив, но молчит: сеть встала или работа зависла. Спроси task_status позже; не сдвинулось — повтори вызов {tool}."
+
+TASK_RECORD_INVALID:
+  class: integrity
+  message_template: "Запись задания «{path}» повреждена — не читается как запись задания."
+  recovery:
+    reason: "Это порча файла сервера, а не ошибка вызова: задание не восстановить. Повтори вызов; файл назван владельцу сервера, содержимое не показано."
 
 MODEL_NO_DISK_SPACE:
   class: human_required
@@ -509,12 +560,6 @@ TEMPLATE_INVALID:
   recovery:
     reason: "Правится в config/templates/workspace/*.tpl.yaml (блок id: с prefix и ancestors) — это объявление, а не данные клиента."
 
-ADVICE_INVALID:
-  class: human_required
-  message_template: "Декларация советов некорректна: {details}"
-  recovery:
-    reason: "Правится в config/recommendations.yaml (ключ → список советов) — это объявление сервера, а не данные клиента. Пока файл битый, успешные ответы идут без рекомендаций."
-
 FOREIGN_WRITE:
   class: integrity
   message_template: "Артефакт подписан другим сервером или изменён извне: {path}"
@@ -654,9 +699,9 @@ PACKAGE_INDEX_FAILED:
   recovery:
     reason: "Колесо вошло в цену установки без размера — итог больше посчитанного. Адрес колеса дал отчёт pip (PyPI или index драйвера в config/providers.yaml → local.gpu.drivers); как спрашивается индекс — config/packages.yaml → index.fetch. Перегрузку и недоступность (retry_on) отказом не считают: длина там просто не узнана."
 
-# ═══ Fallback ═══
+# ═══ Fallback: код, которого нет в реестре, приезжает клиенту этой записью и этим кодом ═══
 
-DEFAULT:
+UNKNOWN_ERROR:
   class: unknown
   message_template: "Непредвиденная ошибка."
   recovery:

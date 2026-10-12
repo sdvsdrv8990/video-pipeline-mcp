@@ -1,0 +1,181 @@
+# Коды отказа сетевого вызова провайдера: причина рождается ответом двойника сети (`given.network`, приспособление
+# `net_double`). Носитель — раннер: токен «живого раннера» засевается в его файл состояния у копии деклараций сервера.
+# Каждый сценарий — свой сервер и своя сеть; законная пара — тот же вызов без токена (RUNNER_NOT_RUNNING, refusals_media_rows).
+
+- scenario: rcode_net_runner_answer_500
+  why: раннер ответил 500 без ErrorDetail — отказ провайдера своим кодом, а не сырой ответ
+  род: отрицательный
+  given:
+    fixtures: [net_double]
+    network:
+      routes: [{host: 127.0.0.1, method: POST, path: /run, replies: [{status: 500, json: {detail: сбой}}]}]
+    files:
+      сеть/вход.png: не картинка — раннер читает путь, а не байты
+      сеть/read.json: |
+        {"RESOURCE_LIMITS": {"schema": {}, "rows": {"L1": {"resource_type": "bg_removals",
+          "provider": "Local_runner", "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+          "warning_threshold": -1, "model": "rmbg", "response_format": "png", "speed": 1.0, "usage_unit": "call"}}}}
+  when:
+    - python: seed_runner_token
+      with: {token: scenario-runner-token}
+      expect: {ok: true}
+    - call: media_generate
+      with: {table: сеть, resource_type: bg_removals, input: сеть/вход.png, scene_id: s1, video_slug: demo}
+      expect: {ok: false, code: PROVIDER_FAILED, net_tasks: 1}
+
+- scenario: rcode_net_runner_answer_401
+  why: раннер не принял токен (401 без ErrorDetail) — отказ авторизации у провайдера своим кодом
+  род: отрицательный
+  given:
+    fixtures: [net_double]
+    network:
+      routes: [{host: 127.0.0.1, method: POST, path: /run, replies: [{status: 401, json: {detail: чужой токен}}]}]
+    files:
+      сеть/вход.png: не картинка — раннер читает путь, а не байты
+      сеть/read.json: |
+        {"RESOURCE_LIMITS": {"schema": {}, "rows": {"L1": {"resource_type": "bg_removals",
+          "provider": "Local_runner", "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+          "warning_threshold": -1, "model": "rmbg", "response_format": "png", "speed": 1.0, "usage_unit": "call"}}}}
+  when:
+    - python: seed_runner_token
+      with: {token: scenario-runner-token}
+      expect: {ok: true}
+    - call: media_generate
+      with: {table: сеть, resource_type: bg_removals, input: сеть/вход.png, scene_id: s1, video_slug: demo}
+      expect: {ok: false, code: AUTH_FAILED, net_tasks: 1}
+
+- scenario: rcode_net_runner_read_timeout
+  why: раннер не ответил за срок вызова — отказ срока, а не повисший вызов
+  род: отрицательный
+  given:
+    fixtures: [net_double]
+    network:
+      routes: [{host: 127.0.0.1, method: POST, path: /run, replies: [{error: ReadTimeout}]}]
+    files:
+      сеть/вход.png: не картинка — раннер читает путь, а не байты
+      сеть/read.json: |
+        {"RESOURCE_LIMITS": {"schema": {}, "rows": {"L1": {"resource_type": "bg_removals",
+          "provider": "Local_runner", "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+          "warning_threshold": -1, "model": "rmbg", "response_format": "png", "speed": 1.0, "usage_unit": "call"}}}}
+  when:
+    - python: seed_runner_token
+      with: {token: scenario-runner-token}
+      expect: {ok: true}
+    - call: media_generate
+      with: {table: сеть, resource_type: bg_removals, input: сеть/вход.png, scene_id: s1, video_slug: demo}
+      expect: {ok: false, code: PROVIDER_TIMEOUT, net_tasks: 1}
+
+- scenario: rcode_net_runner_answer_too_large
+  why: ответ раннера больше объявленного max_bytes — отказ до записи, а не съеденная память
+  род: отрицательный
+  given:
+    fixtures: [net_double]
+    network:
+      routes: [{host: 127.0.0.1, method: POST, path: /run, replies: [{status: 200, size: 2000000}]}]
+    files:
+      сеть/вход.png: не картинка — раннер читает путь, а не байты
+      сеть/read.json: |
+        {"RESOURCE_LIMITS": {"schema": {}, "rows": {"L1": {"resource_type": "bg_removals",
+          "provider": "Local_runner", "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+          "warning_threshold": -1, "model": "rmbg", "response_format": "png", "speed": 1.0, "usage_unit": "call"}}}}
+  when:
+    - python: seed_runner_token
+      with: {token: scenario-runner-token}
+      expect: {ok: true}
+    - call: media_generate
+      with: {table: сеть, resource_type: bg_removals, input: сеть/вход.png, scene_id: s1, video_slug: demo}
+      expect: {ok: false, code: DOWNLOAD_TOO_LARGE, net_tasks: 1}
+
+- scenario: rcode_net_runner_answer_cut_after_send
+  why: ответ на неповторяемый POST оборван после отправки — исход неизвестен, повтора вслепую нет
+  род: отрицательный
+  given:
+    fixtures: [net_double]
+    network:
+      routes: [{host: 127.0.0.1, method: POST, path: /run, replies: [{status: 200, body: "{\"files\": [1, 2, 3]}", cut_after: 3}]}]
+    files:
+      сеть/вход.png: не картинка — раннер читает путь, а не байты
+      сеть/read.json: |
+        {"RESOURCE_LIMITS": {"schema": {}, "rows": {"L1": {"resource_type": "bg_removals",
+          "provider": "Local_runner", "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+          "warning_threshold": -1, "model": "rmbg", "response_format": "png", "speed": 1.0, "usage_unit": "call"}}}}
+  when:
+    - python: seed_runner_token
+      with: {token: scenario-runner-token}
+      expect: {ok: true}
+    - call: media_generate
+      with: {table: сеть, resource_type: bg_removals, input: сеть/вход.png, scene_id: s1, video_slug: demo}
+      expect: {ok: false, code: PROVIDER_OUTCOME_UNKNOWN, net_tasks: 1}
+
+- scenario: rcode_net_runner_answer_not_json
+  why: раннер ответил 200 телом не JSON — отказ кодом политики вызова раннера (codes.failed), а не падение разбора
+  род: отрицательный
+  given:
+    fixtures: [net_double]
+    network:
+      routes: [{host: 127.0.0.1, method: POST, path: /run, replies: [{status: 200, body: "<html>не json</html>"}]}]
+    files:
+      сеть/вход.png: не картинка — раннер читает путь, а не байты
+      сеть/read.json: |
+        {"RESOURCE_LIMITS": {"schema": {}, "rows": {"L1": {"resource_type": "bg_removals",
+          "provider": "Local_runner", "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+          "warning_threshold": -1, "model": "rmbg", "response_format": "png", "speed": 1.0, "usage_unit": "call"}}}}
+  when:
+    - python: seed_runner_token
+      with: {token: scenario-runner-token}
+      expect: {ok: true}
+    - call: media_generate
+      with: {table: сеть, resource_type: bg_removals, input: сеть/вход.png, scene_id: s1, video_slug: demo}
+      expect: {ok: false, code: PROVIDER_FAILED, net_tasks: 1}
+
+- scenario: rcode_net_runner_token_not_ascii
+  why: токен раннера не ASCII — заголовок не отправлен отказом с именем заголовка; запроса нет, значения нет нигде
+  род: отрицательный
+  given:
+    fixtures: [net_double]
+    network:
+      routes: [{host: 127.0.0.1, method: POST, path: /run, replies: [{status: 200, json: {files: []}}]}]
+    files:
+      сеть/вход.png: не картинка — раннер читает путь, а не байты
+      сеть/read.json: |
+        {"RESOURCE_LIMITS": {"schema": {}, "rows": {"L1": {"resource_type": "bg_removals",
+          "provider": "Local_runner", "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+          "warning_threshold": -1, "model": "rmbg", "response_format": "png", "speed": 1.0, "usage_unit": "call"}}}}
+  when:
+    - python: seed_runner_token
+      with: {token: канарейка-раннера-7f3a}
+      expect: {ok: true}
+    - call: media_generate
+      with: {table: сеть, resource_type: bg_removals, input: сеть/вход.png, scene_id: s1, video_slug: demo}
+      expect:
+        ok: false
+        code: REQUEST_HEADER_INVALID
+        net_tasks: 0
+        detail: {facts.header: X-Runner-Token, facts.host: 127.0.0.1}
+        canary: канарейка-раннера-7f3a
+
+- scenario: rcode_net_runner_token_line_break
+  why: токен раннера с переводом строки (попытка вписать свой заголовок) — тот же отказ до сети, а не «мог дойти»
+  род: отрицательный
+  given:
+    fixtures: [net_double]
+    network:
+      routes: [{host: 127.0.0.1, method: POST, path: /run, replies: [{status: 200, json: {files: []}}]}]
+    files:
+      сеть/вход.png: не картинка — раннер читает путь, а не байты
+      сеть/read.json: |
+        {"RESOURCE_LIMITS": {"schema": {}, "rows": {"L1": {"resource_type": "bg_removals",
+          "provider": "Local_runner", "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+          "warning_threshold": -1, "model": "rmbg", "response_format": "png", "speed": 1.0, "usage_unit": "call"}}}}
+  when:
+    - python: seed_runner_token
+      with: {token: "canary-crlf-91b2\r\nX-Injected: yes"}
+      expect: {ok: true}
+    - call: media_generate
+      with: {table: сеть, resource_type: bg_removals, input: сеть/вход.png, scene_id: s1, video_slug: demo}
+      expect:
+        ok: false
+        code: REQUEST_HEADER_INVALID
+        net_tasks: 0
+        detail: {facts.header: X-Runner-Token}
+        canary: canary-crlf-91b2

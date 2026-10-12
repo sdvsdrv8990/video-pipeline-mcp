@@ -18,15 +18,16 @@ from aiohttp import web
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from core.declaration import workspace_root  # noqa: E402 — импорт после правки sys.path: раннер запускается файлом
 from core.runner.service import RunnerService  # noqa: E402 — импорт после правки sys.path: раннер запускается файлом
-
-TOKEN_ENV = "MCP_RUNNER_TOKEN"
+from core.runner.supervisor import TOKEN_ENV  # noqa: E402 — имя двери одно: его объявляет тот, кто токен выпускает
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Раннер локальных моделей (инференс вне сервера)")
     parser.add_argument("--config", default=str(ROOT / "config" / "providers.yaml"))
-    parser.add_argument("--workspace", default=str(ROOT / "workspace"))
+    parser.add_argument("--workspace", default=str(workspace_root()),
+                        help="рабочая область; по умолчанию — MCP_WORKSPACE или workspace/ рядом с кодом (%(default)s)")
     parser.add_argument("--host", default="", help="пусто → хост из объявленного адреса")
     parser.add_argument("--port", type=int, default=0, help="0 → порт из объявленного адреса")
     parser.add_argument("--container", action="store_true",

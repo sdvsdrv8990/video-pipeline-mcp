@@ -80,8 +80,9 @@ def test_suite_passes(suite: Path, repo_root: Path, suite_env: dict[str, str], o
 
 @pytest.fixture(scope="session")
 def suite_env(tmp_path_factory) -> dict[str, str]:
-    """Среда наборов: свой корень журналов. Сторож последней линии к двери `tests/harness/inprocess.py`."""
-    return {**os.environ, "MCP_LOGS": os.environ.get("MCP_LOGS") or str(tmp_path_factory.mktemp("logs"))}
+    """Среда наборов: свой корень журналов и свой дом инстанса. Сторож последней линии к двери `tests/harness/inprocess.py`."""
+    return {**os.environ, "MCP_LOGS": os.environ.get("MCP_LOGS") or str(tmp_path_factory.mktemp("logs")),
+            "MCP_HOME": os.environ.get("MCP_HOME") or str(tmp_path_factory.mktemp("home"))}
 
 
 @pytest.fixture(scope="session")
@@ -119,8 +120,9 @@ def test_failure_names_check_deep_in_output(tmp_path: Path, repo_root: Path):
 
 def test_server_built_through_harness_door():
     """Ни один набор не собирает сервер мимо `tests/harness/inprocess.py`: забытый вызов вернул бы запись наборов в журналы
-    владельца при прямом запуске. Имя модуля берётся из импорта файла, а не угадывается."""
+    владельца и чтение его личности при прямом запуске. Имя модуля берётся из импорта файла, а не угадывается."""
     door = ROOT / "tests" / "harness" / "inprocess.py"
+    builders = {"create_server", "register_basic_tools"}
     bypass = []
     for path in sorted((ROOT / "tests").rglob("*.py")):
         if path == door:
@@ -130,9 +132,9 @@ def test_server_built_through_harness_door():
                    if a.name == "server"}
         for node in ast.walk(tree):
             direct = (isinstance(node, ast.ImportFrom) and node.module == "server"
-                      and any(a.name == "create_server" for a in node.names))
+                      and any(a.name in builders for a in node.names))
             through = (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                       and node.func.attr == "create_server" and isinstance(node.func.value, ast.Name)
+                       and node.func.attr in builders and isinstance(node.func.value, ast.Name)
                        and node.func.value.id in aliases)
             if direct or through:
                 bypass.append(f"{path.relative_to(ROOT)}:{node.lineno}")

@@ -300,7 +300,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             # Прозвонка нужна не «дождаться», а поймать причину отказа.
             ok, polled = ctx.safe(lambda: cycle.wait(adapter.poll, outcome.task_id))
             if not ok:
-                return polled
+                return _hide_key(polled, api_key)
             waited = polled
             answer = waited.get("answer") or {}
             if callable(getattr(adapter, "fetch", None)):
@@ -319,7 +319,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 ok, fetched = ctx.safe(lambda: loader.fetch(
                     url, Files(Path(target).parent), Path(target).name, "result"))
             if not ok:
-                return fetched
+                return _hide_key(fetched, api_key)
             outcome.files = [target]
 
         verified = []

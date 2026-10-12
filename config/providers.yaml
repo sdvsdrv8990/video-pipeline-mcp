@@ -164,6 +164,44 @@ online:
     retry_on: [408, 409, 429, 500, 502, 503, 504]
     # Ответ в память состава не имеет — `corrupt` у него не наступает; обрыв и отказ — `failed`.
     codes: {failed: PROVIDER_FAILED, corrupt: DOWNLOAD_INCOMPLETE}
+  # Вызов провайдера «файл → файл» (online.http ниже) — тот же загрузчик (Fetcher.call): метод с телом, адрес и IP судятся,
+  # ключ — только хосту объявленного адреса; ответ — JSON в память в пределе либо (response: binary) потоком в загрузчик
+  # результатов с его пределом и типами (media_tasks.yaml → download.fetch). Ключи раздела перекрывает блок провайдера
+  # `call: {<<: *call, …}`, их — столбцы строки канала: retry_count + 1 → attempts, retry_delay → backoff_sec,
+  # timeout → timeout_sec; склейку судит схема. Повтор (RFC 9110 §9.2.2): снова слать можно метод из idempotent_methods или
+  # вызов с ключом идемпотентности; POST — только если запрос не применён: не ушёл (имя, адрес, соединение) или ответ из
+  # retry_on ∩ unprocessed. Иначе работа могла выполниться и списаться; отказ несёт срок сервера (retry_after_sec).
+  call: &call
+    schemes: [https]              # ключ в открытом канале виден любому посреднику
+    block_private: true           # имя провайдера, ведущее во внутреннюю сеть, — отказ до запроса
+    max_bytes: 1048576            # 1 МБ, как download.answer: ответ задачи — тот же объект, что ответ опроса её статуса
+    timeout_sec: 120              # одна фаза запроса (соединение, ответ) — прежнее значение в коде вызова
+    deadline_sec: 240             # весь вызов с повторами — одна полная попытка (2 × timeout_sec); прежде срока не было
+    redirects: 0                  # по переходу с ключом и телом не идём
+    attempts: 1                   # без столбца retry_count — одна попытка, как прежде
+    backoff_sec: 0                # без столбца retry_delay — повтор без паузы, как прежде
+    backoff_max_sec: 60
+    retry_after_max_sec: 120
+    jitter: 0.1
+    speed_floor_bytes_per_sec: 0  # мера работы тела (NI-01) выключена: ответ мал, срок — deadline_sec
+    speed_window_sec: 30
+    retry_on: []                  # код ответа повторяется, только если его объявил провайдер (call.retry_on)
+    idempotent_methods: [GET, HEAD, PUT, DELETE, OPTIONS, TRACE]   # RFC 9110 §9.2.2
+    # «Запрос не применён» по тексту RFC 9110 (httpwg/http-core rfc9110.xml, блоб 08e10040): 408 — §15.5.9, строки
+    # 9445–9459, «did not receive a complete request message … MAY repeat»; 503 — §15.6.4, строки 9791–9800, «unable
+    # to handle the request». 429 (RFC 6585 §4) об этом молчит — только по источнику провайдера, в его блоке call.
+    unprocessed: [408, 503]
+    # Ключа идемпотентности не объявляет ни один провайдер ниже: у Replicate в OpenAPI для POST /predictions есть только
+    # Prefer и Cancel-After, у Fal его нет среди Platform Headers (документы прочитаны 2026-10-11).
+    idempotency_header: null
+    # Обрыв ответа — код по повторяемости вызова, а не по стоку (EB-11): повторяемый (GET, ключ идемпотентности) — «не
+    # дочитан»; неповторяемый (POST без ключа) — исход неизвестен: задача могла создаться и списаться.
+    codes:
+      failed: PROVIDER_FAILED
+      corrupt: DOWNLOAD_INCOMPLETE
+      outcome_unknown: PROVIDER_OUTCOME_UNKNOWN
+      unreached: PROVIDER_FAILED
+      timeout: PROVIDER_TIMEOUT
   # ═══ Платные провайдеры «файл → файл» ═══
   # У удаления фона и апскейла режима в реестре LiteLLM нет вовсе — это обычный HTTP-вызов с
   # приложенным файлом. Поэтому здесь объявлено ВСЁ, что нужно для вызова: адрес, как провайдер
@@ -196,7 +234,17 @@ online:
     # birefnet, rembg, real-esrgan, clarity-upscaler — сменой столбца `model` строки канала.
     # Оба отвечают ЗАДАЧЕЙ, а не файлом: адрес статуса они сообщают сами, дальше работает общий
     # цикл ожидания (`config/media_tasks.yaml`) — тот же, что у любого асинхронного провайдера.
-    # Коды повтора — те же, на которых повторяют их собственные официальные клиенты.
+    # Повтор создания задачи (POST, ключа идемпотентности нет — online.call): 429 — «не применён» по источнику самого
+    # провайдера (call.unprocessed), 503 — по RFC 9110 (раздел online.call); 504 в retry_on, но без ключа не повторяется:
+    # задача могла создаться и списаться. Официальные клиенты (сверено gh api 2026-10-11, блоб = файл тега):
+    # - replicate/replicate-javascript v1.4.0: index.js (блоб 3fc14dd5) :280–283 — не-GET повторяется только на 429;
+    #   lib/util.js (блоб 09665774) :180 «A non-GET request is retried only if it fails with a 429 status code.»;
+    #   replicate-python 1.0.7 client.py (блоб 6a798139) :228, :295–296 — POST не повторяет вовсе (429/503/504 —
+    #   только идемпотентные методы); документ — docs/topics/predictions/rate-limits.md:18–21 «Request was throttled».
+    # - fal-ai/fal @ec46b795 projects/fal_client/src/fal_client/client.py (блоб 4cddd308) :1145 RETRY_CODES = [408, 409,
+    #   429], :2407–2409 submit — `_maybe_retry_request(…, "POST", …)`; документ — model-apis/common-parameters.md:305
+    #   «Reject the request with `429` if the endpoint's queue already has more than this many requests waiting» (этот
+    #   429 — при fal_max_queue_length, сервер его не шлёт; опора — клиент).
     Replicate:
       url: https://api.replicate.com/v1/predictions
       auth: bearer
@@ -208,7 +256,7 @@ online:
       task_field: id
       status_url_field: urls.get    # адрес прозвонки приходит в ответе, а не строится нами
       result_path: output[0]
-      retry_on: [429, 503, 504]
+      call: {<<: *call, retry_on: [429, 503, 504], unprocessed: [408, 429, 503]}
       kinds: [bg_removals, upscales]
     Fal:
       # Имя модели из строки канала подставляется в адрес; после подстановки он проверяется
@@ -225,7 +273,7 @@ online:
       status_url_field: status_url
       result_url_field: response_url  # у очереди результат лежит отдельным адресом от статуса
       result_path: image.url
-      retry_on: [429, 503, 504]
+      call: {<<: *call, retry_on: [429, 503, 504], unprocessed: [408, 429, 503]}
       kinds: [bg_removals, upscales]
 
     # ═══ Раннер локальных моделей ═══
@@ -234,38 +282,37 @@ online:
     # же адаптером, а переключение «в процессе → в раннере» остаётся правкой строки канала.
     #
     # Два отличия от платных, и оба объявлены данными, а не сняты проверкой:
-    # `allow_insecure_host` — https обязателен во внешней сети, но требовать его от петли значит
-    # запрещать саму идею раннера; послабление действует ТОЛЬКО для этого хоста и только по http.
+    # `call.schemes: [http]` — https обязателен во внешней сети, но требовать его от петли значит
+    # запрещать саму идею раннера; открытый канал загрузчик пускает ТОЛЬКО к литералу петли.
     # `send_mode: paths` — обмениваемся путями, а не байтами: раннер видит тот же workspace, и
     # гонять 4К-кадр в base64 на каждый вызов — десятки мегабайт на ровном месте.
     Local_runner:
       # Порт объявлен ровно здесь: супервизор берёт его отсюда же, второй копии числа нет.
       url: http://127.0.0.1:8770/run
-      allow_insecure_host: 127.0.0.1
       auth: header:X-Runner-Token
       send_mode: paths
       response: files             # раннер пишет файл сам и возвращает путь, а не тело и не ссылку
       send: {}                    # вся строка канала уходит в params одним куском (см. paths)
-      # Раннер не поднялся или упал — это НЕ «провайдер недоступен, повтори позже»: его поднимают
-      # командой. Код отказа объявлен здесь, чтобы подсказка вела к инструменту, а не в никуда.
-      # Локальный расчёт идёт минутами, а не секундами: общего предела в 120 с ему мало, и
-      # упёршись в него, вызов соврал бы «раннер не отвечает» про раннер, который занят делом.
-      timeout_sec: 900
-      on_unreachable: RUNNER_NOT_RUNNING
+      # Политика вызова раннера. Http и внутренняя сеть — только литералу петли (судит загрузчик). Локальный расчёт идёт
+      # минутами, а не секундами: общей фазы в 120 с ему мало, и упёршись в неё, вызов соврал бы «раннер не отвечает» про
+      # раннер, который занят делом; весь вызов — одна полная попытка. Раннер не поднялся или упал (запрос не ушёл) — это
+      # НЕ «провайдер недоступен, повтори позже»: его поднимают командой, код unreached ведёт к инструменту.
+      call:
+        <<: *call
+        schemes: [http]
+        block_private: false
+        timeout_sec: 900
+        deadline_sec: 1800
+        codes:
+          failed: PROVIDER_FAILED
+          corrupt: DOWNLOAD_INCOMPLETE
+          outcome_unknown: PROVIDER_OUTCOME_UNKNOWN
+          unreached: RUNNER_NOT_RUNNING
+          timeout: PROVIDER_TIMEOUT
       # Раннер — наш же процесс: отказ отвечает формой сервера (ErrorDetail: код реестра, текст, факты). Без этого
       # его «нет весов» приехало бы к ИИ общим PROVIDER_FAILED с JSON в тексте, без подсказки.
       error_detail: true
       kinds: [bg_removals, upscales, tts_characters, image_generations]
-
-  # Повтор вызова провайдера. Снова слать безопасно только метод, чей эффект от нескольких одинаковых
-  # запросов равен одному (RFC 9110 §9.2.2): POST после таймаута чтения мог уже выполниться и списаться.
-  # Срок, названный провайдером (Retry-After: секунды или HTTP-дата), и своя пауза ограничены сверху;
-  # разброс паузы — доля, чтобы повторы разных вызовов не приходили разом.
-  retry:
-    idempotent_methods: [GET, HEAD, PUT, DELETE, OPTIONS, TRACE]
-    retry_after_max_sec: 120
-    backoff_max_sec: 60
-    backoff_jitter_ratio: 0.1
 
   # Чем отличить картиночную модель от прочих в СЫРОМ списке провайдера: он отдаёт всё подряд.
   # Правило — по имени, потому что режима вызова в его ответе нет. Новая линейка = строка здесь.
@@ -423,7 +470,7 @@ local:
     # загрузчик принимает только при хосте-литерале петли. Повтор — у цикла готовности (start), не у двери: один слой;
     # срок цикла идёт вниз — каждая прозвонка получает его остаток.
     health:
-      schemes: [http]           # петля без TLS — то же послабление, что allow_insecure_host у адаптера
+      schemes: [http]           # петля без TLS — то же послабление, что call.schemes вызова раннера
       block_private: false
       max_bytes: 1048576        # 1 МБ: с токеном /health несёт готовность всей описи моделей (растёт с описью)
       timeout_sec: 3            # одна фаза запроса — как было в коде прозвонки

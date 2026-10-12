@@ -1,0 +1,77 @@
+# Коды отказа структуры: адрес и ID судятся реестром связей, запись в реестр — подписью своего сервера.
+# Сценарий — пара: тот же вызов законно проходит и с причиной отказывает своим кодом. Рабочая область общая на файл,
+# поэтому сценарий, которому важен реестр, засевает его сам (`_id_registry.json` без подписи сервер принимает своим).
+
+- scenario: rcode_structure_unknown_entity_named
+  why: адрес или ID, которых нет в реестре, — отказ с подсказкой, а не «сведено ноль» и не копия шаблонов в чужое место
+  род: отрицательный
+  when:
+    - call: structure_create
+      with: {type: niche, name: сверка}
+      expect: {ok: true}
+    - call: structure_customize
+      with: {path: niches/сверка}
+      expect: {ok: true}
+    - call: structure_customize
+      with: {path: niches/незарегистрирована}
+      expect: {ok: false, code: ENTITY_NOT_FOUND}
+    - call: structure_reconcile
+      with: {entity_id: NICHE_000000}
+      expect: {ok: false, code: ENTITY_NOT_FOUND}
+
+- scenario: rcode_structure_path_taken_by_another_id
+  why: второй ID на занятый путь — раздвоение каталога; отказ DUPLICATE_PATH, а не две сущности с одним адресом
+  род: отрицательный
+  given:
+    files:
+      _id_registry.json: |
+        {"entities": {"NICHE_a1b2c3": {"id": "NICHE_a1b2c3", "type": "niche", "name": "занята",
+          "path": "niches/занята", "parent_ids": []}}}
+  when:
+    - call: structure_create
+      with: {type: niche, name: свободна}
+      expect: {ok: true}
+    - call: structure_create
+      with: {type: niche, name: занята}
+      expect: {ok: false, code: DUPLICATE_PATH}
+
+- scenario: rcode_structure_reconcile_rolled_back_whole
+  why: перенос висящего конкурента на занятый путь откатывает весь пакет; убрали помеху — сведение проходит
+  род: отрицательный
+  given:
+    files:
+      _id_registry.json: '{"entities": {}}'
+  when:
+    - call: structure_create
+      with: {type: niche, name: сведение, children: {network: [сеть], competitor_channel: [соперник]}}
+      expect: {ok: true}
+    - call: structure_create
+      with: {type: channel, name: наш, parent_path: niches/сведение/networks/сеть/channels/}
+      expect: {ok: true}
+    - call: fs_create_file
+      with: {path: niches/сведение/networks/сеть/competitors/наш/соперник/помеха.md, content: занято}
+      expect: {ok: true}
+    - call: structure_reconcile
+      with: {anchor_name: наш}
+      expect: {ok: false, code: RECONCILE_ROLLED_BACK}
+    - call: fs_delete
+      with: {path: niches/сведение/networks/сеть/competitors/наш/соперник, force: true}
+      expect: {ok: true}
+    - call: structure_reconcile
+      with: {anchor_name: наш}
+      expect: {ok: true, data: {entities_moved: 1}}
+
+- scenario: rcode_structure_registry_sealed_by_another_server
+  why: реестр, подписанный чужим сервером, — запись отказывает FOREIGN_WRITE и состояние не меняется
+  род: отрицательный
+  given:
+    files:
+      _id_registry.json: |
+        {"entities": {}, "_seal": {"sig": "00", "instance_id": "чужой-сервер"}}
+  when:
+    - call: structure_status
+      with: {}
+      expect: {ok: true}
+    - call: structure_create
+      with: {type: niche, name: чужая}
+      expect: {ok: false, code: FOREIGN_WRITE}

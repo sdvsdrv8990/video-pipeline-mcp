@@ -1,0 +1,32 @@
+# Коды отказа, которые рождает порча боевой декларации (`given.declarations`): свой сервер над копией каталога.
+# Законная пара — тот же вызов на боевых декларациях.
+
+- scenario: rcode_decl_advice_live_declaration_passes
+  why: живая декларация советов проходит схему двери — успешный ответ несёт советы
+  род: положительный
+  given:
+    files:
+      советы/read.json: |
+        {"RESOURCE_LIMITS": {"schema": {}, "rows": {"L1": {"resource_type": "tts_characters",
+          "provider": "Local_piper", "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+          "warning_threshold": -1, "model": "м", "response_format": "wav", "speed": 1.0, "usage_unit": "character"}}}}
+  when:
+    - call: media_provider_status
+      with: {table: советы}
+      expect: {ok: true}
+
+- scenario: rcode_decl_advice_broken_names_its_key
+  why: битая декларация советов — DECLARATION_INVALID с путём ключа у двери, а не свой код и не ответ без советов
+  род: отрицательный
+  given:
+    files:
+      советы/read.json: |
+        {"RESOURCE_LIMITS": {"schema": {}, "rows": {"L1": {"resource_type": "tts_characters",
+          "provider": "Local_piper", "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+          "warning_threshold": -1, "model": "м", "response_format": "wav", "speed": 1.0, "usage_unit": "character"}}}}
+    declarations:
+      recommendations.yaml: {media_provider_status.choice.0.tool: 5}
+  when:
+    - call: media_provider_status
+      with: {table: советы}
+      expect: {ok: false, code: DECLARATION_INVALID}

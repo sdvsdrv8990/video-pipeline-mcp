@@ -1,0 +1,90 @@
+# Коды отказа слоя файлов: причина рождается данными рабочей области (`given.files`), декларацией и вызовом.
+# Сценарий — пара: тот же вызов законно проходит и с причиной отказывает своим кодом; после отказа диск прежний.
+
+- scenario: rcode_file_create_does_not_overwrite
+  why: fs_create_file по занятому пути затёр бы чужой файл — клиент обязан получить FILE_EXISTS, а файл остаться прежним
+  род: отрицательный
+  given:
+    files:
+      заметки/занят.md: исходный текст
+  when:
+    - call: fs_create_file
+      with: {path: заметки/свободный.md, content: новый}
+      expect: {ok: true}
+    - call: fs_create_file
+      with: {path: заметки/занят.md, content: чужой}
+      expect: {ok: false, code: FILE_EXISTS}
+    - call: fs_read_file
+      with: {path: заметки/занят.md}
+      expect: {ok: true, data_contains: {content: исходный текст}}
+
+- scenario: rcode_file_type_outside_allowlist
+  why: запись исполняемого типа в рабочую область — отказ до диска, а не файл, который потом запустят
+  род: отрицательный
+  when:
+    - call: fs_create_file
+      with: {path: заметки/можно.md, content: текст}
+      expect: {ok: true}
+    - call: fs_create_file
+      with: {path: заметки/нельзя.exe, content: текст}
+      expect: {ok: false, code: FILE_TYPE_FORBIDDEN}
+    - call: fs_read_file
+      with: {path: заметки/нельзя.exe}
+      expect: {ok: false, code: FILE_NOT_FOUND}
+
+- scenario: rcode_tree_of_missing_path
+  why: дерево несуществующего каталога — отказ с путём, а не пустое дерево, неотличимое от пустого каталога
+  род: отрицательный
+  given:
+    files:
+      есть/файл.md: x
+  when:
+    - call: fs_get_directory_tree
+      with: {path: есть}
+      expect: {ok: true}
+    - call: fs_get_directory_tree
+      with: {path: нет/такого}
+      expect: {ok: false, code: PATH_NOT_FOUND}
+
+- scenario: rcode_secret_dir_closed_to_tools
+  why: файл ключей канала лежит в рабочей области, но инструменту закрыт — отказ своим кодом, а не содержимое
+  род: отрицательный
+  given:
+    files:
+      канал/заметка.md: открыто
+      канал/.secrets/provider_keys.enc: закрыто
+  when:
+    - call: fs_read_file
+      with: {path: канал/заметка.md}
+      expect: {ok: true}
+    - call: fs_read_file
+      with: {path: канал/.secrets/provider_keys.enc}
+      expect: {ok: false, code: SECRET_ACCESS_DENIED}
+
+- scenario: rcode_read_of_binary_file
+  why: книга .xlsx — не текст; чтение отдаёт отказ кодом, а не байты, разрезанные декодером
+  род: отрицательный
+  when:
+    - call: excel_create_workbook
+      with: {path: книги/двоичная.xlsx, sheet: DATA}
+      expect: {ok: true}
+    - call: fs_read_file
+      with: {path: книги/двоичная.xlsx}
+      expect: {ok: false, code: FILE_NOT_TEXT}
+
+- scenario: rcode_write_over_declared_limit
+  why: запись больше объявленного предела — отказ до диска; файл не появляется наполовину
+  род: отрицательный
+  given:
+    declarations:
+      firewall.yaml: {file_limits.write_bytes: 8}
+  when:
+    - call: fs_write_file
+      with: {path: заметки/впору.md, content: "12345678"}
+      expect: {ok: true}
+    - call: fs_write_file
+      with: {path: заметки/велико.md, content: "123456789"}
+      expect: {ok: false, code: FILE_TOO_LARGE}
+    - call: fs_read_file
+      with: {path: заметки/велико.md}
+      expect: {ok: false, code: FILE_NOT_FOUND}

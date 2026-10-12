@@ -35,3 +35,19 @@ class TaskStatus(BaseModel):
             self.error = None
             self.result = None
         return self
+
+
+class TaskEntry(BaseModel):
+    """Элемент ответа о наборе заданий: ровно одно из `task` (статус задания; кончилось отказом — он в `task.error`) и
+    `error` (о самом задании сказать нечего: нет такого, запись не читается). Один плохой id не прячет статусы
+    остальных: отказ — в своём элементе, а не всего ответа."""
+
+    task_id: str
+    task: TaskStatus | None = None
+    error: ErrorDetail | None = None
+
+    @model_validator(mode="after")
+    def _one(self) -> "TaskEntry":
+        if (self.task is None) == (self.error is None):
+            raise ValueError("ровно одно из task и error")
+        return self

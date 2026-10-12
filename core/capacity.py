@@ -4,6 +4,10 @@
 дверью деклараций; движок, каталог и поиск не решают предел сами, а спрашивают узел.
 """
 
+import threading
+from collections import deque
+from collections.abc import Mapping
+
 from core.contracts import ContractError
 from core.declaration import Declared, declarations_root
 from core.declaration_schemas import RESOURCES, Resources
@@ -29,3 +33,53 @@ class Capacity:
         if name in resources.work:
             return resources.work[name].max_concurrent
         return resources.classes[name].max_concurrent
+
+    def slots(self) -> "Slots":
+        """Счёт мест классов инструментов: его держит движок, им же пользуется узел заданий — один на процесс (CP-05)."""
+        return Slots({name: n for name in self.resources.classes if (n := self.places(name))})
+
+
+class Slots:
+    """Места классов инструментов — один счёт для вызовов движка и заданий узла (CP-05).
+
+    Вызов берёт место без ожидания (`take`): мест нет — отказ решает движок. Задание ждёт место в очереди класса по
+    порядку прихода (`wait`) в своём потоке, и вызов не обгоняет ждущих. Класс без предела — место есть всегда.
+    """
+
+    def __init__(self, places: Mapping[str, int]):
+        self._places = dict(places)
+        self._free = dict(places)
+        self._queue: dict[str, deque] = {name: deque() for name in places}
+        self._turn = threading.Condition()
+
+    def take(self, klass: str) -> bool:
+        """Место сразу или отказ: свободных нет или их ждут задания класса."""
+        with self._turn:
+            if klass not in self._free:
+                return True
+            if self._free[klass] and not self._queue[klass]:
+                self._free[klass] -= 1
+                return True
+            return False
+
+    def wait(self, klass: str) -> None:
+        """Место по порядку прихода: поток ждёт, пока его очередь не первая и место не свободно."""
+        with self._turn:
+            if klass not in self._free:
+                return
+            ticket = object()
+            self._queue[klass].append(ticket)
+            self._turn.wait_for(lambda: self._queue[klass][0] is ticket and self._free[klass] > 0)
+            self._queue[klass].popleft()
+            self._free[klass] -= 1
+            self._turn.notify_all()
+
+    def give(self, klass: str) -> None:
+        """Место назад; отдать невзятое — ошибка кода вызывающего, а не лишнее место."""
+        with self._turn:
+            if klass not in self._free:
+                return
+            if self._free[klass] >= self._places[klass]:
+                raise RuntimeError(f"место класса {klass} отдано без взятия")
+            self._free[klass] += 1
+            self._turn.notify_all()

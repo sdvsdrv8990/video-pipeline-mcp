@@ -60,8 +60,9 @@ def _write_digest(env_path: Path, digest: str) -> None:
 
 
 def token_digest(token: str) -> str:
-    """Хэш ключа — то единственное, что сервер хранит и чем сравнивает."""
-    return hashlib.sha256(token.encode("utf-8")).hexdigest() if token else ""
+    """Хэш ключа — то единственное, что сервер хранит и чем сравнивает. Недопустимые байты заголовка (суррогаты) хешируются
+    как есть; у допустимой строки байты те же, что у строгого UTF-8."""
+    return hashlib.sha256(token.encode("utf-8", "surrogateescape")).hexdigest() if token else ""
 
 
 def ensure_digest(env_path: Path, env: Mapping[str, str] | None = None) -> tuple[str, str]:
@@ -132,7 +133,11 @@ def check_auth(headers: Mapping[str, str], digest: str) -> str:
         presented = lower["x-api-key"]
     if not presented:
         return "AUTH_REQUIRED"
-    # Сравниваем хэши: значения ключа у сервера нет вовсе. Байты, а не str — compare_digest
-    # на str падает TypeError при не-ASCII (чужой ключ с кириллицей ронял бы обработчик в 500).
-    ok = secrets.compare_digest(token_digest(presented).encode("ascii"), digest.encode("ascii"))
-    return "" if ok else "AUTH_FAILED"
+    return "" if presented_matches(presented, digest) else "AUTH_FAILED"
+
+
+def presented_matches(presented: str, digest: str) -> bool:
+    """Присланный секрет против отпечатка своего — постоянным временем на любом значении: сравниваются отпечатки (ASCII),
+    а не строки — `compare_digest` на str с не-ASCII бросает TypeError, и чужой ключ ронял бы обработчик в 500."""
+    return bool(presented and digest) and secrets.compare_digest(token_digest(presented).encode("ascii"),
+                                                                 digest.encode("ascii"))

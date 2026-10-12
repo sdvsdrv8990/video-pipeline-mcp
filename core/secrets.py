@@ -88,8 +88,9 @@ class ChannelSecrets:
         path = self.file_for(channel)
         if not path.is_file():
             return {}
+        box = self._box()            # отказ среды (нет cryptography) — своим кодом, до `except InvalidToken`
         try:
-            raw = self._box().decrypt(path.read_bytes())
+            raw = box.decrypt(path.read_bytes())
         except InvalidToken as e:
             raise SecretError(
                 "SECRET_UNREADABLE", f"Файл ключей канала не расшифровывается: {channel}",

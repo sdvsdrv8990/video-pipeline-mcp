@@ -1,0 +1,24 @@
+# Коды отказа медиа, которые рождает строка книги канала (`given.files`): до провайдера и сети.
+
+- scenario: rcode_media_row_names_its_model
+  why: строка канала без модели — ошибка строки книги с листом и полем; модель без весов — честный отказ с инструментом установки
+  род: отрицательный
+  given:
+    files:
+      ткани/без_весов/read.json: |
+        {"RESOURCE_LIMITS": {"schema": {}, "rows": {"L1": {"resource_type": "tts_characters",
+          "provider": "Local_piper", "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+          "warning_threshold": -1, "model": "нет-такой-модели.onnx", "response_format": "wav", "speed": 1.0,
+          "usage_unit": "character"}}}}
+      ткани/без_имени/read.json: |
+        {"RESOURCE_LIMITS": {"schema": {}, "rows": {"L1": {"resource_type": "tts_characters",
+          "provider": "Local_piper", "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+          "warning_threshold": -1, "model": "", "response_format": "wav", "speed": 1.0,
+          "usage_unit": "character"}}}}
+  when:
+    - call: media_generate
+      with: {table: ткани/без_весов, resource_type: tts_characters, input: текст, scene_id: s1, video_slug: demo}
+      expect: {ok: false, code: LOCAL_MODEL_MISSING, recovery: true}
+    - call: media_generate
+      with: {table: ткани/без_имени, resource_type: tts_characters, input: текст, scene_id: s1, video_slug: demo}
+      expect: {ok: false, code: BOOK_ROW_INVALID}

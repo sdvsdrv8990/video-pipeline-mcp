@@ -2436,6 +2436,29 @@
   },
   "title": "Таблицы: изменить строку"
  },
+ "task_status": {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Показывает статус долгих заданий сервера: ждёт места (pending), идёт (processing), готово (completed) или отказ (failed) с причиной из реестра. Каждый элемент ответа — либо статус задания, либо отказ этого элемента: такого задания нет или его запись повреждена; остальные задания отвечают как обычно. Задание без исполнителя (сервер перезапущен) называется прерванным, а молчащее дольше срока — простоем, а не вечным «идёт».",
+  "group": "tasks",
+  "input_schema": {
+   "properties": {
+    "task_ids": {
+     "description": "Какие задания (их id из ответа запуска); не задано — все живые и недавние",
+     "items": {
+      "type": "string"
+     },
+     "minItems": 1,
+     "type": "array"
+    }
+   },
+   "type": "object"
+  },
+  "title": "Задания: статус"
+ },
  "uniqueness_check": {
   "annotations": {
    "destructiveHint": false,

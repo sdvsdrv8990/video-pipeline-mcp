@@ -1,0 +1,63 @@
+# Коды отказа таблиц и книг: причина рождается данными рабочей области (`given.files`) и вызовом.
+# Сценарий — пара: тот же вызов законно проходит и с причиной отказывает своим кодом.
+
+- scenario: rcode_table_sheet_and_column_named
+  why: лист или столбец, которого нет, — отказ с именем, а не пустая проекция, неотличимая от «данных нет»
+  род: отрицательный
+  given:
+    files:
+      videos/отказы/read.json: |
+        {"META": {"schema": {"title": {"type": "string", "writable": true}},
+          "rows": {"VID_1": {"title": "Hook"}}}}
+  when:
+    - call: table_get_column
+      with: {table: videos/отказы, sheet: META, column: title}
+      expect: {ok: true}
+    - call: table_get_column
+      with: {table: videos/отказы, sheet: НЕТ_ЛИСТА, column: title}
+      expect: {ok: false, code: SHEET_NOT_FOUND}
+    - call: table_get_column
+      with: {table: videos/отказы, sheet: META, column: нет_столбца}
+      expect: {ok: false, code: COLUMN_NOT_FOUND}
+
+- scenario: rcode_table_action_without_content
+  why: поиск без условий и правка без полей — ошибка вызова, а не «ничего не нашлось» и не пустая запись
+  род: отрицательный
+  given:
+    files:
+      videos/пусто/read.json: |
+        {"META": {"schema": {"title": {"type": "string", "writable": true}},
+          "rows": {"VID_1": {"title": "Hook"}}}}
+  when:
+    - call: table_find_row
+      with: {table: videos/пусто, sheet: META, where: {title: Hook}}
+      expect: {ok: true, data: {count: 1}}
+    - call: table_find_row
+      with: {table: videos/пусто, sheet: META, where: {}}
+      expect: {ok: false, code: INVALID_ACTION}
+    - call: table_update
+      with: {table: videos/пусто, sheet: META, row_id: VID_1, data: {}}
+      expect: {ok: false, code: INVALID_ACTION}
+
+- scenario: rcode_book_column_twice_and_formula_overwrite
+  why: второй столбец с тем же именем и молчаливая перезапись формулы портят книгу у пользователя
+  род: отрицательный
+  when:
+    - call: excel_create_workbook
+      with: {path: книги/отказы.xlsx, sheet: DATA}
+      expect: {ok: true}
+    - call: excel_add_column
+      with: {path: книги/отказы.xlsx, sheet: DATA, column: title}
+      expect: {ok: true}
+    - call: excel_add_column
+      with: {path: книги/отказы.xlsx, sheet: DATA, column: title}
+      expect: {ok: false, code: COLUMN_EXISTS}
+    - call: excel_insert_formula
+      with: {path: книги/отказы.xlsx, sheet: DATA, cell: C2, formula: "=1+1"}
+      expect: {ok: true}
+    - call: excel_insert_formula
+      with: {path: книги/отказы.xlsx, sheet: DATA, cell: C2, formula: "=2+2"}
+      expect: {ok: false, code: FORMULA_PROTECTED}
+    - call: excel_insert_formula
+      with: {path: книги/отказы.xlsx, sheet: DATA, cell: C2, formula: "=2+2", overwrite: true}
+      expect: {ok: true}

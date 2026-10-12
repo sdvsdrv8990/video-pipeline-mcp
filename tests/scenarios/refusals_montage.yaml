@@ -1,0 +1,79 @@
+# Коды отказа монтажа: причина рождается строками книги канала и видео (`given.files`) — до запуска ffmpeg.
+# Законный вызов — скелет сценария той же сцены (бинарь ему не нужен); отказы — рендер сцены с причиной.
+
+- scenario: rcode_montage_scene_refusals_name_the_row
+  why: сцена без элементов, вариант не по рамке или не по оси и висячая ссылка на вариант отбиваются до рендера своим кодом
+  род: отрицательный
+  given:
+    files:
+      ch1/read.json: |
+        {"RENDER_CONFIG": {"schema": {}, "rows": {
+            "P1": {"profile_id": "test_16x9", "codec": "h264", "resolution": "640x360", "aspect_ratio": "16:9",
+                   "fps": 25, "crf": 30, "container": "mp4", "subtitles_mode": "TRACK"}}},
+         "SCENE_PROFILE": {"schema": {}, "rows": {
+            "R1": {"fragment_type": "layer_bg", "enabled": true, "fills_frame": true},
+            "R2": {"fragment_type": "layer_character", "enabled": true, "fills_frame": false}}},
+         "CHARACTER_SLOTS": {"schema": {}, "rows": {
+            "S1": {"slot_id": "body", "character_id": "hero", "slot_role": "BODY", "parent_slot": "",
+                   "compat_axis": "view", "anchor_x": 40, "anchor_y": 60, "bounds_w": 60, "bounds_h": 60,
+                   "z_offset": 0, "default_fade_sec": 0.3},
+            "S2": {"slot_id": "face", "character_id": "hero", "slot_role": "FACE", "parent_slot": "body",
+                   "compat_axis": "view", "anchor_x": 20, "anchor_y": 10, "bounds_w": 0, "bounds_h": 0,
+                   "z_offset": 2, "default_fade_sec": 0.12}}},
+         "ASSET_VARIANTS": {"schema": {}, "rows": {
+            "V1": {"variant_id": "pose_idle", "slot_id": "body", "label": "спокойно", "compat_key": "front",
+                   "asset_path": "ch1/assets/pose.png", "width": 60, "height": 60, "status": "ACTIVE"},
+            "V3": {"variant_id": "emo_smile", "slot_id": "face", "label": "улыбка", "compat_key": "front",
+                   "asset_path": "ch1/assets/face.png", "width": 20, "height": 20, "status": "ACTIVE"},
+            "V4": {"variant_id": "emo_side", "slot_id": "face", "label": "профиль", "compat_key": "side",
+                   "asset_path": "ch1/assets/face.png", "width": 20, "height": 20, "status": "ACTIVE"},
+            "V5": {"variant_id": "emo_huge", "slot_id": "face", "label": "великанская", "compat_key": "front",
+                   "asset_path": "ch1/assets/pose.png", "width": 200, "height": 200, "status": "ACTIVE"}}}}
+      ch1/годно/read.json: |
+        {"META": {"schema": {}, "rows": {"M1": {"video_id": "VID1", "render_profile": "test_16x9"}}},
+         "SCENE_ELEMENTS": {"schema": {}, "rows": {
+            "T1": {"element_id": "T1", "scene_id": "S05", "element_role": "layer_character", "slot_id": "body",
+                   "variant_id": "pose_idle", "z_index": 1, "time_end": 3.0},
+            "T3": {"element_id": "T3", "scene_id": "S05", "element_role": "layer_component", "slot_id": "face",
+                   "variant_id": "emo_smile", "z_index": 2, "time_end": 3.0}}},
+         "SCENE_AUDIO": {"schema": {}, "rows": {}}}
+      ch1/велико/read.json: |
+        {"META": {"schema": {}, "rows": {"M1": {"video_id": "VID2", "render_profile": "test_16x9"}}},
+         "SCENE_ELEMENTS": {"schema": {}, "rows": {
+            "T1": {"element_id": "T1", "scene_id": "S05", "element_role": "layer_character", "slot_id": "body",
+                   "variant_id": "pose_idle", "z_index": 1, "time_end": 3.0},
+            "T3": {"element_id": "T3", "scene_id": "S05", "element_role": "layer_component", "slot_id": "face",
+                   "variant_id": "emo_huge", "z_index": 2, "time_end": 3.0}}},
+         "SCENE_AUDIO": {"schema": {}, "rows": {}}}
+      ch1/ось/read.json: |
+        {"META": {"schema": {}, "rows": {"M1": {"video_id": "VID4", "render_profile": "test_16x9"}}},
+         "SCENE_ELEMENTS": {"schema": {}, "rows": {
+            "T1": {"element_id": "T1", "scene_id": "S05", "element_role": "layer_character", "slot_id": "body",
+                   "variant_id": "pose_idle", "z_index": 1, "time_end": 3.0},
+            "T3": {"element_id": "T3", "scene_id": "S05", "element_role": "layer_component", "slot_id": "face",
+                   "variant_id": "emo_side", "z_index": 2, "time_end": 3.0}}},
+         "SCENE_AUDIO": {"schema": {}, "rows": {}}}
+      ch1/висит/read.json: |
+        {"META": {"schema": {}, "rows": {"M1": {"video_id": "VID3", "render_profile": "test_16x9"}}},
+         "SCENE_ELEMENTS": {"schema": {}, "rows": {
+            "T1": {"element_id": "T1", "scene_id": "S05", "element_role": "layer_character", "slot_id": "body",
+                   "variant_id": "pose_idle", "z_index": 1, "time_end": 3.0},
+            "T3": {"element_id": "T3", "scene_id": "S05", "element_role": "layer_component", "slot_id": "face",
+                   "variant_id": "нет_такого", "z_index": 2, "time_end": 3.0}}},
+         "SCENE_AUDIO": {"schema": {}, "rows": {}}}
+  when:
+    - call: montage_scene_script
+      with: {table: ch1/годно, scene_id: S05}
+      expect: {ok: true}
+    - call: montage_render_scene
+      with: {table: ch1/годно, scene_id: S99}
+      expect: {ok: false, code: SCENE_EMPTY}
+    - call: montage_render_scene
+      with: {table: ch1/велико, scene_id: S05}
+      expect: {ok: false, code: VARIANT_INCOMPATIBLE}
+    - call: montage_render_scene
+      with: {table: ch1/ось, scene_id: S05}
+      expect: {ok: false, code: VARIANT_INCOMPATIBLE}
+    - call: montage_render_scene
+      with: {table: ch1/висит, scene_id: S05}
+      expect: {ok: false, code: RENDER_INPUT_UNPREPARED}

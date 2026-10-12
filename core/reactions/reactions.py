@@ -1,6 +1,6 @@
 """core/reactions/reactions.py — код отказа превращается в ответ клиенту.
 
-Паспорт: зовут по проводу с сервера и прямым импортом из tools · условия reactions, code, DEFAULT ·
+Паспорт: зовут по проводу с сервера и прямым импортом из tools · условия reactions, code, UNKNOWN_ERROR ·
   не молчит · поток reaction_to_client.
 Зовёт: ContractError, Declaration, ErrorDetail, Recovery.
 Зовут: из кода никто. Реестр поднимают через пакет `core.reactions`.
@@ -55,9 +55,9 @@ class Reactions:
                   facts: dict | None = None, errors: list[dict] | None = None) -> ErrorDetail:
         """Отказ по коду в форме ответа — единственная сборка на сервере. Класс, текст и подсказка — из реестра, факты
         подставляются в текст и подсказку и едут полем; `raw_message` места — переходный, он стоит поверх шаблона.
-        Неизвестный код идёт записью DEFAULT под кодом UNKNOWN_ERROR."""
-        known = code in self.reactions
-        name, entry = (code, self.reactions[code]) if known else ("UNKNOWN_ERROR", self.reactions.get("DEFAULT", {}))
+        Неизвестный код идёт записью реестра UNKNOWN_ERROR: ключ записи — тот код, который получает клиент."""
+        name = code if code in self.reactions else "UNKNOWN_ERROR"
+        entry = self.reactions.get(name, {})
         recovery, facts = entry.get("recovery", {}), dict(facts or {})
         return ErrorDetail(
             code=name,

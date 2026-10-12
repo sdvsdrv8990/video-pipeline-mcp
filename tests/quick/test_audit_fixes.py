@@ -250,14 +250,14 @@ async def main():
     check("error несёт recovery.reason из реестра (B2: yaml=SoT)", _reason == _reg_reason and bool(_reg_reason),
           f"got={_reason!r} vs реестр={_reg_reason!r}")
 
-    # DEFAULT-fallback игнорит DEFAULT.message_template (хардкодит свою строку без точки).
-    # NB: reaction_class тут совпадёт ('unknown'==DEFAULT.class) — сам по себе не пруф. Меряем шаблон.
+    # Запасная ветка: неизвестный код приезжает записью реестра под тем кодом, который видит клиент.
+    # NB: reaction_class тут совпадёт с 'unknown' и без записи — сам по себе не пруф. Меряем шаблон.
     from core.reactions import Reactions as _Rx
     _rx = _Rx(ROOT / "config" / "server_reactions.yaml")
     _r5 = _rx.get_error("КОД_КОТОРОГО_НЕТ_В_РЕЕСТРЕ_XYZ")
-    _def_tmpl = _reg.get("DEFAULT", {}).get("message_template")
-    check("DEFAULT-fallback берёт message_template из реестра", _r5.message == _def_tmpl and bool(_def_tmpl),
-          f"got={_r5.message!r} vs template={_def_tmpl!r}")
+    _def_tmpl = _reg.get(_r5.code, {}).get("message_template")
+    check(f"запасной отказ {_r5.code} — запись реестра под тем же кодом, шаблон из неё",
+          _r5.message == _def_tmpl and bool(_def_tmpl), f"got={_r5.message!r} vs template={_def_tmpl!r}")
 
     # Коды core/search (QUERY_NOT_FOUND/PATH_NOT_FOUND) должны быть в реестре реакций.
     _search_codes = {"QUERY_NOT_FOUND", "PATH_NOT_FOUND"}
@@ -357,6 +357,15 @@ async def main():
           check_auth({"Authorization": "Bearer wrong"}, token_digest(_new)) == "AUTH_FAILED")
     check("не-ASCII ключ не роняет обработчик (500 → 401)",
           check_auth({"Authorization": "Bearer чужой"}, token_digest(_new)) == "AUTH_FAILED")
+    try:
+        _surrogate = check_auth({"Authorization": "Bearer \udcff\udcfe"}, token_digest(_new))
+    except Exception as _e:  # падение узла — красная строка с именем исключения, а не трасса набора
+        _surrogate = type(_e).__name__
+    check("недопустимые байты UTF-8 в заголовке (суррогаты) не роняют обработчик → AUTH_FAILED",
+          _surrogate == "AUTH_FAILED", _surrogate)
+    import hashlib as _hl
+    check("отпечаток допустимого ключа — прежний sha256 строгого UTF-8: хранимые хэши .env не меняются",
+          token_digest("ключ-проба-éñ") == _hl.sha256("ключ-проба-éñ".encode("utf-8")).hexdigest())
     check("сам отпечаток ключом не является (хэш не подходит как пароль)",
           check_auth({"x-api-key": token_digest(_new)}, token_digest(_new)) == "AUTH_FAILED")
     check("без заголовка → AUTH_REQUIRED", check_auth({}, token_digest(_new)) == "AUTH_REQUIRED")
@@ -404,7 +413,7 @@ async def main():
     # это INTERNAL_ERROR вместо объявленной реакции.
     import yaml as _yml
     from core.contracts.error_detail import KNOWN_ERROR_CODES as _codes
-    _declared = set(_yml.safe_load(open(ROOT / "config" / "server_reactions.yaml"))) - {"DEFAULT"}
+    _declared = set(_yml.safe_load(open(ROOT / "config" / "server_reactions.yaml")))
     _lost = sorted(_declared - _codes)
     check(f"каждый код из server_reactions.yaml есть в KNOWN_ERROR_CODES (выпали{_lost or '—'})",
           not _lost)
@@ -564,7 +573,7 @@ async def main():
 
     for _name, _file, _call in (
         ("Declaration", "объявление.yaml", lambda t, d: _D194(t, ContractError, "s", "h").data),
-        ("Advice", "recommendations.yaml", lambda t, d: _A194(t)._load()),
+        ("Advice", "recommendations.yaml", lambda t, d: _A194(t).get("любой")),
         ("Reactions", "server_reactions.yaml", lambda t, d: _R192(t)),
         ("UniquenessEngine", "uniqueness.yaml", lambda t, d: _U194(t).config),
         ("CloudflaredTunnel", "tunnel.yaml", lambda t, d: _Tun194(port=1, config_path=t)),

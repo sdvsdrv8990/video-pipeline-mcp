@@ -9,7 +9,8 @@
 from pathlib import Path
 
 from core.contracts import ContractError
-from core.declaration import Declaration
+from core.declaration import Declared
+from core.declaration_schemas import Recommendations
 
 
 class AdviceError(ContractError):
@@ -17,20 +18,13 @@ class AdviceError(ContractError):
 
 
 class Advice:
-    """Реестр рекомендаций поверх `config/recommendations.yaml`."""
+    """Реестр рекомендаций поверх `config/recommendations.yaml`: файл судит схема двери (`Recommendations`)."""
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
-        self._decl = Declaration(
+        self._decl = Declared(
             path, AdviceError, "советов",
-            "Заведи config/recommendations.yaml — что советовать клиенту, объявлено там.")
-
-    def _load(self) -> dict:
-        data = self._decl.data
-        if not isinstance(data, dict):
-            raise AdviceError("ADVICE_INVALID",
-                              f"{self.path.name}: ожидался словарь ключ → список советов.")
-        return data
+            "Заведи config/recommendations.yaml — что советовать клиенту, объявлено там.", schema=Recommendations)
 
     def get(self, key: str, **context) -> list[dict]:
         """Советы по ключу с подстановкой контекста в `params`.
@@ -38,15 +32,13 @@ class Advice:
         Неизвестный плейсхолдер остаётся текстом: тихо подставленная пустота выглядела бы
         как валидный параметр и увела бы ИИ не туда.
         """
-        items = self._load().get(key) or []
         out = []
-        for item in items:
+        for item in self._decl.model.root.get(key, ()):
             params = {}
-            for name, value in (item.get("params") or {}).items():
+            for name, value in item.params.items():
                 if isinstance(value, str) and "{" in value:
                     for ctx_name, ctx_value in context.items():
                         value = value.replace("{" + ctx_name + "}", str(ctx_value))
                 params[name] = value
-            out.append({"id": item.get("id", ""), "text": item.get("text", ""),
-                        "tool": item.get("tool", ""), "params": params})
+            out.append({"id": item.id, "text": item.text, "tool": item.tool, "params": params})
         return out

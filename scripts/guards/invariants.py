@@ -77,6 +77,9 @@ SCENARIOS = ("tests", "scenarios")
 ROUTES = ("tests", "routes")
 
 
+UNSCRIPTED = ("tests", "harness", "unscripted.yaml")
+
+
 FACT_TYPES = ("core", "contracts", "fact.py")
 
 
@@ -378,22 +381,63 @@ def declared_but_unscripted(root: Path = ROOT) -> list[str]:
     Слепота растёт молча: новый код отказа попадает в реестр, новый инструмент — в опись, а
     покрытие остаётся вчерашним. Храповик держит потолок, и долг закрывается ОБЪЯВЛЕНИЕМ в
     `tests/scenarios/*.yaml` — python-скрипт на новый код писать не нужно. Судится только код
-    сервера: отказ скрипта сценарий сервера не достанет.
+    сервера: отказ скрипта сценарий сервера не достанет. Код, объявленный несценарным с причиной,
+    считает своя ось (`codes_exempt_from_scenarios`).
     """
     calls, codes = _scenario_declarations(root)
-    notes = []
-    registry = _at(root, REGISTRY)
-    if registry.exists():
-        declared = {k for k, v in (yaml.safe_load(registry.read_text(encoding="utf-8")) or {}).items()
-                    if isinstance(v, dict)}
-        # Код, который бросить некому, сценарием не закрывается в принципе — он у соседнего
-        # сторожа, и считать его здесь значило бы требовать невозможного.
-        notes += [f"код отказа `{code}` сервер бросает, но ни один сценарий его не ждёт"
-                  for code in sorted((declared & _emitted_codes(root, _python_sources(root))) - codes)]
+    exempt = {code for code, why in _unscripted(root).items() if why}
+    # Код, который бросить некому, сценарием не закрывается в принципе — он у соседнего
+    # сторожа, и считать его здесь значило бы требовать невозможного.
+    notes = [f"код отказа `{code}` сервер бросает, но ни один сценарий его не ждёт"
+             for code in sorted(_thrown_codes(root) - codes - exempt)]
     inventory = _at(root, INVENTORY)
     if inventory.exists():
         notes += [f"инструмент `{tool}` есть в описи, но ни один сценарий его не зовёт"
                   for tool in sorted(set(json.loads(inventory.read_text(encoding="utf-8"))) - set(calls))]
+    return notes
+
+
+def _unscripted(root: Path) -> dict[str, str]:
+    """Коды, объявленные несценарными (`tests/harness/unscripted.yaml`): код → причина. Нет файла — объявлений нет."""
+    path = _at(root, UNSCRIPTED)
+    declared = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
+    return {str(code): str(rule.get("why") or "").strip() if isinstance(rule, dict) else ""
+            for code, rule in declared.items()}
+
+
+def _thrown_codes(root: Path) -> set[str]:
+    """Коды, которые реестр объявляет клиенту и код сервера бросает. Нет реестра — нет и кодов."""
+    registry = _at(root, REGISTRY)
+    if not registry.exists():
+        return set()
+    declared = {k for k, v in (yaml.safe_load(registry.read_text(encoding="utf-8")) or {}).items()
+                if isinstance(v, dict)}
+    return declared & _emitted_codes(root, _python_sources(root))
+
+
+def codes_exempt_from_scenarios(root: Path = ROOT) -> list[str]:
+    """Объявленная несценарность — решение с ценой: этот отказ клиент встречает без единой проверки сценарием.
+
+    Храповиком, как ненаблюдаемость фактов: без потолка объявление — дверь, через которую новый код уходит от
+    сценария одной строкой.
+    """
+    return [f"код отказа `{code}` объявлен несценарным: {why}"
+            for code, why in sorted(_unscripted(root).items()) if why]
+
+
+def unscripted_declaration_stale(root: Path = ROOT) -> list[str]:
+    """Объявление несценарности без причины или без предмета: код, который сценарий уже ждёт или сервер не бросает,
+    освобождён ни от чего, а без причины это «потом разберусь», записанное как решение."""
+    _, codes = _scenario_declarations(root)
+    thrown = _thrown_codes(root)
+    notes = []
+    for code, why in sorted(_unscripted(root).items()):
+        if not why:
+            notes.append(f"код отказа `{code}` объявлен несценарным без причины (`why`)")
+        elif code in codes:
+            notes.append(f"код отказа `{code}` объявлен несценарным, а сценарий его ждёт: объявление устарело")
+        elif code not in thrown:
+            notes.append(f"код отказа `{code}` объявлен несценарным, а сервер его не бросает: освобождать не от чего")
     return notes
 
 

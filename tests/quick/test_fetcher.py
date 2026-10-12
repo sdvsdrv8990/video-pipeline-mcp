@@ -11,6 +11,7 @@ import shutil
 import socket
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -115,7 +116,8 @@ class World:
             headers["content-length"] = str(len(rest))
         cut, self.cut = self.cut, None
         stream = self._stream(rest, cut)
-        return httpx.Response(206 if start else 200, headers=headers,
+        # Заголовки — байтами, как с провода: не-ASCII валидатор сервера httpx декодирует, а не отвергает.
+        return httpx.Response(206 if start else 200, headers=[(k, v.encode()) for k, v in headers.items()],
                               content=self._paced(stream) if self.pace else stream)
 
     @staticmethod
@@ -361,7 +363,10 @@ try:
     for case, etag, last, note, resumed in (
             ("без ETag и Last-Modified", "", "", None, 0),
             ("слабый ETag (W/)", 'W/"weak"', "", None, 0),
-            ("только Last-Modified", "", modified, {"last_modified": modified, "host": CDN}, 4096)):
+            ("только Last-Modified", "", modified, {"last_modified": modified, "host": CDN}, 4096),
+            ("ETag не ASCII — библиотеки запроса его обратно не понесут", '"xet-é"', "", None, 0),
+            ("ETag не ASCII и Last-Modified", '"xet-é"', modified, {"last_modified": modified, "host": CDN}, 4096),
+            ("Last-Modified не ASCII", "", f"{modified} é", None, 0)):
         fresh()
         w = World()
         w.etag, w.modified = etag, last
@@ -372,6 +377,16 @@ try:
         check(f"{case}: {'докачка с If-Range' if resumed else 'докачки вслепую нет — Range не послан'}, файл целиком",
               got.get("resumed_from") == resumed and on_disk() == BODY
               and (sent["if_range"] == last if resumed else sent["range"] is None), f"{got} {sent}")
+    fresh()
+    w = World()
+    interrupted(w, size=len(BODY))
+    files.note(PART, "inst1", {"etag": '"xet-é"', "host": CDN})
+    got, e = pull(w, size=len(BODY), digest=SHA)
+    sent = [x for x in w.log if x["host"] == CDN][-1]
+    check("заметка с валидатором, которого библиотеки не понесут (записана прежде суда), — остаток сброшен, файл с нуля, "
+          "а не отказ при каждой докачке",
+          e is None and on_disk() == BODY and got.get("resumed_from") == 0 and sent["range"] is None,
+          (e and (e.code, e.facts), got, sent))
 
     print("== 10. Результат поставщика: предел байт по ходу потока ==")
     fresh()
@@ -813,6 +828,11 @@ try:
     check("срока обращения нет — отказ схемы с путём ключа: срок не берётся умолчанием в коде",
           decl_refusal({"answer": {k: v for k, v in ANSWER.items() if k != "deadline_sec"}}, "answer")
           == "answer.deadline_sec (missing)")
+    check("срок ровно на одну полную попытку (deadline_sec = 2 × timeout_sec) — принят",
+          decl_refusal({"answer": {**ANSWER, "timeout_sec": 30, "deadline_sec": 60}}, "answer") == "принято")
+    check("срок на волос короче одной попытки — отказ схемы с путём ключа: фаза timeout_sec не исполнилась бы ни разу",
+          decl_refusal({"answer": {**ANSWER, "timeout_sec": 30, "deadline_sec": 59.999}}, "answer")
+          == "answer.deadline_sec (deadline_under_attempt)")
     check("явный hosts в разделе ответа — отказ схемы: хост один, из объявленного адреса, списка рядом нет",
           decl_refusal({"answer": {**ANSWER, "hosts": ["api.provider.example"]}}, "answer")
           == "answer.hosts (hosts_derived)")
@@ -830,13 +850,15 @@ try:
     check("читатель ставит хост из объявленного адреса до подстановки — ровно один",
           hosts == ("api.provider.example",), hosts)
 
-    # Обновлено в B3: разделов обращения к объявленному адресу стало четыре (ответы и прозвонки раннера и туннеля).
+    # Обновлено в B3: разделов обращения к объявленному адресу стало четыре (ответы и прозвонки раннера и туннеля);
+    # в B4 — пять (вызов провайдера online.call) и правило схемы deadline_sec ≥ 2 × timeout_sec у всех.
     live = {slot.section: slot for slot in SLOTS if issubclass(slot.schema, AddressedPolicy)}
     taken = {path: attempt(lambda: Declaration(ROOT / "config" / slot.file, ContractError, slot.file, "").section(
         *slot.section, schema=slot.schema))[1] for path, slot in live.items()}
     check("живые декларации: каждый раздел обращения к объявленному адресу проходит свою схему — ответы (online.answer, "
-          "download.answer), прозвонка раннера (local.runner.health), прозвонка туннеля",
-          set(live) == {("online", "answer"), ("download", "answer"), ("local", "runner", "health"), ("прозвонка",)}
+          "download.answer), вызов провайдера (online.call), прозвонка раннера (local.runner.health), прозвонка туннеля",
+          set(live) == {("online", "answer"), ("online", "call"), ("download", "answer"), ("local", "runner", "health"),
+                        ("прозвонка",)}
           and not any(taken.values()), {k: v and v.facts for k, v in taken.items()})
     providers = yaml.safe_load((ROOT / "config" / "providers.yaml").read_text(encoding="utf-8"))
     urls = [(f"{section}.{name}", body["url"]) for section, table in (
@@ -1010,6 +1032,196 @@ try:
         e = attempt(lambda: answers(Declaration(decl, ContractError, "прозвонки", ""), PROBE_SLOT, declared))[1]
         check(f"судья петли: {case} при block_private: false — {'принят' if admitted else 'отказ до запроса'}",
               e is None if admitted else (e is not None and e.code == "DOWNLOAD_FORBIDDEN"), e and (e.code, e.facts))
+
+    print("== 20. Вызов API с телом (B4, NI-05): та же дверь; повтор — только не применённого, ключ — один на вызов ==")
+    from core.declaration_schemas import CallPolicy
+    from core.providers.download import addressed
+
+    CALL = {**ANSWER, "retry_on": [408, 429, 503, 504],
+            "idempotent_methods": ["GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE"], "unprocessed": [408, 503],
+            "idempotency_header": None, "codes": {"failed": "PROVIDER_FAILED", "corrupt": "DOWNLOAD_INCOMPLETE",
+                                                  "unreached": "RUNNER_NOT_RUNNING", "timeout": "PROVIDER_TIMEOUT",
+                                                  "outcome_unknown": "PROVIDER_OUTCOME_UNKNOWN"}}
+    CALL_SLOT = Slot("call.yaml", ("call",), CallPolicy)
+    OK = json.dumps({"ok": True}).encode()
+
+    def dial(*replies, method="POST", declared=DECLARED, sink=None, clock=None, resolve=None, auth="Bearer t", **over):
+        """Вызов двери на подставном API — (значение, отказ, журнал, паузы). Ответ — (код, заголовки[, тело]),
+        генератор тела или исключение сети; последний повторяется. Журнал — (метод, ключ идемпотентности, тело, Host)."""
+        log, queue = [], list(replies)
+
+        def handle(request):
+            log.append((request.method, request.headers.get("idem"), request.read(), request.headers.get("host")))
+            reply = queue.pop(0) if len(queue) > 1 else queue[0]
+            if isinstance(reply, Exception):
+                raise reply
+            if callable(reply):
+                return reply(request)
+            status, headers, *body = reply
+            return httpx.Response(status, headers=headers, content=body[0] if body else OK)
+        decl = work / "call.yaml"
+        decl.write_text(yaml.safe_dump({"call": {**CALL, **over}}), encoding="utf-8")
+        pauses: list[float] = []
+        timed = {"clock": clock.time, "sleep": clock.sleep} if clock else {"sleep": pauses.append}
+        got, e = attempt(lambda: answers(Declaration(decl, ContractError, "вызова", ""), CALL_SLOT, declared,
+                                         transport=httpx.MockTransport(handle), resolve=resolve or World().resolve,
+                                         proxies=dict,
+                                         **timed).call(API, {"Authorization": auth}, method=method,
+                                                       payload={"json": {"image": "x"}}, sink=sink))
+        return got, e, log, pauses
+
+    got, e, log, _ = dial((200, {}))
+    check("законный: POST с телом дошёл тем же путём — JSON тела, метод, имя в Host; ответ — JSON в память",
+          e is None and got == {"ok": True}
+          and [(m, k, json.loads(b), h) for m, k, b, h in log] == [("POST", None, {"image": "x"}, "api.provider.example")],
+          (got, e and e.facts, log))
+    got, e, log, _ = dial(httpx.ConnectError("порт закрыт"), (200, {}))
+    check("соединение не открылось — запрос не ушёл: POST повторён",
+          e is None and got == {"ok": True} and [m for m, *_ in log] == ["POST", "POST"], (e and e.facts, log))
+    failures = [socket.gaierror("имя не разрешено")]
+
+    def flaky(host, port, *args, **kwargs):
+        if failures:
+            raise failures.pop()
+        return World().resolve(host, port)
+
+    got, e, log, _ = dial((200, {}), resolve=flaky)
+    check("имя не разрешилось — запрос не ушёл: вызов повторён и дошёл одним POST",
+          e is None and got == {"ok": True} and len(log) == 1 and not failures, (e and (e.code, e.facts), log))
+    got, e, log, _ = dial(httpx.ReadTimeout("ответ не пришёл"), (200, {}))
+    check("ответ не пришёл в фазу — запрос мог дойти: один POST, код timeout политики",
+          e is not None and e.code == "PROVIDER_TIMEOUT"
+          and e.facts == {"host": "api.provider.example", "status": "ReadTimeout"} and len(log) == 1, (e and e.facts, log))
+    got, e, log, pauses = dial((503, {"Retry-After": "2"}, b""), (200, {}))
+    check("503 из unprocessed — сервер запрос не обработал: POST повторён с паузой сервера",
+          e is None and got == {"ok": True} and len(log) == 2 and pauses == [2.0], (e and e.facts, pauses, log))
+    got, e, log, pauses = dial((504, {"Retry-After": "5"}, b""), (200, {}))
+    check("504 вне unprocessed, ключа нет — POST не повторён, срок сервера в фактах отказа",
+          e is not None and e.code == "PROVIDER_FAILED"
+          and e.facts == {"host": "api.provider.example", "status": 504, "retry_after_sec": 5.0}
+          and len(log) == 1 and not pauses, (e and e.facts, log, pauses))
+    got, e, log, _ = dial((429, {}, b""), (200, {}))
+    check("429 вне unprocessed раздела — POST не повторён: «не применён» для 429 объявляет только провайдер",
+          e is not None and e.code == "PROVIDER_FAILED" and len(log) == 1, (e and e.facts, log))
+    got, e, log, _ = dial((504, {}, b""), (200, {}), idempotency_header="Idem")
+    keys = [k for _, k, *_ in log]
+    check("504 с объявленным ключом идемпотентности — повтор с ТЕМ ЖЕ ключом: вторая попытка — тот же запрос",
+          e is None and len(keys) == 2 and keys[0] and len(set(keys)) == 1, (e and e.facts, keys))
+    got, e, log, _ = dial((200, {}), idempotency_header="Idem")
+    _, _, log2, _ = dial((200, {}), idempotency_header="Idem")
+    check("ключ идемпотентности — новый на каждый вызов: два вызова — два ключа",
+          log[0][1] and log2[0][1] and log[0][1] != log2[0][1], (log[0][1], log2[0][1]))
+    got, e, log, _ = dial(httpx.ReadTimeout("ответ не пришёл"), (200, {}), method="GET")
+    check("GET — метод из idempotent_methods: ответ не пришёл — повтор",
+          e is None and [m for m, *_ in log] == ["GET", "GET"], (e and e.facts, log))
+
+    def cut(request):
+        def chunks():
+            yield b"{" + b" " * 1023
+            raise httpx.ReadError("соединение оборвано")
+        return httpx.Response(200, headers={"content-length": "4096"}, content=chunks())
+
+    got, e, log, _ = dial(cut, (200, {}))
+    check("обрыв тела ответа после отправки неповторяемого POST — исход неизвестен (outcome_unknown) с принятым и "
+          "заявленным, POST не повторён",
+          e is not None and e.code == "PROVIDER_OUTCOME_UNKNOWN"
+          and e.facts == {"host": "api.provider.example", "got": 1024, "expected": 4096} and len(log) == 1,
+          (e and (e.code, e.facts), log))
+    got, e, log, _ = dial(cut, method="GET")
+    check("обрыв тела повторяемого GET на каждой попытке — «не дочитан» (corrupt) с принятым и заявленным после "
+          "attempts попыток",
+          e is not None and e.code == "DOWNLOAD_INCOMPLETE"
+          and e.facts == {"host": "api.provider.example", "got": 1024, "expected": 4096}
+          and [m for m, *_ in log] == ["GET"] * 3, (e and (e.code, e.facts), log))
+    got, e, log, _ = dial((200, {}, b"[" + b"1," * 3000 + b"1]"))
+    check("ответ сверх max_bytes — DOWNLOAD_TOO_LARGE с ключом предела раздела вызова",
+          e is not None and e.code == "DOWNLOAD_TOO_LARGE"
+          and e.facts == {"limit_mb": 0.004, "key": "config/call.yaml → call.max_bytes"}, e and (e.code, e.facts))
+    got, e, log, _ = dial((200, {}), declared="https://inner.example/{model}")
+    check("имя провайдера ведёт во внутреннюю сеть — отказ до запроса: ни тела, ни ключа туда",
+          e is not None and e.code == "DOWNLOAD_FORBIDDEN" and not log, (e and e.facts, log))
+    seen: list = []
+
+    def sink(response, host, deadline, cut=None):
+        seen.append((response.status_code, host, isinstance(deadline, float), cut and cut(host, 1, None).code))
+        return "сток"
+
+    got, e, log, _ = dial((200, {"content-type": "image/png"}, b"png"), sink=sink)
+    check("сток получает открытый ответ, имя хоста (а не судимый IP), срок вызова и обрыв вызова (у POST — исход "
+          "неизвестен); его значение — ответ вызова",
+          e is None and got == "сток" and seen == [(200, "api.provider.example", True, "PROVIDER_OUTCOME_UNKNOWN")],
+          (got, e and e.facts, seen))
+    seen.clear()
+    got, e, log, _ = dial((500, {}, b"{}"), sink=sink)
+    check("код отказа — до стока: сток не зван", e is not None and e.code == "PROVIDER_FAILED" and not seen, (e, seen))
+
+    clock = Clock()
+    got, e, log, _ = dial(clock.hung, clock=clock, deadline_sec=60, attempts=5)
+    check("висящее соединение на подставных часах: не ушедший запрос повторяется, но весь вызов — в deadline_sec "
+          f"(конец {clock.now:g} с ≤ 60, фазы {clock.phases})",
+          e is not None and e.code == "PROVIDER_TIMEOUT" and clock.now <= 60 and len(clock.phases) >= 2,
+          (e and e.facts, clock.phases, clock.now))
+    clock = Clock()
+
+    def drip(request):
+        def chunks():
+            for _ in range(10):
+                clock.now += 25
+                yield b" " * 64
+        return httpx.Response(200, content=chunks())
+
+    got, e, log, _ = dial(drip, clock=clock, deadline_sec=60)
+    check("капля тела на подставных часах: кусок после срока не принят — код timeout политики; перебор — не больше "
+          f"одной фазы чтения (конец {clock.now:g} с ≤ 60 + 30), POST один",
+          e is not None and e.code == "PROVIDER_TIMEOUT" and clock.now <= 60 + 30 and len(log) == 1,
+          (e and e.facts, clock.now, log))
+    check("схема: срок короче одной полной попытки — отказ декларации до сети (deadline_sec < 2 × timeout_sec)",
+          dial((200, {}), deadline_sec=59)[1] is not None
+          and dial((200, {}), deadline_sec=59)[1].facts.get("details") == "call.deadline_sec (deadline_under_attempt)")
+    api = Api((200, OK, {}))
+    e = attempt(lambda: Fetcher(AnswerPolicy.model_validate({**ANSWER}).model_copy(update={"hosts": ("api.provider.example",)}),
+                                transport=httpx.MockTransport(api.handle), resolve=World().resolve,
+                                proxies=dict).call(API, method="POST"))[1]
+    check("вызов без политики вызова (CallPolicy) — ошибка кода до запроса",
+          e is not None and e.code == "НЕ_ОТКАЗ" and e.facts["exception"].startswith("TypeError") and not api.log,
+          (e and e.facts, api.log))
+    policy = CallPolicy.model_validate({**CALL, "schemes": ["http"]})
+    for case, declared, allowed in (
+            ("литерал петли", "http://127.0.0.1:8770/run", None),
+            ("публичный хост по http — открытый канал только петле, и при block_private: true",
+             "http://api.provider.example/v1", "литерал петли (http)")):
+        e = attempt(lambda: addressed(policy, CALL_SLOT, declared))[1]
+        check(f"судья открытого канала: {case} — {'принят' if allowed is None else 'отказ до запроса'}",
+              (e is None) if allowed is None else (e is not None and e.facts.get("allowed") == allowed),
+              e and (e.code, e.facts))
+
+    print("== 21. Значение заголовка судят библиотеки запроса до него: что они не несут — отказ с именем, без значения ==")
+    CANARY = "канарейка-7f3a"
+
+    def hidden(e, secret: str = CANARY) -> bool:
+        """Значения нет ни в тексте отказа, ни в фактах, ни в трассе с цепочкой — том, что пишет журнал инцидента."""
+        return e is not None and secret not in "".join(traceback.format_exception(e)) + repr(e.facts)
+
+    fresh()
+    w = World()
+    got, e = pull(w, size=len(BODY), digest=SHA, headers={"Authorization": "Bearer\tt"})
+    check("законный: ASCII с табуляцией — заголовок ушёл как есть, файл лёг",
+          e is None and on_disk() == BODY and w.log[0]["auth"] == "Bearer\tt", (e and (e.code, e.facts), w.log[:1]))
+    fresh()
+    w = World()
+    got, e = pull(w, size=len(BODY), digest=SHA, headers={"Authorization": f"Bearer {CANARY}"})
+    check("токен не ASCII у загрузки весов — REQUEST_HEADER_INVALID с хостом и именем заголовка; ни разрешения имени, "
+          "ни запроса; значения нет в отказе и в его трассе",
+          e is not None and e.code == "REQUEST_HEADER_INVALID"
+          and e.facts == {"host": "huggingface.co", "header": "Authorization"} and not w.log and not w.resolved
+          and hidden(e), (e and (e.code, e.facts), w.log, w.resolved))
+    for case, auth, secret in (("перевод строки", "Bearer canary7f3a\r\nX-Evil: 1", "canary7f3a"),
+                               ("NUL", "Bearer canary7f3a\x00", "canary7f3a"), ("не ASCII", f"Bearer {CANARY}", CANARY)):
+        got, e, log, _ = dial((200, {}), auth=auth)
+        check(f"вызов API, {case} в ключе — отказ до запроса (не «мог дойти»): ни POST, значения нет",
+              e is not None and e.code == "REQUEST_HEADER_INVALID"
+              and e.facts == {"host": "api.provider.example", "header": "Authorization"} and not log
+              and hidden(e, secret), (e and (e.code, e.facts), log))
 finally:
     shutil.rmtree(work, ignore_errors=True)
 

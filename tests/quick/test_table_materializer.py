@@ -445,13 +445,13 @@ import yaml as _yaml
 from core.engine import Engine as _Eng
 from core.ids import IDGenerator as _IDG
 from core.state import StateManager as _SM
-import server as _srv
+from tests.harness.inprocess import register_basic_tools as _register
 
 _ws9 = Path(tempfile.mkdtemp(prefix="tm9_")) / "workspace"
 _ws9.mkdir(parents=True)
 _sm9 = _SM(_ws9)
 _eng9 = _Eng(state_manager=_sm9)
-_srv.register_basic_tools(_eng9, _IDG(), _sm9)
+_register(_eng9, _IDG(), _sm9)
 
 
 def _call9(**params):
@@ -509,7 +509,6 @@ def _books(state: str) -> Path:
     """Копия боевых деклараций: книги целы, у каждой книги первый столбец первого листа с неизвестным типом, книг нет,
     или у каждой книги листы переименованы (книга цела, но названных декларациями листов в ней нет)."""
     cfg = declarations_copy()
-    (cfg / "tunnel.yaml").unlink(missing_ok=True)       # машинное объявление вне git: читателям книг не нужно
     for schema_file in (cfg / "templates" / "tables").glob("*.schema.yaml"):
         if state == "нет книг":
             schema_file.unlink()
@@ -584,7 +583,6 @@ for _reader, _call10 in _READERS.items():
 # Какую книгу судит строка результата — объявлено в montage.yaml `target.book`; ключа нет — отказ двери, а не книга
 # по умолчанию из кода.
 _no_target_book = declarations_copy()
-(_no_target_book / "tunnel.yaml").unlink(missing_ok=True)
 _montage10 = _yaml.safe_load((_no_target_book / "montage.yaml").read_text(encoding="utf-8"))
 del _montage10["target"]["book"]
 (_no_target_book / "montage.yaml").write_text(_yaml.safe_dump(_montage10, allow_unicode=True, sort_keys=False),
@@ -651,7 +649,6 @@ ok(len(_REFS) >= 10 and all(code == "" for *_, (code, _) in _live11),
 def _broken_refs(change) -> Path:
     """Копия деклараций, где у каждой ссылки на лист сделана правка `change(отображение, ключ книги)`."""
     cfg = declarations_copy()
-    (cfg / "tunnel.yaml").unlink(missing_ok=True)
     for file in sorted({f for f, _, _ in _REFS}):
         data = _yaml.safe_load((cfg / file).read_text(encoding="utf-8"))
         for _f, path, key in (r for r in _REFS if r[0] == file):

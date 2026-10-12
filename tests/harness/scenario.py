@@ -8,11 +8,14 @@
 сценарий зовёт её по имени: иначе получается язык программирования на YAML.
 """
 
+import atexit
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,17 +25,27 @@ import yaml
 
 from core.declaration import declarations_root
 
+from .live_server import declarations_copy, spoil_slot
+from .net_double import BYPASS, JOURNAL, SEAMS, parse_script
+
 ROOT = Path(__file__).resolve().parents[2]
 
 SCENARIO_KEYS = {"scenario", "why", "род", "given", "when", "then"}
 # Роды объявлены СПИСКОМ: свободное слово здесь означало бы, что покрытие зоны родами нельзя
 # посчитать — а именно счёт и отличает механизм от понятия.
 РОДЫ = ("положительный", "отрицательный", "разрушительный")
-# `declarations` — порча боевых деклараций в копии каталога (MCP_CONFIG): сценарий получает свой сервер.
-GIVEN_KEYS = {"files", "declarations"}
+# `declarations` — порча боевых деклараций в копии каталога (MCP_CONFIG), `fixtures` — приспособления среды (модули
+# `fixtures/`, точка входа — `fixtures/sitecustomize.py`), `network` — сценарий двойника сети (`net_double.py`, только с
+# приспособлением `net_double`): такой сценарий получает свой сервер.
+GIVEN_KEYS = {"files", "declarations", "fixtures", "network"}
+FIXTURES = Path(__file__).with_name("fixtures")
 STEP_KEYS = {"call", "python", "rpc", "run", "headers", "token", "repeat", "with", "as", "expect"}
 EXPECT_KEYS = {"ok", "code", "class", "recovery", "facts", "data", "data_contains",
-               "data_absent", "console", "console_absent", "open", "http", "exit"}
+               "data_absent", "console", "console_absent", "open", "http", "exit", "net_tasks", "detail", "canary",
+               "task_error"}
+# Отказ задания в ответе task_status: `in: task` — задание завершилось ошибкой, `in: element` — элемент без задания.
+TASK_ERROR_KEYS = {"code", "class", "in", "facts"}
+TASK_ERROR_PLACES = ("task", "element")
 
 _REF = re.compile(r"\$\{([A-Za-z_][\w]*)\.([\w.]+)\}")
 # Ссылка, не подошедшая под форму имени, раньше уезжала в команду ТЕКСТОМ: сторож получал путь
@@ -99,6 +112,10 @@ class Expectation:
     open: str = ""                         # адрес ОТКРЫТОЙ находки: ждём желаемого, сегодня его нет
     http: int | None = None                # код HTTP: отказ авторизации живёт в статусе, не в теле
     exit_code: int | None = None           # код возврата команды: у сторожа отказ живёт в нём
+    net_tasks: int | None = None           # сколько задач (POST, дошедший до провайдера) шаг создал у двойника сети
+    detail: dict[str, Any] = field(default_factory=dict)   # путь → значение в `error` отказа (`facts.host`, `errors.0.field`)
+    canary: str = ""                       # секрет-канарейка: его нет ни в ответе, ни в консоли, ни в журналах сервера
+    task_error: dict[str, Any] = field(default_factory=dict)   # отказ задания в элементе ответа task_status
 
 
 @dataclass
@@ -130,6 +147,8 @@ class Scenario:
     source: Path
     род: str = "положительный"
     declarations: dict[str, dict[str, Any]] = field(default_factory=dict)
+    fixtures: tuple[str, ...] = ()
+    network: dict[str, Any] = field(default_factory=dict)
 
 
 def _reject_unknown(got: dict, allowed: set[str], where: str) -> None:
@@ -161,6 +180,29 @@ def _expect(raw: dict, vocab: Vocabulary, where: str, command: bool = False) -> 
                             "возврата и есть успех команды")
     if code:
         vocab.validate(code, str(raw.get("class") or "") or None, f"{where}.expect")
+    tasks = raw.get("net_tasks")
+    if tasks is not None and (command or isinstance(tasks, bool) or not isinstance(tasks, int) or tasks < 0):
+        raise ScenarioError(f"{where}.expect: `net_tasks` — целое ≥ 0 у вызова сервера (пришло {tasks!r}"
+                            f"{' у шага `run`' if command else ''}): задачи у провайдера создаёт сервер, а не команда")
+    detail = raw.get("detail")
+    if detail is not None and (ok or command or not isinstance(detail, dict) or not detail):
+        raise ScenarioError(f"{where}.expect: `detail` — непустой словарь «путь → значение» у отказа вызова сервера "
+                            f"(пришло {detail!r}): форма отказа (`ErrorDetail`) есть только у `ok: false` не команды")
+    canary = raw.get("canary")
+    if canary is not None and (command or not isinstance(canary, str) or not canary.strip()):
+        raise ScenarioError(f"{where}.expect: `canary` — непустая строка-секрет у вызова сервера (пришло {canary!r}): "
+                            "у команды нет ни ответа сервера, ни его журналов")
+    task_error = raw.get("task_error")
+    if task_error is not None:
+        if command or not ok or not isinstance(task_error, dict):
+            raise ScenarioError(f"{where}.expect: `task_error` — словарь у успешного вызова сервера (пришло {task_error!r}): "
+                                "отказ задания живёт в элементе ответа task_status, сам вызов успешен")
+        _reject_unknown(task_error, TASK_ERROR_KEYS, f"{where}.expect.task_error")
+        if task_error.get("in") not in TASK_ERROR_PLACES or not task_error.get("code") \
+                or not isinstance(task_error.get("facts", {}), dict):
+            raise ScenarioError(f"{where}.expect.task_error: нужны `code` и `in` из {list(TASK_ERROR_PLACES)}, `facts` — "
+                                f"словарь (пришло {task_error!r}): ошибка задания и отказ элемента — разные исходы")
+        vocab.validate(str(task_error["code"]), str(task_error.get("class") or "") or None, f"{where}.expect.task_error")
     address = str(raw.get("open") or "")
     known = known_findings()
     if address and known and address not in known:
@@ -178,6 +220,10 @@ def _expect(raw: dict, vocab: Vocabulary, where: str, command: bool = False) -> 
         open=str(raw.get("open") or ""),
         http=None if raw.get("http") is None else int(raw["http"]),
         exit_code=status,
+        net_tasks=tasks,
+        detail=dict(detail or {}),
+        canary=str(canary or ""),
+        task_error=dict(task_error or {}),
     )
 
 
@@ -196,6 +242,9 @@ def _steps(raw: list, vocab: Vocabulary, where: str) -> list[Step]:
             raise ScenarioError(f"{where}[{i}]: `stdin` — только у шага `run`: вход на стандартный "
                                 f"поток есть у команды, у остальных он был бы принят и потерян")
         expect = item.get("expect")
+        if int(item.get("repeat") or 1) > 1 and isinstance(expect, dict) and expect.get("net_tasks") is not None:
+            raise ScenarioError(f"{where}[{i}]: `net_tasks` у шага с `repeat` — ряд сверяется по последнему ответу, "
+                                f"а задачи копятся всем рядом; счёт задач — у одиночного вызова")
         out.append(Step(
             index=i, tool=str(item.get("call") or ""), python=str(item.get("python") or ""),
             rpc=str(item.get("rpc") or ""), run=str(item.get("run") or ""),
@@ -228,9 +277,10 @@ def scenario_files(directory: Path) -> list[Path]:
 
 
 def _ждёт_отказа(item: dict) -> bool:
-    """Хоть один шаг объявления ждёт отказа. Разбор по ОБЪЯВЛЕНИЮ, а не по прогону: род сценария
-    обязан читаться до сервера, иначе покрытие зоны узнаётся только после полного прогона."""
-    return any(isinstance((шаг or {}).get("expect"), dict) and (шаг or {})["expect"].get("ok") is False
+    """Хоть один шаг объявления ждёт отказа — вызова (`ok: false`) или задания в элементе ответа (`task_error`). Разбор по
+    ОБЪЯВЛЕНИЮ, а не по прогону: род сценария обязан читаться до сервера, иначе покрытие зоны узнаётся только после
+    полного прогона."""
+    return any(isinstance(ждёт := (шаг or {}).get("expect"), dict) and (ждёт.get("ok") is False or bool(ждёт.get("task_error")))
                for ключ in ("when", "then") for шаг in (item.get(ключ) or []))
 
 
@@ -295,7 +345,12 @@ def load(path: Path, vocab: Vocabulary) -> list[Scenario]:
             then=_steps(item.get("then") or [], vocab, f"{where}.then"),
             source=path,
             declarations=_declarations(dict(given.get("declarations") or {}), f"{where}.given.declarations"),
+            fixtures=_fixtures(given.get("fixtures") or [], f"{where}.given.fixtures"),
+            network=_network(given.get("network"), given.get("fixtures") or [], f"{where}.given.network"),
         ))
+        if not out[-1].network and any(s.expect and s.expect.net_tasks is not None for s in out[-1].when + out[-1].then):
+            raise ScenarioError(f"{where}: `net_tasks` без `given.network` — журнала двойника нет, и ноль задач был бы "
+                                "не замером, а пустым входом")
     if not out:
         raise ScenarioError(f"{path.name}: ни одного сценария — пустой файл красит прогон зелёным ни за что")
     return out
@@ -311,13 +366,54 @@ def _declarations(raw: dict, where: str) -> dict[str, dict[str, Any]]:
             raise ScenarioError(f"{where}: декларации `{name}` нет в каталоге деклараций или порча не названа")
         data = read_yaml(real)
         for key in spoils:
-            node = data
-            for part in str(key).split("."):
-                if not isinstance(node, dict) or part not in node:
-                    raise ScenarioError(f"{where}: в {name} нет ключа `{key}` — порча проверяла бы не то")
-                node = node[part]
+            try:
+                parent, last = spoil_slot(data, str(key))
+            except KeyError:
+                parent, last = {}, ""
+            if isinstance(parent, dict) and last not in parent:
+                raise ScenarioError(f"{where}: в {name} нет ключа `{key}` — порча проверяла бы не то")
         out[str(name)] = {str(k): v for k, v in spoils.items()}
     return out
+
+
+def _fixtures(raw: object, where: str) -> tuple[str, ...]:
+    """Приспособления — имена модулей каталога `fixtures/`; точка входа приспособлением не бывает."""
+    names = tuple(str(name) for name in raw) if isinstance(raw, list) else ()
+    unknown = [n for n in names if n == "sitecustomize" or not (FIXTURES / f"{n}.py").is_file()]
+    if not isinstance(raw, list) or unknown:
+        known = sorted(p.stem for p in FIXTURES.glob("*.py") if p.stem != "sitecustomize")
+        raise ScenarioError(f"{where}: приспособления — список имён из {known}, получено {raw!r}")
+    return names
+
+
+def _network(raw: object, fixtures: object, where: str) -> dict[str, Any]:
+    """Сценарий сети — по форме двойника (`parse_script`) и только с приспособлением `net_double`: один источник истины
+    о том, что сеть сервера подменена."""
+    if not raw:
+        return {}
+    if not isinstance(fixtures, list) or "net_double" not in fixtures:
+        raise ScenarioError(f"{where}: сценарий сети без приспособления `net_double` в `given.fixtures` — сеть боевая")
+    try:
+        return parse_script(raw)
+    except ValueError as exc:
+        raise ScenarioError(f"{where}: {exc}") from None
+
+
+def server_env(scenario: Scenario) -> dict[str, str]:
+    """Среда своего сервера сценария: копия деклараций с порчей (`MCP_CONFIG`) и приспособления (`VPM_FIXTURES`, каталог
+    точки входа первым на `PYTHONPATH`). Пусто — сценарий идёт на общем сервере файла."""
+    env = {}
+    if scenario.declarations or scenario.network:   # сценарий сети пишет состояние у корня проекта — в копии, не в дереве
+        env["MCP_CONFIG"] = str(declarations_copy(scenario.declarations))
+    if scenario.fixtures:
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(FIXTURES), os.environ.get("PYTHONPATH", ""))))
+        env["VPM_FIXTURES"] = ",".join(scenario.fixtures)
+    if scenario.network:
+        script = Path(tempfile.mkdtemp(prefix="vpm-net-")) / "network.json"
+        atexit.register(shutil.rmtree, script.parent, ignore_errors=True)
+        script.write_text(json.dumps(scenario.network, ensure_ascii=False), encoding="utf-8")
+        env["NET_DOUBLE"] = str(script)
+    return env
 
 
 # ═══ Исполнение ═══
@@ -494,6 +590,11 @@ class Runner:
     def run(self, scenario: Scenario) -> list[Check]:
         checks: list[Check] = []
         results: dict[str, Any] = {}
+        if scenario.network:
+            unguarded = self._net_unguarded()
+            checks.append(Check(scenario.id, "двойник сети поставлен до первого шага", not unguarded, unguarded))
+            if unguarded:   # ни одного шага: без двойника первый вызов ушёл бы в настоящую сеть (и с ключом провайдера)
+                return checks
         for rel, content in scenario.files.items():
             self.srv.write(rel, content)
         for step in list(scenario.when) + list(scenario.then):
@@ -544,6 +645,7 @@ class Runner:
               return_observed: bool = False):
         args = _resolve(step.args, results)
         console_from = len(self.srv.console.lines)
+        tasks_from = self._net_tasks() if step.expect and step.expect.net_tasks is not None else None
         if step.run:
             observed = self._command(step, args)
         elif step.python:
@@ -570,7 +672,8 @@ class Runner:
                             "message": rpc.text(envelope)[:400], "data": rpc.data(envelope) or {},
                             "reaction_class": str((rpc.structured(envelope) or {}).get("reaction_class") or ""),
                             "recovery": (rpc.structured(envelope) or {}).get("recovery") or {},
-                            "facts": [str(f.get("type") or "") for f in (rpc.facts(envelope) or [])]}
+                            "facts": [str(f.get("type") or "") for f in (rpc.facts(envelope) or [])],
+                            "detail": rpc.detail(envelope), "top": sorted(rpc.structured(envelope))}
             else:
                 # Ответ протокола — это конверт целиком: у `tools/list` нет ни фактов, ни рекавери,
                 # и подставлять их пустыми честнее, чем притворяться вызовом инструмента.
@@ -581,6 +684,11 @@ class Runner:
                             "data": envelope.get("result") or {},
                             "reaction_class": "", "recovery": {}, "facts": []}
             observed["http"] = status
+            observed["wire"] = json.dumps(envelope, ensure_ascii=False)
+        if tasks_from is not None:
+            observed["net_tasks"] = self._net_tasks() - tasks_from
+        if step.expect and step.expect.task_error:
+            observed["task_error"] = _resolve(step.expect.task_error, results)   # `${шаг.путь}` в фактах — id прошлых шагов
         if step.alias:
             results[step.alias] = observed["data"]
         # У команды своей консоли сервера нет: её вывод И ЕСТЬ то, что читают глазами, поэтому
@@ -618,6 +726,36 @@ class Runner:
                 "data": {"exit": done.returncode}, "reaction_class": "", "recovery": {},
                 "facts": [], "output": done.stdout + done.stderr}
 
+    def _net_records(self) -> list[dict]:
+        """Журнал двойника сети сервера (`JOURNAL` в его журналах); нет файла — пусто."""
+        try:
+            lines = (Path(self.srv.logs) / JOURNAL).read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            return []
+        return [json.loads(line) for line in lines if line.strip()]
+
+    def _net_tasks(self) -> int:
+        """Задачи у провайдера: записи журнала двойника с `task` (POST дошёл, даже если ответ оборван)."""
+        return sum(1 for record in self._net_records() if record.get("task") is True)
+
+    def _net_unguarded(self) -> str:
+        """Чего не хватает до сети под двойником: первая запись журнала — объявление установки (`installed` ⊇ SEAMS,
+        `tripwires` ⊇ BYPASS); пусто — двойник стоит."""
+        records = self._net_records()
+        if not records:
+            return f"журнала `{JOURNAL}` нет — приспособление net_double не поставило двойник"
+        first = records[0]
+        missing = sorted(set(SEAMS) - set(first.get("installed") or [])) + sorted(
+            set(BYPASS) - set(first.get("tripwires") or []))
+        return f"двойник net_double не закрыл {missing} — первая запись журнала: {first}" if missing else ""
+
+    def _canary_in_logs(self, canary: str) -> list[str]:
+        """Файлы журналов сервера, где лежит канарейка — как есть или в экранировании JSON (`\\uXXXX`)."""
+        forms = {canary.encode("utf-8"), json.dumps(canary)[1:-1].encode("utf-8")}
+        root = Path(self.srv.logs)
+        return sorted(str(p.relative_to(root)) for p in root.rglob("*")
+                      if p.is_file() and any(form in p.read_bytes() for form in forms))
+
     def _verify(self, scenario: Scenario, step: Step, got: dict, console: str) -> list[Check]:
         exp = step.expect
         if exp is None:
@@ -628,6 +766,11 @@ class Runner:
         if exp.http is not None:
             out.append(Check(scenario.id, f"{tag} → HTTP {exp.http}", got.get("http") == exp.http,
                              f"пришёл {got.get('http')}"))
+        if exp.net_tasks is not None:
+            out.append(Check(scenario.id, f"{tag} → задач у провайдера {exp.net_tasks}",
+                             got.get("net_tasks") == exp.net_tasks,
+                             f"дошло {got.get('net_tasks')} (журнал двойника `{JOURNAL}` в журналах сервера) · совет: "
+                             "больше — вызов повторён после отправки, меньше — запрос не ушёл или ушёл мимо маршрута"))
 
         if exp.open:
             # Объявлено ЖЕЛАЕМОЕ поведение при открытой находке: сегодня его нет, и это baseline.
@@ -651,6 +794,10 @@ class Runner:
             out.append(Check(scenario.id, f"{tag} → {exp.code}", got["code"] == exp.code,
                              f"пришло {got['code'] or 'УСПЕХ'}: {got['message']} · "
                              f"совет: {self._hint(got['code'], exp.code)}"))
+            if step.tool:
+                # Одно имя — один тип: `facts` наверху — список фактов успеха; факты причины отказа живут под `error`.
+                out.append(Check(scenario.id, f"{tag} → у отказа нет `facts` наверху", "facts" not in got.get("top", []),
+                                 f"ключи structuredContent: {got.get('top')}"))
             if exp.reaction_class:
                 # Класс объявлен реестром: если на проводе другой, теряется он по дороге,
                 # а не «сценарий ошибся» — это разрыв паритета контракта, а не опечатка.
@@ -675,6 +822,36 @@ class Runner:
         for fact in exp.facts:
             out.append(Check(scenario.id, f"{tag} → факт {fact}", fact in got["facts"],
                              f"факты ответа: {got['facts']}"))
+        if exp.canary:
+            # Значение секрета в улике не печатается: строка провала называет только место.
+            out.append(Check(scenario.id, f"{tag} → канарейки нет в ответе", exp.canary not in got.get("wire", ""),
+                             "секрет в ответе сервера (конверт JSON-RPC: текст, structuredContent)"))
+            out.append(Check(scenario.id, f"{tag} → канарейки нет в консоли", exp.canary not in console,
+                             "секрет в консоли сервера"))
+            leaked = self._canary_in_logs(exp.canary)
+            out.append(Check(scenario.id, f"{tag} → канарейки нет в журналах сервера", not leaked,
+                             f"секрет в файлах журналов: {leaked}"))
+        if exp.task_error:
+            want = got.get("task_error") or exp.task_error
+            tasks = got["data"].get("tasks") if isinstance(got["data"], dict) else None
+            one = tasks[0] if isinstance(tasks, list) and len(tasks) == 1 and isinstance(tasks[0], dict) else {}
+            task = one.get("task") or {}
+            # Ошибка задания — у задания, завершённого отказом; отказ элемента — у элемента без задания.
+            error = ((task.get("error") if task.get("status") == "failed" and not one.get("error") else None)
+                     if want["in"] == "task" else (one.get("error") if not task else None)) or {}
+            out.append(Check(scenario.id, f"{tag} → {want['in']}: {want['code']}",
+                             error.get("code") == want["code"]
+                             and (not want.get("class") or error.get("reaction_class") == want["class"]),
+                             f"элемент ответа: {json.dumps(one or tasks, ensure_ascii=False)[:400]}"))
+            for key, value in (want.get("facts") or {}).items():
+                found = (error.get("facts") or {}).get(key)
+                out.append(Check(scenario.id, f"{tag} → {want['in']}: факт {key} = {value!r}", found == value,
+                                 f"пришло {found!r}"))
+        detail = got.get("detail") or {}
+        for path, want in exp.detail.items():
+            found = dig(detail, path)
+            out.append(Check(scenario.id, f"{tag} → отказ: {path} = {want!r}", found == want,
+                             f"пришло {found!r}{_advice(detail, path, found)}"))
         for path, want in exp.data.items():
             found = dig(got["data"], path)
             out.append(Check(scenario.id, f"{tag} → {path} = {want!r}", found == want,

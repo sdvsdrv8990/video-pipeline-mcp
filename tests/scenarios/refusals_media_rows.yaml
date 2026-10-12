@@ -1,0 +1,41 @@
+# Коды отказа медиа, которые рождает строка листа провайдеров канала (`given.files`): до адаптера и сети.
+# Каждая книга — одна причина; законная пара тех же вызовов — refusals_media.yaml (строка локального провайдера).
+
+- scenario: rcode_media_row_provider_refusals
+  why: провайдер с ключом без ключа, раннер не поднят, все строки на пределе, провайдер не объявлен — свой код до вызова
+  род: отрицательный
+  given:
+    files:
+      ряды/ключ/read.json: |
+        {"RESOURCE_LIMITS": {"schema": {}, "rows": {"L1": {"resource_type": "tts_characters",
+          "provider": "ElevenLabs", "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+          "warning_threshold": -1, "model": "eleven_multilingual_v2", "response_format": "mp3", "speed": 1.0,
+          "usage_unit": "character"}}}}
+      ряды/раннер/read.json: |
+        {"RESOURCE_LIMITS": {"schema": {}, "rows": {"L1": {"resource_type": "images",
+          "provider": "Local_runner", "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+          "warning_threshold": -1, "model": "sd-turbo", "response_format": "png", "speed": 1.0,
+          "usage_unit": "call"}}}}
+      ряды/предел/read.json: |
+        {"RESOURCE_LIMITS": {"schema": {}, "rows": {"L1": {"resource_type": "tts_characters",
+          "provider": "Local_piper", "fallback_provider": "", "daily_limit": 1, "current_usage": 1,
+          "warning_threshold": -1, "model": "нет-такой-модели.onnx", "response_format": "wav", "speed": 1.0,
+          "usage_unit": "character"}}}}
+      ряды/чужой/read.json: |
+        {"RESOURCE_LIMITS": {"schema": {}, "rows": {"L1": {"resource_type": "tts_characters",
+          "provider": "Нет_такого_провайдера", "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+          "warning_threshold": -1, "model": "м", "response_format": "wav", "speed": 1.0,
+          "usage_unit": "character"}}}}
+  when:
+    - call: media_generate
+      with: {table: ряды/ключ, resource_type: tts_characters, input: текст, scene_id: s1, video_slug: demo}
+      expect: {ok: false, code: PROVIDER_KEY_MISSING}
+    - call: media_generate
+      with: {table: ряды/раннер, resource_type: images, input: кадр, scene_id: s1, video_slug: demo}
+      expect: {ok: false, code: RUNNER_NOT_RUNNING}
+    - call: media_generate
+      with: {table: ряды/предел, resource_type: tts_characters, input: текст, scene_id: s1, video_slug: demo}
+      expect: {ok: false, code: PROVIDER_EXHAUSTED}
+    - call: media_generate
+      with: {table: ряды/чужой, resource_type: tts_characters, input: текст, scene_id: s1, video_slug: demo}
+      expect: {ok: false, code: PROVIDER_ADAPTER_MISSING}

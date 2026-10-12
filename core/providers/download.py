@@ -8,6 +8,7 @@
 
 import contextlib
 import errno
+import functools
 import hashlib
 import ipaddress
 import json
@@ -16,6 +17,7 @@ import math
 import os
 import random
 import re
+import secrets
 import socket
 import time
 import urllib.request
@@ -25,8 +27,8 @@ from typing import Any, Generic, TypeVar
 
 from core.contracts import ContractError
 from core.declaration import Declaration
-from core.declaration_schemas import (RESULT_FETCH, AddressedPolicy, AnswerPolicy, FetchPolicy, RequestPolicy,
-                                      ResultFetchPolicy, Slot, declared_host)
+from core.declaration_schemas import (RESULT_FETCH, AddressedPolicy, AnswerPolicy, CallCodes, CallPolicy, FetchPolicy,
+                                      RequestPolicy, ResultFetchPolicy, Slot, declared_host)
 from core.paths import Files, PathEscapeError
 from .task_cycle import TaskCycleError
 
@@ -88,11 +90,12 @@ def file_digest(path: Path, algo: str, mark=None) -> str:
 
 
 class _Again(Exception):
-    """Попытка оборвалась так, что повтор осмыслен (обрыв, перегрузка, молчание); несёт отказ на случай исчерпания."""
+    """Попытка оборвалась так, что повтор осмыслен (обрыв, перегрузка, молчание); несёт отказ на случай исчерпания и
+    `applied` — запрос мог дойти и выполниться: неповторяемый вызов (`Fetcher.call`) такую попытку не повторяет."""
 
-    def __init__(self, refusal: ContractError, wait: float = 0.0):
+    def __init__(self, refusal: ContractError, wait: float = 0.0, *, applied: bool = True):
         super().__init__(refusal.code)
-        self.refusal, self.wait = refusal, wait
+        self.refusal, self.wait, self.applied = refusal, wait, applied
 
 
 P = TypeVar("P", bound=RequestPolicy)
@@ -177,16 +180,17 @@ class Fetcher(Generic[P]):
         сокращает; бюджета нет — отказ до запроса."""
         budget = policy.deadline_sec if within is None else min(policy.deadline_sec, within)
         if budget <= 0:
-            raise self._failed(policy.hosts[0], "срок обращения исчерпан до запроса")
+            raise self._late(policy.hosts[0], "срок обращения исчерпан до запроса")
         return self.clock() + budget
 
-    def _retry(self, attempt, deadline: float | None = None):
+    def _retry(self, attempt, deadline: float | None = None, *, replayable: bool = True):
         """Попытка до исхода — один цикл повтора для всех приёмников двери. Повторимое (`_Again`) — пауза: своя растёт
         вдвое от `backoff_sec` до `backoff_max_sec` с разбросом `jitter`; срок сервера (Retry-After) не короче своей и до
         `retry_after_max_sec`. Последний `_Again` уходит наружу — отказ это или «не узнано», решает приёмник — после
         `attempts` попыток, а раньше, если сервер назвал срок длиннее `retry_after_max_sec` или пауза не оставляет
         времени до срока обращения `deadline` (часы двери): названный сервером срок — в фактах отказа, повторять ли
-        позже, решает вызывающий."""
+        позже, решает вызывающий. Неповторяемый вызов (`replayable` False) повторяет только попытку, чей запрос не
+        применён (`_Again.applied` False)."""
         cap, jitter = self.policy.backoff_max_sec, self.policy.jitter
         pause, left = self.policy.backoff_sec, self.policy.attempts
         while True:
@@ -196,7 +200,7 @@ class Fetcher(Generic[P]):
                 left -= 1
                 wait = max(pause * (1 + jitter * self.rng.random()), e.wait)
                 late = deadline is not None and self.clock() + wait >= deadline
-                if not left or e.wait > self.policy.retry_after_max_sec or late:
+                if not left or e.wait > self.policy.retry_after_max_sec or late or (e.applied and not replayable):
                     if e.wait:
                         e.refusal.with_facts(retry_after_sec=e.wait)
                     raise
@@ -216,10 +220,12 @@ class Fetcher(Generic[P]):
 
     @staticmethod
     def _usable(files: Files, path, owner: str, part: Path, size: int | None) -> tuple[int, str, str]:
-        """Свой остаток, годный для докачки — (длина, валидатор, хост); без валидатора или длиннее состава — сброшен."""
+        """Свой остаток, годный для докачки — (длина, валидатор, хост); без валидатора, с валидатором, который библиотеки
+        запроса не понесут (`_carried`), или длиннее состава — сброшен."""
         note = (files.noted(path, owner) or {}) if part.exists() else {}
         validator = str(note.get("etag") or note.get("last_modified") or "")
-        if part.exists() and (not validator or (size is not None and part.stat().st_size > size)):
+        if part.exists() and (not validator or not Fetcher._carried("If-Range", validator)
+                              or (size is not None and part.stat().st_size > size)):
             files.drop(path, owner)
         if not part.exists():
             return 0, "", ""
@@ -252,22 +258,23 @@ class Fetcher(Generic[P]):
             response.close()
         return host, restarted
 
-    def _status(self, response, host: str, refuse=None) -> int:
+    def _status(self, response, host: str, refuse=None, unprocessed: tuple[int, ...] = ()) -> int:
         """Код ответа, судимый одинаково у всех приёмников: повторимый по `retry_on` — `_Again` со сроком сервера как
-        назван (потолки судит `_retry`), 4xx и 5xx — отказ, иначе код как есть. Отказ переводит потребитель
-        (`refuse(ответ)`), если знает причины своего источника, иначе — код политики."""
+        назван (потолки судит `_retry`), 4xx и 5xx — отказ, иначе код как есть. Код из `unprocessed` — запрос не применён
+        (сервер его не обработал), прочий повторимый — мог примениться. Отказ переводит потребитель (`refuse(ответ)`),
+        если знает причины своего источника, иначе — код политики."""
         status = response.status_code
         if status not in self.policy.retry_on and status < REFUSED_FROM:
             return status
         refusal = refuse(response) if refuse else self._failed(host, status)
         if status in self.policy.retry_on:
-            raise self._again(response, refusal)
+            raise self._again(response, refusal, applied=status not in unprocessed)
         raise refusal
 
     @staticmethod
-    def _again(response, refusal: ContractError) -> _Again:
+    def _again(response, refusal: ContractError, *, applied: bool = True) -> _Again:
         """Повторимый ответ: отказ на случай исчерпания и срок, названный сервером, как назван (потолки судит `_retry`)."""
-        return _Again(refusal, retry_after(response.headers.get("Retry-After"), math.inf, 0.0))
+        return _Again(refusal, retry_after(response.headers.get("Retry-After"), math.inf, 0.0), applied=applied)
 
     @staticmethod
     def _append(files: Files, path, owner: str, part: Path) -> int:
@@ -282,14 +289,18 @@ class Fetcher(Generic[P]):
             raise PathEscapeError(files.name(part)) from e
 
     def _open(self, client, url: str, headers: dict | None, offset: int, validator: str, held: str, *,
-              method: str = "GET", stop: str = "", deadline: float | None = None):
+              method: str = "GET", stop: str = "", deadline: float | None = None, payload: dict | None = None,
+              cut=None):
         """Запрос с переходами — (ответ потоком, конечный хост). Каждый адрес судится до запроса.
 
         Напрямую — соединение на судимый IP (`Host` и SNI — исходное имя); через прокси среды — по имени, его разрешает
         прокси, а суд схемы и хоста тот же. Заголовки потребителя (ключ) уходят только исходному хосту; `Range` с
         `If-Range` — только хосту, чей валидатор лежит в заметке: валидатор одного сервера другому ничего не говорит.
+        Заголовок, чьё значение библиотеки запроса не понесут (`_carried`), — отказ с его именем до разрешения имени.
         Ответ с заголовком `stop` возвращается, даже если это переход. При сроке обращения `deadline` срок фазы запроса
         урезан до половины остатка: соединение и ответ вместе в него укладываются; остатка нет — запрос не уходит.
+        `payload` — тело запроса ключами `build_request` (`content`, `data`, `files`, `json`); `cut` — отказ обрыва ответа
+        вызова (`_dropped`).
         """
         import httpx
 
@@ -303,18 +314,23 @@ class Fetcher(Generic[P]):
                 sent.update({"Range": f"bytes={offset}-", "If-Range": validator})
             # Файл — байты как пришли (NI-04): длина, предел и смещение Range — в одном представлении, без распаковки.
             sent.update({"Host": target.netloc.decode("ascii"), "Accept-Encoding": "identity"})
+            unfit = next((name for name, value in sent.items() if not self._carried(name, value)), None)
+            if unfit:
+                # Значение может быть секретом: в отказе только имя заголовка.
+                raise ContractError("REQUEST_HEADER_INVALID", facts={"host": target.host, "header": unfit})
             timeout = httpx.USE_CLIENT_DEFAULT if deadline is None else self._phase(target.host, deadline)
             route = client(proxy)
             if proxy:
-                request = route.build_request(method, target, headers=sent, timeout=timeout)
+                request = route.build_request(method, target, headers=sent, timeout=timeout, **(payload or {}))
             else:
                 request = route.build_request(method, target.copy_with(host=self._judge(target)), headers=sent,
-                                              timeout=timeout, extensions={"sni_hostname": target.host})
+                                              timeout=timeout, extensions={"sni_hostname": target.host},
+                                              **(payload or {}))
             try:
                 self.mark()
                 response = route.send(request, stream=True)
             except httpx.TransportError as e:
-                raise _Again(self._failed(target.host, type(e).__name__)) from e
+                raise self._dropped(target.host, e, cut) from e
             location = response.headers.get("location")
             if response.status_code not in REDIRECTS or not location or (stop and stop in response.headers):
                 return response, target.host
@@ -327,7 +343,7 @@ class Fetcher(Generic[P]):
         (повтор `_retry` уже не начнёт)."""
         left = deadline - self.clock()
         if left <= 0:
-            raise _Again(self._failed(host, "срок обращения исчерпан"))
+            raise _Again(self._late(host, "срок обращения исчерпан"), applied=False)
         return min(self.policy.timeout_sec, left / 2)
 
     def _proxy(self, target) -> str:
@@ -352,7 +368,7 @@ class Fetcher(Generic[P]):
         try:
             found = self.resolve(target.host, target.port or PORTS[target.scheme], type=socket.SOCK_STREAM)
         except OSError as e:
-            raise _Again(self._failed(target.host, type(e).__name__)) from e
+            raise self._dropped(target.host, e) from e
         addresses = list(dict.fromkeys(str(info[4][0]) for info in found))
         inner = next((a for a in addresses if inner_address(a)), None) if self.policy.block_private else None
         if inner or not addresses:
@@ -370,12 +386,12 @@ class Fetcher(Generic[P]):
     @staticmethod
     def _validator(response) -> dict:
         """Валидатор для `If-Range`: сильный ETag, иначе Last-Modified; слабый ETag докачку не разрешает
-        (RFC 9110 §13.1.5)."""
+        (RFC 9110 §13.1.5); значение, которое библиотеки запроса не понесут обратно (`_carried`), — не валидатор."""
         etag = str(response.headers.get("etag") or "")
-        if etag and not etag.startswith("W/"):
+        if etag and not etag.startswith("W/") and Fetcher._carried("If-Range", etag):
             return {"etag": etag}
         modified = str(response.headers.get("last-modified") or "")
-        return {"last_modified": modified} if modified else {}
+        return {"last_modified": modified} if modified and Fetcher._carried("If-Range", modified) else {}
 
     @staticmethod
     def _length(response, offset: int) -> int | None:
@@ -397,14 +413,16 @@ class Fetcher(Generic[P]):
         return self.policy.silence_sec
 
     def take(self, response, files: Files, path, owner: str, *, host: str, size: int | None = None,
-             offset: int = 0) -> int:
+             offset: int = 0, deadline: float | None = None, cut=None) -> int:
         """Тело открытого ответа — в остаток владельца без своего буфера: принятое до обрыва лежит на диске (MF-04).
         Длина — из состава или заявленная ответом; больше состава или предела `max_bytes` политики — остаток снят и отказ
-        кодом; обрыв или недобор — `_Again` с принятым, мера работы — та же, что у ответа в память (`_pour`). Сжатое тело
-        вопреки `identity` — отказ до записи (`_identity`)."""
+        кодом; обрыв или недобор — `_Again` с отказом `cut(хост, принято, ждали)` (по умолчанию «не дочитан» загрузки),
+        мера работы и срок обращения `deadline` — те же, что у ответа в память (`_pour`). Сжатое тело вопреки `identity`
+        — отказ до записи (`_identity`)."""
         self._identity(response, host)
         with os.fdopen(self._append(files, path, owner, files.remnant(path, owner)), "ab") as fh:
-            got, over = self._pour(response, fh.write, host=host, size=size, offset=offset, cut=self._short)
+            got, over = self._pour(response, fh.write, host=host, size=size, offset=offset, cut=cut or self._short,
+                                   deadline=deadline)
         if over:
             files.drop(path, owner)
             if over == "limit":
@@ -413,18 +431,21 @@ class Fetcher(Generic[P]):
                                 facts={"part": files.name(files.place(path)), "expected": size, "got": got})
         return got
 
-    def receive(self, response, files: Files, path, owner: str, *, accept) -> Path:
+    def receive(self, response, files: Files, path, owner: str, *, accept, host: str = "",
+                deadline: float | None = None, cut=None) -> Path:
         """Тело уже открытого ответа API в файл через остаток владельца (адрес судил вызывающий): тип — из объявленных до
-        записи (NI-03), обрыв — отказ без повтора и без остатка, POST не докачивается (NI-05); целое встаёт под имя."""
+        записи (NI-03), обрыв и срок обращения `deadline` — отказ без повтора и без остатка, POST не докачивается
+        (NI-05); целое встаёт под имя. `host` — имя, к которому шёл запрос (соединение дверью идёт на судимый IP); `cut` —
+        отказ обрыва от двери вызова: каким кодом звать обрыв, решает повторяемость вызова, а не сток."""
         self._body()
-        host = response.url.host
+        host = host or response.url.host
         kind = str(response.headers.get("content-type") or "").split(";")[0].strip().lower()
         if kind not in accept:
             raise self._failed(host, f"Content-Type {kind or '—'}")
         files.drop(path, owner)
         files.remnant(path, owner).parent.mkdir(parents=True, exist_ok=True)
         try:
-            self.take(response, files, path, owner, host=host)
+            self.take(response, files, path, owner, host=host, deadline=deadline, cut=cut)
         except _Again as e:
             files.drop(path, owner)
             raise e.refusal from e
@@ -493,30 +514,33 @@ class Fetcher(Generic[P]):
                 body, host = self._retry(lambda: self._recall(client, url, headers, refused, deadline), deadline)
             except _Again as e:
                 raise e.refusal from e
-        try:
-            return json.loads(body)
-        except ValueError as e:
-            raise self._failed(host, "ответ не JSON") from e
+        return self._parsed(body, host)
 
-    def _recall(self, client, url: str, headers: dict | None, refused, deadline: float) -> tuple[bytes, str]:
-        """Одна попытка ответа в память — (тело, конечный хост); повторимое — `_Again`, отказ источника — `_status`."""
+    def _recall(self, client, url: str, headers: dict | None, refused, deadline: float, *, method: str = "GET",
+                payload: dict | None = None, sink=None, unprocessed: tuple[int, ...] = (), cut=None) -> tuple[Any, str]:
+        """Одна попытка ответа в память — (тело, конечный хост), со стоком — (что вернул `sink(ответ, хост, срок, cut)`,
+        хост); повторимое — `_Again`, отказ источника — `_status`, обрыв — отказ `cut` (по умолчанию `_cut`)."""
         import httpx
 
-        response, host = self._open(client, url, headers, 0, "", "", deadline=deadline)
+        response, host = self._open(client, url, headers, 0, "", "", method=method, deadline=deadline, payload=payload,
+                                    cut=cut)
         try:
             self._status(response, host, refused and (lambda r: refused(httpx.Response(
-                r.status_code, headers=r.headers, content=self._kept(r, host, deadline), request=r.request))))
-            return self._kept(response, host, deadline), host
+                r.status_code, headers=r.headers, content=self._kept(r, host, deadline, cut), request=r.request))),
+                unprocessed)
+            if sink:
+                return sink(response, host, deadline, cut), host
+            return self._kept(response, host, deadline, cut), host
         finally:
             response.close()
 
-    def _kept(self, response, host: str, deadline: float) -> bytes:
-        """Тело ответа в память: байты как пришли, не больше `max_bytes` и до срока обращения; обрыв — `_Again` с кодом
-        политики: остатка для докачки у ответа нет."""
+    def _kept(self, response, host: str, deadline: float, cut=None) -> bytes:
+        """Тело ответа в память: байты как пришли, не больше `max_bytes` и до срока обращения; обрыв — `_Again` с отказом
+        обрыва (`cut`, по умолчанию `_cut`): остатка для докачки у ответа нет."""
         self._identity(response, host)
         body = bytearray()
         _, over = self._pour(response, body.extend, host=host, size=None, offset=0, deadline=deadline,
-                             cut=lambda host, got, _expected: self._failed(host, f"ответ оборван на {got} байт"))
+                             cut=cut or self._cut)
         if over:
             raise self._too_large()
         return bytes(body)
@@ -547,7 +571,7 @@ class Fetcher(Generic[P]):
         try:
             for chunk in response.iter_bytes():
                 if deadline is not None and self.clock() >= deadline:
-                    raise _Again(self._failed(host, f"срок обращения истёк на {offset} байт"))
+                    raise _Again(self._late(host, f"срок обращения истёк на {offset} байт"))
                 offset += len(chunk)
                 if size is not None and offset > size:
                     return offset, "size"
@@ -575,6 +599,98 @@ class Fetcher(Generic[P]):
         return ContractError("DOWNLOAD_TOO_LARGE", facts={"limit_mb": round(self._body().max_bytes / 2**20, 3),
                                                           "key": key})
 
+    def call(self, url: str, headers: dict | None = None, *, method: str, payload: dict | None = None, sink=None,
+             refused=None, within: float | None = None) -> Any:
+        """Вызов API методом с телом (`payload` — ключи `build_request`) — та же дверь (NI-09): суд адреса до запроса,
+        соединение на судимый IP, ключ — только исходному хосту, `identity`, срок обращения (`deadline_sec`, срок
+        вызывающего `within` его только сокращает). Ответ — JSON в память в пределе `max_bytes`, а со стоком — то, что
+        вернул `sink(ответ, хост, срок)` на открытом потоке после суда кода.
+
+        Повтор (NI-05, RFC 9110 §9.2.2): повторяемый вызов — метод из `idempotent_methods` или с ключом `idempotency_header`
+        (один на вызов, тот же на каждой попытке) — как у прочих приёмников; неповторяемый — только если запрос не
+        применён: не ушёл (имя, соединение, срок до отправки) или ответ из `retry_on ∩ unprocessed`. Отказ источника
+        переводит `refused`; отказы двери — кодами политики (`CallCodes`), срок сервера — в фактах (`retry_after_sec`)."""
+        policy = self._calling()
+        deadline = self._deadline(policy, within)
+        sent = dict(headers or {})
+        replayable = method.upper() in {m.upper() for m in policy.idempotent_methods}
+        if policy.idempotency_header is not None:
+            sent[policy.idempotency_header] = secrets.token_urlsafe()
+            replayable = True
+        cut = functools.partial(self._cut, replayable=replayable)
+        with contextlib.ExitStack() as stack:
+            client = self._routes(stack)
+            try:
+                body, host = self._retry(lambda: self._recall(
+                    client, url, sent, refused, deadline, method=method, payload=payload, sink=sink,
+                    unprocessed=policy.unprocessed, cut=cut), deadline, replayable=replayable)
+            except _Again as e:
+                raise e.refusal from e
+        return body if sink else self._parsed(body, host)
+
+    def _calling(self) -> CallPolicy:
+        """Политика вызова с хостом объявленного адреса (читатель `answers`); иная — ошибка кода вызывающего, до запроса."""
+        if not (isinstance(self.policy, CallPolicy) and self.policy.hosts):
+            raise TypeError("вызов требует CallPolicy с хостом объявленного адреса (читатель answers), "
+                            f"а загрузчик построен с {type(self.policy).__name__}")
+        return self.policy
+
+    def _parsed(self, body: bytes, host: str) -> Any:
+        """JSON из байтов целого ответа (NI-07): кодировку узнаёт разбор, а не угадывание; не JSON — отказ кодом политики."""
+        try:
+            return json.loads(body)
+        except ValueError as e:
+            raise self._failed(host, "ответ не JSON") from e
+
+    def _dropped(self, host: str, error: Exception, cut=None) -> _Again:
+        """Сбой сети на пути запроса — повторимое `_Again`: запрос, который не ушёл (имя, соединение, его срок), не применён,
+        прочее — мог дойти. Код — политики: у вызова (`CallCodes`) не ушедший — `unreached`, истёкшая фаза — `timeout`,
+        оборванный ответ — отказ обрыва вызова (`cut`, по умолчанию `_cut`); у прочих приёмников — `failed` с именем сбоя."""
+        import httpx
+
+        unsent = isinstance(error, (OSError, httpx.ConnectError, httpx.ConnectTimeout))
+        codes, status = self.policy.codes, type(error).__name__
+        if not isinstance(codes, CallCodes):
+            refusal = self._failed(host, status)
+        elif isinstance(error, httpx.TimeoutException):
+            refusal = ContractError(codes.timeout, facts={"host": host, "status": status})
+        elif unsent:
+            refusal = ContractError(codes.unreached, facts={"host": host, "status": status})
+        elif isinstance(error, (httpx.ReadError, httpx.RemoteProtocolError)):
+            refusal = (cut or self._cut)(host, 0, None)
+        else:
+            refusal = self._failed(host, status)
+        return _Again(refusal, applied=not unsent)
+
+    def _cut(self, host: str, got: int, expected: int | None, replayable: bool = True) -> ContractError:
+        """Ответ оборван после отправки: у вызова (`CallCodes`) код по повторяемости — повторяемый «не дочитан»
+        (`corrupt`), неповторяемый — исход неизвестен (`outcome_unknown`: задача могла создаться и списаться), с принятым
+        и заявленным; у прочих приёмников — `failed`: остатка для докачки у ответа нет."""
+        codes = self.policy.codes
+        if isinstance(codes, CallCodes):
+            return ContractError(codes.corrupt if replayable else codes.outcome_unknown,
+                                 facts={"host": host, "got": got, "expected": "—" if expected is None else expected})
+        return self._failed(host, f"ответ оборван на {got} байт")
+
+    def _late(self, host: str, status: str) -> ContractError:
+        """Срок обращения истёк: у вызова (`CallCodes`) — код `timeout`, у прочих приёмников — `failed`."""
+        codes = self.policy.codes
+        return ContractError(codes.timeout if isinstance(codes, CallCodes) else codes.failed,
+                             facts={"host": host, "status": status})
+
+    @staticmethod
+    def _carried(name: str, value: str) -> bool:
+        """Понесут ли значение заголовка библиотеки запроса: httpx его кодирует, h11 принимает (CR, LF, NUL — нет)."""
+        import h11
+        import httpx
+
+        try:
+            # HTTP/1.0 не требует Host: в запросе — только судимый заголовок, и сам Host судится без двойника.
+            h11.Request(method="GET", target="/", headers=httpx.Headers({name: value}).raw, http_version="1.0")
+        except (UnicodeEncodeError, h11.LocalProtocolError):
+            return False
+        return True
+
 
 class Unreached(str):
     """Причина «длина не узнана» от `Fetcher.length`, когда дверь исчерпала повторы — хост не достигнут."""
@@ -588,11 +704,19 @@ def results(config_file: str | Path, **seams) -> Fetcher[ResultFetchPolicy]:
 
 
 def answers(decl: Declaration, slot: Slot[A], url: str, **seams) -> Fetcher[A]:
-    """Загрузчик обращения к объявленному адресу (ответ в память, статус) по разделу `slot` декларации `decl`: хост —
-    хост объявленного адреса `url` (`ProviderUrl` — хост без подстановки `{…}`), списка хостов рядом с адресом нет.
-    Внутреннюю сеть политика открывает (`block_private: false`) только литералу петли — иначе отказ до запроса."""
-    policy = decl.section(*slot.section, schema=slot.schema)
+    """Загрузчик обращения к объявленному адресу (ответ в память, статус, вызов) по разделу `slot` декларации `decl` —
+    судья адреса `addressed`."""
+    return addressed(decl.section(*slot.section, schema=slot.schema), slot, url, **seams)
+
+
+def addressed(policy: A, slot: Slot[A], url: str, **seams) -> Fetcher[A]:
+    """Загрузчик обращения к объявленному адресу по политике `policy` раздела `slot` (вызывающий мог её перекрыть, суд
+    схемы — его): хост — хост объявленного адреса `url` (`ProviderUrl` — хост без подстановки `{…}`), списка хостов рядом
+    с адресом нет. Внутреннюю сеть (`block_private: false`) и открытый канал (схема не https) политика открывает только
+    литералу петли — там сеть не пересекается; иначе отказ до запроса."""
     host = declared_host(url)
-    if not policy.block_private and not _loopback(host):
-        raise ContractError("DOWNLOAD_FORBIDDEN", facts={"host": host, "allowed": "литерал петли (block_private: false)"})
+    opened = [*(["block_private: false"] if not policy.block_private else []),
+              *(s for s in policy.schemes if s.lower() != "https")]
+    if opened and not _loopback(host):
+        raise ContractError("DOWNLOAD_FORBIDDEN", facts={"host": host, "allowed": f"литерал петли ({', '.join(opened)})"})
     return Fetcher(policy.model_copy(update={"hosts": (host,)}), slot=slot, **seams)

@@ -8,6 +8,7 @@
 import copy
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,7 +23,7 @@ from pydantic import BaseModel, ValidationError, create_model
 
 from core.contracts import ContractError
 from core.declaration import Declaration, Declared
-from core.declaration_schemas import STRICT, Resources
+from core.declaration_schemas import ONLINE_CALL, PACKAGES, REACTIONS, SLOTS, STRICT, Resources
 from core.engine import Engine
 from core.reactions import Reactions
 
@@ -79,6 +80,12 @@ NEED_CASES = [
     ("bool вместо числа", "a:\n  n: true\n", ("a", "n"), int),
     ("число вместо строки", "a:\n  n: 5\n", ("a", "n"), str),
     ("список вместо словаря", "a:\n  n: []\n", ("a", "n"), dict),
+]
+
+# (слот, путь поля-кода от корня файла, чтение): код мимо реестра в поле-коде — отказ двери с этим путём (истина — порча)
+CODE_CASES = [
+    (ONLINE_CALL, ("online", "call", "codes", "timeout"), "раздел"),
+    (PACKAGES, ("index", "fetch", "codes", "failed"), "модель"),
 ]
 
 
@@ -231,6 +238,65 @@ def main():
     check("MCP_CONFIG задан — сервер, установщик и дверь видят один каталог, установщик читает его install.yaml",
           seen.stdout.strip() == "True (False, 'none')", seen.stdout.strip() or seen.stderr.strip()[-200:])
 
+    print("\n== поле-код: код реестра рядом с декларацией — код мимо реестра отказ двери, а не UNKNOWN_ERROR у клиента ==")
+    unpassed = [f"{s.file}:{'.'.join(s.section)}" for s in SLOTS
+                if refusal_of(engine, lambda s=s: read_slot(s, ROOT / "config" / s.file, "раздел"))[0] is not None]
+    check(f"боевые декларации: все {len(SLOTS)} слотов проходят дверь — их коды объявлены в реестре", not unpassed, unpassed)
+    registry = yaml.safe_load((ROOT / "config" / REACTIONS).read_text(encoding="utf-8"))
+    for slot, field, how in CODE_CASES:
+        cfg = Path(tempfile.mkdtemp(prefix="decl-codes-"))
+        shutil.copy(ROOT / "config" / REACTIONS, cfg / REACTIONS)
+        data = yaml.safe_load((ROOT / "config" / slot.file).read_text(encoding="utf-8"))
+        named = ".".join(field)
+        for code, label in ((MARK, "код мимо реестра"), (next(iter(registry)), "код из реестра")):
+            (cfg / slot.file).write_text(yaml.safe_dump(spoil(field, code)(data), allow_unicode=True), encoding="utf-8")
+            said, heard, _ = refusal_of(engine, lambda: read_slot(slot, cfg / slot.file, how))
+            if code != MARK:
+                check(f"{slot.file} ({how}): {label} в {named} — проходит", said is None, said and said.message)
+                continue
+            check(f"{slot.file} ({how}): {label} в {named} — {CODE}, путь от корня файла, правило registry_code",
+                  said is not None and said.code == CODE and f"{named} (registry_code)" in said.message,
+                  said and (said.code, said.message))
+            check(f"{slot.file} ({how}): пришедшего кода нет ни в ответе, ни в журнале",
+                  said is not None and MARK not in repr(said.model_dump()) and not any(MARK in x for x in heard))
+    lone = Path(tempfile.mkdtemp(prefix="decl-lone-")) / PACKAGES.file
+    packages = yaml.safe_load((ROOT / "config" / PACKAGES.file).read_text(encoding="utf-8"))
+    lone.write_text(yaml.safe_dump(spoil(("index", "fetch", "codes", "failed"), MARK)(packages), allow_unicode=True),
+                    encoding="utf-8")
+    said, _, _ = refusal_of(engine, lambda: read_slot(PACKAGES, lone, "модель"))
+    shutil.copy(ROOT / "config" / PACKAGES.file, lone)
+    kept, _, _ = refusal_of(engine, lambda: read_slot(PACKAGES, lone, "модель"))
+    check("файл вне каталога деклараций, реестра рядом нет — судит реестр каталога деклараций прогона: "
+          "код мимо него отказ, боевой код проходит",
+          said is not None and said.code == CODE and "index.fetch.codes.failed (registry_code)" in said.message
+          and kept is None, (said and said.message, kept and kept.message))
+    bare = Path(tempfile.mkdtemp(prefix="decl-bare-"))
+    prior = os.environ.get("MCP_CONFIG")
+    os.environ["MCP_CONFIG"] = str(bare)
+    try:
+        said, _, _ = refusal_of(engine, lambda: read_slot(PACKAGES, lone, "модель"))
+    finally:
+        if prior is None:
+            del os.environ["MCP_CONFIG"]
+        else:
+            os.environ["MCP_CONFIG"] = prior
+    check("реестра нет ни рядом, ни в каталоге деклараций прогона — коды сверять не с чем: TEMPLATE_NOT_FOUND с именем "
+          "реестра, а не пропуск сверки",
+          said is not None and said.code == "TEMPLATE_NOT_FOUND" and REACTIONS in said.message, said and said.message)
+    check("схема без полей-кодов реестра не требует: resources.yaml в каталоге без реестра читается",
+          not (work / REACTIONS).exists() and door(work / "inline.yaml").model is not None)
+    cfg = Path(tempfile.mkdtemp(prefix="decl-reg-"))
+    write(cfg / REACTIONS, registry, 4_000_000_000)
+    shutil.copy(ROOT / "config" / PACKAGES.file, cfg / PACKAGES.file)
+    held = Declared(cfg / PACKAGES.file, ContractError, PACKAGES.file, "", schema=PACKAGES.schema)
+    first, _, _ = refusal_of(engine, lambda: held.model)
+    code = yaml.safe_load((cfg / PACKAGES.file).read_text(encoding="utf-8"))["index"]["fetch"]["codes"]["failed"]
+    write(cfg / REACTIONS, {k: v for k, v in registry.items() if k != code}, 4_000_000_001)
+    said, _, _ = refusal_of(engine, lambda: held.model)
+    check("из реестра убрали код, декларация та же — следующее чтение отказывает с путём, а не держит прежнюю сверку",
+          first is None and said is not None and said.code == CODE and "index.fetch.codes.failed (registry_code)" in said.message,
+          (first and first.message, said and said.message))
+
     print("\n== разрушительное: правка файла посреди работы ==")
     live = work / "live.yaml"
     write(live, real, 3_000_000_000)
@@ -291,6 +357,13 @@ def schema_of(path: tuple, kind: type) -> type[BaseModel]:
     """Схема двери, которая читает то же значение тем же типом: её поле и правило — истина для `need`."""
     inner = create_model("Inner", __config__=STRICT, **{path[1]: (kind, ...)})
     return create_model("Probe", __config__=STRICT, **{path[0]: (inner, ...)})
+
+
+def read_slot(slot, path: Path, how: str):
+    """Слот тем путём двери, который судится: раздел (`section`) или файл целиком (`Declared.model`)."""
+    if how == "модель":
+        return Declared(path, ContractError, slot.file, "", schema=slot.schema).model
+    return Declaration(path, ContractError, slot.file, "").section(*slot.section, schema=slot.schema)
 
 
 if __name__ == "__main__":

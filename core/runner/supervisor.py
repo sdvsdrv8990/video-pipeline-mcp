@@ -192,10 +192,7 @@ class RunnerSupervisor:
         if current["phase"] in ("running", "running_silent"):
             return {**current, "already": True}
         if current["phase"] == "foreign":
-            raise ProviderError(
-                "INVALID_ACTION", f"Порт раннера ({self.base_url}) занят посторонним процессом.",
-                reason="Второй раннер на тот же порт не встанет. Останови занявшего или смени "
-                       "адрес в config/providers.yaml → online.http.")
+            raise ProviderError("RUNNER_PORT_TAKEN", facts={"url": self.base_url})
 
         token = secrets.token_urlsafe(32)
         self.log_file.parent.mkdir(parents=True, exist_ok=True)

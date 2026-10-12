@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT))
 
 from core.declaration import declarations_root
 from tests.harness import AuthProxy, live_server
-from tests.harness.live_server import declarations_copy
+from tests.harness.live_server import _machine_files, declarations_copy
 
 PACKAGE = "@modelcontextprotocol/conformance@latest"
 
@@ -91,11 +91,26 @@ def _declared(root: Path, name: str) -> object:
     return yaml.safe_load((root / name).read_text(encoding="utf-8"))
 
 
+def _untracked(folder: Path, names: set[str]) -> tuple[set[str], str]:
+    """Имена, которых проект не ведёт, и кто это решил: `git check-ignore`; без рабочего дерева git — правила
+    `.gitignore` харнесса (нижняя граница: копия сверяется с её же правилом)."""
+    done = subprocess.run(["git", "-C", str(folder), "check-ignore", "--stdin"], input="\n".join(sorted(names)),
+                          capture_output=True, text=True)
+    if done.returncode in (0, 1):
+        return set(done.stdout.split()), "git check-ignore"
+    return _machine_files(folder)(str(folder), sorted(names)), "правила .gitignore харнесса"
+
+
 print("== 0. Прогон идёт по боевым декларациям, кроме ОДНОГО порога ==")
 live = declarations_root()
-diff_keys = [p.name for p in sorted(live.glob("*.yaml")) if _declared(cfg_dir, p.name) != _declared(live, p.name)]
+diff_keys = [p.name for p in sorted(cfg_dir.glob("*.yaml")) if _declared(cfg_dir, p.name) != _declared(live, p.name)]
 ok(diff_keys == ["firewall.yaml"],
    f"от боевого конфига отличается ровно firewall.yaml ({diff_keys})")
+_names = {p.name for p in live.glob("*.yaml")}
+_left = _names - {p.name for p in cfg_dir.glob("*.yaml")}
+_machine, _judge = _untracked(live, _names)
+ok(_left == _machine, f"в копии нет ровно деклараций, которых проект не ведёт ({_judge}): "
+                      f"нет {sorted(_left)}, не ведёт {sorted(_machine)}")
 fw, src_fw = _declared(cfg_dir, "firewall.yaml"), _declared(live, "firewall.yaml")
 src_fw["rate_limit"].pop("max_requests_per_minute")
 ok(fw["rate_limit"].pop("max_requests_per_minute") == 100000 and fw == src_fw,

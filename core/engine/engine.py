@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import jsonschema
 
 from core.contracts import ContractError, ToolResult, ErrorDetail, Recovery
-from core.capacity import Capacity
+from core.capacity import Capacity, Slots
 from core.declaration_schemas import Resources
 
 log = logging.getLogger(__name__)
@@ -63,8 +63,8 @@ class Engine:
         classes = resources.classes if resources else {}
         self._klass = dict(resources.tools) if resources else {}
         self._offload = {name for name, klass in self._klass.items() if classes[klass].offload}
-        places = {name: Capacity(resources).places(name) for name in classes} if resources else {}
-        self._limits = {name: asyncio.Semaphore(n) for name, n in places.items() if n}
+        # Места — один счёт на процесс у узла ёмкости: его же берут задания узла заданий (CP-05).
+        self.slots = Capacity(resources).slots() if resources else Slots({})
         self._retry_after = {name: body.retry_after_sec for name, body in classes.items() if body.retry_after_sec}
 
     async def _invoke(self, tool: ToolDefinition, params: dict) -> ToolResult:
@@ -72,31 +72,30 @@ class Engine:
 
         Тела хендлеров синхронны (ни одного `await` внутри), поэтому inline-вызов держит ВЕСЬ
         сервер: пока идёт рендер, не отвечает даже `tools/list`. Поток возвращает циклу
-        способность обслуживать остальных; предела одновременности здесь нет.
+        способность обслуживать остальных; предел одновременности — место класса в `slots`.
         """
         # Мест в классе нет — отказываем СРАЗУ. Ожидание внутри вызова уходит за предел клиента
         # и возвращается отказом без кода: решение о повторе принимает вызывающий, а не сервер.
-        limit = self._limits.get(self._klass.get(tool.name, ""))
-        if limit is not None and limit.locked():
-            klass = self._klass[tool.name]
+        klass = self._klass.get(tool.name, "")
+        if not self.slots.take(klass):
             wait = self._retry_after[klass]
             return self._error("RESOURCE_BUSY",
                                f"Класс ресурса '{klass}' занят: свободных мест нет, "
                                f"повтор не раньше чем через {wait} с.",
                                Recovery(reason=f"Повтори не раньше чем через {wait} с либо займись другой задачей."))
-        if tool.name not in self._offload:
-            return await tool.handler(**params)
-        # `handler` объявлен как Awaitable, а не Coroutine: обёртка делает из любого ожидаемого
-        # настоящую корутину, которую можно запустить своим циклом в потоке.
-        awaitable = tool.handler(**params)
+        try:
+            if tool.name not in self._offload:
+                return await tool.handler(**params)
+            # `handler` объявлен как Awaitable, а не Coroutine: обёртка делает из любого ожидаемого
+            # настоящую корутину, которую можно запустить своим циклом в потоке.
+            awaitable = tool.handler(**params)
 
-        async def _run() -> ToolResult:
-            return await awaitable
+            async def _run() -> ToolResult:
+                return await awaitable
 
-        if limit is None:
             return await asyncio.to_thread(lambda: asyncio.run(_run()))
-        async with limit:
-            return await asyncio.to_thread(lambda: asyncio.run(_run()))
+        finally:
+            self.slots.give(klass)
 
     def _error(self, code: str, message: str, recovery: "Recovery", facts: dict | None = None,
                errors: list[dict] | None = None) -> ToolResult:
@@ -188,16 +187,7 @@ class Engine:
                                   f"журнал фактов неполон; дальше молчим, чтобы не залить консоль")
             return result
         except Exception as e:
-            refused = self.refusal(e, name)
-            if refused is not None:
-                return refused
-            # Клиенту — общий текст с номером события, владельцу — причина с трассировкой: текст исключения несёт пути.
-            event = self._incident(name, e)
-            return self._error(
-                "INTERNAL_ERROR",
-                f"Инструмент {name} упал, событие {event}: причина в журнале сервера",
-                Recovery(reason="Внутренняя ошибка сервера"),
-            )
+            return self.failure(name, e)
 
     def _validate(self, tool: ToolDefinition, params: dict) -> ToolResult | None:
         """Проверка params по JSON Schema инструмента: отказ называет место и правило схемы, а не присланное значение
@@ -297,6 +287,17 @@ class Engine:
                      exc.__cause__)
         return self._error(exc.code, exc.message, Recovery(reason=exc.reason, suggested_tool=exc.suggested_tool),
                            facts=exc.facts, errors=exc.errors)
+
+    def failure(self, name: str, exc: BaseException) -> ToolResult:
+        """Исключение работы инструмента — отказ: объявленное — `refusal`, чужое — INTERNAL_ERROR с номером события.
+        Один перевод для вызова и для задания узла заданий (EB-11)."""
+        refused = self.refusal(exc, name)
+        if refused is not None:
+            return refused
+        # Клиенту — общий текст с номером события, владельцу — причина с трассировкой: текст исключения несёт пути.
+        event = self._incident(name, exc)
+        return self._error("INTERNAL_ERROR", f"Инструмент {name} упал, событие {event}: причина в журнале сервера",
+                           Recovery(reason="Внутренняя ошибка сервера"))
 
     def _incident(self, name: str, exc: BaseException) -> str:
         """Причина — в журнал сервера с трассировкой; номер события связывает ответ клиенту с записью."""

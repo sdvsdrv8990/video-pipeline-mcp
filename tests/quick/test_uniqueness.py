@@ -23,7 +23,7 @@ from core.engine import Engine
 from core.ids import IDGenerator
 from core.state import StateManager
 from core.uniqueness import UniquenessEngine, UniquenessError
-import server
+from tests.harness.inprocess import register_basic_tools
 
 CFG = ROOT / "config" / "uniqueness.yaml"
 
@@ -133,7 +133,7 @@ _ws = _tmp / "workspace"
 _ws.mkdir()
 _sm = StateManager(_ws)
 _eng = Engine(state_manager=_sm)
-server.register_basic_tools(_eng, IDGenerator(), _sm)
+register_basic_tools(_eng, IDGenerator(), _sm)
 (_ws / "v1").mkdir()
 
 

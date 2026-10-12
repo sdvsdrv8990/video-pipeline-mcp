@@ -1,0 +1,50 @@
+# Коды узла заданий (звено (в) цепочки TASK_*): причину рождает приспособление `task_node` — три задания засеяны в
+# хранилище узла сервера сценария настоящими путями узла, id — в журнале приспособления (шаг-помощник task_node_ids).
+# Отказ задания живёт в элементе ответа task_status, сам вызов успешен: `task_error` с местом — у задания (`in: task`,
+# задание завершено отказом) или у элемента без задания (`in: element`, запись не читается — не «failed»).
+
+- scenario: rcode_task_interrupted
+  why: задание начал процесс, который умер посреди работы (замок свободен) — task_status называет задание прерванным, а не идущим
+  when:
+    - python: task_node_ids
+      as: ids
+      expect: {ok: true}
+    - call: task_status
+      with: {task_ids: ["${ids.interrupted}"]}
+      expect:
+        ok: true
+        task_error: {in: task, code: TASK_INTERRUPTED, class: server_recoverable,
+                     facts: {task_id: "${ids.interrupted}", tool: сценарий}}
+  given:
+    fixtures: [task_node]
+
+- scenario: rcode_task_stalled
+  why: живой исполнитель держит замок, а признак работы старше предела простоя — task_status называет простой, а не ход работы
+  when:
+    - python: task_node_ids
+      as: ids
+      expect: {ok: true}
+    - call: task_status
+      with: {task_ids: ["${ids.stalled}"]}
+      expect:
+        ok: true
+        task_error: {in: task, code: TASK_STALLED, class: server_recoverable,
+                     facts: {task_id: "${ids.stalled}", tool: сценарий}}
+  given:
+    fixtures: [task_node]
+
+- scenario: rcode_task_record_invalid
+  why: запись законченного задания испорчена на диске — элемент ответа отказывает целостностью с путём записи, без содержимого и не «failed»
+  when:
+    - python: task_node_ids
+      as: ids
+      expect: {ok: true}
+    - call: task_status
+      with: {task_ids: ["${ids.broken}"]}
+      expect:
+        ok: true
+        data_absent: {tasks: испорченная запись}
+        task_error: {in: element, code: TASK_RECORD_INVALID, class: integrity,
+                     facts: {path: "vendor/tasks/${ids.broken}.json"}}
+  given:
+    fixtures: [task_node]

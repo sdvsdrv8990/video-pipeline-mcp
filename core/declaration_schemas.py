@@ -7,20 +7,21 @@
 
 import threading
 import warnings
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from functools import cache
 from types import MappingProxyType
 from typing import Annotated, Generic, Literal, NamedTuple, TypeVar, get_args, get_origin
 from urllib.parse import urlsplit
 
 from pydantic import (AfterValidator, BaseModel, ConfigDict, Field, Strict, StrictBool, StrictFloat, StrictInt,
-                      StrictStr, ValidationError, model_validator)
+                      RootModel, StrictStr, ValidationError, model_validator)
 from pydantic_core import InitErrorDetails, PydanticCustomError
 
 STRICT = ConfigDict(strict=True, frozen=True, extra="forbid")
 ReadOnly = AfterValidator(MappingProxyType)
 Listed = Strict(False)                                  # список YAML принимается кортежем; элементы проверяются строго
 HttpStatus = Annotated[StrictInt, Field(ge=100, le=599)]  # все коды ответа — 100…599 (RFC 9110 §15)
+FieldName = Annotated[StrictStr, Field(pattern=r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")]  # имя поля — token (RFC 9110 §5.1, §5.6.2)
 
 
 class RegistryCode:
@@ -29,6 +30,7 @@ class RegistryCode:
 
 
 ReactionCode = Annotated[StrictStr, RegistryCode()]
+REACTIONS = "server_reactions.yaml"                     # реестр кодов отказа — файл в каталоге деклараций
 
 
 class ResourceClass(BaseModel):
@@ -104,6 +106,15 @@ class FetchCodes(RequestCodes):
     corrupt: ReactionCode
 
 
+class CallCodes(FetchCodes):
+    """…и при вызове API: запрос не ушёл (имя, адрес, соединение), истёк срок фазы или обращения, ответ неповторяемого
+    вызова оборван после отправки — исход неизвестен (`corrupt` — обрыв ответа повторяемого вызова)."""
+
+    unreached: ReactionCode
+    timeout: ReactionCode
+    outcome_unknown: ReactionCode
+
+
 class RequestPolicy(BaseModel):
     """Раздел `fetch` потребителя загрузчика `core.providers.download.Fetcher`, которому тело не отдаётся (длина по HEAD).
 
@@ -172,6 +183,15 @@ class AddressedPolicy(RequestPolicy):
                 "hosts_derived", "хост ответа — из объявленного адреса провайдера, списком не объявляется", ("hosts",))])
         return data
 
+    @model_validator(mode="after")
+    def _attempt_fits(self) -> "AddressedPolicy":
+        # Фаза запроса — меньшее из timeout_sec и половины остатка срока: короче 2 × timeout_sec объявленная фаза не исполнится.
+        if self.deadline_sec < 2 * self.timeout_sec:
+            raise ValidationError.from_exception_data(type(self).__name__, [_gap(
+                "deadline_under_attempt", "срок обращения вмещает одну полную попытку: не меньше 2 × timeout_sec",
+                ("deadline_sec",))])
+        return self
+
 
 class AnswerPolicy(AddressedPolicy, FetchPolicy):
     """Раздел `answer` потребителя, которому загрузчик отдаёт ответ API в память (`Fetcher.answer`): предел обязателен
@@ -184,6 +204,18 @@ class AnswerPolicy(AddressedPolicy, FetchPolicy):
 
 class ProbePolicy(AddressedPolicy):
     """Раздел прозвонки: код и заголовки ответа без тела (`Fetcher.status`) — ключей тела у неё нет."""
+
+
+class CallPolicy(AnswerPolicy):
+    """Раздел `call` — вызов API методом с телом (`Fetcher.call`): ответ в память или потоком в сток. Повторяемый вызов —
+    метод из `idempotent_methods` или объявленный ключ идемпотентности `idempotency_header` (null — провайдер ключа не
+    объявляет); неповторяемый повторяется, только если запрос не применён (RFC 9110 §9.2.2): не ушёл или ответ из
+    `retry_on ∩ unprocessed`."""
+
+    idempotent_methods: Annotated[tuple[StrictStr, ...], Listed]
+    unprocessed: Annotated[tuple[HttpStatus, ...], Listed]
+    idempotency_header: FieldName | None
+    codes: CallCodes
 
 
 def declared_host(url: str) -> str:
@@ -348,6 +380,53 @@ class BookDefaults(BaseModel):
     degrade: Annotated[Mapping[ColumnType, Cell], ReadOnly]
 
 
+class AdviceItem(BaseModel):
+    """Совет в успешном ответе: что, каким инструментом и с какими параметрами — исполним, а не проза."""
+
+    model_config = STRICT
+
+    id: StrictStr
+    text: StrictStr
+    tool: StrictStr
+    params: Annotated[Mapping[StrictStr, object], ReadOnly]
+
+
+class Recommendations(RootModel[Annotated[Mapping[StrictStr, Annotated[tuple[AdviceItem, ...], Listed]], ReadOnly]]):
+    """`config/recommendations.yaml`: ключ совета → советы."""
+
+    model_config = ConfigDict(strict=True, frozen=True)
+
+
+class JobId(BaseModel):
+    """Форма id задания: алфавит и длина. Выдаёт и судит id одна точка — узел заданий (`core/jobs.py`)."""
+
+    model_config = STRICT
+
+    alphabet: StrictStr = Field(min_length=2)
+    length: StrictInt = Field(gt=0)
+
+
+class Jobs(BaseModel):
+    """`config/jobs.yaml`: узел заданий сервера — форма id, каталог записей от дома инстанса, срок хранения конченых,
+    предел молчания живого исполнителя и окно, в котором повтор того же вызова — то же задание."""
+
+    model_config = STRICT
+
+    id: JobId
+    store: StrictStr = Field(min_length=1)
+    retain_sec: StrictInt = Field(gt=0)
+    stale_after_sec: StrictInt = Field(gt=0)
+    dedupe_window_sec: StrictInt = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _window_kept(self) -> "Jobs":
+        # Окно длиннее хранения: уборка снимет запись раньше, чем кончится окно, и повтор заведёт вторую задачу.
+        if self.dedupe_window_sec > self.retain_sec:
+            raise ValidationError.from_exception_data(type(self).__name__, [_gap(
+                "window_over_retain", "окно повтора не длиннее срока хранения retain_sec", ("dedupe_window_sec",))])
+        return self
+
+
 M = TypeVar("M", bound=BaseModel)
 
 
@@ -366,31 +445,40 @@ MODEL_INSTALL = Slot("providers.yaml", ("local", "install"), InstallPolicy)
 MODEL_FETCH = Slot("providers.yaml", ("local", "install", "fetch"), FetchPolicy)
 RESULT_FETCH = Slot("media_tasks.yaml", ("download", "fetch"), ResultFetchPolicy)
 ONLINE_ANSWER = Slot("providers.yaml", ("online", "answer"), AnswerPolicy)
+ONLINE_CALL = Slot("providers.yaml", ("online", "call"), CallPolicy)
 RESULT_ANSWER = Slot("media_tasks.yaml", ("download", "answer"), AnswerPolicy)
 RUNNER_HEALTH = Slot("providers.yaml", ("local", "runner", "health"), AnswerPolicy)
 TUNNEL_PROBE = Slot("tunnel_diagnostics.yaml", ("прозвонка",), ProbePolicy)
-SLOTS = (RESOURCES, PACKAGES, MODEL_INSTALL, MODEL_FETCH, RESULT_FETCH, ONLINE_ANSWER, RESULT_ANSWER, RUNNER_HEALTH,
-         TUNNEL_PROBE)
+JOBS = Slot("jobs.yaml", (), Jobs)
+SLOTS = (RESOURCES, PACKAGES, MODEL_INSTALL, MODEL_FETCH, RESULT_FETCH, ONLINE_ANSWER, ONLINE_CALL, RESULT_ANSWER,
+         RUNNER_HEALTH, TUNNEL_PROBE, JOBS)
 
 
 def registry_codes(model: BaseModel) -> frozenset[str]:
     """Коды реестра, которые декларация отдаёт потребителю: значения полей с меткой `RegistryCode` — по типу поля,
     а не по виду строки."""
-    return frozenset(_codes(model, type(model)))
+    return frozenset(code for _, code in _codes(model, type(model), ()))
 
 
-def _codes(value: object, kind: object) -> set[str]:
+def unregistered_codes(model: BaseModel, known: Collection[str]) -> list[InitErrorDetails]:
+    """Поля-коды, чьего кода нет в реестре: опечатка прошла бы дверь, и клиент получил бы UNKNOWN_ERROR вместо
+    объявленной реакции. Путь — от корня модели."""
+    return [_gap("registry_code", f"код, объявленный в {REACTIONS}", loc)
+            for loc, code in _codes(model, type(model), ()) if code not in known]
+
+
+def _codes(value: object, kind: object, loc: tuple) -> list[tuple[tuple, str]]:
     if get_origin(kind) is Annotated:
         inner, *metadata = get_args(kind)
-        return {str(value)} if any(isinstance(m, RegistryCode) for m in metadata) else _codes(value, inner)
+        return [(loc, str(value))] if any(isinstance(m, RegistryCode) for m in metadata) else _codes(value, inner, loc)
     if isinstance(value, BaseModel):
         # pydantic уносит метаданные Annotated поля в FieldInfo.metadata — возвращаем их к типу.
-        return set().union(*(_codes(getattr(value, name), Annotated[(field.annotation, *field.metadata)]
-                                    if field.metadata else field.annotation)
-                             for name, field in type(value).model_fields.items()))
+        return [pair for name, field in type(value).model_fields.items()
+                for pair in _codes(getattr(value, name), Annotated[(field.annotation, *field.metadata)]
+                                   if field.metadata else field.annotation, (*loc, name))]
     args = get_args(kind)
     if isinstance(value, Mapping):
-        return set().union(*(_codes(item, args[-1] if args else None) for item in value.values()))
+        return [pair for key, item in value.items() for pair in _codes(item, args[-1] if args else None, (*loc, key))]
     if isinstance(value, tuple):
-        return set().union(*(_codes(item, args[0] if args else None) for item in value))
-    return set()
+        return [pair for i, item in enumerate(value) for pair in _codes(item, args[0] if args else None, (*loc, i))]
+    return []

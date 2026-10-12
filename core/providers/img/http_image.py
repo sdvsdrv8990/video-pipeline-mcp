@@ -4,12 +4,12 @@
 ответа — описаны объявлением, и новый провайдер есть блок в нём, а не файл кода. Раннер локальных
 моделей говорит тем же языком и едет сюда же, поэтому переключение «в процессе → в раннере»
 остаётся правкой строки канала. Форма ответа объявлена: файл телом, ссылка, задача с опросом, путь
-на диске. Ключ уходит ТОЛЬКО на объявленный адрес и по https (исключение — объявленная петля, где
-сеть не пересекается), клиенту не возвращается и из сообщения об отказе вычищается.
+на диске. Ключ уходит ТОЛЬКО на объявленный адрес и по объявленной схеме (не https — только литералу петли, где
+сеть не пересекается), клиенту не возвращается и из сообщения об отказе вычищается. В сеть вызов идёт одной дверью
+загрузчика (`Fetcher.call`): суд адреса и IP, срок вызова, повтор только того, что провайдер не применил.
 """
 
 import base64
-import contextlib
 import functools
 import random
 import socket
@@ -18,12 +18,15 @@ from pathlib import Path
 from typing import ClassVar
 from urllib.parse import urlparse
 
+from pydantic import ValidationError
+
 from core.declaration import Declaration
-from core.declaration_schemas import RESULT_ANSWER, ProviderUrl
+from core.declaration_schemas import ONLINE_CALL, RESULT_ANSWER, CallPolicy, ProviderUrl, Slot
 from core.paths import Files
 
 from ..adapters import MediaOutcome, MediaRequest
-from ..download import answers, results, retry_after
+from ..catalog import provider_refusal
+from ..download import addressed, answers, results
 from ..resolver import ProviderError
 
 
@@ -36,6 +39,8 @@ class HttpImageAPI:
     # Часы и сон двери ответа: ими меряется срок опроса и пауза повтора; подмена — на классе, как у сети.
     clock: ClassVar = staticmethod(time.monotonic)
     sleep: ClassVar = staticmethod(time.sleep)
+    # Столбцы строки канала поверх политики вызова: ключ политики ← столбец (попыток на одну больше, чем повторов).
+    ROW: ClassVar[dict[str, str]] = {"attempts": "retry_count", "backoff_sec": "retry_delay", "timeout_sec": "timeout"}
 
     def __init__(self, registry, rng: random.Random | None = None):
         self.registry = registry
@@ -62,7 +67,29 @@ class HttpImageAPI:
         self._decl_cache[provider] = decl
         return decl
 
-    def _url(self, decl: dict, params: dict) -> str:
+    def _section(self, provider: str) -> tuple[Slot, CallPolicy]:
+        """Политика вызова провайдера из декларации: свой блок `online.http.<P>.call` (слияние `<<: *call` с разделом
+        `online.call`) или сам раздел; битый ключ — отказ декларации с его путём."""
+        own = Slot(ONLINE_CALL.file, ("online", "http", provider, "call"), CallPolicy)
+        slot = own if "call" in self._decl_cache.get(provider, {}) else ONLINE_CALL
+        return slot, self._providers.section(*slot.section, schema=CallPolicy)
+
+    def _policy(self, request: MediaRequest) -> tuple[Slot, CallPolicy]:
+        """Политика вызова с перекрытием столбцами строки канала (`ROW`); пустая ячейка не перекрывает. Склейку судит схема:
+        негодный столбец — отказ строки с его именем, а не молчаливая обрезка."""
+        slot, policy = self._section(request.provider)
+        row = {key: request.params[column] for key, column in self.ROW.items()
+               if request.params.get(column) not in (None, "")}
+        if type(row.get("attempts")) is int:
+            row["attempts"] += 1
+        try:
+            return slot, CallPolicy.model_validate({**policy.model_dump(exclude={"hosts"}), **row})
+        except ValidationError as e:
+            raise ProviderError("BOOK_ROW_INVALID", errors=[
+                {"field": self.ROW.get(str(err["loc"][0]), ".".join(map(str, (*slot.section, *err["loc"])))),
+                 "rule": err["type"]} for err in e.errors()]) from None
+
+    def _url(self, decl: dict, params: dict, schemes) -> str:
         """Адрес вызова. В шаблон может подставляться модель из строки канала — но только имя.
 
         Строку канала правит ИИ, поэтому после подстановки адрес судится заново (`_own`): иначе `model`
@@ -72,23 +99,19 @@ class HttpImageAPI:
         url = template
         if "{" in template:
             url = template.format_map({k: str(v) for k, v in params.items()})
-        return self._own(decl, url)
+        return self._own(decl, url, schemes)
 
     @staticmethod
-    def _own(decl: dict, url: str) -> str:
-        """Адрес, куда уйдёт ключ: https и ровно объявленный хост с портом; иначе отказ до сети.
+    def _own(decl: dict, url: str, schemes) -> str:
+        """Адрес, куда уйдёт ключ: схема из объявленных политикой вызова (`schemes`; не https загрузчик пускает только к
+        литералу петли) и ровно объявленный хост с портом; иначе отказ до сети.
 
         Судится и адрес вызова, и адреса из ответа провайдера (статус, результат): хост, который назвал сам ответ,
         ключа не получает. В фактах только хост: в query бывают токены, в имени пользователя — пароль.
         """
         declared = urlparse(str(decl.get("url") or "").split("{", 1)[0]).netloc
         parsed = urlparse(str(url))
-        # Петля — единственное послабление, и оно объявлено ДАННЫМИ: раннер живёт на 127.0.0.1, а
-        # требовать https от петли значит запретить саму идею раннера. Действует только на
-        # объявленный хост и только на http; чужой адрес по http остаётся отказом.
-        insecure_host = str(decl.get("allow_insecure_host") or "")
-        loopback_ok = bool(insecure_host) and parsed.scheme == "http" and parsed.hostname == insecure_host
-        if (parsed.scheme != "https" and not loopback_ok) or parsed.netloc != declared:
+        if parsed.scheme not in schemes or parsed.netloc != declared:
             raise ProviderError("DOWNLOAD_FORBIDDEN",
                                 facts={"host": parsed.netloc.rpartition("@")[2], "allowed": declared})
         return url
@@ -157,14 +180,11 @@ class HttpImageAPI:
                 reason="Ключ вносит владелец: python scripts/set_provider_key.py.")
         self._api_key = request.api_key
         kind = str(decl.get("response") or "binary")
-        response = self._request(decl, "POST", self._url(decl, request.params), request,
-                                 body=self._body(decl, request),
-                                 sink=self._receiver(request) if kind == "binary" else None)
+        answer = self._call(decl, request, self._receiver(request) if kind == "binary" else None)
         meta = {"engine": "http", "provider": request.provider,
                 "compute": {"device": "remote", "why": f"вызов {decl.get('url')}"}}
         if kind == "binary":
             return MediaOutcome(files=[request.target], meta={**meta, "sync": True})
-        answer = self._json(response)
         if kind == "files":
             # Файл уже на диске: раннер видит ту же рабочую область и пишет прямо в место,
             # назначенное сервером. Считать здесь нечего — только убедиться, что он там.
@@ -185,6 +205,18 @@ class HttpImageAPI:
                            f"{', '.join(sorted(answer)[:8]) or '(пусто)'}.")
             return MediaOutcome(task_id=task_id, meta={**meta, "sync": False})
         return MediaOutcome(files=[self.fetch(answer, request.target)], meta={**meta, "sync": True})
+
+    def _call(self, decl: dict, request: MediaRequest, sink=None):
+        """POST провайдеру дверью загрузчика (`Fetcher.call`): политика — `_policy`, адрес — `_url` её схемами, ключ — в
+        объявленной форме, тело — `_body`. Ответ — JSON в память, со стоком — бинарное тело в загрузчик результатов.
+        Отказ провайдера — его причиной (`_refusal`), отказы двери — кодами политики: не ушёл, не успел, не дочитан."""
+        slot, policy = self._policy(request)
+        url = self._url(decl, request.params, policy.schemes)
+        declared = self.registry.need("online", "http", request.provider, "url", kind=ProviderUrl)
+        fetcher = addressed(policy, slot, declared, transport=self.transport, resolve=self.resolve, clock=self.clock,
+                            sleep=self.sleep, rng=self._rng)
+        return fetcher.call(url, self._headers(decl, request.api_key), method="POST", payload=self._body(decl, request),
+                            sink=sink, refused=self._refusal)
 
     def _body(self, decl: dict, request: MediaRequest) -> dict:
         """Тело запроса: файл + поля строки. Форма отправки — свойство провайдера, не наше."""
@@ -262,107 +294,10 @@ class HttpImageAPI:
                        "назначенным — результат не принимается.")
         return request.target
 
-    def _request(self, decl: dict, method: str, url: str, request: MediaRequest, body: dict | None = None, sink=None):
-        """Вызов с повторами. Сколько раз повторять — столбцы строки канала, а не число в коде.
-
-        Повторяем только то, что повторять осмысленно: перегрузку и временную недоступность
-        (`retry_on` в декларации — те же коды, что и у официальных клиентов этих API). Отказ по
-        ключу или по содержимому повтором не лечится, и повторять его значит жечь платный лимит.
-        Неидемпотентный запрос после ошибки, при которой провайдер мог его получить, не повторяется:
-        работа могла выполниться и списаться (`online.retry` в декларации).
-        `sink` — тело принятого ответа потоком без распаковки (NI-04/06): что он вернул, то и ответ; его отказ — как есть.
-        """
-        import httpx
-
-        retry = ("online", "retry")
-        idempotent = {str(m).upper() for m in self.registry.need(*retry, "idempotent_methods", kind=list)}
-        after_max = self.registry.need(*retry, "retry_after_max_sec", kind=float)
-        pause_max = self.registry.need(*retry, "backoff_max_sec", kind=float)
-        jitter = self.registry.need(*retry, "backoff_jitter_ratio", kind=float)
-        attempts = max(0, int(request.params.get("retry_count") or 0)) + 1
-        pause = float(request.params.get("retry_delay") or 0)
-        retry_on = {int(c) for c in (decl.get("retry_on") or [])}
-        timeout = request.params.get("timeout")
-        # Сколько ждать — свойство адресата: платный отвечает за секунды, локальный расчёт идёт
-        # минутами. Строка канала перекрывает объявленное, объявленное перекрывает общее.
-        timeout = (float(timeout) if isinstance(timeout, (int, float))
-                   else float(decl.get("timeout_sec") or 120.0))
-        headers = self._headers(decl, request.api_key)
-        last: Exception | None = None
-        for attempt in range(attempts):
-            opened = contextlib.ExitStack()
-            try:
-                response = (opened.enter_context(httpx.stream(
-                                method, url, headers={**headers, "Accept-Encoding": "identity"}, timeout=timeout,
-                                follow_redirects=False, **(body or {})))
-                            if sink else
-                            httpx.request(method, url, headers=headers, timeout=timeout,
-                                          follow_redirects=False, **(body or {})))
-            except Exception as e:  # сеть/таймаут
-                last = self._unreachable(decl, request.provider, e)
-                # ошибка соединения — запрос не ушёл; любая другая — мог дойти и выполниться
-                if method.upper() not in idempotent and not isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout)):
-                    raise last from e
-            else:
-                with opened:
-                    if response.status_code < 400:
-                        return sink(response) if sink else response
-                    if sink:
-                        response.read()
-                    last = self._refusal(response)
-                    if response.status_code not in retry_on:
-                        raise last or ProviderError(
-                            "PROVIDER_FAILED", "Провайдер не ответил и не назвал причины.",
-                            reason="Ни одна попытка не дошла до ответа — повтори позже.")
-                    # Провайдер сам говорит, когда повторять — его срок важнее нашего.
-                    pause = max(pause, retry_after(response.headers.get("Retry-After"), after_max, pause))
-            if attempt + 1 < attempts and pause:
-                time.sleep(min(pause, pause_max) * (1 + jitter * self._rng.random()))
-                pause = min(pause * 2, pause_max)           # перегрузку не лечат равномерным долблением
-        raise last or ProviderError(
-            "PROVIDER_FAILED", "Провайдер не ответил и не назвал причины.",
-            reason="Ни одна попытка не дошла до ответа — повтори позже или смени провайдера.")
-
-    @staticmethod
-    def _unreachable(decl: dict, provider: str, exc: Exception) -> ProviderError:
-        """Адресат молчит. Почему это не всегда «повтори позже».
-
-        Платный сервис недоступен по сети — ждать. Раннер недоступен потому, что его НЕ ПОДНЯЛИ:
-        повтор здесь не поможет никогда, и подсказка обязана вести к инструменту. Какой код
-        уместен, знает объявление провайдера (`on_unreachable`), а не этот код.
-        """
-        import httpx
-
-        if isinstance(exc, httpx.TimeoutException):
-            # Не молчание, а «не успел»: раннер, считающий большую модель, жив и занят. Сказать
-            # здесь «не поднят» значило бы отправить ИИ поднимать то, что и так работает.
-            return ProviderError(
-                "PROVIDER_TIMEOUT", f"'{provider}' не ответил за отведённое время: {exc}",
-                reason="Работа могла и не оборваться — она идёт дольше отведённого. Увеличь "
-                       "столбец timeout строки канала либо timeout_sec в объявлении провайдера.")
-        declared = str(decl.get("on_unreachable") or "")
-        if declared:
-            return ProviderError(declared, f"'{provider}' не ответил по адресу {decl.get('url')}: {exc}")
-        return ProviderError(
-            "PROVIDER_FAILED", f"Провайдер не ответил: {exc}",
-            reason="Сеть или сам сервис недоступны. Повтори позже либо переключи строку "
-                   "канала на локального провайдера — он работает без сети и ключа.",
-            suggested_tool="media_provider_status")
-
     def _refusal(self, response) -> ProviderError:
-        """Ответ ≥400 → отказ причиной провайдера, а не общим «что-то пошло не так»."""
-        named = self._named_refusal(response)
-        if named is not None:
-            return named
-        if response.status_code in (401, 403):
-            return ProviderError(
-                "AUTH_FAILED", f"Провайдер отклонил ключ ({response.status_code}).",
-                reason="Ключ недействителен или у него нет прав на этот вызов. Заменить может "
-                       "только владелец: python scripts/set_provider_key.py.")
-        return ProviderError(
-            "PROVIDER_FAILED", f"Провайдер ответил {response.status_code}: {response.text[:300]}",
-            reason="Это ответ самого сервиса — в нём причина отказа (модерация, исчерпанный "
-                   "платный лимит, неподходящий файл).")
+        """Ответ ≥400 → отказ причиной провайдера: форма сервера у объявленного адресата (`_named_refusal`), иначе — общий
+        переводчик отказа провайдера."""
+        return self._named_refusal(response) or provider_refusal(response, next(iter(self._decl_cache), ""), "вызов")
 
     def _named_refusal(self, response) -> ProviderError | None:
         """Отказ, названный кодом реестра самим адресатом — если он объявлен отвечающим формой сервера (`error_detail`).
@@ -393,19 +328,10 @@ class HttpImageAPI:
             facts={str(k)[:60]: str(v)[:300] for k, v in list(facts.items())[:20]},
             errors=[e for e in errors if isinstance(e, dict)][:20])
 
-    @staticmethod
-    def _json(response) -> dict:
-        try:
-            return response.json()
-        except Exception as e:  # не JSON в теле
-            raise ProviderError(
-                "PROVIDER_FAILED", f"Ответ провайдера не разобрать как JSON: {e}",
-                reason="Возможно, он отдаёт файл телом — тогда в декларации нужно "
-                       "response: binary.") from e
-
     def _receiver(self, request: MediaRequest):
         """Приёмник бинарного ответа: допустимые типы — объявленные для формата, который просит строка канала (NI-03);
-        формат не передан — любой объявленный. Тело — тем же загрузчиком результатов, с его пределом (NI-06)."""
+        формат не передан — любой объявленный. Тело — тем же загрузчиком результатов, с его пределом (NI-06), в срок
+        вызова, под именем хоста, к которому шёл запрос, и с отказом обрыва от двери вызова (`cut`)."""
         types = self.registry.need("online", "http", request.provider, "content_types", kind=dict)
         asked = str(request.params.get(self._tasks.need("download", "format_column", kind=str)) or "").lower()
         if asked and asked not in types:
@@ -413,8 +339,9 @@ class HttpImageAPI:
                 "details": f"online.http.{request.provider}.content_types: формат «{asked}» не объявлен"})
         accept = {str(t).lower() for f, kinds in types.items() if not asked or f == asked for t in kinds}
         target = Path(request.target)
-        fetcher = results(self._tasks.config_file, transport=self.transport, resolve=self.resolve)
-        return lambda response: fetcher.receive(response, Files(target.parent), target.name, "result", accept=accept)
+        fetcher = results(self._tasks.config_file, transport=self.transport, resolve=self.resolve, clock=self.clock)
+        return lambda response, host, deadline, cut=None: fetcher.receive(
+            response, Files(target.parent), target.name, "result", accept=accept, host=host, deadline=deadline, cut=cut)
 
     # ═══ Задача ═══
 
@@ -423,10 +350,10 @@ class HttpImageAPI:
         ожидания (секунды): опрос с повторами в него укладывается."""
         return self._answer(self._status_url, within)
 
-    def _poll_headers(self, url: str) -> dict:
-        """Ключ к адресу, который назвал ответ провайдера, — только после суда адреса (`_own`), как у вызова."""
+    def _poll_headers(self, url: str, schemes) -> dict:
+        """Ключ к адресу, который назвал ответ провайдера, — только после суда адреса (`_own`) схемами двери опроса."""
         decl: dict = next(iter(self._decl_cache.values()), {})
-        self._own(decl, url)
+        self._own(decl, url, schemes)
         return self._headers(decl, self._api_key) if self._api_key else {}
 
     def fetch(self, answer: dict, target: Path) -> Path:
@@ -456,17 +383,22 @@ class HttpImageAPI:
         return target
 
     def _answer(self, url: str, within: float | None = None) -> dict:
-        """JSON статуса или адреса результата с объявленного хоста: ключ — после суда адреса (`_poll_headers`), запрос и
-        тело — дверью загрузчика по `download.answer` декларации задач, хост — из объявленного адреса провайдера, срок —
-        `deadline_sec` или остаток вызывающего `within`. Отказ провайдера — его причиной (`_refusal`), отказ самой двери
-        — как есть."""
-        headers = self._poll_headers(url)
+        """JSON статуса или адреса результата с объявленного хоста: ключ — после суда адреса схемами этой двери
+        (`_poll_headers`), запрос и тело — дверью загрузчика по `download.answer` декларации задач, хост — из объявленного
+        адреса провайдера, срок — `deadline_sec` или остаток вызывающего `within`. Отказ провайдера — его причиной
+        (`_refusal`), отказ самой двери — как есть."""
         declared = self.registry.need("online", "http", next(iter(self._decl_cache), ""), "url", kind=ProviderUrl)
         fetcher = answers(self._tasks, RESULT_ANSWER, declared, transport=self.transport, resolve=self.resolve,
                           clock=self.clock, sleep=self.sleep)
+        headers = self._poll_headers(url, fetcher.policy.schemes)
         return fetcher.answer(url, headers, refused=self._refusal, within=within)
 
     @functools.cached_property
     def _tasks(self) -> Declaration:
         return Declaration(Path(self.registry.config_file).with_name("media_tasks.yaml"), ProviderError, "ожидания",
                            "Заведи config/media_tasks.yaml — правила ожидания и загрузки объявлены там.")
+
+    @functools.cached_property
+    def _providers(self) -> Declaration:
+        return Declaration(self.registry.config_file, ProviderError, "провайдеров",
+                           "Заведи config/providers.yaml — как вызывать провайдера, объявлено там.")

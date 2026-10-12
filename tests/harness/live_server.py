@@ -8,6 +8,8 @@
 проверить, остался бы непроверенным.
 """
 
+import atexit
+import fnmatch
 import os
 import secrets
 import shutil
@@ -72,6 +74,8 @@ class LiveServer:
                 "MCP_HOST": "127.0.0.1", "MCP_PORT": str(self.port),
                 "MCP_WORKSPACE": str(self.workspace),
                 "MCP_LOGS": str(self.logs),
+                # Свой дом инстанса: личность и ключ шифрования сервера набора, а не владельца.
+                "MCP_HOME": str(self.workspace.parent),
                 # Ключ через среду: `ensure_digest` берёт его первым и .env проекта не трогает.
                 "MCP_AUTH_TOKEN": self.token,
                 "PYTHONUNBUFFERED": "1",
@@ -157,17 +161,77 @@ def live_server(**kw) -> LiveServer:
 
 
 def declarations_copy(changes: dict[str, dict[str, object]] | None = None, root: Path | None = None) -> Path:
-    """Копия боевого каталога деклараций в `<root>/config` (инструменты считают корнем проекта родителя каталога;
-    без `root` — свой временный), значения заменены по путям ключей; боевой каталог не трогается."""
+    """Копия деклараций проекта в `<root>/config` (инструменты считают корнем проекта родителя каталога; без `root` —
+    свой временный, он убирается при выходе процесса), значения заменены по путям ключей (`spoil_slot`); боевой каталог
+    не трогается. Машинные декларации — их проект не ведёт (роль машины, туннель владельца) — в копию не идут:
+    прогон не зависит от машины, на которой идёт."""
+    source = declarations_root()
     copy = Path(root or tempfile.mkdtemp(prefix="vpm-decl-")) / "config"
-    shutil.copytree(declarations_root(), copy)
+    if root is None:
+        atexit.register(shutil.rmtree, copy.parent, ignore_errors=True)
+    shutil.copytree(source, copy, ignore=_machine_files(source))
     for name, values in (changes or {}).items():
         data = yaml.safe_load((copy / name).read_text(encoding="utf-8"))
         for key, value in values.items():
-            *parents, last = key.split(".")
-            node = data
-            for part in parents:
-                node = node[part]
-            node[last] = value
+            parent, last = spoil_slot(data, key)
+            parent[last] = value
         (copy / name).write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
     return copy
+
+
+def spoil_slot(data: object, key: str) -> tuple[dict | list, str | int]:
+    """Где меняется значение по пути `a.b.0.c`: родитель и последний шаг. Шаг-число в списке — индекс; ключ словаря —
+    самый длинный совпавший (ключ сам может нести точку: `media_provider_status.choice`); шага нет — KeyError с путём.
+    Последний ключ словаря может быть новым: порча добавляет запись."""
+    parts, node, at = key.split("."), data, 0
+    while True:
+        step, at = _step(node, parts, at, key)
+        if at == len(parts):
+            return node, step
+        node = node[step]
+
+
+def _step(node: object, parts: list[str], at: int, key: str) -> tuple[str | int, int]:
+    if isinstance(node, list) and parts[at].isdigit() and int(parts[at]) < len(node):
+        return int(parts[at]), at + 1
+    if isinstance(node, dict):
+        for end in range(len(parts), at, -1):
+            if ".".join(parts[at:end]) in node:
+                return ".".join(parts[at:end]), end
+        if at == len(parts) - 1:
+            return parts[at], at + 1
+    raise KeyError(f"в пути `{key}` нет шага `{parts[at]}`")
+
+
+def _machine_files(source: Path):
+    """`copytree(ignore=…)` для файлов, которые проект не ведёт: их объявляет `.gitignore` корня проекта. Правила
+    разбираются без git — копия для замера (`git archive`) репозитория не несёт, а `.gitignore` несёт. Файл вне корня
+    проекта правилами проекта не судится."""
+    rules = [_ignore_rule(line) for line in (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+             if line.strip() and not line.startswith("#")]
+    root = ROOT.resolve()
+
+    def ignore(folder: str, names: list[str]) -> set[str]:
+        out = set()
+        for name in names:
+            path = (Path(folder) / name).resolve()
+            if path.is_relative_to(root) and _ignored(path.relative_to(root).as_posix(), path.is_dir(), rules):
+                out.add(name)
+        return out
+    return ignore
+
+
+def _ignore_rule(line: str) -> tuple[bool, bool, bool, str]:
+    """Правило `.gitignore`: (отрицание `!`, только каталог — `/` в конце, от корня — `/` в начале или внутри, образец).
+    Подмножество формата: `*` в образце проходит и через `/`, экранирование `\\` не разбирается."""
+    negate = line.startswith("!")
+    body = line[negate:].strip()
+    return negate, body.endswith("/"), "/" in body.rstrip("/"), body.strip("/").replace("**", "*")
+
+
+def _ignored(rel: str, is_dir: bool, rules: list[tuple[bool, bool, bool, str]]) -> bool:
+    verdict = False
+    for negate, dir_only, anchored, pattern in rules:
+        if not (dir_only and not is_dir) and fnmatch.fnmatchcase(rel if anchored else rel.rsplit("/", 1)[-1], pattern):
+            verdict = not negate
+    return verdict

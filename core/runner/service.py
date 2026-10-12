@@ -10,13 +10,13 @@
 
 import asyncio
 import logging
-import secrets
 import time
 import uuid
 from pathlib import Path
 
 from aiohttp import web
 
+from core.auth import presented_matches, token_digest
 from core.contracts import ContractError
 from core.paths import Files, PathRefused
 from core.providers import AdapterRegistry, MediaRequest
@@ -36,6 +36,7 @@ class RunnerService:
         self.write_policy = WritePolicy(Path(config_file).parent)
         self.workspace = Path(workspace).resolve()
         self.token = token
+        self._digest = token_digest(token)    # сверяется отпечаток своего токена, а не строка
         self.started = time.time()
         self.calls = 0
         self.last_error = ""
@@ -69,8 +70,7 @@ class RunnerService:
         return app
 
     def authorized(self, request: web.Request) -> bool:
-        got = request.headers.get(self.token_header, "")
-        return bool(self.token) and secrets.compare_digest(got, self.token)
+        return presented_matches(request.headers.get(self.token_header, ""), self._digest)
 
     # ═══ Здоровье ═══
 
@@ -96,7 +96,7 @@ class RunnerService:
 
     async def run(self, request: web.Request) -> web.Response:
         if not self.authorized(request):
-            return self._answer("AUTH_FAILED", 401, facts={"header": self.token_header})
+            return self._answer("RUNNER_TOKEN_REJECTED", 401, facts={"header": self.token_header})
         try:
             body = await request.json()
         except (ValueError, LookupError):  # битый JSON или кодировка тела; предел размера aiohttp ответит сам (413)

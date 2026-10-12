@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 sys.path.insert(0, str(Path(__file__).parent))
 
 from core.contracts import ContractError
-from core.declaration import Declaration, Declared, declarations_root
+from core.declaration import Declaration, Declared, declarations_root, instance_home, workspace_root
 from core.declaration_schemas import RESOURCES, Resources
 from core.engine import Engine
 from core.observability import Logs, wire
@@ -36,7 +36,7 @@ from core.ids import IDGenerator
 from core.state import StateManager
 # A2: движки, маппинг исключений ядра и аннотации MCP живут в контексте групп.
 from tools._context import build_context
-from tools import excel, filesystem, media, memory, montage, search, structure, tables, uniqueness
+from tools import excel, filesystem, media, memory, montage, search, structure, tables, tasks, uniqueness
 
 
 # ═══ КОНФИГУРАЦИЯ ═══
@@ -49,7 +49,7 @@ BASE_PATH = Path(__file__).parent
 # Рабочая область переопределяется переменной среды по той же причине, что хост и порт: иначе
 # поднять сервер рядом с боевым нечем, и тест против ЖИВОГО сервера правил бы настоящие данные
 # канала. Значение резолвится и создаётся — «указал и не создал» иначе падало бы позже и глуше.
-WORKSPACE_PATH = Path(os.environ.get("MCP_WORKSPACE") or (BASE_PATH / "workspace")).resolve()
+WORKSPACE_PATH = workspace_root()
 # Каталог деклараций переопределяется по той же причине, что и рабочая область: конформанс-прогон
 # обязан идти по БОЕВОМУ конфигу, но со своим порогом частоты — иначе сторонний клиент, честно
 # долбящий 30 сценариев подряд, банит сам себя, и «несоответствие спеке» оказывается блокировкой.
@@ -171,6 +171,7 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
     media.register(engine, ctx)
     montage.register(engine, ctx)
     search.register(engine, ctx)
+    tasks.register(engine, ctx)
 
 
 def _origin_allowed(origin: str) -> bool:
@@ -583,7 +584,9 @@ def main():
         with contextlib.suppress(AttributeError, ValueError):
             stream.reconfigure(line_buffering=True)
 
-    parser = argparse.ArgumentParser(description="MCP-сервер видеопайплайна")
+    from core.environment import epilog
+    parser = argparse.ArgumentParser(description="MCP-сервер видеопайплайна", epilog=epilog(),
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--host", default=HOST, help="Хост (по умолчанию: %(default)s)")
     parser.add_argument("--port", type=int, default=PORT, help="Порт (по умолчанию: %(default)s)")
     parser.add_argument("--tunnel", action="store_true", help="Поднять Cloudflare-туннель вместе с сервером (D11)")
@@ -595,7 +598,7 @@ def main():
         # Явное подтверждение владельца, что перенос/восстановление — его действие.
         from core.integrity import InstanceIdentity
         from core.ids import LinkRegistry
-        ident = InstanceIdentity(BASE_PATH, WORKSPACE_PATH)
+        ident = InstanceIdentity(instance_home(CONFIG_PATH), WORKSPACE_PATH)
         if not ident.ensure_key():
             print("Подпись недоступна (нет cryptography) — присваивать нечего.", file=sys.stderr)
             return

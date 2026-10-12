@@ -112,4 +112,12 @@ class JsonRpc:
 
     @staticmethod
     def facts(envelope: dict) -> list[dict]:
-        return list(JsonRpc.structured(envelope).get("facts") or [])
+        """Факты успеха (типы из реестра фактов); факты причины отказа — в `detail`."""
+        found = JsonRpc.structured(envelope).get("facts")
+        return list(found) if isinstance(found, list) and not JsonRpc.is_error(envelope) else []
+
+    @staticmethod
+    def detail(envelope: dict) -> dict:
+        """Форма отказа инструмента (`ErrorDetail` под `error`: код, класс, текст, рецепт, факты, ошибки ввода); у успеха —
+        пусто."""
+        return (JsonRpc.structured(envelope).get("error") or {}) if JsonRpc.is_error(envelope) else {}

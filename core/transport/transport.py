@@ -105,8 +105,8 @@ class Transport:
 
         result = await self.engine.call(name, arguments)
 
-        # Конвертируем ToolResult в MCP формат с structuredContent.
-        # facts и error details → structuredContent (спек-совместимо).
+        # Конвертируем ToolResult в MCP формат с structuredContent: у успеха — факты (типы реестра фактов), у отказа —
+        # код, класс, рецепт и ErrorDetail целиком под `error` (факты причины, ошибки ввода; EB-11): одно имя — один тип.
         # По схеме спеки structuredContent — объект; отсутствие структурированной части
         # выражается ОТСУТСТВИЕМ поля, а не `null` (иначе валидатор провода красит ответ).
         if result.status == "success":
@@ -122,12 +122,9 @@ class Transport:
                 "isError": True,
             }
             if result.error:
-                err_dump = result.error.model_dump()
+                detail = {key: value for key, value in result.error.model_dump().items() if value is not None}
                 payload["structuredContent"] = {
-                    "code": err_dump.get("code"),
-                    "reaction_class": err_dump.get("reaction_class"),
-                    "recovery": err_dump.get("recovery"),
-                }
+                    **{key: detail[key] for key in ("code", "reaction_class", "recovery")}, "error": detail}
             return self._success_response(request_id, payload)
 
     # Версии протокола, которые сервер понимает (по убыванию новизны).

@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 from core.advice import Advice
 from core.contracts import ContractError, Recovery, ToolResult
-from core.declaration import Declaration
+from core.declaration import Declaration, instance_home
 from core.firewall.rules.injection_detector import InjectionDetector
 from core.engine import Engine, TemplateEngine, TemplateResolver
 from core.excel import ExcelEngine
@@ -73,7 +73,7 @@ class ToolContext:
     def secrets(self) -> ChannelSecrets:
         """Ключи провайдеров канала. Единственная дверь в закрытый каталог — и она серверная:
         значение уходит только в исходящий вызов провайдера, клиенту — отпечаток."""
-        return ChannelSecrets(self.workspace_path, self.config_path.parent)
+        return ChannelSecrets(self.workspace_path, instance_home(self.config_path))
 
     @property
     def write_policy(self) -> WritePolicy:
@@ -136,8 +136,8 @@ def build_context(engine: Engine, id_generator: IDGenerator, state_manager: Stat
     # только РАСШИРЯЕТ встроенный минимум: не загрузился — запрет остаётся (fail-closed).
     _declared = (_firewall(config_path).optional().get("secret_paths") or {}).get("dirs") or []
     configure_secret_dirs(_declared)
-    # Личность инстанса — ключ подписи выпускается рядом с .env (вне workspace/).
-    identity = InstanceIdentity(config_path.parent, workspace_path)
+    # Личность инстанса — ключ подписи выпускается в доме инстанса (вне workspace/).
+    identity = InstanceIdentity(instance_home(config_path), workspace_path)
     identity.ensure_key()
     return ToolContext(
         engine=engine,

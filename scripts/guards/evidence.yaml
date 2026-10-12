@@ -43,6 +43,10 @@
       читатель: declared_but_unscripted
       потолок: unscripted_baseline.txt
       совет: "Новое объявление без сценария. Покрытие пишется ОБЪЯВЛЕНИЕМ в tests/scenarios/*.yaml (`call` + `expect.code`), новый python-скрипт для этого не нужен — либо --bless с объяснением"
+    - заголовок: "объявлено несценарным"
+      читатель: codes_exempt_from_scenarios
+      потолок: unscripted_exempt_baseline.txt
+      совет: "Кодов, которые сценарий не родит, стало больше. Сначала попытка родить причину данными, декларацией или средой сервера (given); исключение в tests/harness/unscripted.yaml — только с фактом и местом, чем обвязка не может"
     - заголовок: "объявлено ненаблюдаемым"
       читатель: facts_exempt_from_observation
       потолок: fact_exempt_baseline.txt
@@ -74,6 +78,8 @@
       читатель: observation_incomplete
     - заголовок: "факт эмитится, а решения о наблюдении нет"
       читатель: facts_without_observer
+    - заголовок: "объявление несценарности без причины или предмета"
+      читатель: unscripted_declaration_stale
     - заголовок: "ось написана, но не объявлена"
       читатель: axis_undeclared
 

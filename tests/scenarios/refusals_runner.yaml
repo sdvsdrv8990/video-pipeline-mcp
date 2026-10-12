@@ -1,0 +1,50 @@
+# Отказы подъёма раннера: на объявленном порту отвечает посторонний — двойник сети отвечает на /health, записи о нашем
+# процессе нет (копия деклараций сервера сценария).
+
+- scenario: rcode_runner_port_taken
+  why: на порту раннера отвечает чужой — статус называет «foreign», подъём отказывает своим кодом с адресом, а не кодом очереди таблиц
+  род: отрицательный
+  given:
+    fixtures: [net_double]
+    network:
+      routes: [{host: 127.0.0.1, method: GET, path: /health, replies: [{status: 200, json: {ok: true}}]}]
+  when:
+    - call: media_runner
+      with: {action: status}
+      expect: {ok: true, data: {phase: foreign}}
+    - call: media_runner
+      with: {action: start}
+      expect:
+        ok: false
+        code: RUNNER_PORT_TAKEN
+        class: human_required
+        net_tasks: 0
+        detail: {facts.url: "http://127.0.0.1:8770"}
+
+- scenario: rcode_runner_token_rejected
+  why: раннер не принял токен сервера (ответ ErrorDetail) — клиент получает код раннера с рецептом перезапуска, а не AUTH_FAILED про ключ сервера
+  род: отрицательный
+  given:
+    fixtures: [net_double]
+    network:
+      routes: [{host: 127.0.0.1, method: POST, path: /run, replies: [{status: 401, json: {code: RUNNER_TOKEN_REJECTED,
+        message: "Раннер не принял токен сервера в заголовке «X-Runner-Token».", facts: {header: X-Runner-Token}}}]}]
+    files:
+      сеть/вход.png: не картинка — раннер читает путь, а не байты
+      сеть/read.json: |
+        {"RESOURCE_LIMITS": {"schema": {}, "rows": {"L1": {"resource_type": "bg_removals",
+          "provider": "Local_runner", "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+          "warning_threshold": -1, "model": "rmbg", "response_format": "png", "speed": 1.0, "usage_unit": "call"}}}}
+  when:
+    - python: seed_runner_token
+      with: {token: scenario-runner-token}
+      expect: {ok: true}
+    - call: media_generate
+      with: {table: сеть, resource_type: bg_removals, input: сеть/вход.png, scene_id: s1, video_slug: demo}
+      expect:
+        ok: false
+        code: RUNNER_TOKEN_REJECTED
+        class: server_recoverable
+        recovery: media_runner
+        net_tasks: 1
+        detail: {facts.header: X-Runner-Token}

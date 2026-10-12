@@ -1,0 +1,45 @@
+# Форма отказа доезжает до клиента целиком (`ErrorDetail` под `error` в `structuredContent`): ошибки ввода `errors` и факты
+# причины `facts`, а не только код, класс и рецепт. Текст отказа ссылается на них («какое поле и какое правило — в errors»).
+
+- scenario: rcode_detail_book_row_names_field_and_rule
+  why: строка канала без модели — отказ несёт errors с полем и правилом, на которые ссылается его текст
+  род: отрицательный
+  given:
+    files:
+      ткани/без_имени/read.json: |
+        {"RESOURCE_LIMITS": {"schema": {}, "rows": {"L1": {"resource_type": "tts_characters",
+          "provider": "Local_piper", "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+          "warning_threshold": -1, "model": "", "response_format": "wav", "speed": 1.0,
+          "usage_unit": "character"}}}}
+  when:
+    - call: media_generate
+      with: {table: ткани/без_имени, resource_type: tts_characters, input: текст, scene_id: s1, video_slug: demo}
+      expect:
+        ok: false
+        code: BOOK_ROW_INVALID
+        detail: {errors.0.field: model, errors.0.rule: required}
+
+- scenario: rcode_detail_runner_answer_names_host
+  why: раннер ответил 200 телом не JSON — отказ несёт факты причины (хост и что не так), а не только код
+  род: отрицательный
+  given:
+    fixtures: [net_double]
+    network:
+      routes: [{host: 127.0.0.1, method: POST, path: /run, replies: [{status: 200, body: "<html>не json</html>"}]}]
+    files:
+      сеть/вход.png: не картинка — раннер читает путь, а не байты
+      сеть/read.json: |
+        {"RESOURCE_LIMITS": {"schema": {}, "rows": {"L1": {"resource_type": "bg_removals",
+          "provider": "Local_runner", "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+          "warning_threshold": -1, "model": "rmbg", "response_format": "png", "speed": 1.0, "usage_unit": "call"}}}}
+  when:
+    - python: seed_runner_token
+      with: {token: scenario-runner-token}
+      expect: {ok: true}
+    - call: media_generate
+      with: {table: сеть, resource_type: bg_removals, input: сеть/вход.png, scene_id: s1, video_slug: demo}
+      expect:
+        ok: false
+        code: PROVIDER_FAILED
+        net_tasks: 1
+        detail: {facts.host: 127.0.0.1, facts.status: ответ не JSON}

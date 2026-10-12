@@ -15,9 +15,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from core.declaration import declarations_root, instance_home, workspace_root    # noqa: E402 — после правки sys.path
 from core.secrets import ChannelSecrets, SecretError    # noqa: E402 — после правки sys.path
 
-WORKSPACE = ROOT / "workspace"
+WORKSPACE = workspace_root()
 
 
 def main(argv: list[str]) -> int:
@@ -28,7 +29,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--remove", action="store_true", help="Убрать ключ провайдера")
     args = ap.parse_args(argv[1:])
 
-    box = ChannelSecrets(WORKSPACE, ROOT)
+    box = ChannelSecrets(WORKSPACE, instance_home(declarations_root()))
     try:
         if args.list or not args.provider:
             rows = box.status(args.channel)

@@ -1,0 +1,28 @@
+# Отказы прозвонки задач: идентификатор, которого сервер не выдавал, и идентификатор, уводящий из каталога задач.
+
+- scenario: rcode_task_unknown_id
+  why: статус по идентификатору, которого нет, — TASK_NOT_FOUND с рецептом прозвонки без параметров, а не рецепт таблиц
+  род: отрицательный
+  when:
+    - call: media_install_status
+      with: {install_id: "0123456789ab"}
+      expect:
+        ok: false
+        code: TASK_NOT_FOUND
+        recovery: media_install_status
+        detail: {facts.task_id: "0123456789ab"}
+
+- scenario: rcode_task_id_outside_installs
+  why: идентификатор, уводящий из каталога установок (`..` и абсолютный путь), — TASK_NOT_FOUND; приманка вне каталога не прочитана
+  род: отрицательный
+  when:
+    - python: decoy_beyond_installs
+      with: {marker: МЕТКА-ПРИМАНКИ-5c1e}
+      as: decoy
+      expect: {ok: true}
+    - call: media_install_status
+      with: {install_id: "${decoy.relative}"}
+      expect: {ok: false, code: TASK_NOT_FOUND, canary: МЕТКА-ПРИМАНКИ-5c1e}
+    - call: media_install_status
+      with: {install_id: "${decoy.absolute}"}
+      expect: {ok: false, code: TASK_NOT_FOUND, canary: МЕТКА-ПРИМАНКИ-5c1e}

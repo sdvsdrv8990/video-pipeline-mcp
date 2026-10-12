@@ -869,7 +869,8 @@ class OnlineCatalog:
             # Ключ в открытом канале виден любому посреднику — это отказ, а не предупреждение.
             raise ProviderError("DOWNLOAD_FORBIDDEN", facts={"host": urlparse(url).hostname or url, "allowed": "https"})
         headers = self._auth_headers(str(decl.get("auth") or "bearer"), api_key)
-        items = self.fetcher(url).answer(url, headers, refused=lambda response: self._refused(response, provider))
+        items = self.fetcher(url).answer(
+            url, headers, refused=lambda response: provider_refusal(response, provider, "запрос списка"))
         path = str(decl.get("items") or "")
         if path:
             items = items.get(path) or []
@@ -943,15 +944,18 @@ class OnlineCatalog:
         (`ModelSpec`); хост — хост объявленного адреса `url`."""
         return answers(self._decl, ONLINE_ANSWER, url, transport=self.transport, resolve=self.resolve)
 
-    @staticmethod
-    def _refused(response, provider: str) -> ProviderError:
-        """Отказ провайдера на запрос списка его причиной (тело прочитано дверью в пределе): ключ отклонён — рецепт ключа,
-        иначе — код ответа; список из реестра шлюза остаётся и без обращения к нему."""
-        if response.status_code in (401, 403):
-            return ProviderError(
-                "AUTH_FAILED", f"Провайдер отклонил ключ при запросе списка ({response.status_code}).",
-                reason="Ключ недействителен или у него нет прав. Заменить может только владелец: "
-                       "python scripts/set_provider_key.py --channel <канал> --provider " + provider)
+
+def provider_refusal(response, provider: str, subject: str) -> ProviderError:
+    """Отказ провайдера (ответ ≥400, тело прочитано дверью в пределе) его причиной — одна фраза на все обращения к
+    провайдерам; `subject` — что у него просили («запрос списка», «вызов»): ключ отклонён (401, 403) — AUTH_FAILED с
+    рецептом замены ключа, иначе — PROVIDER_FAILED с кодом и цитатой ответа."""
+    status = response.status_code
+    if status in (401, 403):
         return ProviderError(
-            "PROVIDER_FAILED", f"Провайдер ответил {response.status_code} на запрос списка.",
-            reason="Повтори позже; список из реестра шлюза доступен и без обращения к нему.")
+            "AUTH_FAILED", f"Провайдер отклонил ключ в ответ на {subject} ({status}).",
+            reason="Ключ недействителен или у него нет прав. Заменить может только владелец: "
+                   f"python scripts/set_provider_key.py --channel <канал> --provider {provider}")
+    return ProviderError(
+        "PROVIDER_FAILED", f"Провайдер ответил {status} на {subject}: {response.text[:300]}",
+        reason="Это ответ самого сервиса — в нём причина отказа (модерация, исчерпанный платный лимит, неподходящий "
+               "файл); повтор не лечит её, пока причина не снята.")

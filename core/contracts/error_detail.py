@@ -38,13 +38,14 @@ _КОДЫ = {
     "PROVIDER_FAILED", "CONTENT_REJECTED", "LOCAL_INFERENCE_FAILED",
     "PROVIDER_NOT_CONFIGURED", "PROVIDER_EXHAUSTED",
     "PROVIDER_TIMEOUT", "DOWNLOAD_INCOMPLETE", "DOWNLOAD_FORBIDDEN", "DOWNLOAD_RANGE_INVALID", "DOWNLOAD_TOO_LARGE",
-    "DOWNLOAD_TOO_SLOW",
+    "DOWNLOAD_TOO_SLOW", "PROVIDER_OUTCOME_UNKNOWN", "REQUEST_HEADER_INVALID",
     "PROVIDER_ADAPTER_MISSING", "LOCAL_MODEL_MISSING", "USAGE_UNIT_UNKNOWN",
     "MODEL_INCOMPLETE", "MODEL_CORRUPT", "MODEL_UNVERIFIED",
     "MODEL_SOURCE_FORBIDDEN", "MODEL_SOURCE_FAILED", "MODEL_TOO_LARGE", "MODEL_NOT_IN_CATALOG", "MODEL_GATED", "MODEL_FORMAT_MISSING",
     "MODEL_REVISION_UNKNOWN", "MODEL_NAME_TAKEN",
     "MODEL_UNLOADABLE", "BOOK_ROW_INVALID",
-    "MODEL_NO_DISK_SPACE", "DISK_SPACE_UNKNOWN", "MODEL_SIZE_UNKNOWN", "INSTALL_STALLED", "MODEL_INSTALL_BUSY",
+    "MODEL_NO_DISK_SPACE", "DISK_SPACE_UNKNOWN", "MODEL_SIZE_UNKNOWN", "INSTALL_STALLED", "MODEL_INSTALL_BUSY", "TASK_NOT_FOUND",
+    "TASK_INTERRUPTED", "TASK_STALLED", "TASK_RECORD_INVALID",
     "RESOURCE_BUSY",
     # Объявлены в server_reactions.yaml и реально бросаются, но выпали отсюда —
     # ErrorDetail предупреждал «код не в реестре» на штатных отказах поиска и пересчёта
@@ -52,11 +53,11 @@ _КОДЫ = {
     # Reconcile: пакет откачен целиком — половина сведения хуже отсутствия
     "RECONCILE_ROLLED_BACK",
     # Раннер: строка канала просит считать вне сервера, а он не поднят
-    "RUNNER_NOT_RUNNING",
+    "RUNNER_NOT_RUNNING", "RUNNER_PORT_TAKEN", "RUNNER_TOKEN_REJECTED",
     # Ключи провайдеров: значение не выдаётся никогда, только отпечаток
     "SECRET_ACCESS_DENIED", "PROVIDER_KEY_MISSING", "SECRET_UNREADABLE",
     "SECRET_ENCRYPTION_UNAVAILABLE",
-    "AUTH_REQUIRED", "AUTH_FAILED", "DEFAULT", "UNKNOWN_ERROR",
+    "AUTH_REQUIRED", "AUTH_FAILED", "UNKNOWN_ERROR",
     "SHEET_NOT_FOUND", "COLUMN_NOT_FOUND", "ROW_NOT_FOUND",
     "COMPUTED_READONLY", "ENUM_VIOLATION", "INVALID_ACTION",
     # Таблицы: структура (Категория 2, excel_*)
@@ -70,8 +71,6 @@ _КОДЫ = {
     "SCHEMA_INVALID",
     # Декларация config/*.yaml не прошла схему двери (поле и правило — в errors)
     "DECLARATION_INVALID",
-    # Советы в успешном ответе: битая декларация не должна приезжать INTERNAL_ERROR
-    "ADVICE_INVALID",
     # Иерархия ID: цепочка по каталогу назначения
     "DUPLICATE_PATH", "CHAIN_UNRESOLVED", "TEMPLATE_INVALID",
     # Целостность артефактов: подпись инстанса и отпечаток машины

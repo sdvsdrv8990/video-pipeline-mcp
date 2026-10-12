@@ -846,13 +846,13 @@ print("== 35. Три режима создания: сервер ПРЕДЛАГ�
 import asyncio as _aio35
 from core.engine import Engine as _Eng35
 from core.state import StateManager as _SM35
-import server as _srv35
+from tests.harness.inprocess import register_basic_tools as _register35
 
 _ws35 = Path(tempfile.mkdtemp(prefix="vpm_m35_")) / "workspace"
 _ws35.mkdir(parents=True)
 _sm35 = _SM35(_ws35)
 _eng35 = _Eng35(state_manager=_sm35)
-_srv35.register_basic_tools(_eng35, IDGenerator(), _sm35)
+_register35(_eng35, IDGenerator(), _sm35)
 
 
 def _call35(tool, **params):

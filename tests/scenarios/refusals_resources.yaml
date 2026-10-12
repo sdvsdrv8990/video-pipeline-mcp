@@ -1,0 +1,12 @@
+# Коды отказа предела одновременности: место класса ресурса держит приспособление `hold_slot`, второй вызов того же класса
+# упирается в занятое место. Без часов: держатель отпускает место по флагу шага, а не по таймеру.
+
+- scenario: rcode_resource_class_busy_refuses_second_call
+  why: класс ресурса с одним местом занят — второй вызов сразу получает «занято» с подсказкой повтора, а не ждёт за пределом клиента
+  род: отрицательный
+  given:
+    fixtures: [hold_slot]
+  when:
+    - python: busy_while_held
+      with: {tool: media_runner, args: {action: status}}
+      expect: {ok: false, code: RESOURCE_BUSY, data: {held: true, freed_after: true}}

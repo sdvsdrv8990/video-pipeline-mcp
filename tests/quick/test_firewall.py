@@ -219,7 +219,6 @@ _TUNNEL_CASES = {
 }
 for _case, _text in _TUNNEL_CASES.items():
     _cfg9 = declarations_copy()
-    (_cfg9 / "tunnel.yaml").unlink(missing_ok=True)
     if _text is not None:
         (_cfg9 / "tunnel.yaml").write_text(_text, encoding="utf-8")
     try:

@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT))
 from invariants import (
     НетУлики,
     axis_undeclared,
+    codes_exempt_from_scenarios,
     codes_outside_registry,
     codes_without_emitter,
     dead_recovery_in_engine,
@@ -42,6 +43,7 @@ from invariants import (
     muted_refusal,
     record_field_mismatch,
     unfinished_in_server,
+    unscripted_declaration_stale,
 )
 _checks = 0
 
@@ -216,9 +218,9 @@ PACKAGES_LIVE = (ROOT / "config" / "packages.yaml").read_text(encoding="utf-8")
 ORPHAN_IN_PACKAGES = PACKAGES_LIVE.replace("PACKAGE_INDEX_FAILED", "ORPHAN_CODE")
 
 
-def с_пакетами(packages: str, reader: str = "scripts/cost.py") -> Path:
+def с_пакетами(packages: str, reader: str = "scripts/cost.py", registry: str = REGISTRY_TWO) -> Path:
     """Корень с packages.yaml и модулем `reader`, который читает её слот (`PACKAGES`)."""
-    return make({"config/server_reactions.yaml": REGISTRY_TWO, "core/z.py": EMITTER, "config/packages.yaml": packages,
+    return make({"config/server_reactions.yaml": registry, "core/z.py": EMITTER, "config/packages.yaml": packages,
                  "tests/quick/tools_inventory.golden.json": INVENTORY_TWO, "tests/scenarios/a.yaml": COVERS_ALL,
                  reader: "from core.declaration_schemas import PACKAGES\n"})
 
@@ -227,8 +229,11 @@ ok(not codes_without_emitter(с_пакетами(ORPHAN_IN_PACKAGES)),
    "код отдаёт декларация полем-кодом схемы (index.fetch.codes.failed), слот читает скрипт — обещание держат: молчим")
 ok(len(codes_without_emitter(с_пакетами(ORPHAN_IN_PACKAGES, reader="docs/cost.md"))) == 1,
    "слот декларации не читает ни сервер, ни скрипт — её код бросить некому: находка остаётся")
-ok(len(codes_without_emitter(с_пакетами(PACKAGES_LIVE.replace("hosts: []", "hosts: [ORPHAN_CODE]")))) == 1,
+ok(len(codes_without_emitter(с_пакетами(PACKAGES_LIVE.replace("hosts: []", "hosts: [ORPHAN_CODE]"),
+                                       registry=REGISTRY_TWO + "PACKAGE_INDEX_FAILED:\n  class: server_recoverable\n"))) == 1,
    "та же строка в поле без метки кода (hosts) — не код: суд по типу поля, а не по виду строки, находка остаётся")
+ok("packages.yaml" in отказ(codes_without_emitter, с_пакетами(PACKAGES_LIVE)),
+   "код поля-кода декларации не объявлен в реестре рядом — дверь отказывает, ось не судит и называет файл")
 ok("packages.yaml" in отказ(codes_without_emitter, с_пакетами(PACKAGES_LIVE.replace("attempts: 6", "attempts: 0"))),
    "декларация не проходит свою схему — ось отказывает судить и называет файл, а не молчит")
 ok(not declared_but_unscripted(с_пакетами(ORPHAN_IN_PACKAGES)),
@@ -253,6 +258,28 @@ ok(len(declared_but_unscripted(make({"config/server_reactions.yaml": REGISTRY_TW
                                      "tests/quick/tools_inventory.golden.json": INVENTORY_TWO,
                                      "tests/scenarios/a.yaml": COVERS_ALL.replace("ALIVE_CODE", "FOREIGN_CODE")}))) == 1,
    "бросаемый код не ждёт ни один сценарий — новый код отказа без объявления")
+
+
+def с_несценарным(unscripted: str, scenario: str = COVERS_ALL.replace("ALIVE_CODE", "FOREIGN_CODE")) -> Path:
+    """Корень, где ALIVE_CODE бросают, а сценарий его не ждёт, плюс объявление несценарности."""
+    return make({"config/server_reactions.yaml": REGISTRY_TWO, "core/z.py": EMITTER,
+                 "tests/quick/tools_inventory.golden.json": INVENTORY_TWO, "tests/scenarios/a.yaml": scenario,
+                 "tests/harness/unscripted.yaml": unscripted})
+
+
+EXEMPT_ALIVE = "ALIVE_CODE:\n  why: рождает только падение, место z.py:2\n"
+
+ok(not declared_but_unscripted(с_несценарным(EXEMPT_ALIVE))
+   and len(codes_exempt_from_scenarios(с_несценарным(EXEMPT_ALIVE))) == 1
+   and not unscripted_declaration_stale(с_несценарным(EXEMPT_ALIVE)),
+   "код объявлен несценарным с причиной — уходит из «не покрыто» и считается своей осью-храповиком")
+ok(len(declared_but_unscripted(с_несценарным("ALIVE_CODE:\n  why: ''\n"))) == 1
+   and "без причины" in " ".join(unscripted_declaration_stale(с_несценарным("ALIVE_CODE:\n  why: ''\n"))),
+   "объявление без причины не освобождает: код остаётся непокрытым, жёсткая ось называет пустой `why`")
+ok("сценарий его ждёт" in " ".join(unscripted_declaration_stale(с_несценарным(EXEMPT_ALIVE, scenario=COVERS_ALL))),
+   "код объявлен несценарным, а сценарий его уже ждёт — объявление устарело, жёсткая ось его называет")
+ok("не бросает" in " ".join(unscripted_declaration_stale(с_несценарным("ORPHAN_CODE:\n  why: падение\n"))),
+   "несценарным объявлен код, которого сервер не бросает — освобождать не от чего, жёсткая ось его называет")
 
 print("\n== рецепт движка, который клиент не увидит ==")
 

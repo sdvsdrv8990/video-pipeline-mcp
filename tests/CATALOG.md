@@ -136,7 +136,7 @@
 | **F86** | сигнал аномалии немой: `reason` выбрасывался на ALLOW, `log_suspicious` — мёртвый knob | behavioral | `agent_swarm/test_agent_swarm.py` → `atk_anomaly_sequence` (след в консоли живого сервера) | 🟢 **ЗАКРЫТ S24** (мутация M98: `if False and …` → красный) |
 | **F87** | провенанс не доехал до результатов поиска (остаток OUT8) | behavioral | `agent_swarm/test_agent_swarm.py` → `atk_search_poison` (объявлен `xfail-spec`) | 🟡 **OPEN-CONFIRMED S24** — дыра доказана живьём, ждёт фикса |
 | **F43** | реестр обходится хендлерами → error без `reaction_class` из реестра | behavioral | `test_audit_fixes` (регрессия: `table_get_row` на нет-таблице → `reaction_class` И `recovery.reason` из реестра) | 🟢 **ЗАКРЫТ S16 (A6)** — `_err`→`get_error` + 24 `fs_*`-сайта; регрессия (2 проверки) зелёная |
-| **F5** | DEFAULT-fallback игнорит `DEFAULT.message_template` | behavioral | `test_audit_fixes` (`get_error(unknown)` → assert message==template) | 🟢 **ЗАКРЫТ S16 (A6)** — DEFAULT-ветка тянет class/template/recovery из реестра; регрессия зелёная |
+| **F5** | запасная ветка (код не в реестре) игнорит шаблон своей записи реестра | behavioral | `test_audit_fixes` (`get_error(unknown)` → запись реестра под кодом ответа, message==её template) | 🟢 **ЗАКРЫТ S16 (A6)** — запасная ветка тянет class/template/recovery из реестра; с 2026-10-11 запись названа кодом ответа `UNKNOWN_ERROR` (была `DEFAULT`); регрессия зелёная |
 | **F40** | search-коды `QUERY_NOT_FOUND`/`PATH_NOT_FOUND` НЕ в реестре | behavioral | `test_audit_fixes` (assert коды ⊂ реестр) | 🟢 **ЗАКРЫТ S16 (A6)** — коды добавлены в `server_reactions.yaml`; регрессия зелёная. Остаток дубль-классов → A5 |
 | **F42** | `_match_filter`/`_apply_sort` на разнотипном → TypeError | behavioral | `test_audit_fixes` (фильтр str vs int gt + сортировка разнотипного) | 🟢 **ЗАКРЫТ S16 (A5)** — type-safe фильтр+сортировка; регрессия зелёная (2 проверки). Остаток relevance/overclaim → A5 (F31) |
 | **F29** | `validate_formulas`=grep токенов без пересчёта (театр) | behavioral | `test_audit_fixes` (`=1/0` → `validate_formulas` ловит через LO recalc; гардед по soffice) | 🟢 **ЗАКРЫТ S16 (A-tables)** — LibreOffice headless recalc; регрессия зелёная. F30 loader / F28 → отдельно |
@@ -468,7 +468,7 @@
 | M101 | чужеродные значения снова участвуют в развороте сортировки (откат F90) | `core/search/query_planner.py` | `test_search` | 🔴 ловит (S24) |
 | M98 | сигнал аномалии снова выбрасывается на ALLOW-пути (откат F86) | `core/firewall/firewall.py` | `agent_swarm` | 🔴 ловит (S24) |
 | M1 | `ToolContext.err` мимо реестра реакций (откат F43) | `tools/_context.py` | `test_audit_fixes` | 🔴 ловит |
-| M2 | DEFAULT-fallback хардкодит message (откат F5) | `core/reactions/reactions.py` | `test_audit_fixes` | 🔴 ловит |
+| M2 | запасная ветка `UNKNOWN_ERROR` хардкодит message (откат F5) | `core/reactions/reactions.py` | `test_audit_fixes` | 🔴 ловит |
 | M3 | `QUERY_NOT_FOUND` убран из реестра (откат F40) | `config/server_reactions.yaml` | `test_audit_fixes` | 🔴 ловит |
 | M4 | типонебезопасный `_match_filter` (откат F42) | `core/search/query_planner.py` | `test_audit_fixes` 🔴 / **`test_search` 🟢** | частично — **слепа зона search** |
 | M5 | `validate_formulas` без LO-пересчёта (откат F29) | `core/excel/excel_core.py` | `test_audit_fixes` | 🔴 ловит |

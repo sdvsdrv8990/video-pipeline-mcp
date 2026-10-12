@@ -13,7 +13,7 @@ warnings.simplefilter("error", UserWarning)  # ловим незарегистр
 from core.engine import Engine
 from core.state import StateManager
 from core.ids import IDGenerator
-import server
+from tests.harness.inprocess import register_basic_tools
 
 PASS, FAIL = [], []
 def check(name, cond):
@@ -25,7 +25,7 @@ async def main():
     ws = tmp / "workspace"; ws.mkdir()
     sm = StateManager(ws)
     eng = Engine(state_manager=sm)
-    server.register_basic_tools(eng, IDGenerator(), sm)
+    register_basic_tools(eng, IDGenerator(), sm)
 
     # tools/list: все новые инструменты + title
     names = {t["name"] for t in eng.list_tools()}

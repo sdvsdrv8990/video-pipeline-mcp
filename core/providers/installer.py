@@ -16,8 +16,9 @@ import time
 import uuid
 from pathlib import Path
 
+from core import jobs
 from core.contracts import ContractError, TaskStatus
-from core.paths import Files
+from core.paths import Files, PathRefused
 from core.reactions import Reactions
 
 from .resolver import ProviderError
@@ -41,8 +42,17 @@ class ModelInstaller:
     def state_dir(self) -> Path:
         return Path(self.catalog.models_dir) / "installs"
 
+    @staticmethod
+    def _unknown(install_id: str) -> ProviderError:
+        """Задачи с таким id нет: узел заданий его не выдавал, он уводит из каталога установок или состояния нет."""
+        return ProviderError("TASK_NOT_FOUND", facts={"task_id": install_id})
+
     def _file(self, install_id: str) -> Path:
-        return self.state_dir / f"{install_id}.json"
+        """Файл состояния через дверь путей: id, который уводит из каталога установок, — задачи с таким id нет."""
+        try:
+            return Files(self.state_dir).place(f"{install_id}.json")
+        except PathRefused:
+            raise self._unknown(install_id) from None
 
     def _write(self, state: dict) -> None:
         """Замена файла состояния целиком через дверь слоя: читатель видит старый или новый, не половину (FS-06)."""
@@ -51,11 +61,7 @@ class ModelInstaller:
     def _read(self, install_id: str) -> dict:
         path = self._file(install_id)
         if not path.is_file():
-            raise ProviderError(
-                "ROW_NOT_FOUND", f"Установка '{install_id}' не найдена.",
-                reason="Идентификатор выдаётся при запуске; список идущих и завершённых — "
-                       "media_install_status без параметров.",
-                suggested_tool="media_install_status")
+            raise self._unknown(install_id)
         return json.loads(path.read_text(encoding="utf-8"))
 
     # ═══ Запуск ═══
@@ -74,7 +80,7 @@ class ModelInstaller:
         # Место спрашивается ДО фонового потока (нехватка — отказ `место_под`): кончившийся диск обрывает загрузку
         # общим исключением, и клиент узнаёт об этом гигабайтами позже, без числа и без причины.
         место = self.catalog.место_под(model_id, kind, force=force)
-        state = {"install_id": uuid.uuid4().hex[:12], "model_id": model_id, "kind": kind,
+        state = {"install_id": jobs.issue(), "model_id": model_id, "kind": kind,
                  "phase": "running", "started": time.time(), "heartbeat": time.time(), "bytes": 0, "force": force}
         begun = threading.Event()
         refused: list[BaseException] = []
@@ -156,7 +162,10 @@ class ModelInstaller:
     # ═══ Прозвонка ═══
 
     def status(self, install_id: str = "") -> list[dict]:
-        """Что с установками — `TaskStatus` каждой: идёт, готово, отказ (простой тоже). Молчания нет ни в одном случае."""
+        """Что с установками — `TaskStatus` каждой: идёт, готово, отказ (простой тоже). Молчания нет ни в одном случае.
+        id, которого узел заданий не выдавал (форма `jobs.yaml`), — TASK_NOT_FOUND до того, как из него строится путь."""
+        if install_id and not jobs.issued(install_id):
+            raise self._unknown(install_id)
         return [self._task(s) for s in ([self._read(install_id)] if install_id else self._states())]
 
     def _states(self) -> list[dict]:

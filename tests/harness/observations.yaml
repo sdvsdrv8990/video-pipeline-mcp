@@ -158,7 +158,7 @@ ModelInstallStarted:
   observe: media_install_status
   with: {install_id: "${identity}"}
   present: {ok: true, facts: [ModelInstallStatus]}
-  absent: {ok: false, code: ROW_NOT_FOUND}
+  absent: {ok: false, code: TASK_NOT_FOUND}
 
 RenderCompleted:
   identity: data.file_path

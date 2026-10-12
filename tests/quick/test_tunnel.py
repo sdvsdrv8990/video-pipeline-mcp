@@ -16,8 +16,12 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from core.transport.tunnel import CloudflaredTunnel, TunnelCancelled, TunnelError
+from tests.harness.live_server import declarations_copy
 
-CFG = str(ROOT / "config" / "tunnel.yaml")
+# Декларация туннеля — у прогона, в копии деклараций харнесса: машинный config/tunnel.yaml владельца в копию не идёт,
+# и пороги отступа супервизора судятся по объявленным здесь, а не по чужой машине.
+CFG = declarations_copy() / "tunnel.yaml"
+CFG.write_text("mode: quick\nretry_base_seconds: 2\nretry_max_seconds: 60\nretry_reset_seconds: 60\n", encoding="utf-8")
 results = []
 
 
@@ -114,6 +118,8 @@ def test_readiness_event_driven():
 
 
 def test_supervisor_backoff_and_status():
+    check("декларация туннеля — копия прогона, а не config/ дерева (машинный файл владельца)",
+          not CFG.resolve().is_relative_to((ROOT / "config").resolve()), CFG)
     t = CloudflaredTunnel(port=8080, config_path=CFG)
 
     check("stable run resets attempts to 1", t._next_attempts(5, uptime=120) == 1, t._next_attempts(5, 120))
