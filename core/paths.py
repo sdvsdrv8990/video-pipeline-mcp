@@ -181,15 +181,17 @@ class Files:
         """Остаток с содержимым на диске: создан исключительно (`O_EXCL`), права выставлены до первого байта."""
         part = self.remnant(target, uuid.uuid4().hex[:12], secrets=secrets)
         part.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        # O_BINARY есть только на Windows: без него дескриптор в текстовом режиме CRT, запись переводит \n в \r\n.
+        fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
         try:
-            os.fchmod(fd, mode)
             with os.fdopen(fd, "wb") as f:
+                # chmod по дескриптору — где он поддержан (на Windows — с 3.13), иначе по пути: файл уже создан и пуст.
+                os.chmod(f.fileno() if os.chmod in os.supports_fd else part, mode)
                 f.write(data.encode("utf-8") if isinstance(data, str) else data)
                 f.flush()
                 os.fsync(f.fileno())
         except BaseException:
-            part.unlink(missing_ok=True)
+            part.unlink(missing_ok=True)  # файл уже закрыт выходом из with: Windows не удаляет открытый
             raise
         return part
 

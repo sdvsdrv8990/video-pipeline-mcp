@@ -1,0 +1,8 @@
+# transport.yaml — что сервер обещает клиенту на проводе. Схема — core/declaration_schemas.py TransportDeclaration.
+
+# Источники страниц (Origin), которым разрешено звать сервер вдобавок к петле: клиенты, чей бэкенд шлёт Origin.
+# Прочим Origin — отказ ORIGIN_FORBIDDEN; запрос без Origin (не браузер) судится как прежде. Добавка на одной машине —
+# переменная MCP_ALLOWED_ORIGINS (через запятую), к этому списку.
+origins:
+  allowed:
+    - https://claude.ai     # коннектор Claude AI Web: строгая проверка Origin ему не даёт подняться (claude.com/docs/connectors/building/troubleshooting)

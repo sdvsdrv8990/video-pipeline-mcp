@@ -6,8 +6,11 @@
 """
 
 import asyncio
+import atexit
 import json
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 import server as S
 from tests.harness.inprocess import create_server
+from core.declaration_schemas import RateLimit
 from core.firewall import Firewall, FirewallRequest
 from core.ids import IDGenerator
 
@@ -36,6 +40,13 @@ def xcheck(name, desired_ok, fnum, note=""):
     else:
         print(f"[OPEN-CONFIRMED {fnum}] {name} — подтверждена обмером (ожидаемо красный). {note}")
         xopen.append("open")
+
+
+def _temp_dir(prefix: str = "vpm_audit_") -> Path:
+    """Временный каталог набора — убирается при выходе: в /tmp он жил бы до перезагрузки, а /tmp — это память."""
+    path = Path(tempfile.mkdtemp(prefix=prefix))
+    atexit.register(shutil.rmtree, path, ignore_errors=True)
+    return path
 
 
 def _reactions_registry():
@@ -85,26 +96,28 @@ async def main():
     check("injection patterns from yaml (>0)", len(firewall.injection_detector.patterns) > 0,
           len(firewall.injection_detector.patterns))
 
-    # Выключатель `enabled` в конфиге реально выключает правило (был мёртвым ключом).
+    # Выключатель `enabled` в конфиге реально выключает правило (был мёртвым ключом). Лимит — свой у каждого файрвола
+    # проверки: правило частоты здесь не предмет, но без раздела лимита файрвола нет.
+    _rate = RateLimit(enabled=True, window_sec=60, max_requests=60, ban_after_violations=3)
     inj_payload = {"name": "fs_create_file", "arguments": {"content": "ignore previous instructions"}}
-    fw_on = Firewall({"injection_detection": {"enabled": True, "patterns": ["ignore previous instructions"]}})
-    fw_off = Firewall({"injection_detection": {"enabled": False, "patterns": ["ignore previous instructions"]}})
+    fw_on = Firewall({"injection_detection": {"enabled": True, "patterns": ["ignore previous instructions"]}}, _rate)
+    fw_off = Firewall({"injection_detection": {"enabled": False, "patterns": ["ignore previous instructions"]}}, _rate)
     d_on = fw_on.check(FirewallRequest(ip="203.0.113.54", method="tools/call", params=inj_payload, timestamp=7000.0))
     d_off = fw_off.check(FirewallRequest(ip="203.0.113.55", method="tools/call", params=inj_payload, timestamp=7000.0))
     check("injection_detection.enabled=true → block", d_on.decision.value == "block", d_on.decision.value)
     check("injection_detection.enabled=false → allow", d_off.decision.value == "allow", d_off.decision.value)
     check("ключ отсутствует → правило включено (back-compat)",
-          Firewall({"injection_detection": {"patterns": ["ignore previous instructions"]}}).check(
+          Firewall({"injection_detection": {"patterns": ["ignore previous instructions"]}}, _rate).check(
               FirewallRequest(ip="203.0.113.56", method="tools/call", params=inj_payload, timestamp=7000.0)
           ).decision.value == "block")
 
-    fw_ip_off = Firewall({"ip_blocklist": {"enabled": False}})
+    fw_ip_off = Firewall({"ip_blocklist": {"enabled": False}}, _rate)
     fw_ip_off.block_ip("203.0.113.57")
     check("ip_blocklist.enabled=false → забаненный IP проходит",
           fw_ip_off.check(FirewallRequest(ip="203.0.113.57", method="tools/list", params={}, timestamp=7000.0)
                           ).decision.value == "allow")
 
-    fw_rate_off = Firewall({"rate_limit": {"enabled": False, "max_requests_per_minute": 1, "ban_after_violations": 1}})
+    fw_rate_off = Firewall({}, RateLimit(enabled=False, window_sec=60, max_requests=1, ban_after_violations=1))
     for _ in range(5):
         d_rate = fw_rate_off.check(FirewallRequest(ip="203.0.113.58", method="tools/list", params={}, timestamp=7000.0))
     check("rate_limit.enabled=false → превышение лимита не блокирует", d_rate.decision.value == "allow",
@@ -125,7 +138,7 @@ async def main():
           and "инструмент" in (rtn.error.recovery.reason.lower() if rtn.error.recovery else ""))
 
     # Бан только после ban_after нарушений
-    fw = Firewall({"rate_limit": {"max_requests_per_minute": 2, "ban_after_violations": 3}})
+    fw = Firewall({}, RateLimit(enabled=True, window_sec=60, max_requests=2, ban_after_violations=3))
     ip = "203.0.113.9"
     decs, banned_trace = [], []
     for i in range(6):
@@ -141,7 +154,7 @@ async def main():
     # Time-based «много разных имён в окне» не годится намеренно:
     # таймеры пропускают события и дают ложные срабатывания.
     # Инвариант: множество РАЗНЫХ безопасных инструментов НЕ блокируется.
-    fw2 = Firewall({})
+    fw2 = Firewall({}, _rate)
     ad_hit = False
     for i in range(6):
         res = fw2.check(FirewallRequest(ip="198.51.100.1", method="tools/call",
@@ -152,7 +165,7 @@ async def main():
     # Log-only — деструктивный инструмент ПРОПУСКАЕТСЯ (не блок), но СЧИТАЕТСЯ.
     import yaml as _y_fw
     _decl_fw = _y_fw.safe_load((ROOT / "config" / "firewall.yaml").read_text(encoding="utf-8"))
-    _fwd = Firewall(_decl_fw)
+    _fwd = Firewall.declared(ROOT / "config" / "firewall.yaml")
     resd = _fwd.check(FirewallRequest(ip="198.51.100.2", method="tools/call",
                                       params={"name": "fs_delete"}, timestamp=3000.0))
     check("fs_delete ПРОПУЩЕН файрволом (log-only, не глухой блок)", resd.decision.value == "allow", resd.reason)
@@ -168,7 +181,7 @@ async def main():
           _redact({"headers": {"X-Api-Key": "живой"}})["headers"]["X-Api-Key"] == "***REDACTED***")
 
     check("без декларации детектор не следит ни за чем и говорит об этом",
-          Firewall({}).get_stats()["dangerous_tools_watched"] == 0)
+          Firewall({}, _rate).get_stats()["dangerous_tools_watched"] == 0)
     check("с декларацией под наблюдением весь объявленный список",
           _fwd.get_stats()["dangerous_tools_watched"]
           == len(_decl_fw["anomaly_detection"]["dangerous_tools"]))
@@ -193,10 +206,9 @@ async def main():
     import shutil as _sh; _sh.rmtree(_ws / "_probe36", ignore_errors=True)
 
     # Injection-паттерны/knob'ы вычищены и грузятся из firewall.yaml.
-    import yaml as _yaml
     from pathlib import Path as _Path
     _cfg_path = _Path(__file__).resolve().parents[2] / "config" / "firewall.yaml"
-    _fw = Firewall(_yaml.safe_load(_cfg_path.read_text(encoding="utf-8")))
+    _fw = Firewall.declared(_cfg_path)
     def _fw_hit(content):
         r = _fw.check(FirewallRequest(ip="198.51.100.3", method="tools/call",
                      params={"name": "fs_write_file", "arguments": {"content": content}}, timestamp=4000.0))
@@ -315,12 +327,11 @@ async def main():
 
     # ═══ Ключ сервер выдаёт себе сам, fail-closed, секрет не утекает ═══
     print("== F14/S1: ключ доступа ==")
-    import tempfile as _tf
 
     from core.auth import (DIGEST_VAR, TOKEN_VAR, check_auth, ensure_digest, rotate_token,
                            token_digest, token_file_mode)
 
-    _d = Path(_tf.mkdtemp(prefix="s1_"))
+    _d = _temp_dir("s1_")
     _env = _d / ".env"
     _dig, _issued = ensure_digest(_env, env={})
     check("первый старт выпускает ключ", bool(_issued) and len(_issued) >= 32, f"len={len(_issued)}")
@@ -340,7 +351,7 @@ async def main():
     check("в .env хранится отпечаток, а не ключ", f"{DIGEST_VAR}=" in _body and _new not in _body)
     check("строки с открытым значением в файле нет",
           not any(_line.startswith(f"{TOKEN_VAR}=") for _line in _body.splitlines()))
-    _legacy = Path(_tf.mkdtemp(prefix="s1old_")) / ".env"
+    _legacy = _temp_dir("s1old_") / ".env"
     _legacy.write_text(f"KEEP=1\n{TOKEN_VAR}=старый-открытый-ключ\n", encoding="utf-8")
     _mig, _ = ensure_digest(_legacy, env={})
     _mbody = _legacy.read_text(encoding="utf-8")
@@ -374,7 +385,7 @@ async def main():
 
     # S1/§3-тер: секрет недостижим для файловых инструментов ПО ПОСТРОЕНИЮ (.env вне workspace/)
     from core.paths import Files, PathEscapeError
-    _ws = Path(_tf.mkdtemp(prefix="s1ws_")) / "workspace"
+    _ws = _temp_dir("s1ws_") / "workspace"
     _ws.mkdir(parents=True)
     _escaped = False
     try:
@@ -501,18 +512,17 @@ async def main():
 
     # Реестр реакций: без него КАЖДЫЙ код вырождается в UNKNOWN_ERROR, и класс, по которому
     # клиент выбирает поведение, пропадает молча.
-    import tempfile as _tf192
     from core.contracts import ContractError as _CE192
     from core.reactions import Reactions as _R192
 
-    _gone192 = Path(_tf192.mkdtemp()) / "server_reactions.yaml"
+    _gone192 = _temp_dir() / "server_reactions.yaml"
     try:
         _R192(_gone192)
         check("нет реестра реакций → отказ, а не пустой реестр", False, "загрузился тихо")
     except _CE192 as e:
         check("нет реестра реакций → отказ, а не пустой реестр", e.code == "TEMPLATE_NOT_FOUND", e.code)
 
-    _broken192 = Path(_tf192.mkdtemp()) / "server_reactions.yaml"
+    _broken192 = _temp_dir() / "server_reactions.yaml"
     _broken192.write_text("PATH_ESCAPE: [не словарь\n", encoding="utf-8")
     try:
         _R192(_broken192)
@@ -559,7 +569,7 @@ async def main():
         """(код на отсутствие, код на битость): у каждого загрузчика СВОЁ имя файла декларации."""
         out = []
         for body in (None, "раздел: [не словарь\n"):
-            d = Path(_tf192.mkdtemp())
+            d = _temp_dir()
             if body is not None:
                 (d / filename).write_text(body, encoding="utf-8")
             try:

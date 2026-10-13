@@ -160,12 +160,21 @@ ModelInstallStarted:
   present: {ok: true, facts: [ModelInstallStatus]}
   absent: {ok: false, code: TASK_NOT_FOUND}
 
+# Рендер начат — предмет задание: task_status отвечает успехом и на чужой id, отказ живёт в элементе ответа.
+RenderStarted:
+  identity: data.task_id
+  observe: task_status
+  with: {task_ids: ["${identity}"]}
+  present: {ok: true, data: {tasks.0.task.task_id: "${identity}"}}
+  absent: {ok: true, data: {tasks.0.error.code: TASK_NOT_FOUND}}
+
+# Видео — не текст: чтение отказывает FILE_NOT_TEXT и на существующем файле, поэтому предмет спрашивается обходом пути.
 RenderCompleted:
   identity: data.file_path
-  observe: fs_read_file
+  observe: fs_get_directory_tree
   with: {path: "${identity}"}
-  present: {ok: true, facts: [FileRead]}
-  absent: {ok: false, code: FILE_NOT_FOUND}
+  present: {ok: true, facts: [DirectoryTree]}
+  absent: {ok: false, code: PATH_NOT_FOUND}
 
 # ── Наблюдать нечего: ЧТЕНИЕ ничего не создаёт ───────────────────────────────────────────────
 # Спрашивать «существует ли прочитанное» бессмысленно: предмет существовал ДО факта и не им создан.

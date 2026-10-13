@@ -1,9 +1,11 @@
-"""Приспособление «узел заданий» (сценарии TASK_*): в хранилище узла сервера сценария засеяны три задания настоящими
+"""Приспособление «узел заданий» (сценарии TASK_*): в хранилище узла сервера сценария засеяны четыре задания настоящими
 путями узла, id каждого — в журнале приспособления `MCP_LOGS/task_node.jsonl` (одна строка {interrupted, stalled,
-broken}):
+broken, foreign}):
 - interrupted — задание начал дочерний процесс и умер: запись незаконченная, замок свободен (TASK_INTERRUPTED);
-- stalled — живой поток этого процесса держит замок, признак работы старше `stale_after_sec` (TASK_STALLED);
-- broken — запись задания испорчена (TASK_RECORD_INVALID).
+- stalled — живой поток этого процесса держит замок, последний признак работы — в эпохе 0: processing с фактами хода
+  (`last_work_at`, `idle_sec`), вердикта по часам нет; снимается `task_cancel` (свой исполнитель — TASK_CANCELLED);
+- broken — запись задания испорчена (TASK_RECORD_INVALID);
+- foreign — живое задание дочернего процесса, который держит замок записи, пока жив сервер: снятие — TASK_FOREIGN.
 Засев кончается исходом или отказом приспособления: бесконечного ожидания в нём нет.
 """
 import json
@@ -46,6 +48,25 @@ def _silent() -> str:
     return task_id
 
 
+_FOREIGN = ("import sys, threading\nfrom core.engine.engine import Engine\nfrom core.jobs import Tasks\n"
+            "node, stop = Tasks(Engine()), threading.Event()\n"
+            "entry = node.begin('сценарий', {'засев': 'чужое'}, 'любой', lambda beat: (stop.wait(), {'ok': 1})[1])\n"
+            "print(entry['task_id'], flush=True)\nsys.stdin.read()\nstop.set()\nnode.settle(entry['task_id'], 5)\n")
+_held: list[subprocess.Popen] = []
+
+
+def _foreign() -> str:
+    """Живое задание другого процесса: ребёнок держит замок записи, пока открыт его stdin. Трубу держит этот процесс —
+    с его концом ребёнок доводит работу до completed и выходит сам."""
+    child = subprocess.Popen([sys.executable, "-c", _FOREIGN], cwd=ROOT, text=True,
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    _held.append(child)
+    task_id = (child.stdout.readline() if child.stdout else "").strip()
+    if not task_id:
+        raise RuntimeError(f"чужой исполнитель не выдал id задания: код {child.wait()}")
+    return task_id
+
+
 def _broken() -> str:
     """Задание с выданным id, чья запись на настоящем пути узла испорчена: исполнителя и ожидания нет."""
     task_id = issue()
@@ -60,4 +81,5 @@ if _unset:
 journal = Path(os.environ["MCP_LOGS"]) / "task_node.jsonl"
 journal.parent.mkdir(parents=True, exist_ok=True)
 with journal.open("a", encoding="utf-8") as fh:
-    fh.write(json.dumps({"interrupted": _died(), "stalled": _silent(), "broken": _broken()}) + "\n")
+    fh.write(json.dumps({"interrupted": _died(), "stalled": _silent(), "broken": _broken(),
+                         "foreign": _foreign()}) + "\n")

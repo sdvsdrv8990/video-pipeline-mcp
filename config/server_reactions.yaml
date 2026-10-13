@@ -104,15 +104,66 @@ LOCAL_INFERENCE_FAILED:
 
 AUTH_REQUIRED:
   class: human_required
-  message_template: "Требуется аутентификация. Заголовок Authorization отсутствует."
+  message_template: "Требуется аутентификация: ключа нет ни в Authorization, ни в X-Api-Key."
   recovery:
-    reason: "Передай bearer-токен в заголовке Authorization: Bearer <token>."
+    reason: "Передай ключ заголовком Authorization: Bearer <ключ> или X-Api-Key: <ключ>."
 
 AUTH_FAILED:
   class: human_required
-  message_template: "Аутентификация не пройдена. Неверный токен."
+  message_template: "Аутентификация не пройдена: ключ не совпал с ключом сервера."
   recovery:
-    reason: "Проверь значение MCP_AUTH_TOKEN и повтори запрос."
+    reason: "Сверь ключ в заголовках коннектора; потерянный ключ владелец перевыпускает: server.py --rotate-key."
+
+# ═══ Периметр: отказ до разбора запроса как MCP ═══
+# Факты здесь — только имена и числа сервера: пришедшие значения (Host, Origin, тело, адрес клиента) в ответ не идут.
+
+HOST_FORBIDDEN:
+  class: human_required
+  message_template: "Имя хоста запроса не из списка сервера — запрос отклонён до разбора."
+  recovery:
+    reason: "Обращайся к серверу по его имени: петля или объявленный хост туннеля. Чужое имя хоста — признак обхода через браузер (DNS rebinding)."
+
+ORIGIN_FORBIDDEN:
+  class: human_required
+  message_template: "Origin запроса не из разрешённых — запрос из чужой вкладки браузера отклонён."
+  recovery:
+    reason: "Разрешённые Origin объявляет владелец (MCP_ALLOWED_ORIGINS); клиент не из браузера Origin не шлёт."
+
+MEDIA_TYPE_UNSUPPORTED:
+  class: human_required
+  message_template: "Тело запроса принимается только с Content-Type: {required}."
+  recovery:
+    reason: "Пошли тело JSON-RPC с заголовком Content-Type: {required}."
+
+REQUEST_UNREADABLE:
+  class: human_required
+  message_template: "Тело запроса не прочитано: соединение оборвалось или байты не в кодировке тела."
+  recovery:
+    reason: "Пошли тело JSON-RPC целиком в UTF-8."
+
+REQUEST_MALFORMED:
+  class: human_required
+  message_template: "Тело запроса — не JSON: разбор встал на строке {line}, столбце {column}."
+  recovery:
+    reason: "Пошли одно сообщение JSON-RPC 2.0 корректным JSON."
+
+FIREWALL_UNAVAILABLE:
+  class: server_recoverable
+  message_template: "Проверка запроса файрволом не удалась — запрос отклонён, а не пропущен; причина в консоли сервера."
+  recovery:
+    reason: "Повтори позже; повторяется — владелец смотрит консоль сервера и firewall.yaml."
+
+REQUEST_BLOCKED:
+  class: human_required
+  message_template: "Запрос отклонён файрволом: сработало правило {rule}."
+  recovery:
+    reason: "Повтор не поможет: ложное срабатывание правила {rule} снимает владелец (firewall.yaml, разблокировка адреса)."
+
+RATE_LIMITED:
+  class: ai_recoverable
+  message_template: "Превышена частота запросов — повтори через {retry_after_sec} с."
+  recovery:
+    reason: "Подожди {retry_after_sec} с и повтори; повторные превышения подряд блокируют адрес целиком."
 
 # ═══ Таблицы: данные (Категория 3) ═══
 
@@ -349,17 +400,31 @@ TASK_INTERRUPTED:
   recovery:
     reason: "Повтори вызов {tool} с теми же параметрами — задание начнётся заново."
 
-TASK_STALLED:
-  class: server_recoverable
-  message_template: "Задание «{task_id}» ({tool}) не подаёт признаков работы дольше {seconds} с."
-  recovery:
-    reason: "Исполнитель жив, но молчит: сеть встала или работа зависла. Спроси task_status позже; не сдвинулось — повтори вызов {tool}."
-
 TASK_RECORD_INVALID:
   class: integrity
   message_template: "Запись задания «{path}» повреждена — не читается как запись задания."
   recovery:
     reason: "Это порча файла сервера, а не ошибка вызова: задание не восстановить. Повтори вызов; файл назван владельцу сервера, содержимое не показано."
+
+TASK_CANCELLED:
+  class: ai_recoverable
+  message_template: "Задание «{task_id}» ({tool}) снято вызовом task_cancel."
+  recovery:
+    reason: "Снятие — решение вызывающего, а не сбой. Работа ещё нужна — повтори вызов {tool} с теми же параметрами."
+
+TASK_FINISHED:
+  class: ai_recoverable
+  message_template: "Задание «{task_id}» уже кончилось ({status}) — снимать нечего."
+  recovery:
+    suggested_tool: task_status
+    reason: "Исход задания — в task_status. Снятие действует только на задание, которое ждёт места или идёт."
+
+TASK_FOREIGN:
+  class: ai_recoverable
+  message_template: "Задание «{task_id}» исполняет другой процесс — этот сервер его не снимет."
+  recovery:
+    suggested_tool: task_status
+    reason: "Снять его может только исполнитель — другой сервер или скрипт владельца. Дождись исхода в task_status."
 
 MODEL_NO_DISK_SPACE:
   class: human_required
@@ -647,12 +712,6 @@ RENDER_FAILED:
   recovery:
     reason: "Причину называет сам ffmpeg последней строкой. Смотри её: чаще всего это несовместимые параметры ассета и профиля."
 
-RENDER_TIMEOUT:
-  class: server_recoverable
-  message_template: "Рендер не уложился в отведённое время ({timeout} с)."
-  recovery:
-    reason: "Процесс снят по таймауту, файл не готов. Раздели сцену, уменьши разрешение профиля или подними лимит времени вызова."
-
 RENDER_UNVERIFIED:
   class: integrity
   message_template: "Файл собран, но приёмка его не подтверждает: {reason}"
@@ -684,6 +743,26 @@ PACKAGE_INDEX_FAILED:
   message_template: "Индекс пакетов «{host}» не назвал длину колеса: {status}."
   recovery:
     reason: "Колесо вошло в цену установки без размера — итог больше посчитанного. Адрес колеса дал отчёт pip (PyPI или index драйвера в config/providers.yaml → local.gpu.drivers); как спрашивается индекс — config/packages.yaml → index.fetch. Перегрузку и недоступность (retry_on) отказом не считают: длина там просто не узнана."
+
+# ═══ Туннель: бинарь клиентского конца (установщик, scripts/fetch_tunnel_binary.py) ═══
+
+TUNNEL_BINARY_UNAVAILABLE:
+  class: human_required
+  message_template: "Для системы {system} и архитектуры {arch} готового бинаря туннеля нет."
+  recovery:
+    reason: "Поставь бинарь туннеля вручную по пути каталога (config/tunnel_diagnostics.yaml → бинари) или выбери роль без туннеля — клиент консоль на этой машине."
+
+TUNNEL_BINARY_SOURCE_FAILED:
+  class: server_recoverable
+  message_template: "Источник бинаря туннеля «{host}» отказал: {status}."
+  recovery:
+    reason: "Повтори установку позже: оборванная загрузка докачается с места обрыва. Повторяется — проверь связь машины с источником или поставь бинарь вручную по пути каталога (config/tunnel_diagnostics.yaml → бинари)."
+
+TUNNEL_BINARY_CORRUPT:
+  class: integrity
+  message_template: "Бинарь туннеля принят не полностью: {got} байт из {expected}."
+  recovery:
+    reason: "Остаток снят — повтор установки начнёт загрузку заново. Повторяется — источник отдаёт не тот файл: поставь бинарь вручную."
 
 # ═══ Fallback: код, которого нет в реестре, приезжает клиенту этой записью и этим кодом ═══
 

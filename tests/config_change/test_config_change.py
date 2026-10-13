@@ -77,7 +77,7 @@ async def test_hot_reload_rejects_broken_config():
         check("до правки сервер отвечает", srv.rpc.request("tools/list", {}).status_code == 200)
 
         text = cfg.read_text(encoding="utf-8")
-        broken = re.sub(r"max_requests_per_minute:\s*\d+", 'max_requests_per_minute: "60 "', text, count=1)
+        broken = re.sub(r"max_requests:\s*\d+", 'max_requests: "60 "', text, count=1)
         check("якорь порога найден", broken != text)
         cfg.write_text(broken, encoding="utf-8")
 
@@ -90,7 +90,9 @@ async def test_hot_reload_rejects_broken_config():
         # и сервер отвечает отказом на КАЖДЫЙ запрос, объявив «перезагружен без рестарта».
         check("сервер объявил отказ применить, а не успех", any("НЕ применён" in ln for ln in said), said)
         check("отказ называет причину — путь ключа, а не «битый конфиг»",
-              any("rate_limit.max_requests_per_minute" in ln for ln in said), said)
+              any("rate_limit.max_requests" in ln for ln in said), said)
+        check("значение из декларации в отказ не едет — только путь и правило", not any("60 " in ln for ln in said),
+              said)
 
         resp = srv.rpc.request("tools/list", {})
         check("после битого конфига сервер продолжает обслуживать", resp.status_code == 200,

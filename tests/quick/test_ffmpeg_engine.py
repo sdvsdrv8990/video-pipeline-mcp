@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 import yaml
@@ -18,6 +20,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from core.capacity import Capacity
 from core.providers.ffmpeg import (
     AudioTrack, FfmpegDictionary, FfmpegEngine, FfmpegError, FilterUse, Layer, RenderProfile,
     SceneSpec, accept,
@@ -51,6 +54,30 @@ def refuses(fn, code, msg):
         ok(False, f"{msg} — вместо кода реестра {type(e).__name__}: {e}")
         return
     ok(False, f"{msg} — отказа не было вовсе")
+
+
+class _Pulse:
+    """Двойник признака работы задания узла: ход в список, крючки снятия, сигнал снятия и его отказ — как у Pulse.
+    `cancel_on_first` — снять задание на первом блоке хода (зовёт крючки, как Tasks.cancel)."""
+
+    def __init__(self, cancel_on_first: bool = False):
+        self.beats: list[tuple[dict, bool]] = []
+        self.hooks: list = []
+        self.cancelled = threading.Event()
+        self._cancel_on_first = cancel_on_first
+
+    def __call__(self, progress=None, working=True):
+        self.beats.append((progress or {}, working))
+        if self._cancel_on_first and not self.cancelled.is_set():
+            self.cancelled.set()
+            for hook in self.hooks:
+                hook()
+
+    def on_cancel(self, hook):
+        self.hooks.append(hook)
+
+    def refusal(self):
+        return FfmpegError("TASK_CANCELLED", "задание снято", reason="двойник снятия")
 
 
 DICT = FfmpegDictionary()
@@ -104,6 +131,21 @@ for _src in (ROOT / "core" / "providers" / "ffmpeg").glob("*.py"):
     _used |= set(re.findall(r'FfmpegError\(\s*"([A-Z_]+)"', _src.read_text(encoding="utf-8")))
 ok(_used and not (_used - _declared),
    f"каждый код движка объявлен в server_reactions.yaml (нет: {sorted(_used - _declared) or '—'})")
+
+print("\n== контейнер профиля → muxer: словарь не отстаёт от профилей каналов ==")
+_channel = yaml.safe_load((ROOT / "config/templates/tables/channel_data.schema.yaml").read_text(encoding="utf-8"))
+_containers = {row["container"] for sheet in _channel["sheets"] if sheet["name"] == "RENDER_CONFIG"
+               for row in sheet.get("rows") or [] if row.get("container")}
+_unmapped = []
+for _container in sorted(_containers):
+    try:
+        DICT.muxer(_container)
+    except FfmpegError:
+        _unmapped.append(_container)
+ok(_containers and not _unmapped,
+   f"каждый контейнер профилей каналов находит muxer ({sorted(_containers)}; без muxer: {_unmapped or '—'})")
+refuses(lambda: DICT.muxer("avi"), "RENDER_PROFILE_INVALID",
+        "контейнер, которого нет в словаре, — отказ профиля до запуска, с допустимыми именами")
 
 # Пропуск ЗАПРЕЩЁН, когда бинарь обязан быть (в CI он ставится джобой): раз его нет — установка
 # сломалась, и «пропущено с причиной» дало бы зелёный гейт, не собравший ни одного кадра.
@@ -213,9 +255,37 @@ else:
         ok(e.code in ("RENDER_UNVERIFIED", "RENDER_INPUT_UNPREPARED"),
            f"файл, который не является видео, приёмку не проходит ({e.code})")
 
-    _short = ENGINE.build(_two)[0]
-    refuses(lambda: FfmpegEngine(DICT, timeout_sec=0).run(_short), "RENDER_TIMEOUT",
-            "рендер за пределом времени снимается кодом, а не висит")
+    # Снято в шаге 1 рендера: таймера у рендера нет (слово владельца) — «рендер за пределом времени снимается кодом
+    # RENDER_TIMEOUT» уходит; живость меряет ход ffmpeg, остановку — снятие задания (события ниже).
+    _beat = _Pulse()
+    _paced = ENGINE.render_scene(_two, _beat)
+    _last = _beat.beats[-1][0] if _beat.beats else {}
+    ok(_paced.path.exists() and any(working for _, working in _beat.beats)
+       and _last.get("frame") == 75 and _last.get("share") == 1.0,
+       f"ход рендера — блоки -progress ffmpeg в признак работы: кадр дошёл до обещанного замыслом (3 с × 25 = 75), "
+       f"доля 1 ({len(_beat.beats)} блоков, последний {_last})")
+
+print("\n── ход и снятие на двойнике ffmpeg (дочерний Python печатает блоки -progress) ──")
+_ENGINE = FfmpegEngine(DICT)
+_BLOCKS = ("import sys\nfor frame in (10, 10, 25):\n"
+           "    print(f'frame={frame}\\nout_time_us={frame * 40000}\\ntotal_size=100\\nprogress=continue', flush=True)\n"
+           "print('progress=end', flush=True)\n")
+_flat = _Pulse()
+_ENGINE.run([sys.executable, "-c", _BLOCKS, "-nostdin", "-y", "выход"], _flat, 25)
+ok([working for _, working in _flat.beats] == [True, False, True, False] and _flat.beats[2][0].get("share") == 1.0,
+   f"работа — рост кадра или времени выхода с прошлого блока, а не сам блок: тот же кадр — не работа "
+   f"({[(p.get('frame'), w) for p, w in _flat.beats]})")
+_HANGS = ("import time\nprint('frame=1\\nout_time_us=40000\\ntotal_size=10\\nprogress=continue', flush=True)\n"
+          "time.sleep(60)\n")                # сторож набора: без снятия двойник выходит сам через 60 с — красное, а не висит
+_stopped = _Pulse(cancel_on_first=True)
+_began = time.monotonic()
+refuses(lambda: _ENGINE.run([sys.executable, "-c", _HANGS, "-nostdin", "-y", "выход"], _stopped, 25),
+        "TASK_CANCELLED", "снятие задания убивает зависший процесс: отказ снятия, а не вечное ожидание")
+ok(time.monotonic() - _began < 30, f"процесс снят по событию снятия, а не по сроку ({time.monotonic() - _began:.1f} с)")
+_threads = _ENGINE.live(["ffmpeg", "-nostdin", "-i", "вход", "-y", "выход"])
+ok(_threads[_threads.index("-threads") + 1] == str(Capacity().share("render"))
+   and _threads.index("-progress") == 2 and _threads[-2:] == ["-y", "выход"],
+   f"запуск: ход в stdout после -nostdin, потоки — доля ядер на место рендера перед -y ({_threads})")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

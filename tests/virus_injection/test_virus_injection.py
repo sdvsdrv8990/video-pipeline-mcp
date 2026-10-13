@@ -13,6 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from core.declaration_schemas import RateLimit
 from core.firewall import Firewall, FirewallRequest
 
 results = []
@@ -24,7 +25,8 @@ def check(name, cond, detail=""):
 
 
 def _decision(content: str, ip: str) -> str:
-    fw = Firewall({})
+    # Предмет — детектор внедрения; лимит частоты задан явно и не мешает одному вызову.
+    fw = Firewall({}, RateLimit(enabled=True, window_sec=60, max_requests=60, ban_after_violations=3))
     res = fw.check(FirewallRequest(
         ip=ip, method="tools/call",
         params={"name": "fs_create_file", "arguments": {"content": content}},

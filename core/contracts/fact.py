@@ -28,7 +28,8 @@ KNOWN_FACT_TYPES = {
     "MemoryRead", "MemoryWritten",
     "SearchCompleted", "QuickSearch", "MultiSearch",
     "FsSearch", "FsSearchYaml", "FsSearchMulti",
-    "RenderCompleted", "SnapshotRead", "TableRead",
+    # Рендер — задание узла: вызов отдаёт «начат» (предмет — задание), итог — «готов» в результате задания
+    "RenderStarted", "RenderCompleted", "SnapshotRead", "TableRead",
     "ColumnRead", "RowRead", "RowSet", "RowUpdated", "RowsFound", "RowAppended", "RowDeleted",
     "DependentsFound",
     "QueuePushed", "QueueExecuted", "QueueCleared", "QueueRead",

@@ -3,6 +3,8 @@
 Сервер набор поднимает себе сам: свой порт, своя временная рабочая область, настоящий ключ.
 Проверки судят БЛОКИРОВКУ, а не «ответ пришёл»: второе зелено и на снятом файрволе.
 """
+import os
+import re
 import sys
 from pathlib import Path
 
@@ -51,7 +53,8 @@ with live_server() as srv:
     _evil = rpc.request("tools/list", {}, extra_headers={"Host": "evil.example.com",
                                                          "Origin": "http://evil.example.com"})
     ok(_evil.status_code == 403, f"запрос с чужим Host отклонён 403 ({_evil.status_code})")
-    ok("Forbidden host" in _evil.text, f"причина названа явно ({_evil.text[:80]})")
+    ok(rpc.error_code(_evil.json()) == "HOST_FORBIDDEN", f"причина названа кодом реестра ({_evil.text[:120]})")
+    ok("evil.example.com" not in _evil.text, "пришедшее имя хоста в ответ не возвращается — ни в тексте, ни в фактах")
     # 0.0.0.0 маршрутизируется в localhost («0.0.0.0 Day») — потому в списке разрешённых его нет.
     _zero = rpc.request("tools/list", {}, extra_headers={"Host": "0.0.0.0:8000"})
     ok(_zero.status_code == 403, f"Host 0.0.0.0 отклонён 403 ({_zero.status_code})")
@@ -77,8 +80,8 @@ with live_server() as srv:
                            ("похожее имя", "https://127.0.0.1.evil.com"),
                            ("подставленный домен туннеля", "https://mcp.videopipelinemcp.ru")):
         _r = rpc.request("tools/list", {}, extra_headers={"Origin": _origin})
-        ok(_r.status_code == 403 and "Forbidden origin" in _r.text,
-           f"{_case} → 403 ({_r.status_code})")
+        ok(_r.status_code == 403 and rpc.error_code(_r.json()) == "ORIGIN_FORBIDDEN",
+           f"{_case} → 403 ORIGIN_FORBIDDEN ({_r.status_code} {_r.text[:120]})")
     # Петлю принимаем — того же требует спека («MUST accept valid localhost Host/Origin»), и
     # подделать её удалённый сайт не может: браузер ставит Origin по адресу самой страницы.
     for _case, _origin in (("своя петля", f"http://127.0.0.1:{srv.port}"),
@@ -180,7 +183,9 @@ with live_server() as srv:
        "сервер сообщает о поднятом файрволе при старте")
     ok(srv.console.contains(r"Аутентификация: активна"),
        "и о том, что аутентификация включена — калитка MCP_ALLOW_NO_AUTH не использовалась")
-    ok(srv.console.contains(rf"Workspace: {srv.workspace}"),
+    # Путь — данные, не образец (точки, обратные слэши Windows); сервер вправе назвать и настоящий путь (macOS: /private/var).
+    ws_forms = "|".join(re.escape(p) for p in {str(srv.workspace), os.path.realpath(srv.workspace)})
+    ok(srv.console.contains(rf"Workspace: (?:{ws_forms})"),
        "сервер работает в СВОЕЙ временной области, а не в боевой")
 
     print("== 7. Поток запросов не роняет сервер и не банит честного (rate limit) ==")

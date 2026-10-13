@@ -175,10 +175,11 @@ ok(parsed[0]["when"][0]["with"] == {"path": "a.txt"}, "аргументы дое
 
 
 print("\n== уровень решает форму шага ==")
-PERIM = {"level": "perimeter", "tool": "", "rpc": "", "ok": False, "code": "RPC_-32002",
+PERIM = {"level": "perimeter", "tool": "", "rpc": "", "ok": False, "code": "HOST_FORBIDDEN",
          "args": {"Host": "evil.example", "Content-Type": "application/json", "X-Api-Key": "***REDACTED***"}}
-IDENT = {"level": "identity", "tool": "", "rpc": "tools/list", "ok": False, "code": "RPC_-32001",
+IDENT = {"level": "identity", "tool": "", "rpc": "tools/list", "ok": False, "code": "AUTH_FAILED",
          "args": {"Host": "127.0.0.1", "Authorization": "***REDACTED***"}}
+BARE = {**IDENT, "code": "AUTH_REQUIRED", "args": {"Host": "127.0.0.1"}}
 
 perim_step = as_steps([PERIM])[0]
 ok("call" not in perim_step and perim_step["rpc"] == "tools/list",
@@ -188,9 +189,12 @@ ok(perim_step["headers"] == {"Host": "evil.example", "Content-Type": "applicatio
 ok("X-Api-Key" not in perim_step["headers"],
    "замаскированный ключ в шаг не переносится — подставлять маску вместо ключа значит врать")
 
-ident_step = as_steps([IDENT])[0]
-ok(ident_step.get("token") == "" and ident_step["rpc"] == "tools/list",
-   "ключа в записи нет по построению — отказ воспроизводится ОТСУТСТВИЕМ ключа, а не выдумкой")
+ident_step, bare_step = as_steps([IDENT])[0], as_steps([BARE])[0]
+ok(ident_step.get("token") not in ("", None, "***REDACTED***") and ident_step["rpc"] == "tools/list"
+   and ident_step["expect"]["code"] == "AUTH_FAILED",
+   "чужой ключ воспроизводится заведомо чужим ключом, а не маской и не пустым — пустой дал бы AUTH_REQUIRED")
+ok(bare_step.get("token") == "" and bare_step["expect"]["code"] == "AUTH_REQUIRED",
+   "отсутствие ключа воспроизводится отсутствием — код повтора тот же, что в записи")
 
 REC2 = Path(tempfile.mkdtemp(prefix="vpm-lvl-")) / "trail-y.jsonl"
 REC2.write_text(json.dumps(PERIM) + "\n", encoding="utf-8")

@@ -34,6 +34,11 @@
         data:
           args.api_key: "***REDACTED***"
 
+# Обновлено в E5a (2026-10-13, 09): отказы периметра, ключа и файрвола пишутся в след и приходят клиенту кодом
+# реестра (HOST_FORBIDDEN, AUTH_FAILED, REQUEST_BLOCKED), а не числом JSON-RPC `RPC_-3200x`. Почему: число −32001
+# склеивало ключ и лимит, −32002 — Host и Origin; повтор из следа по числу не различал причину. Роды: positive — запись
+# есть со своим кодом и уровнем; negative — ключа в записи нет. Прогноз до замера: все шаги зелёные.
+
 - scenario: obs_perimeter_refusal_lands_in_trail_with_its_level
   why: на периметре сервер ещё не понял запрос как MCP — воспроизводить такой отказ можно только
        формой соединения, и без записи её взять негде
@@ -43,10 +48,10 @@
       headers: {Host: "evil.example"}
       expect:
         ok: false
-        code: RPC_-32002
+        code: HOST_FORBIDDEN
         http: 403
     - python: trail_says
-      with: {level: perimeter, code: RPC_-32002}
+      with: {level: perimeter, code: HOST_FORBIDDEN}
       expect:
         ok: true
         data:
@@ -63,7 +68,7 @@
       token: definitely-wrong-key
       expect:
         ok: false
-        code: RPC_-32001
+        code: AUTH_FAILED
         http: 401
     - python: trail_says
       with: {level: identity}
@@ -81,7 +86,7 @@
       repeat: 120
       expect:
         ok: false
-        code: RPC_-32000
+        code: REQUEST_BLOCKED
     - python: trail_says
       with: {level: firewall}
       expect:

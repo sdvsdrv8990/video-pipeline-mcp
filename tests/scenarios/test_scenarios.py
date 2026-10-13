@@ -213,6 +213,34 @@ def _language() -> list[str]:
             bad.append(f"точка входа: приспособление поставлено {links} раз (ждали 1), среда ребёнка и сервера после "
                        f"загрузки {done.stdout.split()} (ждали без VPM_FIXTURES), код {done.returncode}: "
                        f"{done.stderr[-300:]}")
+
+    # Шаг ожидания задания: сервер, ответивший на wait без смены живого статуса, — отказ шага на втором ответе, а не цикл;
+    # смена до конечного — итог. Клиент подменён ответами по очереди: предмет — решение шага, а не провод.
+    import tests.scenarios.steps as steps_module
+
+    class Answers:
+        said: list[str] = []
+
+        def __init__(self, *_args, **_kw):
+            pass
+
+        def call_tool(self, _name, _args):
+            status = Answers.said.pop(0)
+            return {"is_error": False, "envelope": {},
+                    "data": {"tasks": [{"task_id": "t", "task": {"status": status, "error": None}}]}}
+
+    real, steps_module.JsonRpc = steps_module.JsonRpc, Answers
+    srv = type("Srv", (), {"rpc": type("Rpc", (), {"url": "", "token": ""})})()
+    try:
+        for said, want in ((["processing", "processing", "completed"], (False, "STEP_WAIT_UNCHANGED", 1)),
+                           (["pending", "processing", "completed"], (True, "", 0))):
+            Answers.said = list(said)
+            outcome = steps_module.await_task(srv, "t")
+            if (outcome["ok"], outcome["code"], len(Answers.said)) != want:
+                bad.append(f"await_task на ответах {said}: ok={outcome['ok']} код={outcome['code']!r}, "
+                           f"не прочитано {len(Answers.said)} (ждали {want})")
+    finally:
+        steps_module.JsonRpc = real
     return bad
 
 

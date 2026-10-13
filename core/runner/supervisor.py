@@ -7,12 +7,12 @@ pid, порт и токен лежат в файле только для вла�
 уронить снова. Упал — это видно, а поднимает человек или ИИ той же командой.
 """
 
+import contextlib
 import functools
 import json
 import logging
 import os
 import secrets
-import signal
 import socket
 import subprocess
 import sys
@@ -21,9 +21,12 @@ from pathlib import Path
 from typing import ClassVar
 from urllib.parse import urlparse
 
+import psutil
+
 from core.contracts import ContractError
 from core.declaration import Declaration
 from core.declaration_schemas import RUNNER_HEALTH, ProviderUrl
+from core.environment import child_spawn
 from core.paths import Files
 from core.providers.download import answers
 from core.providers.resolver import ProviderError
@@ -133,21 +136,19 @@ class RunnerSupervisor:
         Раннер запущен сервером, то есть его ребёнок: умерев, он остаётся зомби, пока его не
         подберут, а `kill -0` на зомби отвечает успехом. Без этого упавший раннер вечно числился
         бы «встаёт» — ровно то молчание вместо причины, ради которого раннер и выносили.
+        Ветку ОС держит psutil: на Windows `os.kill(pid, 0)` не проба, а TerminateProcess.
         """
         if not pid:
             return False
         try:
-            if os.waitpid(pid, os.WNOHANG)[0] == pid:
+            proc = psutil.Process(pid)
+            if proc.status() == psutil.STATUS_ZOMBIE:
+                with contextlib.suppress(ChildProcessError, OSError):
+                    os.waitpid(pid, 0)  # свой зомби подбирается сразу; чужой — не наш ребёнок
                 return False
-        except ChildProcessError:
-            pass                        # не наш ребёнок: сервер перезапускали, раннер его пережил
-        except OSError:
+            return proc.is_running()
+        except psutil.Error:
             return False
-        try:
-            os.kill(pid, 0)
-        except OSError:
-            return False
-        return True
 
     def status(self) -> dict:
         """Жив, не поднят, умер или занял чужой порт — но никогда не молчание."""
@@ -200,8 +201,8 @@ class RunnerSupervisor:
         with self.log_file.open("a", encoding="utf-8") as log:
             log.write(f"\n=== запуск {time.strftime('%Y-%m-%d %H:%M:%S')} ({mode}) ===\n")
             log.flush()
-            proc = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
-                                    env={**os.environ, TOKEN_ENV: token}, cwd=str(self.root))
+            proc = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, cwd=str(self.root),
+                                    **child_spawn("replace", {TOKEN_ENV: token}))
         state = {"pid": proc.pid, "token": token, "mode": mode, "started": time.time(),
                  "workspace": str(workspace), "command": command}
         self._write(state)
@@ -284,14 +285,18 @@ class RunnerSupervisor:
         if state.get("mode") == "docker":
             container = str((self.rules.get("docker") or {}).get("container") or "")
             stopped = subprocess.run(["docker", "stop", container], check=False,
-                                     capture_output=True).returncode == 0
+                                     capture_output=True, **child_spawn("replace")).returncode == 0
         elif self._alive(pid):
-            os.kill(pid, signal.SIGTERM)
-            deadline = time.time() + float(self.rules.get("stop_grace_sec") or 5)
-            while time.time() < deadline and self._alive(pid):
-                time.sleep(0.1)
-            if self._alive(pid):
-                os.kill(pid, signal.SIGKILL)          # не отдал по-хорошему — модель могла зависнуть
+            # Ветку ОС держит psutil: terminate — SIGTERM на POSIX и TerminateProcess на Windows; wait ждёт событие
+            # конца процесса (и подбирает ребёнка), а не опрашивает его.
+            with contextlib.suppress(psutil.NoSuchProcess):
+                proc = psutil.Process(pid)
+                proc.terminate()
+                try:
+                    proc.wait(timeout=float(self.rules.get("stop_grace_sec") or 5))
+                except psutil.TimeoutExpired:
+                    proc.kill()                       # не отдал по-хорошему — модель могла зависнуть
+                    proc.wait()
             stopped = True
         self.state_file.unlink(missing_ok=True)
         return {"phase": "stopped", "stopped": stopped, "pid": pid,

@@ -261,7 +261,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             dst_dir = root / PROJECT_TEMPLATES_DIR / sub
             for src in sorted(src_dir.glob("*.yaml")):
                 dst = dst_dir / src.name
-                rel = str(dst.relative_to(ctx.workspace_path))
+                rel = files.name(dst)  # дверь сверяет корень и его настоящий путь (macOS: /var → /private/var)
                 # Копия шаблона — обычная запись в workspace: та же дверь с политикой, что у fs_*. Без overwrite правку
                 # проекта не затираем — тот же закон, что у kind: config; занятое имя решает `create`, а не проба.
                 text = src.read_text(encoding="utf-8")

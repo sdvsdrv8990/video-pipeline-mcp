@@ -104,10 +104,12 @@ class JsonRpc:
 
     @staticmethod
     def error_code(envelope: dict) -> str:
-        """Код реакции — по нему тест и ассертит, а не по тексту сообщения."""
+        """Код реакции — по нему тест и ассертит, а не по тексту сообщения. Отказ периметра несёт код реестра в
+        `error.data`; отказ транспорта (метод, разбор после периметра) — только число протокола: `RPC_<число>`."""
         failure = JsonRpc.protocol_error(envelope)
         if failure:
-            return f"RPC_{failure.get('code')}"
+            data = failure.get("data")
+            return str(data["code"]) if isinstance(data, dict) and data.get("code") else f"RPC_{failure.get('code')}"
         return str(JsonRpc.structured(envelope).get("code") or "")
 
     @staticmethod
@@ -118,6 +120,10 @@ class JsonRpc:
 
     @staticmethod
     def detail(envelope: dict) -> dict:
-        """Форма отказа инструмента (`ErrorDetail` под `error`: код, класс, текст, рецепт, факты, ошибки ввода); у успеха —
-        пусто."""
+        """Форма отказа (`ErrorDetail`: код, класс, текст, рецепт, факты, ошибки ввода) — у инструмента под
+        `structuredContent.error`, у периметра — в `error.data` конверта; у успеха и отказа транспорта — пусто."""
+        failure = JsonRpc.protocol_error(envelope)
+        if failure:
+            data = failure.get("data")
+            return data if isinstance(data, dict) else {}
         return (JsonRpc.structured(envelope).get("error") or {}) if JsonRpc.is_error(envelope) else {}

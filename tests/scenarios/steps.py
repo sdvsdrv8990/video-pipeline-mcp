@@ -5,13 +5,17 @@ import json
 import os
 import re
 import socket
+import struct
 import threading
 import time
+import zlib
 from pathlib import Path
 
+import httpx
 import yaml
 
 from core.declaration import declarations_root, instance_home
+from tests.harness.jsonrpc import JsonRpc
 
 
 def remove_path(srv, path: str) -> dict:
@@ -32,6 +36,21 @@ def workspace_path(srv, path: str = "") -> dict:
     if not target.exists():
         return {"ok": False, "code": "FILE_NOT_FOUND", "message": f"в рабочей области нет: {path}"}
     return {"ok": True, "data": {"path": str(target)}}
+
+
+def seed_png(srv, path: str, width: int, height: int) -> dict:
+    """Картинка-ассет в рабочей области: `given.files` кладёт только текст, а рендеру нужен настоящий PNG. Однотонный RGB
+    нужного размера по спецификации PNG (сигнатура, IHDR, IDAT, IEND) — без библиотек и без порождения процессов."""
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+    rows = b"".join(b"\x00" + b"\x80\x40\x20" * int(width) for _ in range(int(height)))
+    data = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", int(width), int(height), 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+    target = Path(srv.workspace) / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    return {"ok": True, "data": {"path": path, "bytes": len(data)}}
 
 
 def branch_state(srv, niche: str) -> dict:
@@ -147,13 +166,41 @@ def decoy_beyond_installs(srv, marker: str) -> dict:
 
 def task_node_ids(srv) -> dict:
     """id заданий, которые засеяло приспособление `task_node` в хранилище узла сервера сценария: последняя строка его
-    журнала `MCP_LOGS/task_node.jsonl` — {interrupted, stalled, broken}. Журнала нет — отказ: приспособление не стояло."""
+    журнала `MCP_LOGS/task_node.jsonl` — {interrupted, stalled, broken, foreign}. Журнала нет — отказ: приспособление
+    не стояло."""
     journal = Path(srv.logs) / "task_node.jsonl"
     lines = journal.read_text(encoding="utf-8").splitlines() if journal.is_file() else []
     if not lines:
         return {"ok": False, "code": "SCHEMA_INVALID",
                 "message": f"журнала приспособления task_node нет ({journal.name}) — в given.fixtures нет task_node"}
     return {"ok": True, "data": json.loads(lines[-1])}
+
+
+def await_task(srv, task_id: str) -> dict:
+    """Дождаться конца задания узла: `task_status(wait=true)` отвечает на смену статуса, шаг зовёт его до конечного.
+
+    Клиент свой, без предела по часам: предел клиента сценария оборвал бы долгую работу (рендер) посреди ожидания, а
+    зависание ловит сторож прогона. Ответ без смены живого статуса — сервер ждать не может (исполнитель в другом
+    процессе): отказ шага, а не цикл. Итог — элемент задания; отказ или снятие — код причины из `task.error`.
+    """
+    client, said = JsonRpc(srv.rpc.url, srv.rpc.token, timeout=None), None
+    while True:
+        answer = client.call_tool("task_status", {"task_ids": [task_id], "wait": True})
+        if answer["is_error"]:
+            return {"ok": False, "code": answer["code"], "message": client.text(answer["envelope"])[:400]}
+        element = (answer["data"].get("tasks") or [{}])[0]
+        task, refused = element.get("task") or {}, element.get("error") or {}
+        if refused:
+            return {"ok": False, "code": str(refused.get("code") or ""), "message": str(refused.get("message") or ""),
+                    "data": element}
+        if task.get("status") in ("completed", "failed", "cancelled"):
+            error = task.get("error") or {}
+            return {"ok": task["status"] == "completed", "code": str(error.get("code") or ""),
+                    "message": str(error.get("message") or ""), "data": element}
+        if task.get("status") == said:
+            return {"ok": False, "code": "STEP_WAIT_UNCHANGED",
+                    "message": f"task_status(wait=true) ответил без смены статуса {said} — ждать нечем", "data": element}
+        said = task.get("status")
 
 
 def trail_says(srv, tool: str = "", level: str = "", code: str = "") -> dict:
@@ -209,6 +256,22 @@ def speak_garbage(srv, payload: str, ждать: bool = True) -> dict:
     finally:
         conn.close()
     return {"ok": True, "data": {"первая_строка": answer.split("\r\n")[0]}}
+
+
+def post_body(srv, text: str = "", hex: str = "") -> dict:
+    """Тело, которое вызовом не собрать: не JSON (`text`) или байты не в кодировке тела (`hex`). Тело разбирается до ключа
+    и до диспетчера — отказ приходит конвертом JSON-RPC: код реестра, HTTP и ErrorDetail (`data.detail`)."""
+    if bool(text) == bool(hex):
+        return {"ok": False, "code": "STEP_ARGS_INVALID", "message": "нужно ровно одно из: text, hex"}
+    response = httpx.post(srv.rpc.url, content=text.encode("utf-8") if text else bytes.fromhex(hex),
+                          headers={**srv.rpc.headers(), "Content-Type": "application/json"}, timeout=srv.rpc.timeout)
+    try:
+        envelope = response.json()
+    except ValueError:
+        return {"ok": False, "code": "", "message": f"ответ не JSON: HTTP {response.status_code} {response.text[:200]}"}
+    return {"ok": not srv.rpc.is_error(envelope), "code": srv.rpc.error_code(envelope),
+            "message": srv.rpc.text(envelope)[:400],
+            "data": {"http": response.status_code, "detail": srv.rpc.detail(envelope)}}
 
 
 def hold_connections(srv, count: int, seconds: float = 2.5) -> dict:
@@ -359,9 +422,9 @@ def снимок_источника(srv, источник: str, куда: str, �
 
 STEPS = {"remove_path": remove_path, "branch_state": branch_state,
          "снимок_источника": снимок_источника,
-         "workspace_path": workspace_path,
+         "workspace_path": workspace_path, "seed_png": seed_png, "await_task": await_task,
          "busy_server_still_answers": busy_server_still_answers, "busy_while_held": busy_while_held,
          "seed_runner_token": seed_runner_token, "decoy_beyond_installs": decoy_beyond_installs,
          "task_node_ids": task_node_ids,
-         "trail_says": trail_says, "speak_garbage": speak_garbage,
+         "trail_says": trail_says, "speak_garbage": speak_garbage, "post_body": post_body,
          "hold_connections": hold_connections}

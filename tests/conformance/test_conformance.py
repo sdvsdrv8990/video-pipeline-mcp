@@ -84,7 +84,7 @@ if not shutil.which("npx"):
 # Конфиг прогона: копия БОЕВОГО, в которой поднят единственный порог — частота. Сторонний клиент
 # честно бьёт 30 сценариев подряд с одного адреса и на боевых 60 запросах в минуту банит сам себя
 # (`Blocked: IP заблокирован`), после чего «несоответствие спеке» — это на самом деле блокировка.
-cfg_dir = declarations_copy({"firewall.yaml": {"rate_limit.max_requests_per_minute": 100000}})
+cfg_dir = declarations_copy({"firewall.yaml": {"rate_limit.max_requests": 100000}})
 
 
 def _declared(root: Path, name: str) -> object:
@@ -112,8 +112,8 @@ _machine, _judge = _untracked(live, _names)
 ok(_left == _machine, f"в копии нет ровно деклараций, которых проект не ведёт ({_judge}): "
                       f"нет {sorted(_left)}, не ведёт {sorted(_machine)}")
 fw, src_fw = _declared(cfg_dir, "firewall.yaml"), _declared(live, "firewall.yaml")
-src_fw["rate_limit"].pop("max_requests_per_minute")
-ok(fw["rate_limit"].pop("max_requests_per_minute") == 100000 and fw == src_fw,
+src_fw["rate_limit"].pop("max_requests")
+ok(fw["rate_limit"].pop("max_requests") == 100000 and fw == src_fw,
    "и в нём — ровно порог частоты, остальные правила файрвола боевые")
 
 with live_server(env={"MCP_CONFIG": str(cfg_dir)}) as srv, AuthProxy(srv.url, srv.token) as proxy:

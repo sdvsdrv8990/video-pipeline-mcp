@@ -2,11 +2,13 @@
 
 Справка `server.py --help` печатается из него; полноту держит событие `tests/quick/test_environment.py`: каждое имя
 `MCP_*` в коде сервера — дверь перечня или объявленное «не дверь», и у каждой двери есть читатель. Здесь же — среда
-процесса, которого порождает сервер (`child_environ`): одно решение для всех мест порождения.
+процесса, которого порождает сервер (`child_environ`), и аргументы его порождения (`child_spawn`): одно решение для всех
+мест порождения.
 """
 
 import os
 from collections.abc import Mapping
+from typing import Literal
 
 DOORS = {
     "MCP_HOST": "адрес слушателя; умолчание — у флага --host",
@@ -37,6 +39,14 @@ def epilog() -> str:
     """Таблица дверей для `--help`: имя и что меняет."""
     width = max(map(len, DOORS))
     return "двери среды:\n" + "\n".join(f"  {name:<{width}}  {what}" for name, what in DOORS.items())
+
+
+def child_spawn(errors: Literal["strict", "replace"], extra: Mapping[str, str] | None = None,
+                environ: Mapping[str, str] = os.environ) -> dict:
+    """Аргументы порождения ребёнка — среда узла и текст вывода в utf-8 (не кодировкой локали: на Windows она cp1252).
+    `errors` — выбор места по назначению вывода, умолчания нет: разбираемый вывод — strict (битые байты — громкий отказ),
+    вывод для человека или журнала — replace. `environ` — база среды, если место уже сняло из неё своё."""
+    return {"env": child_environ(extra, environ), "encoding": "utf-8", "errors": errors}
 
 
 def child_environ(extra: Mapping[str, str] | None = None, environ: Mapping[str, str] = os.environ) -> dict[str, str]:

@@ -18,6 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from core.environment import SECRETS
 from core.transport.tunnel import CloudflaredTunnel, TunnelCancelled, TunnelError
 from tests.harness.live_server import declarations_copy
 
@@ -547,12 +548,13 @@ def test_secret_reaches_child_by_env():
     if not Path("/proc/self/environ").exists():
         print("── не судится: в ОС нет /proc — argv и среду ребёнка спросить не у кого")
         return
-    секрет, чужой = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
+    секрет, чужой, ключ = secrets.token_urlsafe(24), secrets.token_urlsafe(24), secrets.token_urlsafe(24)
     наследство = {"TUNNEL_TOKEN": чужой, "TUNNEL_TOKEN_FILE": "/нет/токена", "TUNNEL_CRED_FILE": "/нет/учётных.json",
                   "TUNNEL_CRED_CONTENTS": "{}"}
     случаи = (
-        ("токен: в argv его нет, в среде ребёнка — свой, а не унаследованный", "named",
-         {"MCP_TUNNEL_TOKEN": секрет, **наследство}, {}, ["tunnel", "--no-autoupdate", "run"], {"TUNNEL_TOKEN": секрет}),
+        ("токен: в argv его нет, в среде ребёнка — свой, а не унаследованный; секретов сервера нет", "named",
+         {"MCP_TUNNEL_TOKEN": секрет, "MCP_AUTH_TOKEN": ключ, **наследство}, {}, ["tunnel", "--no-autoupdate", "run"],
+         {"TUNNEL_TOKEN": секрет}),
         ("credentials: унаследованная личность туннеля ребёнку не идёт", "named", наследство,
          {"tunnel_id": "uuid-123", "credentials_file": "/x/cred.json"},
          ["tunnel", "--no-autoupdate", "--credentials-file", "/x/cred.json", "run", "--url", "http://127.0.0.1:8080",
@@ -560,7 +562,7 @@ def test_secret_reaches_child_by_env():
         ("quick: унаследованная личность туннеля ребёнку не идёт", "quick", наследство, {},
          ["tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:8080"], {}),
     )
-    прежние = {имя: os.environ.get(имя) for имя in ("MCP_TUNNEL_TOKEN", *наследство)}
+    прежние = {имя: os.environ.get(имя) for имя in ("MCP_TUNNEL_TOKEN", "MCP_AUTH_TOKEN", *наследство)}
     with tempfile.TemporaryDirectory() as tmp:
         двойник = _двойник(Path(tmp))
         for случай, режим, среда, поля, хвост, ждём in случаи:
@@ -579,10 +581,13 @@ def test_secret_reaches_child_by_env():
                 t.stop()
                 _вернуть(прежние)
             личность = {k: v for k, v in у_ребёнка.items() if k in наследство}
+            утечка = sorted(set(у_ребёнка) & SECRETS)
             видно = [a.replace(секрет, "<секрет>").replace(чужой, "<чужой>") for a in argv[2:]]
             check(f"{случай} (argv и среда — /proc ребёнка)",
-                  argv[-len(хвост):] == хвост and not any(секрет in a or чужой in a for a in argv) and личность == ждём,
-                  {"argv": видно, "личность": {k: "<секрет>" if v == секрет else "<чужое>" for k, v in личность.items()}})
+                  argv[-len(хвост):] == хвост and not any(секрет in a or чужой in a for a in argv) and личность == ждём
+                  and not утечка,
+                  {"argv": видно, "личность": {k: "<секрет>" if v == секрет else "<чужое>" for k, v in личность.items()},
+                   "секреты сервера": утечка})
 
         # Бинаря нет — отказ до порождения: процесса, которому ушёл бы токен, нет вовсе.
         os.environ["MCP_TUNNEL_TOKEN"] = секрет

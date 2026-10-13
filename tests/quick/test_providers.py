@@ -26,6 +26,11 @@ sys.path.insert(0, str(ROOT))
 import atexit
 import shutil
 
+# Временные каталоги и файлы набора (mkdtemp событий без своей уборки) — под одним каталогом прогона, убираемым при
+# выходе: вне клетки узла ресурсов они не копятся.
+tempfile.tempdir = tempfile.mkdtemp(prefix="vpm_providers_")
+atexit.register(shutil.rmtree, tempfile.tempdir, ignore_errors=True)
+
 # Свой дом инстанса на прогон набора, а не общий дом прогона наборов: задания узла и ключи инстанса этого прогона не
 # видны следующему (повтор в окне AD-21 нашёл бы двойника прошлого прогона) и соседним наборам.
 _RUN_HOME = tempfile.mkdtemp(prefix="vpm_home_providers_")
@@ -1072,7 +1077,7 @@ ok(all(m["mode"] == "image_generation" for m in _lst_on.data["models"]),
 print("== 16. Установка — задание узла: за ней наблюдают, и молчания нет ни в одном исходе ==")
 import threading as _thr16
 import time as _time
-from core.jobs import Tasks as _Tasks16, stale as _stale16
+from core.jobs import Tasks as _Tasks16
 from core.providers.installer import ModelInstaller
 
 _JOBS16 = yaml.safe_load((ROOT / "config" / "jobs.yaml").read_text(encoding="utf-8"))
@@ -1279,26 +1284,27 @@ class _Silent(_SlowCatalog):
         return {**место["entry"], "path": "весы.onnx", "mb": 0.002, "refused": []}
 
 
-_S16 = _JOBS16["stale_after_sec"]
+# Обновлено в шаге 1 рендера: простой больше не вердикт сервера (слово владельца) — замершая установка идёт с фактами
+# хода, клиент снимает её сам. Прежде: TASK_STALLED через jobs.yaml stale_after_sec, «один суд и один срок узла» и
+# «простой — не приговор».
 _clock16 = [7000.0]
 _silent = _Silent()
 _node_silent, _silent_task = _install16(_silent, "модель-3", clock=lambda: _clock16[0])
 _silent.entered.wait(10)
 _calm16 = (_node_silent.status([_silent_task["task_id"]])[0].get("task") or {}).get("status")
-_clock16[0] += _S16 + 1
-_stale_state = _node_silent.status([_silent_task["task_id"]])[0].get("task") or {}
-ok(_calm16 in ("pending", "processing") and _stale_state.get("status") == "failed"
-   and (_stale_state.get("error") or {}).get("code") == "TASK_STALLED"
-   and _stale_state["error"].get("reaction_class") == "server_recoverable"
-   and _stale_state["error"].get("facts") == {"task_id": _silent_task["task_id"], "tool": "media_model_install",
-                                               "seconds": _S16 + 1},
-   f"замершая установка — простой узла TASK_STALLED (jobs.yaml stale_after_sec), с id, инструментом и секундами "
-   f"({_calm16} → {_stale_state.get('error')})")
-ok("INSTALL_STALLED" not in _json.dumps(_stale_state, ensure_ascii=False) and _stale16(_S16 + 1) and not _stale16(_S16),
-   "своего кода простоя у установки нет: один суд и один срок узла")
+_clock16[0] += 7 * 86400
+_quiet16 = _node_silent.status([_silent_task["task_id"]])[0].get("task") or {}
+ok(_calm16 == "processing" and _quiet16.get("status") == "processing" and _quiet16.get("error") is None
+   and _quiet16.get("idle_sec") == 7 * 86400,
+   f"замершая установка молчит неделю — processing с idle_sec недели, а не отказ по часам ({_calm16} → {_quiet16})")
+_cancel16 = _node_silent.cancel([_silent_task["task_id"]])[0].get("task") or {}
 _silent.gate.set()
-ok((_node_silent.settle(_silent_task["task_id"], 10).get("task") or {}).get("status") == "completed",
-   "простой — не приговор: загрузка дошла — completed")
+_after16 = _node_silent.settle(_silent_task["task_id"], 10).get("task") or {}
+ok(_cancel16.get("status") == "cancelled" and (_cancel16.get("error") or {}).get("code") == "TASK_CANCELLED"
+   and _cancel16["error"].get("facts") == {"task_id": _silent_task["task_id"], "tool": "media_model_install"}
+   and _after16.get("status") == "cancelled" and _after16.get("result") is None,
+   f"клиент снял замершую установку — cancelled с TASK_CANCELLED; загрузка дошла позже — её итог отказан, статус "
+   f"прежний ({_cancel16.get('error')}, {_after16.get('status')})")
 
 
 from core.declaration import Declaration as _Decl16
@@ -1323,40 +1329,7 @@ ok(_second_key.startswith("DECLARATION_INVALID") and "local.install.progress.sta
    and _section16(lambda install: None) == "",
    f"второй ключ простоя у установки не возвращается тихо — отказ двери с путём; без него раздел проходит "
    f"({_second_key[:90]})")
-import subprocess as _sp16
-from core.declaration_schemas import MODEL_FETCH as _MF16
-from tests.harness.live_server import declarations_copy as _decl_copy16
-
-_LINK16 = ("import json, sys\nfrom pathlib import Path\nfrom core.contracts import ContractError\n"
-           "from core.declaration import declarations_root\nfrom core.providers.catalog import ModelCatalog\n"
-           "from core.providers.installer import ModelInstaller\n"
-           "catalog = ModelCatalog(declarations_root() / 'providers.yaml', Path(sys.argv[1]))\n"
-           "try:\n    ModelInstaller(catalog, heartbeat_sec=1).linked()\n    print(json.dumps({'ok': True}))\n"
-           "except ContractError as e:\n    print(json.dumps({'code': e.code, 'facts': e.facts}, ensure_ascii=False))\n")
-
-
-def _linked16(stale_after: int) -> dict:
-    """Суд связи установщика в чистом процессе на копии деклараций с `jobs.yaml stale_after_sec` — исход или отказ."""
-    config = _decl_copy16({"jobs.yaml": {"stale_after_sec": stale_after}})
-    env = {k: v for k, v in os.environ.items() if k not in ("VPM_FIXTURES", "MCP_CONFIG")}
-    done = _sp16.run([sys.executable, "-c", _LINK16, str(_врем("link16_"))], cwd=ROOT,
-                     env={**env, "MCP_CONFIG": str(config)}, capture_output=True, text=True)
-    try:
-        return _json.loads(done.stdout.strip().splitlines()[-1])
-    except (IndexError, ValueError):
-        return {"crash": done.stderr[-400:]}
-
-
-_fetch16 = _Decl16(CFG, _CE13, "провайдеров", "").section(*_MF16.section, schema=_MF16.schema)
-_quiet16 = int(max(_fetch16.silence_sec, _fetch16.speed_window_sec))
-_link_bad, _link_ok = _linked16(_quiet16), _linked16(_quiet16 + 1)
-ok(_link_bad.get("code") == "DECLARATION_INVALID"
-   and _link_bad.get("facts", {}).get("file") == "jobs.yaml, providers.yaml"
-   and "jobs.yaml: stale_after_sec" in _link_bad["facts"].get("details", "")
-   and "providers.yaml: local.install.fetch" in _link_bad["facts"]["details"]
-   and str(_quiet16) not in _json.dumps(_link_bad, ensure_ascii=False) and _link_ok == {"ok": True},
-   f"простой не длиннее тишины загрузчика ({_quiet16} с) — отказ двери с путями обоих файлов, без значений; на секунду "
-   f"дольше — проходит ({_link_bad}, {_link_ok})")
+# Снято в шаге 1 рендера: связь jobs.yaml stale_after_sec с тишиной загрузчика (E13) — срока простоя у узла больше нет.
 _without_revisions = _section16(lambda install: install.pop("revisions"))
 ok(_without_revisions.startswith("DECLARATION_INVALID") and "local.install.revisions" in _without_revisions,
    f"закреплённые ревизии не объявлены — отказ двери с путём, а не «не закреплено» молча ({_without_revisions[:90]})")
@@ -2753,7 +2726,8 @@ ok("--device" in _docker17 and "/dev/kfd" in _dstr17,
 _gid17 = _docker17[_docker17.index("--group-add") + 1] if "--group-add" in _docker17 else ""
 ok(_gid17.isdigit(),
    f"группа доступа к карте взята у устройства ЧИСЛОМ, а не именем, которого в образе нет ({_gid17 or 'её нет'})")
-ok(_dstr17.count("-v ") >= 2 and "vendor/models" in _dstr17 and str(_ws) in _dstr17,
+# Обновлено в шаге 1 рендера (R2): рабочая область через ссылку ФС монтируется настоящим путём — сверка по нему.
+ok(_dstr17.count("-v ") >= 2 and "vendor/models" in _dstr17 and str(_ws.resolve()) in _dstr17,
    "веса и рабочая область приезжают ТОМАМИ, а не слоями образа")
 ok("providers.yaml:ro" in _dstr17 and "tunnel.yaml" not in _dstr17,
    "декларации монтируются живые и только для чтения, а секреты внутрь не едут")
@@ -3510,9 +3484,9 @@ def _model_fetch(work: Path, records: list[str]) -> None:
     ok(cat.judge(second["entry"], deep=True, mark=lambda: marks.append(1))["verdict"] == "ready" and marks,
        f"суд по отпечатку отмечает работу по ходу чтения, а не одной отметкой до ({len(marks)} отметок)")
     # Обновлено в доделке B2: тишина загрузчика включает срок сервера до retry_after_max_sec (120) — прежде 60 (2 × 30).
-    ok(cat.silence_sec() == 120.0,
-       f"тишина загрузчика — срок сервера retry_after_max_sec, 120 с; связь с простоем узла судит установщик (§16) "
-       f"({cat.silence_sec()})")
+    # Обновлено в шаге 1 рендера: простоя у сервера больше нет, связь тишины с ним снята — тишину мерит загрузчик каталога.
+    ok(cat.fetcher().silence_sec() == 120.0,
+       f"тишина загрузчика каталога — срок сервера retry_after_max_sec, 120 с ({cat.fetcher().silence_sec()})")
     info["org/away"] = repo(put("org/away", "model.onnx", b"a" * 100))
     away[("org/away", "model.onnx")] = "https://evil.example/org/away/model.onnx"
     w0 = len(wire)
@@ -3648,7 +3622,8 @@ def _model_fetch(work: Path, records: list[str]) -> None:
     print("== 19m. Готовность к подъёму: состав по длине, отказ кодом причины, руками положенное — по политике ==")
     reg = AdapterRegistry(cfg, work)
     got = reg.ready("bg")
-    ok(got["path"] == models / "bg/bg/model.onnx" and got["checked"] == "по длине",
+    # Обновлено в шаге 1 рендера (R2): путь весов сверяется как файл, а не как текст — каталог через ссылку ФС тот же.
+    ok(got["path"].resolve() == (models / "bg/bg/model.onnx").resolve() and got["checked"] == "по длине",
        f"поставленная модель — путь её весов и названная ступень ({got['why']})")
     ok(refused(lambda: reg.ready("short")) == "MODEL_INCOMPLETE", "часть короче объявленной — MODEL_INCOMPLETE до подъёма")
     old_rows = [*cat.inventory(), {"id": "old", "kind": "bg_removal", "repo": "org/old", "path": "bg/old/model.onnx"}]
@@ -3657,7 +3632,7 @@ def _model_fetch(work: Path, records: list[str]) -> None:
     ok(refused(lambda: reg.ready("нет-такой")) == "LOCAL_MODEL_MISSING", "ни записи, ни файла — LOCAL_MODEL_MISSING")
     (models / "руками.onnx").write_bytes(b"r" * 10)
     hand = reg.ready("руками.onnx")
-    ok(hand["path"] == models / "руками.onnx" and hand["checked"] == "по наличию (состав не объявлен)",
+    ok(hand["path"].resolve() == (models / "руками.onnx").resolve() and hand["checked"] == "по наличию (состав не объявлен)",
        f"руками положенное по политике by_presence — пускается, ступень названа ({hand['checked']})")
     base = yaml.safe_load(cfg.read_text(encoding="utf-8"))
     for policy, code, what in (("refuse", "MODEL_UNVERIFIED", "политика refuse — отказ"),
@@ -4108,6 +4083,8 @@ def _model_fetch(work: Path, records: list[str]) -> None:
        f"держатель вышел — его замок сняло ядро: задание и CLI дождались, часть легла одной загрузкой ({len(held_gets)}), "
        f"второй пересудил план ({held_task.get('status')}, CLI {cli_done.get('code')})")
 
+    # Обновлено в шаге 1 рендера: простоя у сервера нет — молчащий держатель задание по часам не кончает; клиент видит
+    # факты хода и снимает задание сам (S5). Прежде: «держатель молчит дольше срока простоя — TASK_STALLED».
     quiet_space, quiet_remnant, quiet_holder = held_by_other("org/quiet", b"q" * 200, b"q" * 50)
     quiet_before, reached_quiet = (quiet_remnant.read_bytes(), quiet_remnant.stat().st_ino), threading.Event()
     try:
@@ -4115,16 +4092,28 @@ def _model_fetch(work: Path, records: list[str]) -> None:
         mark = len(calls)
         quiet_id = waiting(quiet_space, reached_quiet)
         reached_quiet.wait(10)
-        clock19[0] += _S16 + 1
+        counted, deadline = 0, _t19.monotonic() + 5
+        while counted < 50 and _t19.monotonic() < deadline:   # первый тик учёл остаток держателя — это рост, работа
+            counted = ((node19.status([quiet_id])[0].get("task") or {}).get("progress") or {}).get("bytes", 0)
+            _t19.sleep(0.01)
+        clock19[0] += 7 * 86400
+        quiet_alive = node19.settle(quiet_id, 0.2).get("task") or {}
+        quiet_cancel = node19.cancel([quiet_id])[0].get("task") or {}
+        settled_at = _t19.monotonic()
         quiet_task = node19.settle(quiet_id, 10).get("task") or {}
+        ended_by_event = _t19.monotonic() - settled_at < 9   # settle вернулся по событию конца исполнителя, а не сроком
+        holder_alive = quiet_holder.poll() is None
     finally:
         quiet_holder.stdin.close()
         quiet_holder.wait()
-    ok(quiet_task.get("status") == "failed" and (quiet_task.get("error") or {}).get("code") == "TASK_STALLED"
-       and quiet_task["error"].get("facts", {}).get("tool") == "media_model_install"
+    ok(quiet_alive.get("status") == "processing" and quiet_alive.get("idle_sec", 0) >= 7 * 86400
+       and (quiet_alive.get("error") is None),
+       f"держатель замка молчит неделю — задание ждёт дальше с фактами хода, а не кончается по часам ({quiet_alive})")
+    ok(quiet_cancel.get("status") == "cancelled" and quiet_task.get("status") == "cancelled" and holder_alive
+       and ended_by_event and (quiet_task.get("error") or {}).get("code") == "TASK_CANCELLED"
        and (quiet_remnant.read_bytes(), quiet_remnant.stat().st_ino) == quiet_before and not downloads(mark),
-       f"держатель замка молчит дольше срока простоя — задание кончается простоем узла, а не ждёт вечно: остаток не "
-       f"тронут, к источнику ни запроса ({quiet_task.get('error')})")
+       f"клиент снял ждущее задание — ожидание замка снято, пока держатель ещё жив: cancelled, остаток не тронут, к "
+       f"источнику ни запроса ({quiet_task.get('status')}, держатель жив: {holder_alive})")
 
     grow_space, grow_remnant, grow_holder = held_by_other("org/grow", b"g" * 400, b"g" * 10)
     reached_grow, grown_seen = threading.Event(), 0
@@ -4132,24 +4121,25 @@ def _model_fetch(work: Path, records: list[str]) -> None:
         grow_holder.stdout.readline()
         grow_id = waiting(grow_space, reached_grow)
         reached_grow.wait(10)
-        clock19[0] += _S16 // 2
+        clock19[0] += 7 * 86400
         with grow_remnant.open("ab") as fh:
             fh.write(b"g" * 90)                 # держатель растит общий остаток части
         deadline = _t19.monotonic() + 5
         while grown_seen < 100 and _t19.monotonic() < deadline:
             grown_seen = ((node19.status([grow_id])[0].get("task") or {}).get("progress") or {}).get("bytes", 0)
             _t19.sleep(0.01)
-        clock19[0] += _S16 // 2 + 1
+        clock19[0] += 600
         grow_alive = node19.status([grow_id])[0].get("task") or {}
     finally:
         grow_holder.stdin.close()
         grow_holder.wait()
     grow_done = node19.settle(grow_id, 30).get("task") or {}
     _t19.sleep = pauses.append
-    ok(grown_seen == 100 and grow_alive.get("status") == "processing" and grow_done.get("status") == "completed"
-       and (models / "bg/grow/model.onnx").read_bytes() == b"g" * 400,
-       f"держатель растит общий остаток — ждущее задание видит рост как работу: от старта дольше срока простоя, а "
-       f"простоя нет; держатель вышел — задание доделало ({grown_seen}, {grow_alive.get('status')}, "
+    # Обновлено в шаге 1 рендера: рост — работа ждущего, мера — idle_sec от роста, а не «простоя нет».
+    ok(grown_seen == 100 and grow_alive.get("status") == "processing" and grow_alive.get("idle_sec") == 600
+       and grow_done.get("status") == "completed" and (models / "bg/grow/model.onnx").read_bytes() == b"g" * 400,
+       f"держатель растит общий остаток — ждущее задание видит рост как работу: idle_sec от роста (600), а не от "
+       f"старта (неделя); держатель вышел — задание доделало ({grown_seen}, {grow_alive.get('idle_sec')}, "
        f"{grow_done.get('status')})")
 
     info["org/slow"] = repo(put("org/slow", "model.onnx", b"w" * 400))

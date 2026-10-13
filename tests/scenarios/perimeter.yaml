@@ -1,6 +1,13 @@
 # Периметр — единственная зона, где предмет проверки лежит НЕ в теле ответа: ключ проверяется до
 # разбора тела, чужой `Origin` отбивается на конверте, а состав манифеста клиент читает вообще без
 # вызова инструмента. Поэтому здесь объявляются транспортные условия шага, а не только аргументы.
+#
+# Обновлено в E5a (2026-10-13, 09): отказ периметра несёт ErrorDetail реестра в `error.data` конверта JSON-RPC — код,
+# класс, рецепт, факты, как у инструмента. Прежде: только число JSON-RPC (`RPC_-32001`, `RPC_-32002`, `RPC_-32600`),
+# и ключ с лимитом частоты делили одно −32001 — клиент различал их текстом. Числа протокола не менялись; ждём код
+# реестра. Роды: positive — каждый отказ называет свой код, класс и рецепт; negative — пришедшее значение (Host,
+# Origin, тело) в фактах ответа не едет; destructive — сломанная проверка файрвола отказывает, а не пропускает.
+# Прогноз до замера: все шаги зелёные; id сценариев прежние — журналы прошлых прогонов остаются сравнимы.
 
 - scenario: prm_manifest_is_readable_and_sane
   why: манифест — первое, что видит клиент; инструмент, пропавший из описи, ломает его молча
@@ -15,25 +22,29 @@
       token: ""
       expect:
         ok: false
-        code: RPC_-32001
+        code: AUTH_REQUIRED
+        class: human_required
+        recovery: true
         http: 401
 
 - scenario: prm_key_is_checked_before_the_body
-  why: без ключа сервер обязан отказать статусом, а не разбирать тело — иначе периметр держится на теле
+  why: без ключа сервер обязан отказать статусом, а не разбирать тело — иначе периметр держится на теле; отсутствие
+       ключа и чужой ключ — разные коды
   when:
     - call: fs_read_file
       with: {path: notes/нет.txt}
       token: ""
       expect:
         ok: false
-        code: RPC_-32001
+        code: AUTH_REQUIRED
         http: 401
     - call: fs_read_file
       with: {path: notes/нет.txt}
       token: definitely-wrong-key
       expect:
         ok: false
-        code: RPC_-32001
+        code: AUTH_FAILED
+        class: human_required
         http: 401
 
 - scenario: prm_unknown_method_is_answered_by_protocol
@@ -53,17 +64,86 @@
       headers: {Origin: "https://evil.example"}
       expect:
         ok: false
-        code: RPC_-32002
+        code: ORIGIN_FORBIDDEN
+        class: human_required
+        http: 403
+        detail: {facts: {}}
     - call: fs_get_directory_tree
       with: {path: ""}
       headers: {Host: "evil.example"}
       expect:
         ok: false
-        code: RPC_-32002
+        code: HOST_FORBIDDEN
+        class: human_required
+        http: 403
+        detail: {facts: {}}
     - call: fs_get_directory_tree
       with: {path: ""}
       headers: {Content-Type: text/plain}
       expect:
         ok: false
-        code: RPC_-32600
+        code: MEDIA_TYPE_UNSUPPORTED
+        recovery: true
         http: 415
+        detail: {facts.required: application/json}
+
+# Слово владельца (2026-10-13): Origin коннектора Claude AI Web — строкой декларации config/transport.yaml, не в коде;
+# прочие Origin судятся как прежде. Роды: positive — объявленный источник проходит; negative — чужой и снятый из
+# декларации отказаны. Прогноз до замера: зелёные.
+- scenario: prm_declared_origin_passes
+  why: коннектор Claude AI Web шлёт Origin со своего бэкенда — объявленный источник проходит, чужой отказан
+  when:
+    - call: fs_get_directory_tree
+      with: {path: ""}
+      headers: {Origin: "https://claude.ai"}
+      expect: {ok: true}
+    - call: fs_get_directory_tree
+      with: {path: ""}
+      headers: {Origin: "https://claude.ai.evil.example"}
+      expect: {ok: false, code: ORIGIN_FORBIDDEN, http: 403}
+
+- scenario: prm_origin_list_is_the_declaration
+  why: список источников читается из декларации, а не из кода — подменённая декларация меняет, кого пускают
+  given:
+    declarations:
+      transport.yaml: {origins.allowed: ["https://example.test"]}
+  when:
+    - call: fs_get_directory_tree
+      with: {path: ""}
+      headers: {Origin: "https://example.test"}
+      expect: {ok: true}
+    - call: fs_get_directory_tree
+      with: {path: ""}
+      headers: {Origin: "https://claude.ai"}
+      expect: {ok: false, code: ORIGIN_FORBIDDEN, http: 403}
+
+- scenario: prm_body_is_judged_before_the_key_without_quoting_it
+  why: тело разбирается до ключа — отказ называет место разбора (строка, столбец), а не цитирует присланное
+  when:
+    - python: post_body
+      with: {text: '{"метка-тела": '}
+      expect:
+        ok: false
+        code: REQUEST_MALFORMED
+        data: {http: 400, detail.reaction_class: human_required, detail.facts.line: 1, detail.facts.column: 16}
+        data_absent: {detail: метка-тела}
+    - python: post_body
+      with: {hex: "fffe7b7d"}
+      expect:
+        ok: false
+        code: REQUEST_UNREADABLE
+        data: {http: 400, detail.reaction_class: human_required}
+
+- scenario: prm_broken_firewall_refuses_instead_of_passing
+  why: сбой проверки файрвола — отказ (fail-closed) с причиной в консоли владельца, а не пропуск и не текст исключения клиенту
+  when:
+    - call: fs_get_directory_tree
+      with: {path: ""}
+      expect:
+        ok: false
+        code: FIREWALL_UNAVAILABLE
+        class: server_recoverable
+        http: 403
+        console: сбой проверки
+  given:
+    fixtures: [firewall_broken]

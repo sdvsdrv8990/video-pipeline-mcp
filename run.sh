@@ -80,6 +80,10 @@ if [ "$MCP_STOIT" != "True" ]; then
     echo "  Серверный конец: ./scripts/deploy_tunnel_server.sh --host <адрес сервера>"
     exit 2
 fi
+# Клиент — консоль на этой машине: туннель не объявлен, сервер только по петле.
+if [ "$TUNNEL_END" = "none" ]; then
+    TUNNEL=""
+fi
 
 # Предупреждение «без ключа + туннель» печатает сам сервер: его зовут и напрямую (server.py --tunnel).
 python3 server.py $TUNNEL

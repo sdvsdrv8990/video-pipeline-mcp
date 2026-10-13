@@ -78,10 +78,13 @@ check("сервер в канале cp1252 печатает справку в ut
 
 print("== 4. Среда ребёнка сервера — без дверей-секретов, в UTF-8 Mode ==")
 check("двери-секреты — двери перечня", SECRETS and SECRETS <= set(DOORS), sorted(SECRETS - set(DOORS)))
-server_env = {name: f"секрет-{name}" for name in SECRETS} | {"PATH": "/bin", "MCP_HOME": "/дом"}
+# Секреты — истина события (ключ доступа, токены туннеля и раннера), а не перечень узла: иначе потерю имени не увидеть.
+server_secrets = ("MCP_AUTH_TOKEN", "MCP_TUNNEL_TOKEN", "MCP_RUNNER_TOKEN")
+server_env = {name: f"секрет-{name}" for name in server_secrets} | {"PATH": "/bin", "MCP_HOME": "/дом"}
 child = child_environ(environ=server_env)
 check("ни одна дверь-секрет не уходит ребёнку, прочая среда сервера — уходит",
-      not set(child) & SECRETS and child.get("PATH") == "/bin" and child.get("MCP_HOME") == "/дом", sorted(child))
+      not set(child) & set(server_secrets) and child.get("PATH") == "/bin" and child.get("MCP_HOME") == "/дом",
+      sorted(child))
 check("ребёнок — в UTF-8 Mode; явный выбор владельца не перекрывается",
       child.get("PYTHONUTF8") == "1" and child_environ(environ={"PYTHONUTF8": "0"})["PYTHONUTF8"] == "0")
 check("свой секрет ребёнку кладёт тот, кто его выпускает (extra главнее)",

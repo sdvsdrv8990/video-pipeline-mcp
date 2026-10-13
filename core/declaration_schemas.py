@@ -236,8 +236,8 @@ ProviderUrl = Annotated[StrictStr, AfterValidator(_declared_url)]   # адрес
 
 
 class InstallProgress(BaseModel):
-    """Наблюдение за установкой: как часто пересчитывать легшие байты. Простой судит узел заданий — один ключ
-    `jobs.yaml` `stale_after_sec`."""
+    """Наблюдение за установкой: как часто пересчитывать легшие байты; ход — в факты статуса задания узла, срока
+    молчания нет (простой — не вердикт сервера)."""
 
     model_config = STRICT
 
@@ -391,15 +391,14 @@ class JobId(BaseModel):
 
 
 class Jobs(BaseModel):
-    """`config/jobs.yaml`: узел заданий сервера — форма id, каталог записей от дома инстанса, срок хранения конченых,
-    предел молчания живого исполнителя и окно, в котором повтор того же вызова — то же задание."""
+    """`config/jobs.yaml`: узел заданий сервера — форма id, каталог записей от дома инстанса, срок хранения конченых и
+    окно, в котором повтор того же вызова — то же задание. Срока молчания нет: простой — не вердикт сервера."""
 
     model_config = STRICT
 
     id: JobId
     store: StrictStr = Field(min_length=1)
     retain_sec: StrictInt = Field(gt=0)
-    stale_after_sec: StrictInt = Field(gt=0)
     dedupe_window_sec: StrictInt = Field(gt=0)
 
     @model_validator(mode="after")
@@ -409,6 +408,69 @@ class Jobs(BaseModel):
             raise ValidationError.from_exception_data(type(self).__name__, [_gap(
                 "window_over_retain", "окно повтора не длиннее срока хранения retain_sec", ("dedupe_window_sec",))])
         return self
+
+
+class RateLimit(BaseModel):
+    """`config/firewall.yaml → rate_limit`: частота запросов с одного адреса — окно, предел запросов в нём и число
+    превышений подряд до бана адреса. Единица времени — в имени ключа окна, а не в имени предела."""
+
+    model_config = STRICT
+
+    enabled: StrictBool
+    window_sec: StrictInt = Field(gt=0)
+    max_requests: StrictInt = Field(gt=0)
+    ban_after_violations: StrictInt = Field(gt=0)
+
+
+class TunnelBinaryFetch(BaseModel):
+    """`config/tunnel_diagnostics.yaml → загрузка_клиента`: готовый бинарь клиентского конца туннеля — какой из `бинари`
+    (`binary`: путь в дереве — его), адрес с подстановками `{system}` и `{arch}` (имена поставщика по системе и архитектуре
+    машины: `systems`, `arches`) и политика загрузки двери `core.providers.download.Fetcher`. Системы или архитектуры нет
+    в списке — готового бинаря нет."""
+
+    model_config = STRICT
+
+    binary: StrictStr = Field(min_length=1)
+    url: StrictStr = Field(min_length=1)
+    systems: Annotated[Mapping[StrictStr, StrictStr], ReadOnly]
+    arches: Annotated[Mapping[StrictStr, StrictStr], ReadOnly]
+    fetch: FetchPolicy
+
+    @model_validator(mode="after")
+    def _url_named(self) -> "TunnelBinaryFetch":
+        # Адрес без подстановки взял бы один бинарь на все машины — чужая архитектура упала бы уже при запуске.
+        missing = [part for part in ("{system}", "{arch}") if part not in self.url]
+        if missing:
+            raise ValidationError.from_exception_data(type(self).__name__, [_gap(
+                "url_unbound", f"адрес с подстановками {', '.join(missing)}", ("url",))])
+        return self
+
+
+class Origins(BaseModel):
+    """Источники страниц (Origin), которым сервер разрешает звать себя вдобавок к петле."""
+
+    model_config = STRICT
+
+    allowed: Annotated[tuple[StrictStr, ...], Listed]
+
+    @model_validator(mode="after")
+    def _origins_only(self) -> "Origins":
+        # Origin — схема и хост без пути: строка с путём или слешем не совпала бы ни с одним запросом молча.
+        gaps = [_gap("not_origin", "Origin: http(s)://хост[:порт] без пути", ("allowed", str(i)))
+                for i, value in enumerate(self.allowed)
+                if urlsplit(value).scheme not in ("http", "https") or not urlsplit(value).hostname
+                or urlsplit(value).path or urlsplit(value).query or urlsplit(value).fragment]
+        if gaps:
+            raise ValidationError.from_exception_data(type(self).__name__, gaps)
+        return self
+
+
+class TransportDeclaration(BaseModel):
+    """`config/transport.yaml`: что сервер обещает клиенту на проводе — кто может звать его из браузера."""
+
+    model_config = STRICT
+
+    origins: Origins
 
 
 M = TypeVar("M", bound=BaseModel)
@@ -434,8 +496,11 @@ RESULT_ANSWER = Slot("media_tasks.yaml", ("download", "answer"), AnswerPolicy)
 RUNNER_HEALTH = Slot("providers.yaml", ("local", "runner", "health"), AnswerPolicy)
 TUNNEL_PROBE = Slot("tunnel_diagnostics.yaml", ("прозвонка",), ProbePolicy)
 JOBS = Slot("jobs.yaml", (), Jobs)
+RATE_LIMIT = Slot("firewall.yaml", ("rate_limit",), RateLimit)
+TUNNEL_BINARY_FETCH = Slot("tunnel_diagnostics.yaml", ("загрузка_клиента",), TunnelBinaryFetch)
+TRANSPORT = Slot("transport.yaml", (), TransportDeclaration)
 SLOTS = (RESOURCES, PACKAGES, MODEL_INSTALL, MODEL_FETCH, RESULT_FETCH, ONLINE_ANSWER, ONLINE_CALL, RESULT_ANSWER,
-         RUNNER_HEALTH, TUNNEL_PROBE, JOBS)
+         RUNNER_HEALTH, TUNNEL_PROBE, JOBS, RATE_LIMIT, TUNNEL_BINARY_FETCH, TRANSPORT)
 
 
 def registry_codes(model: BaseModel) -> frozenset[str]:

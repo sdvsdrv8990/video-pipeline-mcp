@@ -31,7 +31,11 @@ class FirewallResult:
 
     Attributes:
         decision: Решение (allow/block/rate_limit)
-        reason: Причина (для логирования и ответа)
+        reason: Причина для консоли и следа: в ней адрес клиента, в ответ клиенту она не идёт
+        rule: Сработавшее правило — имя его раздела в firewall.yaml (факт отказа для клиента)
+        retry_after_sec: Через сколько секунд повторять — срок лимитера; у остальных решений 0
     """
     decision: FirewallDecision
     reason: str = ""
+    rule: str = ""
+    retry_after_sec: int = 0

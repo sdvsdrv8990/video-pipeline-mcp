@@ -6,7 +6,7 @@
 
 import threading
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from core.contracts import ContractError
 from core.declaration import Declared, declarations_root
@@ -34,6 +34,12 @@ class Capacity:
             return resources.work[name].max_concurrent
         return resources.classes[name].max_concurrent
 
+    def share(self, name: str) -> int:
+        """Сколько ядер этого процесса приходится на одно место работы `name` — потоки внутри одной работы (`-threads`
+        ffmpeg): ядра процесса (`process_cpus`) поровну на объявленные места, не меньше одного; класс без предела — все."""
+        from core.providers.hardware import process_cpus     # здесь, а не сверху: пакет провайдеров сам зовёт узел ёмкости
+        return max(1, process_cpus()[0] // (self.places(name) or 1))
+
     def slots(self) -> "Slots":
         """Счёт мест классов инструментов и внутренней работы: его держит движок, им же пользуется узел заданий — один
         на процесс (CP-05). Работа задания, которой клиент «занято» не слышит (загрузка весов), ждёт место класса `work`."""
@@ -45,7 +51,8 @@ class Slots:
     """Места классов — один счёт для вызовов движка и заданий узла (CP-05).
 
     Вызов берёт место без ожидания (`take`): мест нет — отказ решает движок. Задание ждёт место в очереди класса по
-    порядку прихода (`wait`) в своём потоке, и вызов не обгоняет ждущих. Класс без предела — место есть всегда.
+    порядку прихода (`wait`) в своём потоке, и вызов не обгоняет ждущих; снятое задание уходит из очереди, не взяв
+    места (`wake` будит ждущих судить уход). Класс без предела — место есть всегда.
     """
 
     def __init__(self, places: Mapping[str, int]):
@@ -64,16 +71,25 @@ class Slots:
                 return True
             return False
 
-    def wait(self, klass: str) -> None:
-        """Место по порядку прихода: поток ждёт, пока его очередь не первая и место не свободно."""
+    def wait(self, klass: str, gone: Callable[[], bool] = lambda: False) -> bool:
+        """Место по порядку прихода: поток ждёт, пока его очередь не первая и место не свободно. `gone()` судится на
+        каждом пробуждении: ушёл — False, места не брал, очередь за ним сдвигается."""
         with self._turn:
             if klass not in self._free:
-                return
+                return not gone()
             ticket = object()
             self._queue[klass].append(ticket)
-            self._turn.wait_for(lambda: self._queue[klass][0] is ticket and self._free[klass] > 0)
-            self._queue[klass].popleft()
+            self._turn.wait_for(lambda: gone() or (self._queue[klass][0] is ticket and self._free[klass] > 0))
+            self._queue[klass].remove(ticket)
+            self._turn.notify_all()
+            if gone():
+                return False
             self._free[klass] -= 1
+            return True
+
+    def wake(self) -> None:
+        """Разбудить ждущих место: их уход (`gone` у `wait`) судится заново."""
+        with self._turn:
             self._turn.notify_all()
 
     def give(self, klass: str) -> None:

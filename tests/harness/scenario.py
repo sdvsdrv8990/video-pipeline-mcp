@@ -619,14 +619,15 @@ class Runner:
         """
         single = Step(index=step.index, tool=step.tool, python=step.python, rpc=step.rpc,
                       headers=step.headers, token=step.token, args=step.args, alias=step.alias)
-        ok_count, first_refusal, last = 0, None, None
+        ok_count, first_refusal, first_code, first_detail, last = 0, None, None, None, None
         for attempt in range(1, step.repeat + 1):
             last = self._once(scenario, single, results, return_observed=True)
             if last["ok"]:
                 ok_count += 1
             elif first_refusal is None:
-                first_refusal = attempt
-        summary = {"times": step.repeat, "ok_count": ok_count, "first_refusal": first_refusal}
+                first_refusal, first_code, first_detail = attempt, last["code"], last.get("detail") or {}
+        summary = {"times": step.repeat, "ok_count": ok_count, "first_refusal": first_refusal, "first_code": first_code,
+                   "first_detail": first_detail}
         if isinstance(last.get("data"), dict):
             last["data"] = {**last["data"], "_repeat": summary}
         else:
@@ -667,22 +668,26 @@ class Runner:
             params = {"name": step.tool, "arguments": args} if step.tool else args
             envelope, status = self.srv.rpc.raw_with_status(method, params, **kw)
             rpc = self.srv.rpc
+            # Класс и рецепт — из ErrorDetail отказа: у инструмента он в structuredContent, у периметра — в `error.data`
+            # конверта (вызов инструмента, отбитый до диспетчера, structuredContent не несёт).
+            detail = rpc.detail(envelope)
             if step.tool:
                 observed = {"ok": not rpc.is_error(envelope), "code": rpc.error_code(envelope) or "",
                             "message": rpc.text(envelope)[:400], "data": rpc.data(envelope) or {},
-                            "reaction_class": str((rpc.structured(envelope) or {}).get("reaction_class") or ""),
-                            "recovery": (rpc.structured(envelope) or {}).get("recovery") or {},
+                            "reaction_class": str(detail.get("reaction_class") or ""),
+                            "recovery": detail.get("recovery") or {},
                             "facts": [str(f.get("type") or "") for f in (rpc.facts(envelope) or [])],
-                            "detail": rpc.detail(envelope), "top": sorted(rpc.structured(envelope))}
+                            "detail": detail, "top": sorted(rpc.structured(envelope))}
             else:
-                # Ответ протокола — это конверт целиком: у `tools/list` нет ни фактов, ни рекавери,
-                # и подставлять их пустыми честнее, чем притворяться вызовом инструмента.
+                # Ответ протокола — это конверт целиком: у `tools/list` нет фактов успеха, а у отказа транспорта — ни
+                # класса, ни рецепта, и подставлять их пустыми честнее, чем притворяться вызовом инструмента.
                 failure = rpc.protocol_error(envelope)
                 observed = {"ok": not failure and "result" in envelope,
                             "code": rpc.error_code(envelope),
                             "message": str(failure.get("message", ""))[:400],
                             "data": envelope.get("result") or {},
-                            "reaction_class": "", "recovery": {}, "facts": []}
+                            "reaction_class": str(detail.get("reaction_class") or ""),
+                            "recovery": detail.get("recovery") or {}, "facts": [], "detail": detail}
             observed["http"] = status
             observed["wire"] = json.dumps(envelope, ensure_ascii=False)
         if tasks_from is not None:
@@ -836,8 +841,9 @@ class Runner:
             tasks = got["data"].get("tasks") if isinstance(got["data"], dict) else None
             one = tasks[0] if isinstance(tasks, list) and len(tasks) == 1 and isinstance(tasks[0], dict) else {}
             task = one.get("task") or {}
-            # Ошибка задания — у задания, завершённого отказом; отказ элемента — у элемента без задания.
-            error = ((task.get("error") if task.get("status") == "failed" and not one.get("error") else None)
+            # Ошибка задания — у задания, завершённого отказом или снятием (причина cancelled тоже в `error`); отказ
+            # элемента — у элемента без задания.
+            error = ((task.get("error") if task.get("status") in ("failed", "cancelled") and not one.get("error") else None)
                      if want["in"] == "task" else (one.get("error") if not task else None)) or {}
             out.append(Check(scenario.id, f"{tag} → {want['in']}: {want['code']}",
                              error.get("code") == want["code"]

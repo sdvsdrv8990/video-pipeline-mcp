@@ -26,7 +26,7 @@ import httpx
 from core.contracts import ContractError
 from core.declaration import Declaration, declarations_root
 from core.declaration_schemas import TUNNEL_PROBE
-from core.environment import child_environ
+from core.environment import child_spawn
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -243,7 +243,7 @@ class Диагностика:
     def _версия(self, путь: str, имя: str) -> str:
         флаги = self._объявление["бинари"].get(имя, {}).get("версия", ["--version"])
         try:
-            done = subprocess.run([путь, *флаги], capture_output=True, text=True, timeout=10, env=child_environ())
+            done = subprocess.run([путь, *флаги], capture_output=True, timeout=10, **child_spawn("replace"))
         except (OSError, subprocess.SubprocessError):
             return "версия не отвечает"
         строки = (done.stdout or done.stderr).strip().splitlines()

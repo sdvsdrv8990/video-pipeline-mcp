@@ -18,8 +18,13 @@
   given:
     fixtures: [task_node]
 
+# Обновлено в шаге 1 рендера (2026-10-13, 09): простой больше не вердикт сервера — слово владельца «сторожей в клиента не
+# ставим». Прежде: признак работы старше stale_after_sec → task: TASK_STALLED. Теперь молчун — processing с фактами хода
+# (last_work_at, idle_sec), решает клиент: task_cancel снимает его → cancelled с причиной TASK_CANCELLED. Роды: positive —
+# processing с фактами хода; negative — снятое задание несёт отказ TASK_CANCELLED. Прогноз до замера: оба зелёные на
+# узле 66 (test_jobs §8 судит то же в процессе); id сценария прежний — журналы прошлых прогонов остаются сравнимы.
 - scenario: rcode_task_stalled
-  why: живой исполнитель держит замок, а признак работы старше предела простоя — task_status называет простой, а не ход работы
+  why: живой исполнитель молчит с эпохи 0 — task_status отдаёт processing с фактами хода (вердикта по часам нет), снятие клиентом — cancelled с причиной TASK_CANCELLED
   when:
     - python: task_node_ids
       as: ids
@@ -28,8 +33,31 @@
       with: {task_ids: ["${ids.stalled}"]}
       expect:
         ok: true
-        task_error: {in: task, code: TASK_STALLED, class: server_recoverable,
+        data: {tasks.0.task.status: processing, tasks.0.task.last_work_at: "1970-01-01T00:00:00+00:00"}
+    - call: task_cancel
+      with: {task_ids: ["${ids.stalled}"]}
+      expect: {ok: true}
+    - call: task_status
+      with: {task_ids: ["${ids.stalled}"]}
+      expect:
+        ok: true
+        task_error: {in: task, code: TASK_CANCELLED, class: ai_recoverable,
                      facts: {task_id: "${ids.stalled}", tool: сценарий}}
+  given:
+    fixtures: [task_node]
+
+- scenario: rcode_task_finished
+  why: снятие задания, которое уже кончилось (прерванное — failed), — отказ элемента TASK_FINISHED со статусом, задание не тронуто
+  when:
+    - python: task_node_ids
+      as: ids
+      expect: {ok: true}
+    - call: task_cancel
+      with: {task_ids: ["${ids.interrupted}"]}
+      expect:
+        ok: true
+        task_error: {in: element, code: TASK_FINISHED, class: ai_recoverable,
+                     facts: {task_id: "${ids.interrupted}", status: failed}}
   given:
     fixtures: [task_node]
 
@@ -46,5 +74,25 @@
         data_absent: {tasks: испорченная запись}
         task_error: {in: element, code: TASK_RECORD_INVALID, class: integrity,
                      facts: {path: "vendor/tasks/${ids.broken}.json"}}
+  given:
+    fixtures: [task_node]
+
+- scenario: rcode_task_foreign
+  why: живое задание, чей исполнитель — другой процесс (держит замок записи), сервер не снимает — отказ элемента TASK_FOREIGN, задание идёт дальше
+  when:
+    - python: task_node_ids
+      as: ids
+      expect: {ok: true}
+    - call: task_cancel
+      with: {task_ids: ["${ids.foreign}"]}
+      expect:
+        ok: true
+        task_error: {in: element, code: TASK_FOREIGN, class: ai_recoverable,
+                     facts: {task_id: "${ids.foreign}"}}
+    - call: task_status
+      with: {task_ids: ["${ids.foreign}"]}
+      expect:
+        ok: true
+        data: {tasks.0.task.status: processing}
   given:
     fixtures: [task_node]

@@ -3,7 +3,8 @@
 
 set -e
 
-# Роль машины (до .venv). Неинтерактивно: VPM_INSTALL_CHOICE=local|server|tunnel-remote|tunnel-here
+# Роль машины (до .venv) — по клиенту: консоль на этой машине без туннеля, Claude AI Web — через туннель.
+# Неинтерактивно: VPM_INSTALL_CHOICE=local|console|server|tunnel-remote|tunnel-here
 python3 scripts/installer_tui.py || exit 1
 MCP="$(sed -n 's/^mcp: *//p' config/install.yaml)"
 TUNNEL_END="$(sed -n 's/^tunnel: *//p' config/install.yaml)"
@@ -31,12 +32,18 @@ if [ "$MCP" = "true" ]; then
     echo "Установка зависимостей из pyproject.toml..."
     pip install -e .
 
-    # 5. Проверка FFmpeg
+    # 5. Проверка FFmpeg. Подсказка — по факту менеджера пакетов этой системы и без команды: имя пакета у
+    # дистрибутивов разное (у одних ffmpeg, у других ffmpeg-free или из стороннего репозитория).
     echo "Проверка FFmpeg..."
     if command -v ffmpeg &> /dev/null; then
         echo "✓ FFmpeg: $(ffmpeg -version | head -n 1)"
     else
-        echo "✗ FFmpeg не найден в PATH. Установите: sudo apt install ffmpeg"
+        PM=""
+        for candidate in apt-get dnf yum zypper pacman apk brew port; do
+            if command -v "$candidate" &> /dev/null; then PM="$candidate"; break; fi
+        done
+        echo "✗ FFmpeg не найден в PATH: это системный бинарь, а не пакет pip —" \
+             "${PM:+поставьте его менеджером пакетов $PM; }сборки по системам: https://ffmpeg.org/download.html"
     fi
 
     # 7. Локальный инференс картинок (удаление фона, апскейл) — граф ONNX.
@@ -58,8 +65,8 @@ if [ "$MCP" = "true" ]; then
     fi
 fi
 
-# 9. Клиентский конец туннеля — его бинарь. Путь в дереве (bin/tunnel) объявлен в config/tunnel_diagnostics.yaml
-# (`бинари`): там его ищут туннель и диагностика; имя в PATH и источник загрузки — свойства поставщика.
+# 9. Клиентский конец туннеля — его бинарь. Адрес по системе и архитектуре и политика загрузки объявлены в
+# config/tunnel_diagnostics.yaml (`загрузка_клиента`, путь в дереве — `бинари`); ставит дверь — scripts/fetch_tunnel_binary.py.
 case "$TUNNEL_END" in
     client|both)
         # Переезд прежнего пути в дереве на нейтральный.
@@ -72,21 +79,16 @@ case "$TUNNEL_END" in
         elif [ -x "./bin/tunnel" ]; then
             echo "✓ бинарь туннеля: ./bin/tunnel"
         else
-            echo "Загрузка бинаря туннеля..."
-            mkdir -p bin
-            case "$(uname -m)" in
-                x86_64|amd64) CF_ARCH="amd64" ;;
-                aarch64|arm64) CF_ARCH="arm64" ;;
-                *) CF_ARCH="" ;;
-            esac
-            CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}"
-            if [ -n "$CF_ARCH" ] && { curl -fsSL "$CF_URL" -o bin/tunnel 2>/dev/null \
-                                      || wget -q "$CF_URL" -O bin/tunnel 2>/dev/null; }; then
-                chmod +x bin/tunnel
-                echo "✓ бинарь туннеля: ./bin/tunnel"
-            else
-                echo "✗ не удалось загрузить бинарь туннеля — установите его вручную"
+            # Роль без MCP окружения не ставит, а двери загрузки нужны её пакеты: минимальный .venv, версии из pyproject.
+            if [ ! -x .venv/bin/python ]; then
+                echo "Окружение двери загрузки (.venv, минимальное)..."
+                python3 -m venv .venv
+                python3 scripts/door_deps.py pydantic pydantic-core pyyaml filelock httpx h11 \
+                    | .venv/bin/pip install -q -r /dev/stdin
             fi
+            echo "Загрузка бинаря туннеля..."
+            .venv/bin/python scripts/fetch_tunnel_binary.py \
+                || echo "  бинарь туннеля не поставлен — причина выше, компонент назовёт приёмка"
         fi
         ;;
 esac
@@ -107,8 +109,8 @@ echo "=== Установка завершена ==="
 
 # Меню, а не автозапуск настроек: настройки доступны, но обязательным шагом установки не являются.
 # Без терминала (CI) меню не поднимается — там же печатается отчёт быстрой проверки.
-# Роль без MCP окружения не ставит, и меню тогда нечем поднять: печатаем команды, а не падаем.
-if [ "$MCP" = "true" ]; then
+# Окружение есть у MCP и у роли с клиентским концом (минимальное, шаг 9); без него меню нечем поднять — печатаем команды.
+if [ -x .venv/bin/python ]; then
     PY=".venv/bin/python"
 else
     PY="python3"

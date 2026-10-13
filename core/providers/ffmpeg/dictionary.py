@@ -114,6 +114,16 @@ class FfmpegDictionary:
                 suggested_tool="table_set")
         return guard(str(by_name[codec]), "codec")
 
+    def muxer(self, container: str) -> str:
+        """Контейнер профиля → muxer ffmpeg (`-f`). Человек пишет расширение `mkv`, ffmpeg зовёт формат `matroska`."""
+        by_name = (self.data.get("containers") or {}).get("by_name") or {}
+        if container not in by_name:
+            raise FfmpegError(
+                "RENDER_PROFILE_INVALID", f"Контейнер `{container}` не объявлен.",
+                reason=f"Допустимые: {', '.join(sorted(by_name))}. Поправь строку профиля рендера.",
+                suggested_tool="table_set")
+        return guard(str(by_name[container]), "container")
+
     def output_defaults(self) -> dict:
         """Звук микса и формат пикселей: у профиля таких столбцов нет, значения общие."""
         section = self.data.get("codecs") or {}

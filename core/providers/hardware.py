@@ -13,7 +13,10 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path, PurePosixPath
+
+from core.environment import child_spawn
 
 PROC = Path("/proc")             # корни чтения ядер и памяти; проверки подают временные каталоги
 FS_ROOT = Path("/")
@@ -90,7 +93,7 @@ def _nvidia_smi() -> list[dict]:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=name,memory.total,memory.free",
              "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=10, check=False).stdout
+            capture_output=True, timeout=10, check=False, **child_spawn("replace")).stdout
     except (OSError, subprocess.SubprocessError):
         return []
     cards = []
@@ -208,10 +211,9 @@ def probe(disk_for: str | Path = ".", gpu_rules: dict | None = None, *,
         unknown.append(f"свободное место под веса ({disk_for}: {exc.strerror or exc})")
     if memory["available"] is None:
         unknown.append(f"объём памяти — консервативный 0: {memory['source']}")
-    cpus, cpu_source = _cpus(proc, fs_root)
-    if cpus is None:
-        cpus, cpu_source = 1, f"минимум 1: {cpu_source}"
-        unknown.append(f"число ядер — {cpu_source}")
+    cpus, cpu_source, cpu_unknown = process_cpus(proc, fs_root)
+    if cpu_unknown:
+        unknown.append(cpu_unknown)
     return {
         "ram_total_mb": round((memory["total"] or 0) / 1e6),
         "ram_available_mb": round((memory["available"] or 0) / 1e6),
@@ -266,6 +268,16 @@ def compute_device(gpu_rules: dict, want: str = "", hw: dict | None = None) -> d
     return {"device": "cpu", "dtype": str(dtypes.get("cpu", "")), "available_mb": ram,
             "source": "проба железа",
             "why": ("считаем на процессоре: " + (idle[0]["why"] if idle else "карты не нашлось"))}
+
+
+def process_cpus(proc: Path = PROC, fs_root: Path = FS_ROOT) -> tuple[int, str, str]:
+    """Ядра, которые может занять ЭТОТ процесс, — числом всегда (HW-01): число, его источник и причина минимума (пусто —
+    число известно). Не ответила ни одна ступень — консервативный минимум 1 (HW-05). Одна точка решения для снимка
+    `probe` и доли мест работы (`Capacity.share`)."""
+    cpus, source = _cpus(proc, fs_root)
+    if cpus is None:
+        return 1, f"минимум 1: {source}", f"число ядер — минимум 1: {source}"
+    return cpus, source, ""
 
 
 def _cpus(proc: Path = PROC, fs_root: Path = FS_ROOT) -> tuple[int | None, str]:
@@ -392,9 +404,11 @@ def _memory_portable() -> tuple[int | None, int | None, str]:
         import psutil
     except ImportError as exc:
         why = f"нет /proc/meminfo, psutil не импортируется ({exc})"
+        if sys.platform == "win32":                 # os.sysconf — только Unix (документация os): всего не узнать
+            return None, None, why + ", os.sysconf на Windows нет"
         try:
             pages, size = os.sysconf("SC_PHYS_PAGES"), os.sysconf("SC_PAGE_SIZE")
-        except (AttributeError, ValueError, OSError):  # sysconf — только POSIX, и имя есть не у всех систем
+        except (ValueError, OSError):               # имя SC_* есть не у всех Unix
             return None, None, why
         return (pages * size, None, why + ", всего — sysconf") if pages > 0 and size > 0 else (None, None, why)
     vm = psutil.virtual_memory()

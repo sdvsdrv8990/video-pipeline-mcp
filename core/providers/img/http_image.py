@@ -263,9 +263,10 @@ class HttpImageAPI:
                 "INTERNAL_ERROR", "Раннеру не с чем сопоставить пути: не передана рабочая область.",
                 reason="MediaRequest.workspace заполняет вызывающий инструмент — это проводка, "
                        "а не данные канала.")
+        named = Files(root)                     # дверь корня: путь через ссылку ФС (/var → /private/var) — тот же файл
         return {"kind": request.resource_type, "input": request.input,
-                "source": str(request.source.relative_to(root)) if request.source else "",
-                "target": str(request.target.relative_to(root)),
+                "source": named.name(request.source) if request.source else "",
+                "target": named.name(request.target),
                 # Строка канала уходит целиком: какие рычаги у модели — знает модель, и
                 # перечислять их здесь значило бы держать вторую копию списка столбцов.
                 "params": {**request.params, **fields}}

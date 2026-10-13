@@ -25,12 +25,14 @@ class RateLimiter:
     """Ограничитель частоты запросов.
 
     Attributes:
-        max_requests: Максимум запросов в минуту
+        max_requests: Максимум запросов в окне
         ban_after: Через сколько нарушений бан
         window_sec: Окно времени (сек)
+
+    Пороги — из декларации (`config/firewall.yaml → rate_limit`, схема `RateLimit`): умолчаний политики здесь нет.
     """
 
-    def __init__(self, max_requests: int = 60, ban_after: int = 3, window_sec: float = 60):
+    def __init__(self, max_requests: int, ban_after: int, window_sec: float):
         self.max_requests = max_requests
         self.ban_after = ban_after
         self.window_sec = window_sec
@@ -63,7 +65,7 @@ class RateLimiter:
             return RateLimiterResult(
                 allowed=False,
                 remaining=0,
-                reset_in=self.window_sec
+                reset_in=self._until_free(ip, timestamp)
             )
 
         # Добавляем запрос
@@ -72,8 +74,13 @@ class RateLimiter:
         return RateLimiterResult(
             allowed=True,
             remaining=self.max_requests - requests_in_window - 1,
-            reset_in=self.window_sec
+            reset_in=self._until_free(ip, timestamp)
         )
+
+    def _until_free(self, ip: str, now: float) -> float:
+        """Сколько секунд до выхода старейшего запроса окна — тогда освободится место. Окно не пусто: зовут после
+        отказа (в окне не меньше предела) или после добавления запроса."""
+        return self._requests[ip][0] + self.window_sec - now
 
     def _cleanup(self, ip: str, current_time: float):
         """Очистка старых запросов и violations.

@@ -325,7 +325,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
 
         verified = []
         for path in outcome.files:
-            rel_file = str(Path(path).relative_to(ctx.workspace_path))
+            rel_file = Files(ctx.workspace_path).name(path)     # дверь корня: путь через ссылку ФС — тот же файл
             ok, report = ctx.safe(partial(cycle.verify_download, rel_file, ctx.workspace_path))
             if not ok:
                 return report
@@ -482,13 +482,11 @@ def register(engine: Engine, ctx: ToolContext) -> None:
     tasks = Tasks(engine)
 
     def _installer() -> ModelInstaller:
-        """Установщик моделей на узле заданий: тик наблюдения — раз в `local.install.progress.heartbeat_sec`, простой
-        судит узел (`jobs.yaml` `stale_after_sec`), связь срока простоя с тишиной загрузчика — до задания."""
+        """Установщик моделей на узле заданий: тик наблюдения — раз в `local.install.progress.heartbeat_sec`; ход — в
+        факты статуса задания, вердикта по тишине у сервера нет."""
         registry = AdapterRegistry(ctx.config_path / "providers.yaml", ctx.config_path.parent)
         catalog = ModelCatalog(ctx.config_path / "providers.yaml", registry.models_dir)
-        installer = ModelInstaller(catalog, heartbeat_sec=catalog.install_policy().progress.heartbeat_sec)
-        installer.linked()
-        return installer
+        return ModelInstaller(catalog, heartbeat_sec=catalog.install_policy().progress.heartbeat_sec)
 
     async def media_model_install(model_id: str, kind: str, confirm: bool = False,
                                   force: bool = False) -> "ToolResult":
@@ -512,11 +510,13 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 "checked": task["result"]["checked"]})])
         return ToolResult(status="success", data={
             **task,
-            "next": ("Установка идёт заданием сервера — гигабайты качаются минутами. Прозвони её: "
-                     f"task_status(task_ids=['{task['task_id']}']). Отвалившийся клиент установку не теряет и "
-                     "не спасает: она продолжается, статус прозванивается заново. Оборвалась (простой, сбой сети) — "
-                     "повтори установку: целые части в план не войдут, а оборванная докачается с места обрыва, "
-                     "если источник не сменил файл."),
+            "next": ("Установка идёт заданием сервера — гигабайты качаются минутами. Прозванивай её опросом: "
+                     f"task_status(task_ids=['{task['task_id']}']) — ответ сразу; wait=true держит вызов до смены "
+                     "статуса — только клиенту без короткого срока вызова. "
+                     "Отвалившийся клиент установку не теряет и не спасает: она продолжается, статус прозванивается "
+                     "заново. Молчит слишком долго (idle_sec в статусе) — сними её task_cancel. Оборвалась (сбой "
+                     "сети) или снята — повтори установку: целые части в план не войдут, а оборванная докачается с "
+                     "места обрыва, если источник не сменил файл."),
         }, facts=[Fact(type="ModelInstallStarted", data={
             "install_id": task["task_id"], "model_id": model_id, "kind": kind})])
 
@@ -524,8 +524,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """Что с установками моделей — статус задания каждой (`TaskStatus` узла заданий): ждёт места, идёт, готово или
         отказ. Обёртка над `task_status` на время перевода: тот же статус, отбор по установкам.
 
-        Ход считается по диску, а не по отчёту загрузчика: он способен отрапортовать и оборваться. Признаков работы
-        нет дольше объявленного — отказ простоя TASK_STALLED, а не «идёт». Одна установка, которой нет, — отказ вызова;
+        Ход считается по диску, а не по отчёту загрузчика: он способен отрапортовать и оборваться. У идущей — факты хода
+        (`last_work_at`, `idle_sec`): вердикт по тишине выносит клиент, а не сервер. Одна установка, которой нет, — отказ вызова;
         в списке запись, которую не прочесть, названа отказом своего элемента (`unreadable`), а не пропущена.
         """
         def installs() -> list[dict]:

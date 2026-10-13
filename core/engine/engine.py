@@ -8,6 +8,7 @@
 import asyncio
 import inspect
 import logging
+import time
 import uuid
 from typing import Callable, Awaitable
 from dataclasses import dataclass
@@ -60,6 +61,7 @@ class Engine:
         self._state_manager = state_manager
         self._log_broken = False   # об отказе журнала говорим ОДИН раз за процесс
         self.trail = trail
+        self.stopping = False      # сервер останавливается (метка server.py до runner.cleanup): отмена вызова — его, а не клиента
         classes = resources.classes if resources else {}
         self._klass = dict(resources.tools) if resources else {}
         self._offload = {name for name, klass in self._klass.items() if classes[klass].offload}
@@ -83,9 +85,12 @@ class Engine:
                                f"Класс ресурса '{klass}' занят: свободных мест нет, "
                                f"повтор не раньше чем через {wait} с.",
                                Recovery(reason=f"Повтори не раньше чем через {wait} с либо займись другой задачей."))
-        try:
-            if tool.name not in self._offload:
+        if tool.name not in self._offload:
+            try:
                 return await tool.handler(**params)
+            finally:
+                self.slots.give(klass)
+        try:
             # `handler` объявлен как Awaitable, а не Coroutine: обёртка делает из любого ожидаемого
             # настоящую корутину, которую можно запустить своим циклом в потоке.
             awaitable = tool.handler(**params)
@@ -93,9 +98,21 @@ class Engine:
             async def _run() -> ToolResult:
                 return await awaitable
 
-            return await asyncio.to_thread(lambda: asyncio.run(_run()))
-        finally:
+            work = asyncio.ensure_future(asyncio.to_thread(lambda: asyncio.run(_run())))
+        except BaseException:
             self.slots.give(klass)
+            raise
+        # Место отдаёт конец потока, а не выход ожидающего: отменённый вызов (обрыв клиента) поток не останавливает,
+        # и место, отданное раньше его конца, пустило бы вторую работу поверх живой (на карте — OOM).
+        work.add_done_callback(lambda done: self._released(klass, done))
+        return await asyncio.shield(work)
+
+    def _released(self, klass: str, done: asyncio.Future) -> None:
+        """Место назад по концу потока; исход брошенного вызова забирается здесь — не «исключение, которое никто не
+        прочёл» в журнале цикла."""
+        self.slots.give(klass)
+        if not done.cancelled():
+            done.exception()
 
     def _error(self, code: str, message: str, recovery: "Recovery", facts: dict | None = None,
                errors: list[dict] | None = None) -> ToolResult:
@@ -141,7 +158,15 @@ class Engine:
         Returns:
             ToolResult с результатом
         """
-        result = await self._dispatch(name, params)
+        started = time.monotonic()
+        try:
+            result = await self._dispatch(name, params)
+        except asyncio.CancelledError:
+            # Исхода нет — пишется улика отмены: живой оракул брошенного вызова (обрыв клиента).
+            if self.trail is not None:
+                self.trail.cancelled(name, self._klass.get(name, ""), time.monotonic() - started,
+                                     "остановка сервера" if self.stopping else "обрыв клиента")
+            raise
         if self.trail is not None:
             self.trail.write(name, params, result)
         return result

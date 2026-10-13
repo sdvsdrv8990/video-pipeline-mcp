@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import yaml
@@ -19,6 +20,15 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+import atexit
+
+# Свой дом инстанса на прогон набора: рендер — задание узла, его записи не ложатся в дом по умолчанию (живое дерево)
+# и не видны соседним наборам и прогонам (повтор в окне AD-21 нашёл бы двойника).
+_RUN_HOME = tempfile.mkdtemp(prefix="vpm_home_montage_")
+atexit.register(shutil.rmtree, _RUN_HOME, ignore_errors=True)
+os.environ["MCP_HOME"] = _RUN_HOME
+
+from core.contracts import ErrorDetail, Fact, ToolResult
 from core.engine import Engine
 from core.ids import IDGenerator
 from core.montage import MontageError, RenderLedger, SceneBook
@@ -234,7 +244,26 @@ else:
     def call(tool, **params):
         return asyncio.run(ENG.call(tool, params))
 
-    _r = call("montage_render_scene", table="ch1/v1", scene_id="S01")
+    def rendered(**params):
+        """Рендер — задание узла: ответ вызова — статус задания; ждём смену статуса (task_status wait=true) до конца и
+        отдаём итог формой ответа: данные вызова и результат задания, факты — из результата; отказ задания — отказом.
+        Отказ входа приходит самим вызовом."""
+        started = call("montage_render_scene", **params)
+        task = started.data or {}
+        while started.status == "success" and task.get("status") in ("pending", "processing"):
+            waited = call("task_status", task_ids=[task["task_id"]], wait=True)
+            if waited.status != "success":
+                return waited
+            task = waited.data["tasks"][0].get("task") or {}
+        if started.status != "success":
+            return started
+        if task.get("status") != "completed":
+            return ToolResult(status="error", error=ErrorDetail(**task["error"]))
+        result = task["result"]
+        return ToolResult(status="success", data={**started.data, **{k: v for k, v in result.items() if k != "facts"}},
+                          facts=[Fact(**fact) for fact in result["facts"]])
+
+    _r = rendered(table="ch1/v1", scene_id="S01")
     ok(_r.status == "success", f"сцена из книги собралась ({_r.error.message if _r.error else ''})")
     if _r.status == "success":
         ok((WS / _r.data["file_path"]).exists(), f"файл лёг в объявленное место ({_r.data['file_path']})")
@@ -257,16 +286,16 @@ else:
         ok(_row[_cols["file_path"]].startswith("ch1/v1/"),
            "путь в книге относительный — рабочая область переносима")
 
-    _silent = call("montage_render_scene", table="ch1/v1", scene_id="S02")
+    _silent = rendered(table="ch1/v1", scene_id="S02")
     ok(_silent.status == "success", "сцена без единой дорожки звука собирается: пустой звук не отказ")
 
     print("\n  ── тумблер вариативности и советы ──")
-    _plain = call("montage_render_scene", table="ch1/v1", scene_id="S02")
+    _plain = rendered(table="ch1/v1", scene_id="S02")
     ok(not _plain.data.get("recommendations"),
        "тумблер выключен, слотов в сцене нет — сервер молчит: согласованный случай не советует")
 
     book({**ELEMENTS, "E2": {**ELEMENTS["E2"], "slot_id": "body"}}, AUDIO)
-    _mismatch = call("montage_render_scene", table="ch1/v1", scene_id="S01")
+    _mismatch = rendered(table="ch1/v1", scene_id="S01")
     _rec = (data_of(_mismatch, "сцена со слотом при выключенном тумблере собирается")
             .get("recommendations") or [{}])[0]
     ok(_rec.get("id") == "variants_disabled_but_used",
@@ -278,11 +307,11 @@ else:
     _ch["SCENE_PROFILE"]["rows"]["R9"] = {"fragment_type": MONTAGE["rig"]["toggle"]["fragment_type"],
                                           "enabled": True, "niche_weight": 0.25}
     (WS / "ch1" / "read.json").write_text(json.dumps(_ch, ensure_ascii=False), encoding="utf-8")
-    _on_used = data_of(call("montage_render_scene", table="ch1/v1", scene_id="S01"),
+    _on_used = data_of(rendered(table="ch1/v1", scene_id="S01"),
                        "сцена со слотом при включённом тумблере собирается")
     ok(not _on_used.get("recommendations") and _on_used.get("variants_enabled") is True,
        "тумблер включён и сцена по слотам — снова молчание, и состояние тумблера видно клиенту")
-    _on_unused = data_of(call("montage_render_scene", table="ch1/v1", scene_id="S02"),
+    _on_unused = data_of(rendered(table="ch1/v1", scene_id="S02"),
                          "сцена без слотов при включённом тумблере собирается")
     ok((_on_unused.get("recommendations") or [{}])[0].get("id") == "variants_enabled_but_unused",
        "включено, а сцена без слотов → второй совет: пробел готовности вместо числа")
@@ -320,7 +349,7 @@ else:
     refuses(lambda: call("montage_generate_scene", table="ch1/v1", scene_id="S08",
                          template_id="нет_такой"),
             "TEMPLATE_NOT_FOUND", "незнакомая заготовка отбивается и называет доступные")
-    refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S07"),
+    refuses(lambda: rendered(table="ch1/v1", scene_id="S07"),
             "SCENE_EMPTY", "разложенная заготовка без ассетов не рендерится молча: сказано, чего нет")
 
     print("\n  ── чистый скрипт сцены по требованию ──")
@@ -377,20 +406,20 @@ else:
         ok(True, f"враждебное имя сцены отбито до записи ({_evil.error.code})")
 
     print("\n  ── отказы ──")
-    refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S99"),
+    refuses(lambda: rendered(table="ch1/v1", scene_id="S99"),
             "SCENE_EMPTY", "сцены без элементов не рендерятся, а называются")
-    refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S01", profile_id="нет_такого"),
+    refuses(lambda: rendered(table="ch1/v1", scene_id="S01", profile_id="нет_такого"),
             "RENDER_PROFILE_INVALID", "профиль вне листа отбивается до запуска бинаря")
 
     book({**ELEMENTS, "E3": {**ELEMENTS["E1"], "element_id": "E3",
                              "asset_path": "../../../etc/passwd"}}, AUDIO)
-    refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S01"),
+    refuses(lambda: rendered(table="ch1/v1", scene_id="S01"),
             "PATH_ESCAPE", "путь ассета из книги проходит containment рабочей области")
 
     book({**ELEMENTS, "E4": {**ELEMENTS["E1"], "element_id": "E4", "speed": "быстро"}}, AUDIO)
-    refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S01"),
+    refuses(lambda: rendered(table="ch1/v1", scene_id="S01"),
             "VALIDATION_ERROR", "нечисло в числовой ячейке отбивается с именем строки и листа")
-    _said = call("montage_render_scene", table="ch1/v1", scene_id="S01").error.message
+    _said = rendered(table="ch1/v1", scene_id="S01").error.message
     ok("speed" in _said and "быстро" not in _said and "input_value" not in _said and "pydantic" not in _said,
        f"отказ ячейки называет поле и правило, а не значение и не текст pydantic ({_said[:80]!r})")
 
@@ -399,15 +428,24 @@ else:
     _bent = json.loads(_kept)
     _bent["RENDER_CONFIG"]["rows"]["P1"]["fps"] = -7
     _channel.write_text(json.dumps(_bent, ensure_ascii=False), encoding="utf-8")
-    _r = call("montage_render_scene", table="ch1/v1", scene_id="S01")
+    _r = rendered(table="ch1/v1", scene_id="S01")
     _channel.write_text(_kept, encoding="utf-8")
     _said = _r.error.message if _r.error else ""
     ok(_r.status == "error" and _r.error.code == "RENDER_PROFILE_INVALID" and "fps" in _said
        and "-7" not in _said and "input_value" not in _said and "pydantic" not in _said,
        f"негодный профиль называет поле и правило, а не значение и не текст pydantic ({_said[:80]!r})")
+    book(ELEMENTS, AUDIO)                       # сцена годна: отказать вправе только контейнер профиля
+    _boxed = json.loads(_kept)
+    _boxed["RENDER_CONFIG"]["rows"]["P1"]["container"] = "avi"
+    _channel.write_text(json.dumps(_boxed, ensure_ascii=False), encoding="utf-8")
+    _box = call("montage_render_scene", table="ch1/v1", scene_id="S01")
+    _channel.write_text(_kept, encoding="utf-8")
+    ok(_box.status == "error" and _box.error.code == "RENDER_PROFILE_INVALID" and "avi" in _box.error.message,
+       f"контейнер без muxer в словаре — отказ профиля этим же вызовом, до задания, а не упавшее задание "
+       f"({_box.error.code if _box.error else (_box.data or {}).get('status')})")
 
     book(ELEMENTS, AUDIO, meta={"video_id": "VID1"})
-    _no_choice = call("montage_render_scene", table="ch1/v1", scene_id="S01")
+    _no_choice = rendered(table="ch1/v1", scene_id="S01")
     ok(_no_choice.status == "success",
        "профиль в книге один — видео вправе его не называть")
 
@@ -448,22 +486,73 @@ else:
     ok("x='(40)+(20)'" in _graph5 and "y='(60)+(10)'" in _graph5,
        "координаты ребёнка СЛОЖЕНЫ с родительскими, а не заданы заново")
 
-    _track_render = call("montage_render_scene", table="ch1/v1", scene_id="S05")
+    _track_render = rendered(table="ch1/v1", scene_id="S05")
     ok(_track_render.status == "success" and _track_render.data["elements"] == 4,
        f"сцена с дорожками собирается целиком ({_track_render.data.get('elements')} слоёв)")
 
     book({**TRACK, "T3": {**TRACK["T3"], "variant_id": "emo_huge"}}, AUDIO)
-    refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S05"),
+    refuses(lambda: rendered(table="ch1/v1", scene_id="S05"),
             "VARIANT_INCOMPATIBLE", "вариант больше рамки родителя не примеряется")
     book({**TRACK, "T3": {**TRACK["T3"], "variant_id": "emo_side"}}, AUDIO)
-    refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S05"),
+    refuses(lambda: rendered(table="ch1/v1", scene_id="S05"),
             "VARIANT_INCOMPATIBLE", "ключ оси не совпал с родителем — сочетание отбито до рендера")
     book({**TRACK, "T3": {**TRACK["T3"], "variant_id": "нет_такого"}}, AUDIO)
-    refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S05"),
+    refuses(lambda: rendered(table="ch1/v1", scene_id="S05"),
             "RENDER_INPUT_UNPREPARED", "висячая ссылка на вариант каталога отбивается, а не игнорируется")
     book({**TRACK, "T2": {**TRACK["T2"], "x": 15}}, AUDIO)
-    refuses(lambda: call("montage_render_scene", table="ch1/v1", scene_id="S05"),
+    refuses(lambda: rendered(table="ch1/v1", scene_id="S05"),
             "VALIDATION_ERROR", "кадры дорожки в разных точках отбиваются: слот двигается целиком")
+    book(ELEMENTS, AUDIO)
+
+    print("\n  ── рендер — задание узла: ответ, повтор, правка входа, снятие ──")
+    from core.jobs import Tasks as _Tasks
+
+    def _ledger_rows() -> dict:
+        """Строки листа рендеров; листа нет (книга переписана `book`) — строк нет."""
+        return ((SM.read_snapshot("ch1/v1") or {}).get(MONTAGE["target"]["sheet"]) or {}).get("rows") or {}
+
+    _node_out = {"table": "ch1/v1", "scene_id": "S02", "output": "ch1/v1/renders/node_s02.mp4"}
+    _started = call("montage_render_scene", **_node_out)
+    _st = data_of(_started, "рендер начат заданием")
+    # Обновлено после сдачи шага 1 (слово ee, форма 09): у идущего задания факт-предмет вызова — RenderStarted.
+    ok(bool(_st.get("task_id")) and _st.get("status") in ("pending", "processing")
+       and "task_status" in _st.get("next", "")
+       and [(f.type, f.data.get("task_id")) for f in _started.facts] == [("RenderStarted", _st.get("task_id"))],
+       f"ответ вызова — статус задания и путь к итогу, а не файл: рендер идёт в фоне, факт-предмет — RenderStarted "
+       f"({_st.get('status')}, {[f.type for f in _started.facts]})")
+    ok(rendered(**_node_out).status == "success", "итог задания — файл, принятый ffprobe")
+    _rows_before = len(_ledger_rows())
+    _again = data_of(call("montage_render_scene", **_node_out), "повтор того же вызова")
+    ok(_again.get("task_id") == _st.get("task_id") and _again.get("status") == "completed"
+       and len(_ledger_rows()) == _rows_before,
+       f"повтор того же вызова при тех же входах — то же задание (AD-21): второго рендера и второй строки нет "
+       f"({_again.get('status')}, строк {len(_ledger_rows())} из {_rows_before})")
+    _bg_file = WS / "ch1/v1/assets/bg.png"
+    _bg_seen = _bg_file.stat()
+    os.utime(_bg_file, ns=(_bg_seen.st_atime_ns, _bg_seen.st_mtime_ns + 10 ** 9))
+    _changed = data_of(call("montage_render_scene", **_node_out), "вызов после правки входа")
+    ok(_changed.get("task_id") not in (None, _st.get("task_id")),
+       "вход перегенерирован (время правки сдвинулось) — новое задание, а не старый файл")
+    rendered(**_node_out)
+
+    book({**ELEMENTS, "E8": {"element_id": "E8", "scene_id": "S09", "element_role": "layer_bg",
+                             "asset_path": "ch1/v1/assets/bg.png", "z_index": 0, "time_end": 600}}, AUDIO)
+    _long = data_of(call("montage_render_scene", table="ch1/v1", scene_id="S09"), "долгий рендер начат")
+    _framed, _deadline = 0, time.monotonic() + 30
+    while not _framed and time.monotonic() < _deadline:    # снимать посреди работы: остаток уже пишется на диск
+        _seen = ((call("task_status", task_ids=[_long.get("task_id")]).data or {}).get("tasks") or [{}])[0]
+        _framed = (((_seen.get("task") or {}).get("progress")) or {}).get("frame") or 0
+        time.sleep(0.05)
+    _gone = ((call("task_cancel", task_ids=[_long.get("task_id")]).data or {}).get("tasks") or [{}])[0]
+    _ended = _Tasks(ENG).settle(str(_long.get("task_id")), 60).get("task") or {}
+    ok((_gone.get("task") or {}).get("status") == "cancelled" and _ended.get("status") == "cancelled"
+       and not any("S09" in str(row) for row in _ledger_rows().values()),
+       f"снятие долгого рендера — cancelled, процесс ffmpeg снят, строки результата нет ({_ended.get('status')})")
+    _s09 = WS / "ch1/v1" / MONTAGE["output"]["dir"] / f"S09_{MONTAGE['target']['stage']}.mp4"
+    _left = sorted(p.name for p in _s09.parent.glob(f"{_s09.name}*")) if _s09.parent.exists() else []
+    ok(_framed > 0 and not _left,
+       f"снятие посреди рендера (кадров уже {_framed}) — по пути выхода ничего: ни недописанного файла, ни остатка "
+       f"({_left})")
     book(ELEMENTS, AUDIO)
 
     print("\n  ── профиль и строка результата поштучно ──")

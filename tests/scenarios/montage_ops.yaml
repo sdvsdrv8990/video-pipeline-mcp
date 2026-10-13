@@ -1,7 +1,14 @@
 # Монтаж (план `19`) проверяется здесь ЦЕПОЧКОЙ ОТКАЗОВ: каждый называет ровно ту недостающую
 # часть, без которой сборка невозможна. Это и есть контракт, с которым ИИ встречается на неготовом
-# проекте, — и он обязан быть адресным, а не «не получилось». Рендер с настоящими ассетами требует
-# бинаря и весов, поэтому happy-path живёт в наборе монтажа, а здесь — то, что от них не зависит.
+# проекте, — и он обязан быть адресным, а не «не получилось».
+#
+# Обновлено в цепочке 5а (2026-10-13, 09): рендер стал заданием узла (66) — вызов отвечает статусом задания, итог
+# (файл, принятый ffprobe, строка листа рендеров, факт RenderCompleted) приходит в task_status. Этот контракт провода
+# сценарием не судился: прежде happy-path жил только в наборе монтажа (в процессе, мимо провода) с доводом «нужен
+# бинарь». Довод снят фактом: CI ставит ffmpeg на всех ОС и запрещает пропуск (`VPM_FFMPEG_REQUIRED`). Добавлен
+# сценарий рендера-задания на ассетах-PNG, засеянных шагом. Роды: positive — вызов сразу отдаёт задание, ожидание
+# смены статуса доводит его до completed с принятым файлом и фактом, файл читается по пути из итога; negative —
+# прежняя цепочка отказов входа (без изменений). Прогноз до замера: зелёный на машине с ffmpeg.
 - scenario: mnt_refusals_name_what_is_missing
   why: рендер пустой сцены обязан сказать, ЧЕГО нет, а не молчать или падать
   given:
@@ -19,3 +26,78 @@
     - call: montage_generate_scene
       with: {table: ch1/v1, scene_id: S01, template_id: несуществующий}
       expect: {ok: false, code: TEMPLATE_NOT_FOUND}
+
+- scenario: mnt_render_runs_as_task_until_a_verified_file
+  why: рендер — задание узла — вызов сразу отдаёт задание, итог (файл, принятый ffprobe, и факт) приходит в
+       task_status по смене статуса; клиент ждёт событие, а не держит вызов
+  given:
+    files:
+      ch1/read.json: |
+        {"RENDER_CONFIG": {"schema": {}, "rows": {
+            "P1": {"profile_id": "test_16x9", "codec": "h264", "resolution": "640x360", "aspect_ratio": "16:9",
+                   "fps": 25, "crf": 30, "container": "mp4", "subtitles_mode": "TRACK"}}},
+         "SCENE_PROFILE": {"schema": {}, "rows": {
+            "R1": {"fragment_type": "layer_bg", "enabled": true, "fills_frame": true},
+            "R2": {"fragment_type": "layer_character", "enabled": true, "fills_frame": false}}},
+         "CHARACTER_SLOTS": {"schema": {}, "rows": {
+            "S1": {"slot_id": "body", "character_id": "hero", "slot_role": "BODY", "parent_slot": "",
+                   "compat_axis": "view", "anchor_x": 40, "anchor_y": 60, "bounds_w": 60, "bounds_h": 60,
+                   "z_offset": 0, "default_fade_sec": 0.3},
+            "S2": {"slot_id": "face", "character_id": "hero", "slot_role": "FACE", "parent_slot": "body",
+                   "compat_axis": "view", "anchor_x": 20, "anchor_y": 10, "bounds_w": 0, "bounds_h": 0,
+                   "z_offset": 2, "default_fade_sec": 0.12}}},
+         "ASSET_VARIANTS": {"schema": {}, "rows": {
+            "V1": {"variant_id": "pose_idle", "slot_id": "body", "label": "спокойно", "compat_key": "front",
+                   "asset_path": "ch1/assets/pose.png", "width": 60, "height": 60, "status": "ACTIVE"},
+            "V3": {"variant_id": "emo_smile", "slot_id": "face", "label": "улыбка", "compat_key": "front",
+                   "asset_path": "ch1/assets/face.png", "width": 20, "height": 20, "status": "ACTIVE"}}}}
+      ch1/v2/read.json: |
+        {"META": {"schema": {}, "rows": {"M1": {"video_id": "VID1", "render_profile": "test_16x9"}}},
+         "SCENE_ELEMENTS": {"schema": {}, "rows": {
+            "T1": {"element_id": "T1", "scene_id": "S05", "element_role": "layer_character", "slot_id": "body",
+                   "variant_id": "pose_idle", "z_index": 1, "time_end": 3.0},
+            "T3": {"element_id": "T3", "scene_id": "S05", "element_role": "layer_component", "slot_id": "face",
+                   "variant_id": "emo_smile", "z_index": 2, "time_end": 3.0}}},
+         "SCENE_AUDIO": {"schema": {}, "rows": {}}}
+  when:
+    - python: seed_png
+      with: {path: ch1/assets/pose.png, width: 60, height: 60}
+      expect: {ok: true}
+    - python: seed_png
+      with: {path: ch1/assets/face.png, width: 20, height: 20}
+      expect: {ok: true}
+    - call: montage_render_scene
+      with: {table: ch1/v2, scene_id: S05}
+      as: render
+      expect:
+        ok: true
+        facts: [RenderStarted]
+        data_contains: {next: task_status}
+    - python: await_task
+      with: {task_id: "${render.task_id}"}
+      as: done
+      expect:
+        ok: true
+        data: {task.status: completed, task.result.file_verified: true, task.result.frame: 640x360,
+               task.result.facts.0.type: RenderCompleted}
+    # Наблюдение RenderStarted так, как его объявляет tests/harness/observations.yaml: предмет — задание.
+    - call: task_status
+      with: {task_ids: ["${render.task_id}"]}
+      expect:
+        ok: true
+        data: {tasks.0.task.status: completed}
+    - call: task_status
+      with: {task_ids: ["000000000000"]}
+      expect:
+        ok: true
+        task_error: {in: element, code: TASK_NOT_FOUND}
+    # Наблюдение RenderCompleted так, как его объявляет tests/harness/observations.yaml.
+    - call: fs_get_directory_tree
+      with: {path: "${done.task.result.file_path}"}
+      expect: {ok: true, facts: [DirectoryTree]}
+    - python: remove_path
+      with: {path: "${done.task.result.file_path}"}
+      expect: {ok: true}
+    - call: fs_get_directory_tree
+      with: {path: "${done.task.result.file_path}"}
+      expect: {ok: false, code: PATH_NOT_FOUND}

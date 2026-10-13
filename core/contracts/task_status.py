@@ -2,8 +2,8 @@
 
 Зовут: contracts.
 
-Клиент опрашивает задачу сам: сервер не держит соединение и не шлёт события, поэтому состояние
-обязано читаться в любой момент отдельным вызовом.
+Клиент опрашивает задачу сам или ждёт смены статуса: состояние обязано читаться в любой момент отдельным вызовом, а
+о ходе живой задачи — её факты (`last_work_at`, `idle_sec`), без вердикта сервера по часам.
 """
 
 from pydantic import BaseModel, model_validator
@@ -18,22 +18,29 @@ class TaskStatus(BaseModel):
     заводилась: исход известен сразу (например, «уже стоит»), прозванивать нечего."""
 
     task_id: str | None
-    status: Literal["pending", "processing", "completed", "failed"]
+    status: Literal["pending", "processing", "completed", "failed", "cancelled"]
     params: dict | None = None
     progress: dict | None = None
     result: dict | None = None
     error: ErrorDetail | None = None
+    last_work_at: str | None = None     # живая задача: последний признак работы, ISO 8601 UTC
+    idle_sec: int | None = None         # живая задача: сколько секунд признака работы нет на момент ответа
 
     @model_validator(mode="after")
     def _check_invariant(self) -> "TaskStatus":
-        """Инвариант status ↔ error/result."""
-        if self.status == "failed" and self.error is None:
-            raise ValueError("status='failed' requires error to be set")
+        """Инвариант status ↔ error/result: отказ и снятие несут причину в `error`, готово — `result`."""
+        if self.status in ("failed", "cancelled") and self.error is None:
+            raise ValueError(f"status='{self.status}' requires error to be set")
         if self.status == "completed" and self.result is None:
             raise ValueError("status='completed' requires result to be set")
+        if self.status == "cancelled":
+            self.result = None
         if self.status in ("pending", "processing"):
             self.error = None
             self.result = None
+        else:
+            self.last_work_at = None
+            self.idle_sec = None
         return self
 
 

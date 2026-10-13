@@ -19,6 +19,8 @@ import random
 import re
 import secrets
 import socket
+import stat
+import sys
 import time
 import urllib.request
 from email.utils import parsedate_to_datetime
@@ -39,6 +41,19 @@ PARTIAL = 206                                           # часть по Range 
 REFUSED_FROM = 400                                      # 4xx и 5xx — отказ клиента и сервера (RFC 9110 §15.5–15.6)
 PORTS = {"https": 443, "http": 80}
 DIGEST_BLOCK = 2**20                                    # отметка работы на каждый МиБ сверки: 30 мс на медленном диске
+
+if sys.platform == "win32":
+    def _unfollowed(part: Path) -> int:
+        """Дозапись без ссылки там, где O_NOFOLLOW нет (он — только Unix): ссылка на месте остатка (lstat) или подмена
+        между проверкой и открытием (fstat ≠ lstat) — ELOOP, как у O_NOFOLLOW. O_BINARY — без перевода строк CRT."""
+        if part.is_symlink():
+            raise OSError(errno.ELOOP, "ссылка на месте остатка", str(part))
+        fd = os.open(part, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_BINARY, 0o666)
+        opened, there = os.fstat(fd), os.lstat(part)
+        if stat.S_ISLNK(there.st_mode) or (opened.st_dev, opened.st_ino) != (there.st_dev, there.st_ino):
+            os.close(fd)
+            raise OSError(errno.ELOOP, "остаток подменён ссылкой при открытии", str(part))
+        return fd
 
 
 def inner_address(raw: str) -> bool:
@@ -282,6 +297,8 @@ class Fetcher(Generic[P]):
         """Дескриптор дозаписи своего остатка, не проходя ссылку на его месте (FS-14): ссылку снимает `drop`, сама
         жертва цела, вызов — отказ; повтор начнёт с нуля."""
         try:
+            if sys.platform == "win32":
+                return _unfollowed(part)
             return os.open(part, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o666)
         except OSError as e:
             if e.errno != errno.ELOOP:
@@ -409,8 +426,7 @@ class Fetcher(Generic[P]):
                              facts={"host": host, "got": got, "expected": "—" if expected is None else expected})
 
     def silence_sec(self) -> float:
-        """Наибольшая тишина между отметками работы — свойство политики (`RequestPolicy.silence_sec`): её же судит схема
-        раздела установки против `progress.stale_after_sec`."""
+        """Наибольшая тишина между отметками работы — свойство политики (`RequestPolicy.silence_sec`)."""
         return self.policy.silence_sec
 
     def take(self, response, files: Files, path, owner: str, *, host: str, size: int | None = None,

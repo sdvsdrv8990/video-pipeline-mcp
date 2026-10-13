@@ -80,3 +80,28 @@
   xray:
     в_дереве: /opt/vpm-tunnel/xray
     версия: ["version"]
+
+# Готовый бинарь клиентского конца: ставит scripts/fetch_tunnel_binary.py (зовёт install.sh) дверью загрузки
+# core/providers/download.Fetcher в путь `в_дереве` бинаря `binary` из `бинари`. Схема — core/declaration_schemas.py
+# TunnelBinaryFetch; имя поставщика — только здесь, в каталоге.
+загрузка_клиента:
+  binary: cloudflared
+  url: "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-{system}-{arch}"
+  systems: {Linux: linux}                 # platform.system() → имя поставщика; macOS отдаётся архивом — вручную
+  arches: {x86_64: amd64, amd64: amd64, aarch64: arm64, arm64: arm64}   # platform.machine() → имя поставщика
+  fetch:
+    schemes: [https]
+    hosts: [github.com, release-assets.githubusercontent.com]   # релиз «latest» → версия → хранилище файлов
+    block_private: true
+    max_bytes: 0
+    timeout_sec: 60
+    redirects: 5
+    attempts: 5
+    backoff_sec: 2
+    backoff_max_sec: 60
+    retry_after_max_sec: 120
+    jitter: 0.1
+    speed_floor_bytes_per_sec: 0
+    speed_window_sec: 30
+    retry_on: [429, 500, 502, 503, 504]
+    codes: {failed: TUNNEL_BINARY_SOURCE_FAILED, corrupt: TUNNEL_BINARY_CORRUPT}

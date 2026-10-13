@@ -609,8 +609,8 @@ class ModelCatalog:
         """Скачать части плана, записать состав в опись и судить по отпечатку: расхождение — отказ кодом причины.
 
         Модель ставит одна установка на все процессы (MF-10): замок по владельцу её остатков. Занят — ждём, пока держатель
-        не отпустит; с `pulse` — пока работа не молчит дольше объявленного (`pulse.quiet`, суд узла заданий), иначе
-        отказ простоя (`pulse.stall`). Дождались — план пересуживается под замком по длине, как в `место_под`: части,
+        не отпустит (умер — замок снимает ядро); с `pulse` — пока задание не снято (`pulse.cancelled`), снято — отказ
+        снятия (`pulse.refusal`). Дождались — план пересуживается под замком по длине, как в `место_под`: части,
         поставленные держателем, второй раз не качаются (`force` — все части). `held()` — замок взят. Порядок замков:
         модель → опись. Состав ложится в опись и при отказе загрузчика: `pull` знает, что чинить, и докачивает свой
         остаток (MF-04). `mark()` — признак работы для наблюдателя: загрузка и сверка отмечают себя по ходу.
@@ -621,9 +621,9 @@ class ModelCatalog:
         except Timeout:
             progress("жду замок модели: её ставит другая установка")
             try:
-                hold = lock.acquire(timeout=-1, cancel_check=pulse.quiet if pulse else None)
+                hold = lock.acquire(timeout=-1, cancel_check=pulse.cancelled.is_set if pulse else None)
             except Timeout:
-                raise pulse.stall() from None
+                raise pulse.refusal() from None
             if not force:
                 parts = self.judge(entry)["plan"]
         with hold:
@@ -653,23 +653,13 @@ class ModelCatalog:
         return Fetcher(self._decl.section(*MODEL_FETCH.section, schema=MODEL_FETCH.schema), transport=self.transport,
                        resolve=self.resolve, mark=mark, slot=MODEL_FETCH)
 
-    def silence_sec(self) -> float:
-        """Наибольшая тишина загрузчика весов между признаками работы — простой обязан быть длиннее (`Fetcher.silence_sec`)."""
-        return self.fetcher().silence_sec()
-
     def speed(self) -> dict:
-        """Мера работы тела из политики загрузчика весов (NI-01): та же пара судит приём и простой установки."""
+        """Мера работы тела из политики загрузчика весов (NI-01): та же пара судит приём и признак работы установки."""
         policy = self.fetcher().policy
         return {"floor": policy.speed_floor_bytes_per_sec, "window": policy.speed_window_sec}
 
-    @property
-    def declaration(self) -> Declaration:
-        """Дверь `providers.yaml` каталога — для отказа связи с ключами другой декларации (судит потребитель обоих)."""
-        return self._decl
-
     def install_policy(self) -> InstallPolicy:
-        """Раздел `local.install` — объект схемы двери: простой длиннее законной тишины загрузчика судит схема, битый
-        раздел — отказ кодом двери с путём ключа."""
+        """Раздел `local.install` — объект схемы двери: битый раздел — отказ кодом двери с путём ключа."""
         return self._decl.section(*MODEL_INSTALL.section, schema=MODEL_INSTALL.schema)
 
     @staticmethod

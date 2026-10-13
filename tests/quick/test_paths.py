@@ -445,6 +445,48 @@ def main():
     check("предел записи строкой в объявлении — DECLARATION_INVALID через путь доставки, файла нет",
           getattr(said, "code", None) == "DECLARATION_INVALID" and "write_bytes" in said.message
           and not (ws / "тип.md").exists(), said)
+
+    print("== остаток записи на платформе без chmod по дескриптору (Windows до 3.13) и отказ посреди записи ==")
+    real_supports, real_fsync, real_fchmod = os.supports_fd, os.fsync, os.fchmod
+    os.supports_fd = real_supports - {os.chmod}
+    del os.fchmod  # факты Windows до 3.13: ни fchmod, ни chmod по дескриптору
+    fds_before, modes = len(os.listdir("/proc/self/fd")), []
+    try:
+        said = refused(lambda: modes.extend(first_bytes(lambda: files.create("win/ключ.key", "секрет", mode=0o600))))
+    finally:
+        os.supports_fd, os.fchmod = real_supports, real_fchmod
+    check("без chmod по дескриптору права ставятся по пути — 0o600 уже в момент первого байта",
+          said is None and modes == [0o600], (said, modes))
+    check("и дескриптор не теряется", len(os.listdir("/proc/self/fd")) == fds_before,
+          (fds_before, len(os.listdir("/proc/self/fd"))))
+
+    def _fsync_fails(fd):
+        raise OSError(5, "сбой диска в пробе")
+
+    fds_before = len(os.listdir("/proc/self/fd"))
+    os.fsync = _fsync_fails
+    try:
+        said = refused(lambda: files.create("win/сбой.key", "x", mode=0o600))
+    finally:
+        os.fsync = real_fsync
+    check("отказ посреди записи: остатка нет, имени нет — удаление после закрытия файла (Windows не удаляет открытый)",
+          leftovers(ws / "win") == [] and not (ws / "win" / "сбой.key").exists(), leftovers(ws / "win"))
+    check("отказ посреди записи не теряет дескриптор", len(os.listdir("/proc/self/fd")) == fds_before,
+          (fds_before, len(os.listdir("/proc/self/fd")), said))
+
+    had_binary, real_open, opened = hasattr(os, "O_BINARY"), os.open, []
+    if not had_binary:
+        os.O_BINARY = 0x8000  # факт Windows: флаг двоичного режима CRT существует
+    os.open = lambda path, flags, *a: (opened.append(flags), real_open(path, flags & ~os.O_BINARY, *a))[1]
+    try:
+        files.create("win/двоичный.key", "a\nb", mode=0o600)
+    finally:
+        os.open = real_open
+        if not had_binary:
+            del os.O_BINARY
+    check("где есть O_BINARY, остаток открыт в двоичном режиме — запись не переводит \\n в \\r\\n",
+          any(f & os.O_CREAT for f in opened) and all(f & 0x8000 for f in opened if f & os.O_CREAT),
+          [hex(f) for f in opened])  # открытие каталога для сброса на диск (O_RDONLY) — не запись, флага не требует
     shutil.rmtree(ws, ignore_errors=True)
 
     print(f"\n{'=' * 50}")

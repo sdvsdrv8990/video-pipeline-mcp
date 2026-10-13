@@ -11,6 +11,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.environment import child_spawn
+
 from .errors import FfmpegError
 
 PROBE_TIMEOUT_SEC = 60
@@ -44,9 +46,13 @@ def raw(path: Path, probe: str = "ffprobe") -> dict:
         raise FfmpegError(
             "FILE_NOT_FOUND", f"Файл не найден: {path}",
             reason="Путь берётся из книги; проверь, что ассет создан и лежит там, где записано.")
-    out = subprocess.run(
-        [binary(probe), "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
-        capture_output=True, text=True, timeout=PROBE_TIMEOUT_SEC)
+    try:
+        out = subprocess.run(
+            [binary(probe), "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
+            capture_output=True, timeout=PROBE_TIMEOUT_SEC, **child_spawn("strict"))
+    except UnicodeDecodeError as exc:       # разбираемый ответ: битые байты — громкий отказ, а не подмена знаком
+        raise FfmpegError("RENDER_UNVERIFIED", f"ffprobe ответил неразбираемым: {path}",
+                          reason=f"ответ ffprobe не в utf-8 (байт {exc.start})") from exc
     if out.returncode != 0:
         raise FfmpegError(
             "RENDER_INPUT_UNPREPARED", f"ffprobe не разбирает файл: {path}",
@@ -79,9 +85,18 @@ def facts(path: Path, probe: str = "ffprobe") -> MediaFacts:
                       has_video=video is not None, has_audio=audio is not None)
 
 
+@dataclass(frozen=True)
+class Accepted:
+    """Принятый результат: длительность и кадр, подтверждённые ffprobe, — без неизвестных."""
+
+    duration_sec: float
+    width: int
+    height: int
+
+
 def accept(path: Path, expect_duration: float | None, expect_size: tuple[int, int] | None,
-           tolerance_sec: float = 0.5, probe: str = "ffprobe") -> MediaFacts:
-    """Приёмка результата: поток, ненулевая длительность и обещанная профилем геометрия."""
+           tolerance_sec: float = 0.5, probe: str = "ffprobe") -> Accepted:
+    """Приёмка результата: поток, ненулевая длительность, названный и обещанный профилем кадр."""
     got = facts(path, probe)
     if not got.has_video:
         raise FfmpegError("RENDER_UNVERIFIED", f"В результате нет видеопотока: {path}",
@@ -89,6 +104,9 @@ def accept(path: Path, expect_duration: float | None, expect_size: tuple[int, in
     if not got.duration_sec:
         raise FfmpegError("RENDER_UNVERIFIED", f"Длительность результата нулевая: {path}",
                           reason="Пустой файл проходит как успех только до первого просмотра.")
+    if got.width is None or got.height is None:
+        raise FfmpegError("RENDER_UNVERIFIED", f"Кадр результата ffprobe не назвал: {path}",
+                          reason="Без размера кадра геометрию не сверить — успех был бы на слово.")
     if expect_duration and abs(got.duration_sec - expect_duration) > tolerance_sec:
         raise FfmpegError(
             "RENDER_UNVERIFIED", f"Длительность разошлась с замыслом: {got.duration_sec:.2f} с вместо "
@@ -99,4 +117,4 @@ def accept(path: Path, expect_duration: float | None, expect_size: tuple[int, in
             "RENDER_UNVERIFIED", f"Кадр {got.width}x{got.height} вместо обещанного профилем "
             f"{expect_size[0]}x{expect_size[1]}.",
             reason="Геометрию задаёт профиль рендера; расхождение ломает склейку сцен.")
-    return got
+    return Accepted(duration_sec=got.duration_sec, width=got.width, height=got.height)

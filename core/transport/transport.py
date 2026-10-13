@@ -111,7 +111,8 @@ class Transport:
         # выражается ОТСУТСТВИЕМ поля, а не `null` (иначе валидатор провода красит ответ).
         if result.status == "success":
             payload: dict[str, Any] = {
-                "content": [{"type": "text", "text": json.dumps(result.data or {})}]}
+                # Текст — как есть: экранирование \uXXXX клиент видит буквально, и кириллица стоит ему 6 символов.
+                "content": [{"type": "text", "text": json.dumps(result.data or {}, ensure_ascii=False)}]}
             if result.facts:
                 payload["structuredContent"] = {"facts": [f.model_dump() for f in result.facts]}
             return self._success_response(request_id, payload)

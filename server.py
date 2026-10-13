@@ -23,8 +23,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from core.contracts import ContractError
 from core.declaration import Declaration, Declared, declarations_root, instance_home, workspace_root
-from core.declaration_schemas import RESOURCES, Resources
+from core.declaration_schemas import RESOURCES, TRANSPORT, Resources, TransportDeclaration
 from core.engine import Engine
+from core.environment import child_spawn
 from core.observability import Logs, wire
 from core.firewall import Firewall, FirewallRequest, FirewallDecision
 from core.transport import Transport
@@ -123,17 +124,21 @@ def _load_resources(path: Path) -> Resources:
                     f"Заведи config/{path.name} — по нему тяжёлые вызовы снимаются с цикла.", schema=RESOURCES.schema).model
 
 
+def _load_transport(path: Path) -> TransportDeclaration:
+    """Обещания провода — по схеме у двери: битая декларация — отказ при старте, а не прежний список молча."""
+    return Declared(path, ContractError, "«transport»",
+                    f"Заведи config/{path.name} — по нему сервер решает, кто может звать его из браузера.",
+                    schema=TRANSPORT.schema).model
+
+
 def create_server() -> tuple[Engine, Transport, Firewall]:
     """Создание и настройка сервера."""
-    # Конфиг файрвола обязан ЗАГРУЖАТЬСЯ: объявленный, но не прочитанный файл
-    # оставил бы правила дефолтными молча.
-    firewall_config = _load_yaml(CONFIG_PATH / "firewall.yaml")
-
     # Реестр реакций подключается к движку — иначе он лишь объект в памяти,
     # а ошибки уходят наружу без class/recovery.
     reactions = Reactions(CONFIG_PATH / "server_reactions.yaml")
 
-    firewall = Firewall(firewall_config)
+    # Файрвол — по декларации через дверь: битый раздел лимита — отказ старта с путём ключа, а не правила по умолчанию.
+    firewall = Firewall.declared(CONFIG_PATH / "firewall.yaml")
     id_generator = IDGenerator()
     # Журналы под одним объявленным корнем: след вызовов (без него отказ в живой сессии не оставляет условий, по которым
     # его повторяют) и журнал фактов — его state_manager пишет по фактам, которые ему передаёт движок.
@@ -174,13 +179,13 @@ def register_basic_tools(engine: Engine, id_generator: IDGenerator, state_manage
     tasks.register(engine, ctx)
 
 
-def _origin_allowed(origin: str) -> bool:
-    """Источник страницы: петля всегда, объявленный список — вдобавок к ней.
+def _origin_admitted(origin: str, allowed: tuple[str, ...]) -> bool:
+    """Источник страницы: петля всегда, `allowed` — вдобавок к ней (объявленные в transport.yaml и MCP_ALLOWED_ORIGINS).
 
     Петлевой Origin удалённый сайт подделать не может — браузер ставит его по адресу самой
     страницы, и DNS-rebinding оставляет там имя атакующего. Спека требует петлю принимать.
     """
-    if origin in ALLOWED_ORIGINS:
+    if origin in allowed:
         return True
     return (urlsplit(origin).hostname or "\x00") in {h.strip("[]") for h in _LOOPBACK_HOSTS}
 
@@ -193,16 +198,17 @@ def _report_origin(origin: str) -> None:
               f"(разрешить — MCP_ALLOWED_ORIGINS)")
 
 
-def _jsonrpc_error(request_id, code: int, message: str) -> dict:
-    """Сборка JSON-RPC ошибки (для транспортного уровня)."""
-    return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+def _jsonrpc_refusal(request_id, code: int, detail: dict) -> dict:
+    """Отказ до диспетчера в конверте JSON-RPC: число — протоколу, `data` — ErrorDetail реестра (код, класс, рецепт,
+    факты), та же форма, что `error` в ответе инструмента."""
+    return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": detail["message"], "data": detail}}
 
 
 
 def _port_holder(port: int) -> str:
     """Кто слушает порт — именем и pid. Не удалось узнать — молчим, а не выдумываем."""
     try:
-        готово = subprocess.run(["ss", "-ltnp"], capture_output=True, text=True, timeout=5)
+        готово = subprocess.run(["ss", "-ltnp"], capture_output=True, timeout=5, **child_spawn("replace"))
     except (OSError, subprocess.SubprocessError):
         return ""
     for строка in готово.stdout.splitlines():
@@ -246,6 +252,8 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
 
     # Битое объявление туннеля — отказ старта: сервер, отвечающий 403 на каждый запрос через туннель, хуже неподнятого.
     allowed_hosts = _allowed_hosts()
+    # Кто может звать из браузера: объявленные источники провода и добавка машины из среды.
+    origins = (*_load_transport(CONFIG_PATH / TRANSPORT.file).origins.allowed, *ALLOWED_ORIGINS)
     engine, transport, firewall = create_server()
 
     print("=== MCP-сервер видеопайплайна ===")
@@ -254,8 +262,8 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
     print(f"Workspace: {WORKSPACE_PATH}")
     print(f"Инструментов: {len(engine.tools)}")
     print(f"Файрвол: активен (config: {'загружен' if (CONFIG_PATH / 'firewall.yaml').exists() else 'дефолт'})")
-    print(f"Браузер: Origin петлевой{' + ' + ', '.join(ALLOWED_ORIGINS) if ALLOWED_ORIGINS else ''}"
-          f" (MCP_ALLOWED_ORIGINS), без Origin — пускаем, тело только {JSON_CONTENT_TYPE}")
+    print(f"Браузер: Origin петлевой{' + ' + ', '.join(origins) if origins else ''}"
+          f" (transport.yaml, MCP_ALLOWED_ORIGINS), без Origin — пускаем, тело только {JSON_CONTENT_TYPE}")
     if ALLOW_NO_AUTH:
         print("Аутентификация: ⚠ ОТКЛЮЧЕНА (MCP_ALLOW_NO_AUTH=1) — только локальная разработка")
     else:
@@ -265,16 +273,20 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
 
     from aiohttp import web
 
-    def _refuse(level: str, rpc_code: int, message: str, status: int, request: "web.Request",
-                request_id=None, rpc: str = "", headers: dict | None = None) -> "web.Response":
+    def _refuse(level: str, code: str, rpc_code: int, status: int, request: "web.Request", facts: dict | None = None,
+                note: str = "", request_id=None, rpc: str = "", headers: dict | None = None) -> "web.Response":
         """Отказ до диспетчера: пишем в след и отвечаем. Одна точка на все уровни.
 
         Веток отказа тут почти десяток, и запись в каждой держалась бы дисциплиной — десятую
         допишут без неё. Уровень записывается явно: на периметре сервер ещё не понял запрос как
-        MCP, и воспроизводится такой отказ формой соединения, а не именем инструмента.
+        MCP, и воспроизводится такой отказ формой соединения, а не именем инструмента. Текст, класс и
+        рецепт — реестр по коду, тем же переводом, что у инструмента; число JSON-RPC остаётся протоколу.
+        `note` — причина для следа владельца (в ней адрес клиента), в ответ она не идёт.
         """
+        detail = engine.failure(level, ContractError(code, facts=facts)).error
+        assert detail is not None
         if engine.trail is not None:
-            engine.trail.refusal(level, f"RPC_{rpc_code}", message, rpc=rpc, args={
+            engine.trail.refusal(level, code, note or detail.message, rpc=rpc, args={
                 "Host": request.headers.get("Host", ""),
                 "Origin": request.headers.get("Origin", ""),
                 "Content-Type": request.headers.get("Content-Type", ""),
@@ -282,8 +294,8 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
                 "X-Api-Key": request.headers.get("X-Api-Key", ""),
                 "ip": request.remote or "",
             })
-        return web.json_response(_jsonrpc_error(request_id, rpc_code, message),
-                                 status=status, headers=headers or {})
+        data = {key: value for key, value in detail.model_dump().items() if value is not None}
+        return web.json_response(_jsonrpc_refusal(request_id, rpc_code, data), status=status, headers=headers or {})
 
     async def handle_jsonrpc(request: "web.Request") -> "web.Response":
         """Обработка JSON-RPC запросов: Origin → Auth → Firewall → Transport."""
@@ -294,40 +306,40 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
         # значит верить отправителю в выборе, какое из имён считать нашим.
         if "," in host or (host.rsplit(":", 1)[0].strip("[]") not in {h.strip("[]") for h in allowed_hosts}
                            and host not in allowed_hosts):
-            return _refuse("perimeter", -32002, "Forbidden host", 403, request)
+            return _refuse("perimeter", "HOST_FORBIDDEN", -32002, 403, request)
 
         # Origin проверяется всегда, когда он есть. Отсутствие заголовка = не браузер:
         # кросс-доменный запрос без Origin браузер отправить не может, а CSRF простым запросом
         # отбивает требование application/json ниже.
         origin = request.headers.get("Origin")
-        if origin is not None and not _origin_allowed(origin):
+        if origin is not None and not _origin_admitted(origin, origins):
             _report_origin(origin)
-            return _refuse("perimeter", -32002, "Forbidden origin", 403, request)
+            return _refuse("perimeter", "ORIGIN_FORBIDDEN", -32002, 403, request)
 
         # Чужой тип тела = запрос, который браузер отправляет без preflight.
         if request.content_type != JSON_CONTENT_TYPE:
-            return _refuse("perimeter", -32600,
-                           f"Unsupported Media Type: {JSON_CONTENT_TYPE} required", 415, request)
+            return _refuse("perimeter", "MEDIA_TYPE_UNSUPPORTED", -32600, 415, request,
+                           facts={"required": JSON_CONTENT_TYPE})
 
         try:
             raw_request = await request.text()
         except Exception:
-            return _refuse("perimeter", -32700, "Cannot read body", 400, request)
+            return _refuse("perimeter", "REQUEST_UNREADABLE", -32700, 400, request)
 
         # Fail-closed — не можем распарсить/проверить → блокируем, а не пропускаем.
+        # Наружу — только место разбора: текст исключения цитирует тело.
         try:
             req_data = json.loads(raw_request)
         except json.JSONDecodeError as e:
-            return _refuse("perimeter", -32700, f"Parse error: {e}", 400, request)
+            return _refuse("perimeter", "REQUEST_MALFORMED", -32700, 400, request,
+                           facts={"line": e.lineno, "column": e.colno})
 
         # Аутентификация ДО файрвола. Принимаем оба заголовка из allowlist коннектора
         # Claude AI Web (Authorization: Bearer / X-Api-Key) — иначе клиент не сможет прислать ключ.
         if not ALLOW_NO_AUTH:
             deny = check_auth(request.headers, MCP_AUTH_DIGEST)
             if deny:
-                hint = ("Требуется заголовок Authorization: Bearer <token> или X-Api-Key: <token>"
-                        if deny == "AUTH_REQUIRED" else "Неверный токен аутентификации")
-                return _refuse("identity", -32001, f"{deny}: {hint}", 401, request,
+                return _refuse("identity", deny, -32001, 401, request,
                                request_id=req_data.get("id") if isinstance(req_data, dict) else None,
                                rpc=req_data.get("method", "") if isinstance(req_data, dict) else "")
 
@@ -345,22 +357,24 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
                 # Причина сбоя — в консоль владельца; наружу только факт отказа, иначе
                 # клиент получает текст внутреннего исключения (имена типов, значения полей).
                 print(f"⛔ [firewall] сбой проверки, запрос отклонён: {e!r}")
-                return _refuse("firewall", -32000, "Firewall error (blocked)", 403, request,
+                return _refuse("firewall", "FIREWALL_UNAVAILABLE", -32000, 403, request,
                                request_id=req_data.get("id") if isinstance(req_data, dict) else None,
                                rpc=req_data.get("method", "") if isinstance(req_data, dict) else "")
 
-            # RATE_LIMIT и BLOCK — разные HTTP-коды, чтобы Claude различал.
+            # RATE_LIMIT и BLOCK — разные HTTP-коды и коды реестра; число JSON-RPC лимита то же, что у ключа.
             if fw_result.decision == FirewallDecision.BLOCK:
-                return _refuse("firewall", -32000, f"Blocked: {fw_result.reason}", 403, request,
+                return _refuse("firewall", "REQUEST_BLOCKED", -32000, 403, request, facts={"rule": fw_result.rule},
+                               note=fw_result.reason,
                                request_id=req_data.get("id") if isinstance(req_data, dict) else None,
                                rpc=fw_request.method)
             if fw_result.decision == FirewallDecision.RATE_LIMIT:
-                return _refuse("firewall", -32001, f"Rate limit exceeded: {fw_result.reason}", 429,
-                               request,
+                return _refuse("firewall", "RATE_LIMITED", -32001, 429, request,
+                               facts={"retry_after_sec": fw_result.retry_after_sec}, note=fw_result.reason,
                                request_id=req_data.get("id") if isinstance(req_data, dict) else None,
-                               rpc=fw_request.method, headers={"Retry-After": "5"})
+                               rpc=fw_request.method, headers={"Retry-After": str(fw_result.retry_after_sec)})
             if fw_result.decision != FirewallDecision.ALLOW:
-                return _refuse("firewall", -32000, f"Blocked: {fw_result.reason}", 403, request,
+                return _refuse("firewall", "REQUEST_BLOCKED", -32000, 403, request, facts={"rule": fw_result.rule},
+                               note=fw_result.reason,
                                request_id=req_data.get("id") if isinstance(req_data, dict) else None,
                                rpc=fw_request.method)
             # Пропуск С причиной = сигнал log-only (деструктивный инструмент). Печатаем его:
@@ -406,7 +420,9 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
     app.router.add_post("/", handle_jsonrpc)
     app.router.add_post("/mcp", handle_jsonrpc)
 
-    runner = web.AppRunner(app)
+    # Обрыв клиента отменяет его хендлер (aiohttp по умолчанию — нет): брошенное ожидание `task_status(wait)` не держит
+    # слушателя узла; вызов, снятый с цикла в поток, держит место до конца потока (Engine._invoke).
+    runner = web.AppRunner(app, handler_cancellation=True)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
     try:
@@ -474,6 +490,7 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
             # позже, чем до процесса туннеля. Продолжать запуск и объявлять «ГОТОВ» после этого значит
             # переработать стоп в поломку чужого механизма.
             print(f"\n⏹  Остановка: туннель получил тот же сигнал, что и сервер ({e}).")
+            engine.stopping = True              # отменённые остановкой вызовы след пишет остановкой, а не обрывом клиента
             try:
                 await runner.cleanup()
             except (OSError, RuntimeError) as сбой:
@@ -531,13 +548,16 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
                 cfg_mtime[cfg_path] = m  # фиксируем сразу → битый конфиг не ретрайдим каждые 10с
                 try:
                     if kind == "firewall" and firewall is not None:
-                        firewall.reload(_load_yaml(cfg_path))   # битый — исключение с причиной, прежние правила целы
+                        firewall.reload_declared(cfg_path)   # битый — отказ двери с путём ключа, прежние правила целы
                         print("♻️  [config] firewall.yaml перезагружен без рестарта")
                     elif kind == "reactions" and reactions is not None:
                         reactions.load(cfg_path)
                         print("♻️  [config] server_reactions.yaml перезагружен без рестарта")
                 except Exception as e:
-                    print(f"⚠️  [config] {cfg_path.name} НЕ применён: {e} — держим прежнее")
+                    # Отказ двери — текстом реестра (файл и путь ключа, без значений); чужое исключение — как есть.
+                    refused = engine.refusal(e)
+                    why = refused.error.message if refused is not None and refused.error is not None else e
+                    print(f"⚠️  [config] {cfg_path.name} НЕ применён: {why} — держим прежнее")
 
             if not tunnel:
                 continue
@@ -565,6 +585,7 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
+        engine.stopping = True                  # отменённые остановкой вызовы след пишет остановкой, а не обрывом клиента
         if tunnel:
             tunnel.stop()
         await wire.stop_socket_watch(socket_task)

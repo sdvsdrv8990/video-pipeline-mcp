@@ -4,10 +4,12 @@
 # Ключ отсутствует → правило включено. Выключать в проде — только осознанно: fail-open по своей воле.
 
 # ═══ ОГРАНИЧЕНИЕ ЧАСТОТЫ ═══
+# Схема — core/declaration_schemas.py RateLimit: все ключи обязательны, умолчаний в коде нет.
 rate_limit:
   enabled: true
-  max_requests_per_minute: 60
-  ban_after_violations: 3
+  window_sec: 60                # окно счёта запросов с одного адреса
+  max_requests: 60              # предел запросов в окне
+  ban_after_violations: 3       # превышений подряд до бана адреса
 
 # ═══ БЛОКИРОВКА IP ═══
 ip_blocklist:

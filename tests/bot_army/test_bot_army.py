@@ -5,12 +5,18 @@
 """
 
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from core.contracts import ContractError
+from core.declaration_schemas import RateLimit
 from core.firewall import Firewall, FirewallRequest
+from core.firewall.rules.rate_limiter import RateLimiter
+
+FIREWALL = ROOT / "config" / "firewall.yaml"
 
 results = []
 
@@ -24,7 +30,7 @@ def test_rate_limiting():
     """Тест rate limiting: много запросов с одного IP."""
     print("=== Rate Limiting ===")
 
-    fw = Firewall({"rate_limit": {"max_requests_per_minute": 5, "ban_after_violations": 3}})
+    fw = Firewall({}, RateLimit(enabled=True, window_sec=60, max_requests=5, ban_after_violations=3))
     ip = "198.51.100.1"
 
     # Первые 5 запросов — проходят
@@ -49,7 +55,7 @@ def test_ban_after_violations():
     """
     print("\n=== Ban After Violations ===")
 
-    fw = Firewall({"rate_limit": {"max_requests_per_minute": 2, "ban_after_violations": 3}})
+    fw = Firewall({}, RateLimit(enabled=True, window_sec=60, max_requests=2, ban_after_violations=3))
     ip = "203.0.113.9"
 
     # 2 запроса — проходят (лимит 2)
@@ -84,7 +90,7 @@ def test_anomaly_detection():
     """
     print("\n=== Anomaly Detection (event-based) ===")
 
-    fw = Firewall({})
+    fw = Firewall({}, RateLimit(enabled=True, window_sec=60, max_requests=60, ban_after_violations=3))
     ip = "198.51.100.5"
 
     # Много разных БЕЗОПАСНЫХ инструментов — НЕ блок.
@@ -97,8 +103,7 @@ def test_anomaly_detection():
               res.decision.value == "allow", f"decision={res.decision.value}")
 
     # Деструктивный инструмент: ПРОПУЩЕН (log-only), но ПОСЧИТАН.
-    import yaml as _y
-    fw2 = Firewall(_y.safe_load((ROOT / "config" / "firewall.yaml").read_text(encoding="utf-8")))
+    fw2 = Firewall.declared(FIREWALL)
     resd = fw2.check(FirewallRequest(
         ip="198.51.100.6", method="tools/call",
         params={"name": "fs_delete"}, timestamp=3100.0
@@ -111,7 +116,7 @@ def test_legitimate_after_ban():
     """Тест что легитимные запросы проходят после бана другого IP."""
     print("\n=== Legitimate After Ban ===")
 
-    fw = Firewall({"rate_limit": {"max_requests_per_minute": 2, "ban_after_violations": 2}})
+    fw = Firewall({}, RateLimit(enabled=True, window_sec=60, max_requests=2, ban_after_violations=2))
 
     # Баним IP1
     ip1 = "10.0.0.1"
@@ -134,10 +139,10 @@ def test_shipped_config_is_enforced():
     import yaml
     print("=== Боевая конфигурация исполняется (F55) ===")
 
-    cfg = yaml.safe_load((ROOT / "config" / "firewall.yaml").read_text(encoding="utf-8"))
-    limit = int(cfg["rate_limit"]["max_requests_per_minute"])
+    cfg = yaml.safe_load(FIREWALL.read_text(encoding="utf-8"))
+    limit = int(cfg["rate_limit"]["max_requests"])
     ban_after = int(cfg["rate_limit"]["ban_after_violations"])
-    fw = Firewall(cfg)
+    fw = Firewall.declared(FIREWALL)
     ip = "203.0.113.77"
 
     # Все запросы внутри ОДНОГО окна: шаг в секунду растянул бы их ровно на минуту, и первый
@@ -159,11 +164,56 @@ def test_shipped_config_is_enforced():
 
     # Инъекция: список паттернов тоже боевой, а не тестовый.
     phrase = str((cfg["injection_detection"]["patterns"] or ["ignore previous instructions"])[0])
-    fresh = Firewall(cfg)
+    fresh = Firewall.declared(FIREWALL)
     verdict = fresh.check(FirewallRequest(ip="203.0.113.78", method="tools/call",
                                           params={"arguments": {"q": phrase}}, timestamp=9500.0))
     check("фраза ИЗ боевого списка паттернов блокируется",
           verdict.decision.value == "block", f"decision={verdict.decision.value}")
+
+
+def test_retry_after_is_remainder():
+    """Срок повтора — остаток до выхода старейшего запроса окна, а не окно целиком: клиент ждёт ровно столько, сколько
+    держит лимит. Часы — параметр запроса: событие на шве часов, без ожидания."""
+    print("\n=== Срок повтора — остаток окна ===")
+    limiter = RateLimiter(max_requests=3, ban_after=3, window_sec=60)
+    for at in (1000.0, 1010.0, 1020.0):
+        limiter.check("198.51.100.20", at)
+    refused = limiter.check("198.51.100.20", 1030.0)
+    check("отказ после предела в окне", not refused.allowed)
+    check("reset_in — остаток до выхода старейшего (1000 + 60 − 1030 = 30)", refused.reset_in == 30.0, refused.reset_in)
+    # Окно не 60: прежний литерал окна дал бы здесь 30, объявленное окно 40 — 10.
+    fw = Firewall({}, RateLimit(enabled=True, window_sec=40, max_requests=3, ban_after_violations=3))
+    for at in (2000.0, 2010.0, 2020.0):
+        fw.check(FirewallRequest(ip="198.51.100.21", method="ping", params={}, timestamp=at))
+    over = fw.check(FirewallRequest(ip="198.51.100.21", method="ping", params={}, timestamp=2030.5))
+    check("файрвол отдаёт срок по объявленному окну, целыми секундами вверх (2000 + 40 − 2030.5 = 9.5 → 10)",
+          over.decision.value == "rate_limit" and over.retry_after_sec == 10, (over.decision.value, over.retry_after_sec))
+
+
+def test_declaration_is_judged_by_the_door():
+    """Раздел лимита читается дверью деклараций: нет ключа — DECLARATION_INVALID с путём ключа, а не значение по
+    умолчанию; битая декларация при перезагрузке — тот же отказ, а прежние правила остаются в силе."""
+    print("\n=== Дверь деклараций: раздел лимита ===")
+    text = FIREWALL.read_text(encoding="utf-8")
+    with tempfile.TemporaryDirectory() as tmp:
+        broken = Path(tmp) / "firewall.yaml"
+        broken.write_text(text.replace("  window_sec:", "  # window_sec:", 1), encoding="utf-8")
+        check("порча легла: ключ окна снят в копии", "# window_sec:" in broken.read_text(encoding="utf-8"))
+        try:
+            Firewall.declared(broken)
+            check("декларация без window_sec отвергнута", False, "собрана")
+        except ContractError as refused:
+            check("декларация без window_sec — DECLARATION_INVALID с путём ключа",
+                  refused.code == "DECLARATION_INVALID"
+                  and any(e["field"] == "rate_limit.window_sec" for e in refused.errors), refused.errors)
+        fw = Firewall.declared(FIREWALL)
+        limiter = fw.rate_limiter
+        try:
+            fw.reload_declared(broken)
+            check("перезагрузка битой декларации отвергнута", False, "применена")
+        except ContractError as refused:
+            check("перезагрузка битой декларации — отказ двери", refused.code == "DECLARATION_INVALID", refused.code)
+        check("после отказа перезагрузки правила прежние (тот же лимитер)", fw.rate_limiter is limiter)
 
 
 def main():
@@ -172,6 +222,8 @@ def main():
     test_ban_after_violations()
     test_anomaly_detection()
     test_legitimate_after_ban()
+    test_retry_after_is_remainder()
+    test_declaration_is_judged_by_the_door()
 
     print()
     passed = sum(results)

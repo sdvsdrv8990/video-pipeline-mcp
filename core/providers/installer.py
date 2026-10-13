@@ -2,9 +2,9 @@
 
 Гигабайты не укладываются в один синхронный вызов: он упёрся бы в таймаут клиента или замолчал бы неотличимо от смерти.
 Ход меряется ПО ДИСКУ, а не по проценту загрузчика — тот может отчитаться и оборваться: признак работы — рост байтов
-плана не медленнее меры загрузчика или его отметка, а не тик наблюдателя. Запись, статус, простой и перевод отказа — у
+плана не медленнее меры загрузчика или его отметка, а не тик наблюдателя. Запись, статус, снятие и перевод отказа — у
 узла заданий (`core/jobs.py`); планировщика нет (решение владельца): поток живёт ровно эту установку. Замок модели
-держит другая установка — работа ждёт, пока та подаёт признаки работы (остаток части у них общий), а не отказывает.
+держит другая установка — работа ждёт её конца (остаток части у них общий), пока задание не снято, а не отказывает.
 """
 
 import logging
@@ -13,7 +13,6 @@ import time
 
 from core import jobs
 from core.contracts import TaskStatus
-from core.declaration_schemas import MODEL_FETCH
 
 log = logging.getLogger(__name__)
 PLACE = "model_download"        # класс места работы установки: число мест — resources.yaml `work`
@@ -26,13 +25,6 @@ class ModelInstaller:
         self.catalog = catalog
         self.heartbeat = float(heartbeat_sec)
         self.floor = float(catalog.speed()["floor"])
-
-    def linked(self) -> None:
-        """Связь двух деклараций: срок простоя узла (`jobs.yaml`) длиннее законной тишины загрузчика весов и окна его меры
-        скорости (`providers.yaml` `local.install.fetch`) — иначе живая загрузка станет простоем. Судит потребитель обоих
-        файлов, отказ на оба файла собирает дверь."""
-        jobs.outlasts(max(self.catalog.silence_sec(), self.catalog.speed()["window"]), self.catalog.declaration,
-                      [MODEL_FETCH.section])
 
     def begin(self, tasks: jobs.Tasks, tool: str, model_id: str, kind: str, force: bool = False) -> dict:
         """Начать установку заданием узла — статус задачи (`TaskStatus`) с идентификатором для прозвонки.
@@ -51,19 +43,29 @@ class ModelInstaller:
 
     def work(self, место: dict, pulse, progress=lambda _m: None) -> dict:
         """Работа установки по снимку `место_под`: наблюдатель — с первого шага, до замка модели (рост чужой загрузки той
-        же модели — тоже работа: остаток части у них общий), чужой замок ждётся, пока работа не молчит дольше
-        объявленного (`pulse.quiet`). Итог — после того, как наблюдатель остановлен и дождан: его последний тик не ляжет
-        поверх итога. `pulse` — признак работы задания узла или установки из CLI."""
+        же модели — тоже работа: остаток части у них общий), чужой замок ждётся до конца держателя, пока задание не
+        снято. Снятие (`pulse.cancelled`) работа судит в каждой фазе — ожидание замка, шаг, отметка загрузки и сверки —
+        и кончается отказом снятия (`pulse.refusal`). Итог — после того, как наблюдатель остановлен и дождан: его
+        последний тик не ляжет поверх итога. `pulse` — признак работы задания узла или установки из CLI."""
         steps, marks, stop, started = [""], [0.0], threading.Event(), time.time()
 
+        def alive() -> None:
+            if pulse.cancelled.is_set():
+                raise pulse.refusal()
+
         def step(message: str) -> None:
+            alive()
             steps.append(message)
             progress(message)
+
+        def mark() -> None:
+            alive()
+            marks.append(time.time())
 
         watcher = threading.Thread(target=self._observe, args=(место, pulse, started, steps, marks, stop), daemon=True)
         watcher.start()
         try:
-            entry = self.catalog.install_planned(место, progress=step, mark=lambda: marks.append(time.time()),
+            entry = self.catalog.install_planned(место, progress=step, mark=mark,
                                                  held=lambda: step("замок модели взят"), pulse=pulse)
         finally:
             stop.set()

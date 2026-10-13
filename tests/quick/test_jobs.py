@@ -7,6 +7,7 @@
 import asyncio
 import atexit
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -24,7 +25,7 @@ import yaml
 from core.contracts import ContractError, ToolResult
 from core.declaration_schemas import Resources
 from core.engine.engine import Engine
-from core.jobs import Tasks, issue, issued, stale
+from core.jobs import Tasks, issue, issued
 from core.reactions import Reactions
 from tests.harness.live_server import declarations_copy
 
@@ -124,6 +125,52 @@ except RuntimeError as e:
     over = str(e)
 check("отдать невзятое место — ошибка кода, а не лишнее место", "без взятия" in over, over)
 
+RES3 = Resources.model_validate({"default": "пробный",
+                                 "classes": {"пробный": {"offload": True, "max_concurrent": 1, "retry_after_sec": 7}},
+                                 "tools": {"долгий": "пробный"}, "work": {}})
+eng3 = Engine(resources=RES3)
+started3, gate3 = threading.Event(), threading.Event()
+
+
+async def _long():
+    started3.set()
+    gate3.wait(5)
+    return ToolResult(status="success", data={})
+
+
+eng3.register("долгий", "проба отмены", {"type": "object", "properties": {}}, _long)
+
+
+async def _abandoned_call() -> tuple[bool, bool]:
+    """Вызов offload отменён посреди работы (так приходит обрыв клиента при отмене хендлера): место занято, пока поток не
+    кончил; кончил — место свободно."""
+    call3 = asyncio.create_task(eng3.call("долгий", {}))
+    deadline = time.monotonic() + 5
+    while not started3.is_set() and time.monotonic() < deadline:
+        await asyncio.sleep(0.001)
+    call3.cancel()
+    try:
+        await call3
+    except asyncio.CancelledError:
+        pass
+    early = eng3.slots.take("пробный")
+    if early:
+        eng3.slots.give("пробный")
+    gate3.set()
+    late, deadline = False, time.monotonic() + 5
+    while not late and time.monotonic() < deadline:
+        late = eng3.slots.take("пробный")
+        await asyncio.sleep(0 if late else 0.01)
+    if late:
+        eng3.slots.give("пробный")
+    return not early, late
+
+
+held3, freed3 = asyncio.run(_abandoned_call())
+check("вызов, снятый с цикла в поток, отменён посреди работы (обрыв клиента) — место занято, пока поток не кончил; "
+      "кончил — место отдано: отмена ожидающего не пускает вторую работу поверх живой",
+      held3 and freed3, (held3, freed3))
+
 print("== 4. Узел: занято — pending; отказ работы — в задании; прерванное, простой; плохой id и битая — в элементе ==")
 JOBS = yaml.safe_load((ROOT / "config" / "jobs.yaml").read_text(encoding="utf-8"))
 now = [1000.0]
@@ -205,16 +252,32 @@ check("прерванное записано: следующее чтение �
 check("граф записи (родитель, дети, входы и выходы с хешами) переживает перезапись узлом",
       {key: rewritten.get(key) for key in GRAPH} == GRAPH, rewritten)
 
-gate_s = threading.Event()
-s_id = node.begin("проба", {"шаг": "простой"}, "пробный", held(gate_s, {"ok": "s"}))["task_id"]
-settle(s_id, {"processing"})
-now[0] += JOBS["stale_after_sec"] + 1
-stalled = node.status([s_id])[0]["task"]
-check("живой исполнитель молчит дольше stale_after_sec — TASK_STALLED с секундами (в ответе)",
-      (stalled.get("error") or {}).get("code") == "TASK_STALLED"
-      and stalled["error"]["facts"].get("seconds") == JOBS["stale_after_sec"] + 1, stalled)
+# Обновлено в шаге 1 рендера: простой больше не вердикт сервера (слово владельца) — живое молчащее задание несёт факты
+# хода, решает клиент. Прежде: «молчит дольше stale_after_sec — TASK_STALLED» и «простой — не приговор».
+now_s, gate_s, beaten_s = [2000.0], threading.Event(), threading.Event()
+node_s = Tasks(reng, root=scratch("tasks_s_"), clock=lambda: now_s[0])
+
+
+def silent(beat):
+    beat({"шаг": 1})                        # последний признак работы — в 2000 с эпохи
+    beaten_s.set()
+    gate_s.wait(5)
+    return {"ok": "s"}
+
+
+s_id = node_s.begin("проба", {"шаг": "молчит"}, "любой", silent)["task_id"]
+beaten_s.wait(5)
+now_s[0] += 7 * 86400
+quiet_s = node_s.status([s_id])[0]["task"]
+check("S1: живой исполнитель молчит неделю — processing с фактами хода (last_work_at прежний, idle_sec — неделя), "
+      "ни failed, ни отказа по часам",
+      quiet_s.get("status") == "processing" and quiet_s.get("error") is None
+      and quiet_s.get("last_work_at") == "1970-01-01T00:33:20+00:00" and quiet_s.get("idle_sec") == 7 * 86400, quiet_s)
 gate_s.set()
-check("простой — не приговор: исполнитель дописал — completed", settle(s_id, {"completed"}).get("result") == {"ok": "s"})
+done_s = node_s.settle(s_id, 5).get("task") or {}
+check("законный: молчавший дописал — completed с результатом, у конечного фактов хода нет",
+      done_s.get("result") == {"ok": "s"} and done_s.get("last_work_at") is None and done_s.get("idle_sec") is None,
+      done_s)
 
 broken = issue()
 (store / f"{broken}.json").write_text("{битая запись канарейка", encoding="utf-8")
@@ -255,9 +318,15 @@ except (IndexError, ValueError):
     seeded = {"crash": done.stderr[-400:]}
 codes = {kind: ((entry.get("task") or {}).get("error") or entry.get("error") or {}).get("code")
          for kind, entry in seeded.items() if isinstance(entry, dict)}
-check("засев: прерванное — TASK_INTERRUPTED, молчун — TASK_STALLED (в task.error), битая — TASK_RECORD_INVALID (error)",
-      codes == {"interrupted": "TASK_INTERRUPTED", "stalled": "TASK_STALLED", "broken": "TASK_RECORD_INVALID"}
-      and seeded["broken"].get("task") is None, (codes, done.stderr[-300:]))
+quiet5 = (seeded.get("stalled") or {}).get("task") or {}
+# Обновлено в шаге 1 рендера: молчун — processing с фактами хода, а не TASK_STALLED (простой больше не вердикт сервера).
+check("засев: прерванное — TASK_INTERRUPTED (в task.error), битая — TASK_RECORD_INVALID (error), молчун — processing "
+      "с последним признаком работы в эпохе 0 и idle_sec от неё, чужой — живой (его замок держит дочерний процесс)",
+      codes == {"interrupted": "TASK_INTERRUPTED", "stalled": None, "broken": "TASK_RECORD_INVALID", "foreign": None}
+      and seeded["broken"].get("task") is None and quiet5.get("status") == "processing"
+      and ((seeded.get("foreign") or {}).get("task") or {}).get("status") in ("pending", "processing")
+      and quiet5.get("last_work_at") == "1970-01-01T00:00:00+00:00" and quiet5.get("idle_sec", 0) > 10 ** 9,
+      (codes, quiet5, done.stderr[-300:]))
 
 print("== 6. Повтор того же вызова — то же задание (AD-21); конец работы — событием; ход без признака работы ==")
 now6 = [5000.0]
@@ -355,22 +424,25 @@ def drip(beat):
     return {"bytes": 20}
 
 
+# Обновлено в шаге 1 рендера: ход без признака работы не отодвигает last_work_at, idle_sec растёт; прежде — TASK_STALLED.
 drip_id = node6.begin("проба", {"x": 7}, "любой", drip)["task_id"]
-half = JOBS["stale_after_sec"] // 2
 working6.wait(5)
-now6[0] += half
+began6 = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(now6[0]))
+now6[0] += 600
 ticked.set()
 dripped.wait(5)
-now6[0] += JOBS["stale_after_sec"] - half + 1        # от признака работы — stale_after_sec + 1, от хода — меньше
+now6[0] += 600                                      # от признака работы — 1200 с, от хода — 600
 drip_seen = node6.status([drip_id])[0]["task"]
-check("ход без признака работы (working=False) пишет ход, но простой не отодвигает — TASK_STALLED с ходом",
-      (drip_seen.get("error") or {}).get("code") == "TASK_STALLED" and drip_seen.get("progress") == {"bytes": 10},
-      drip_seen)
+check("S2: ход без признака работы (working=False) — ход новый, last_work_at прежний, idle_sec растёт от признака, "
+      "а не от хода",
+      drip_seen.get("status") == "processing" and drip_seen.get("progress") == {"bytes": 10}
+      and drip_seen.get("last_work_at") == began6 and drip_seen.get("idle_sec") == 1200, (began6, drip_seen))
 go_on.set()
 resumed.wait(5)
 drip_back = node6.status([drip_id])[0]["task"]
-check("признак работы вернулся — снова processing, ход новый",
-      drip_back.get("status") == "processing" and drip_back.get("progress") == {"bytes": 20}, drip_back)
+check("признак работы вернулся — processing, ход новый, idle_sec с нуля",
+      drip_back.get("status") == "processing" and drip_back.get("progress") == {"bytes": 20}
+      and drip_back.get("idle_sec") == 0, drip_back)
 finish.set()
 node6.settle(drip_id, 5)
 
@@ -380,45 +452,82 @@ check("окно повтора длиннее срока хранения — DE
 edge = child(declarations_copy({"jobs.yaml": {"dedupe_window_sec": JOBS["retain_sec"]}}))
 check("законный: окно равно сроку хранения — декларация проходит", edge.get("own") is True, edge)
 
-print("== 7. Работа ждёт чужое: простой судит одно правило узла; список по инструменту; место класса work — у задания ==")
-check("правило простоя — объявленный срок: ровно stale_after_sec — ещё работа, на секунду дольше — простой",
-      not stale(JOBS["stale_after_sec"]) and stale(JOBS["stale_after_sec"] + 1))
+print("== 7. Работа ждёт чужое — до снятия (S3); список по инструменту; место класса work — у задания ==")
+# Обновлено в шаге 1 рендера: суда тишины у узла нет — «правило простоя» и «ждёт дольше срока — TASK_STALLED» сняты
+# (слово владельца: простой — не вердикт сервера); ждущая работа кончается снятием.
 now7 = [9000.0]
 root7 = scratch("tasks7_")
 node7 = Tasks(reng, root=root7, clock=lambda: now7[0])
 waiting7 = threading.Event()
 
 
+class _Said(logging.Handler):
+    """Строки журнала узла — улика отказанной поздней записи."""
+
+    def __init__(self):
+        super().__init__(logging.INFO)
+        self.lines: list[str] = []
+
+    def emit(self, record):
+        self.lines.append(record.getMessage())
+
+
+said7 = _Said()
+logging.getLogger("core.jobs").addHandler(said7)
+logging.getLogger("core.jobs").setLevel(logging.INFO)
+
+
+heard7: list[bool] = []
+
+
 def awaiting(pulse):
-    """Работа ждёт чужое и спрашивает суд тишины узла, как установка у чужого замка модели (cancel_check)."""
+    """Работа ждёт чужое до снятия, как установка у чужого замка модели (cancel_check), и снятия не слушается: её итог
+    после снятия — поздняя запись."""
     waiting7.set()
-    deadline = time.monotonic() + 5
-    while not pulse.quiet() and time.monotonic() < deadline:
-        threading.Event().wait(0.005)
-    raise pulse.stall()
+    heard7.append(pulse.cancelled.wait(5))
+    return {"поздно": 1}
 
 
 w7 = node7.begin("ожидание", {"x": 1}, "любой", awaiting)["task_id"]
 waiting7.wait(5)
 calm = node7.status([w7])[0]["task"]
-check("законный: ждёт в пределах срока — processing, не простой", calm.get("status") == "processing", calm)
-now7[0] += JOBS["stale_after_sec"] // 2
-half7 = node7.settle(w7, 0.2).get("task") or {}
-check("законный: молчит полсрока — работа ещё ждёт: срок — объявленный stale_after_sec, а не свой",
-      half7.get("status") == "processing", half7)
-now7[0] += JOBS["stale_after_sec"] - JOBS["stale_after_sec"] // 2 + 1
-over = node7.settle(w7, 5).get("task") or {}
-check("ждёт дольше срока — работа кончилась TASK_STALLED с теми же фактами, что видит читатель",
-      (over.get("error") or {}).get("code") == "TASK_STALLED" and over.get("status") == "failed"
-      and over["error"].get("facts") == {"task_id": w7, "tool": "ожидание", "seconds": JOBS["stale_after_sec"] + 1},
-      over)
-node7.settle(node7.begin("другой", {"x": 2}, "любой", lambda pulse: {"ok": 1})["task_id"], 5)
+check("законный: ждёт — processing", calm.get("status") == "processing", calm)
+now7[0] += 7 * 86400
+week7 = node7.settle(w7, 0.2).get("task") or {}
+check("ждёт неделю — processing с idle_sec недели: узел не кончает работу по часам",
+      week7.get("status") == "processing" and week7.get("idle_sec") == 7 * 86400, week7)
+task7 = node7.cancel([w7])[0].get("task") or {}
+check("S3: снятие молчащего — cancelled с причиной TASK_CANCELLED (id, инструмент), результата нет",
+      task7.get("status") == "cancelled" and (task7.get("error") or {}).get("code") == "TASK_CANCELLED"
+      and task7["error"].get("facts") == {"task_id": w7, "tool": "ожидание"} and task7.get("result") is None, task7)
+after7 = node7.settle(w7, 5).get("task") or {}
+check("сигнал дошёл до работы (её ожидание кончилось снятием, а не сроком), её поздний итог — отказ узла с фактом в "
+      "журнале: cancelled необратим",
+      heard7 == [True] and after7.get("status") == "cancelled" and after7.get("result") is None
+      and any(w7 in line and "итог работы после cancelled отказано" in line for line in said7.lines),
+      (heard7, after7, said7.lines))
+cut7 = node7.begin("ожидание", {"x": 9}, "любой", lambda pulse: (pulse.cancelled.wait(5), {"ok": 1})[1])["task_id"]
+node7.cancel([cut7])
+again7 = node7.begin("ожидание", {"x": 9}, "любой", lambda pulse: {"заново": 1})["task_id"]
+node7.settle(again7, 5)
+check("повтор вызова в окне повтора после снятия — новое задание, а не снятое (рецепт TASK_CANCELLED — повторить вызов)",
+      again7 != cut7 and (node7.status([again7])[0].get("task") or {}).get("result") == {"заново": 1}, (cut7, again7))
+done7 = node7.begin("другой", {"x": 2}, "любой", lambda pulse: {"ok": 1})["task_id"]
+node7.settle(done7, 5)
+cancel_set = node7.cancel([w7, done7, issue()])
+check("набор «снятое, кончившееся, несуществующее» — три элемента-отказа, вызов не падает: TASK_FINISHED с конечным "
+      "статусом (повторное снятие — с cancelled), TASK_NOT_FOUND",
+      [(e.get("error") or {}).get("code") for e in cancel_set] == ["TASK_FINISHED", "TASK_FINISHED", "TASK_NOT_FOUND"]
+      and [((e.get("error") or {}).get("facts") or {}).get("status") for e in cancel_set[:2]]
+      == ["cancelled", "completed"], cancel_set)
+check("снятие кончившегося — статус прежний, а не тихий успех",
+      (node7.status([done7])[0].get("task") or {}).get("status") == "completed")
 broken7 = issue()
 (root7 / JOBS["store"] / f"{broken7}.json").write_text("{битая запись", encoding="utf-8")
 by_tool = {entry["task_id"] for entry in node7.status(tool="ожидание")}
 check("список по инструменту — его задания и битые записи (их инструмент не прочесть), чужого инструмента — нет",
-      by_tool == {w7, broken7}, sorted(by_tool))
-check("законный: без инструмента — все записи", len(node7.status()) == 3, len(node7.status()))
+      by_tool == {w7, cut7, again7, broken7}, sorted(by_tool))
+check("законный: без инструмента — все записи", len(node7.status()) == 5, len(node7.status()))
 class Hiding:
     """Дверь файлов, чей обход не видит одно имя — так прячет имя записи `os.replace` на btrfs; остальное — прежней."""
 
@@ -472,6 +581,267 @@ gate7.set()
 check("первая отдала место — вторая доделана",
       (node7b.settle(one7, 5).get("task") or {}).get("status") == "completed"
       and (node7b.settle(two7["task_id"], 5).get("task") or {}).get("result") == {"ok": "вторая"}, two7["task_id"])
+
+print("== 8. Снятие ждущего места; ожидание смены статуса (task_status wait); исполнитель другого процесса ==")
+root8 = scratch("tasks8_")
+node8 = Tasks(eng7, root=root8)
+began8, tick8, ticked8, gate8, gate9 = (threading.Event() for _ in range(5))
+ran8: list[str] = []
+
+
+def holding(pulse):
+    began8.set()
+    tick8.wait(5)
+    pulse({"шаг": 1})                       # ход — не смена статуса
+    ticked8.set()
+    gate8.wait(5)
+    return {"ok": "держатель"}
+
+
+def queued8(pulse):
+    ran8.append("снятая")
+    return {"ok": "снятая"}
+
+
+def waited(ids: list[str]) -> tuple[threading.Thread, dict]:
+    """Ожидание смены статуса в своём потоке — как вызов task_status(wait=true)."""
+    seen: dict = {}
+    thread = threading.Thread(target=lambda: seen.update(entries=asyncio.run(node8.waiting(ids))))
+    thread.start()
+    return thread, seen
+
+
+def said8(seen: dict) -> list:
+    return [(e.get("task") or {}).get("status") for e in seen.get("entries", [])]
+
+
+hold8 = node8.begin("держит", {"m": 1}, "загрузка", holding)["task_id"]
+began8.wait(5)
+pend8 = node8.begin("ждёт", {"m": 2}, "загрузка", queued8)["task_id"]
+on_pend, seen_pend = waited([pend8])
+on_pend.join(0.2)
+check("S7: ожидание на pending не отвечает, пока статус прежний", on_pend.is_alive(), seen_pend)
+pend_task = node8.cancel([pend8])[0].get("task") or {}
+on_pend.join(5)
+check("снятие pending — cancelled; ожидание ответило на смену статуса — cancelled",
+      pend_task.get("status") == "cancelled" and said8(seen_pend) == ["cancelled"], (pend_task, seen_pend))
+node8.settle(pend8, 5)
+check("снятое в очереди ушло из неё, не взяв места: работа не начиналась, очередь класса пуста",
+      ran8 == [] and not eng7.slots._queue["загрузка"], (ran8, list(eng7.slots._queue["загрузка"])))
+pend9 = node8.begin("ждёт", {"m": 3}, "загрузка", held(gate9, {"ok": "третья"}))["task_id"]
+on_hold, seen_hold = waited([hold8])
+on_next, seen_next = waited([pend9])
+tick8.set()
+ticked8.wait(5)
+on_hold.join(0.2)
+check("ход работы (тик) сменой статуса не считается — ожидание не ответило", on_hold.is_alive(), seen_hold)
+gate8.set()
+on_hold.join(5)
+on_next.join(5)
+check("конец работы — ожидание ответило completed; ждавшее место — processing (первая смена, а не конец)",
+      said8(seen_hold) == ["completed"] and said8(seen_next) == ["processing"], (seen_hold, seen_next))
+gate9.set()
+node8.settle(pend9, 5)
+started = time.monotonic()
+idle8 = asyncio.run(node8.waiting([hold8, issue()]))
+check("законный: живых исполнителей этого процесса среди ждущих нет — ответ сразу, без ожидания",
+      [(e.get("task") or {}).get("status") or e["error"]["code"] for e in idle8] == ["completed", "TASK_NOT_FOUND"]
+      and time.monotonic() - started < 1, idle8)
+
+gate_own8 = threading.Event()
+own8 = node8.begin("своё", {"m": 10}, "любой", held(gate_own8, {"ok": "своё"}))["task_id"]
+node8.settle(own8, 0.2)
+on_own, seen_own = waited([own8])
+node8.settle(node8.begin("чужое", {"m": 11}, "любой", lambda pulse: {"ok": "чужое"})["task_id"], 5)
+on_own.join(0.2)
+check("смена статуса другого задания ожиданию своего не отвечает: ждёт смены именно своего", on_own.is_alive(),
+      seen_own)
+gate_own8.set()
+on_own.join(5)
+check("своё кончилось — ответ completed", said8(seen_own) == ["completed"], seen_own)
+
+from core import jobs as _jobs
+
+
+async def _abandon(task_id: str) -> tuple[int, int, bool]:
+    """Ожидающий, чей вызов отменён (так приходит обрыв клиента при отмене хендлера), — слушатели узла до и после."""
+    before = len(_jobs._HEARD)
+    waiter = asyncio.create_task(node8.waiting([task_id]))
+    while len(_jobs._HEARD) == before and not waiter.done():   # слушатель встал — ожидание началось
+        await asyncio.sleep(0)
+    waiter.cancel()
+    try:
+        await waiter
+    except asyncio.CancelledError:
+        pass
+    return before, len(_jobs._HEARD), waiter.cancelled()
+
+
+gate_ab8 = threading.Event()
+left8 = node8.begin("брошенное", {"m": 12}, "любой", held(gate_ab8, {"ok": 1}))["task_id"]
+node8.settle(left8, 0.2)
+heard_before, heard_after, was_cancelled = asyncio.run(_abandon(left8))
+gate_ab8.set()
+node8.settle(left8, 5)
+check("ожидание без потока и места: отменённый ожидающий (обрыв клиента) снимает слушателя — у узла не остаётся "
+      "ни слушателя, ни ждущего потока", was_cancelled and heard_after == heard_before,
+      (heard_before, heard_after, was_cancelled))
+
+from aiohttp import ClientSession, ClientTimeout, web
+
+
+async def _dropped(cancel_on_drop: bool, task_id: str) -> tuple[int, int]:
+    """Клиент оборвал ожидание по HTTP (настоящий aiohttp на петле): слушатели узла до запроса и после обрыва."""
+    async def handler(request):
+        return web.json_response(await node8.waiting([task_id]))
+
+    app = web.Application()
+    app.router.add_post("/", handler)
+    runner = web.AppRunner(app, handler_cancellation=cancel_on_drop, shutdown_timeout=0.5)   # контроль висит — не ждать 60 с
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    before = len(_jobs._HEARD)
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=0.3)) as client:
+            await client.post(f"http://127.0.0.1:{runner.addresses[0][1]}/")
+    except asyncio.TimeoutError:
+        pass
+    deadline = time.monotonic() + 3
+    while len(_jobs._HEARD) > before and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    after = len(_jobs._HEARD)
+    await runner.cleanup()
+    return before, after
+
+
+gate_drop8 = threading.Event()
+drop8 = node8.begin("оборванное", {"m": 13}, "любой", held(gate_drop8, {"ok": 1}))["task_id"]
+node8.settle(drop8, 0.2)
+cut_before, cut_after = asyncio.run(_dropped(True, drop8))
+kept_before, kept_after = asyncio.run(_dropped(False, drop8))
+gate_drop8.set()
+node8.settle(drop8, 5)
+check("клиент оборвал task_status(wait) по HTTP — с отменой хендлера (server.py) у узла не остаётся слушателя; без неё "
+      "слушатель висит до смены статуса (контроль: событие различает флаг)",
+      cut_after == cut_before and kept_after == kept_before + 1, (cut_before, cut_after, kept_before, kept_after))
+
+from core.observability.trail import Trail
+
+
+async def _dropped_traced(task_id: str, trail_dir: Path, stop: bool = False) -> list[dict]:
+    """Вызов движка по HTTP отменён до ответа — обрывом клиента или остановкой сервера (`stop`: метка остановки, затем
+    cleanup, как server.py): что легло в след (живой оракул брошенного ожидания)."""
+    traced = Engine(trail=Trail(trail_dir, keep_files=1, max_bytes=0, record_args=False))
+
+    async def awaiting_call():
+        return ToolResult(status="success", data={"tasks": await node8.waiting([task_id])})
+
+    traced.register("ждать", "ожидание смены статуса", {"type": "object", "properties": {}}, awaiting_call)
+
+    async def handler(request):
+        return web.json_response((await traced.call("ждать", {})).model_dump())
+
+    app = web.Application()
+    app.router.add_post("/", handler)
+    runner = web.AppRunner(app, handler_cancellation=True, shutdown_timeout=0.5)
+    await runner.setup()
+    await web.TCPSite(runner, "127.0.0.1", 0).start()
+    url = f"http://127.0.0.1:{runner.addresses[0][1]}/"
+    if stop:
+        async with ClientSession(timeout=ClientTimeout(total=10)) as client:
+            asked = asyncio.ensure_future(client.post(url))
+            heard, deadline = len(_jobs._HEARD), time.monotonic() + 3
+            while len(_jobs._HEARD) == heard and time.monotonic() < deadline:   # ожидание встало
+                await asyncio.sleep(0.01)
+            traced.stopping = True
+            await runner.cleanup()
+            try:
+                await asyncio.wait_for(asked, 3)
+            except Exception:                   # сервер закрыл соединение — ответа клиенту нет, это и меряется
+                pass
+    else:
+        try:
+            async with ClientSession(timeout=ClientTimeout(total=0.3)) as client:
+                await client.post(url)
+        except asyncio.TimeoutError:
+            pass
+    records: list[dict] = []
+    deadline = time.monotonic() + 3
+    while not records and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+        records = [json.loads(line) for path in trail_dir.glob("trail-*.jsonl")
+                   for line in path.read_text(encoding="utf-8").splitlines()]
+    if not stop:
+        await runner.cleanup()
+    return records
+
+
+gate_trace8 = threading.Event()
+trace8 = node8.begin("след обрыва", {"m": 14}, "любой", held(gate_trace8, {"ok": 1}))["task_id"]
+node8.settle(trace8, 0.2)
+traced8 = asyncio.run(_dropped_traced(trace8, scratch("trail8_")))
+gate_trace8.set()
+node8.settle(trace8, 5)
+check("обрыв клиента на ожидании — в следе запись отмены (улика, не шаг): инструмент, сколько шёл, кто отменил, без "
+      "параметров вызова",
+      len(traced8) == 1 and traced8[0].get("level") == "cancel" and traced8[0].get("tool") == "ждать"
+      and traced8[0].get("ok") is False and traced8[0].get("args") == {}
+      and traced8[0].get("data", {}).get("elapsed_sec", 0) >= 0.2 and traced8[0]["data"].get("by") == "обрыв клиента",
+      traced8)
+gate_stop8 = threading.Event()
+stop8 = node8.begin("след остановки", {"m": 15}, "любой", held(gate_stop8, {"ok": 1}))["task_id"]
+node8.settle(stop8, 0.2)
+stopped8 = asyncio.run(_dropped_traced(stop8, scratch("trail8s_"), stop=True))
+gate_stop8.set()
+node8.settle(stop8, 5)
+check("остановка сервера посреди ожидания (метка до cleanup) — в следе запись отмены с причиной «остановка сервера», "
+      "а не обрыв клиента",
+      [(r.get("level"), r.get("data", {}).get("by")) for r in stopped8] == [("cancel", "остановка сервера")], stopped8)
+
+sys.path.insert(0, str(ROOT / "scripts" / "guards"))
+import reproduce
+
+try:
+    _picked = reproduce.pick(traced8 + stopped8, None, None)
+except SystemExit as said:
+    _picked = str(said)
+try:
+    reproduce.as_steps(traced8)
+    _stepped = "шаг собран"
+except SystemExit as said:
+    _stepped = str(said)
+check("воспроизводитель не выдаёт отмену за отказ: pick её пропускает (воспроизводить нечего), as_steps отказывает с "
+      "причиной, а не expect UNKNOWN_ERROR",
+      "воспроизводить нечего" in str(_picked) and "не воспроизводится" in _stepped, (_picked, _stepped))
+
+bare_gate = threading.Event()
+bare_node = Tasks(Engine(), root=root8)          # исполнитель на движке без реестра — как приспособление сценария
+bare_id = bare_node.begin("голый", {"m": 9}, "любой", held(bare_gate, {"ok": 1}))["task_id"]
+bare_task = node8.cancel([bare_id])[0].get("task") or {}
+bare_gate.set()
+bare_node.settle(bare_id, 5)
+check("причину снятия переводит узел, принявший вызов, а не узел исполнителя: исполнитель на движке без реестра — "
+      "TASK_CANCELLED с классом и текстом реестра",
+      (bare_task.get("error") or {}).get("reaction_class") == "ai_recoverable"
+      and bare_id in (bare_task.get("error") or {}).get("message", ""), bare_task)
+
+FOREIGN = ("import sys, threading\nfrom pathlib import Path\nfrom core.engine.engine import Engine\n"
+           "from core.jobs import Tasks\nnode, stop = Tasks(Engine(), root=Path(sys.argv[1])), threading.Event()\n"
+           "entry = node.begin('чужое', {'x': 1}, 'любой', lambda beat: (stop.wait(), {'ok': 1})[1])\n"
+           "print(entry['task_id'], flush=True)\nsys.stdin.read()\nstop.set()\nnode.settle(entry['task_id'], 5)\n")
+clean = {k: v for k, v in os.environ.items() if k != "VPM_FIXTURES"}
+other = subprocess.Popen([sys.executable, "-c", FOREIGN, str(root8)], cwd=ROOT, env=clean, text=True,
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+foreign_id = (other.stdout.readline() if other.stdout else "").strip()
+foreign = node8.cancel([foreign_id])[0]
+check("снятие задания, чей исполнитель в другом процессе (держит замок записи), — TASK_FOREIGN; задание идёт дальше",
+      (foreign.get("error") or {}).get("code") == "TASK_FOREIGN"
+      and (node8.status([foreign_id])[0].get("task") or {}).get("status") in ("pending", "processing"), foreign)
+stdout8, stderr8 = other.communicate(timeout=10)
+check("конец трубы — конец чужой работы: completed, процесс вышел сам",
+      other.returncode == 0 and (node8.status([foreign_id])[0].get("task") or {}).get("status") == "completed",
+      stderr8[-300:])
 
 print(f"\nРЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

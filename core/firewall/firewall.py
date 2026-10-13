@@ -5,6 +5,13 @@
 запрос успел бы увидеть половину старых правил и половину новых.
 """
 
+import math
+from pathlib import Path
+
+from core.contracts import ContractError
+from core.declaration import Declaration
+from core.declaration_schemas import RATE_LIMIT, RateLimit
+
 from .contracts import FirewallDecision, FirewallRequest, FirewallResult
 from .rules.rate_limiter import RateLimiter
 from .rules.injection_detector import InjectionDetector
@@ -18,13 +25,15 @@ class Firewall:
     `enabled: false` в конфиге правило реально выключает, а не игнорируется.
     """
 
-    def __init__(self, config: dict | None = None):
-        """Инициализация файрвола.
+    def __init__(self, config: dict, rate: RateLimit):
+        """Файрвол по разделам firewall.yaml (`config`) и разделу лимита (`rate`, схема `RateLimit`); сборка по
+        декларации через дверь — `Firewall.declared`."""
+        self._assign(self._make_rules(config, rate))
 
-        Args:
-            config: Конфигурация из firewall.yaml (опционально)
-        """
-        self._assign(self._make_rules(config))
+    @classmethod
+    def declared(cls, path: Path) -> "Firewall":
+        """Файрвол по декларации через дверь: битая — отказ двери при сборке, а не правила по умолчанию."""
+        return cls(*_declaration(path))
 
     @staticmethod
     def _num(config: dict, section: str, key: str, default: int) -> int:
@@ -39,18 +48,16 @@ class Firewall:
         return int(raw)
 
     @staticmethod
-    def _make_rules(config: dict | None):
+    def _make_rules(config: dict, rate: RateLimit):
         """Собрать набор правил из конфига (без сайд-эффектов на self).
 
         Вынесено из __init__, чтобы reload() собирал правила во ВРЕМЕННЫЕ объекты и подменял
         их атомарно только при успехе. Битый конфиг проявляется исключением отсюда — его ловит
-        reload(); кривой regex в паттернах невозможен, они экранируются как литералы.
+        reload(); кривой regex в паттернах невозможен, они экранируются как литералы. Лимит частоты —
+        проверенный схемой раздел (`RateLimit`): умолчаний здесь нет.
         """
-        config = config or {}
-        rate_limiter = RateLimiter(
-            max_requests=Firewall._num(config, "rate_limit", "max_requests_per_minute", 60),
-            ban_after=Firewall._num(config, "rate_limit", "ban_after_violations", 3)
-        )
+        rate_limiter = RateLimiter(max_requests=rate.max_requests, ban_after=rate.ban_after_violations,
+                                   window_sec=rate.window_sec)
         # patterns=None → refined DEFAULT_PATTERNS; [] = выключить детекцию.
         injection_detector = InjectionDetector(
             patterns=config.get("injection_detection", {}).get("patterns", None)
@@ -66,11 +73,11 @@ class Firewall:
         )
         # Выключатель правила обязан ЧИТАТЬСЯ: объявленный, но никем не читаемый `enabled`
         # выглядит рабочим и молча ничего не выключает.
-        # Отсутствие ключа = правило включено (обратная совместимость со старым конфигом).
+        # Отсутствие ключа = правило включено (обратная совместимость со старым конфигом); у лимита ключ обязателен схемой.
         enabled = {
             section: bool(config.get(section, {}).get("enabled", True))
-            for section in ("rate_limit", "ip_blocklist", "injection_detection", "anomaly_detection")
-        }
+            for section in ("ip_blocklist", "injection_detection", "anomaly_detection")
+        } | {"rate_limit": rate.enabled}
         # Та же родня: без чтения `logging.log_suspicious` сигнал log-only остаётся немым —
         # счётчик в памяти видят только тесты.
         log_suspicious = bool(config.get("logging", {}).get("log_suspicious", True))
@@ -82,7 +89,7 @@ class Firewall:
         (self.rate_limiter, self.injection_detector,
          self.ip_blocklist, self.anomaly_detector, self.enabled, self.log_suspicious) = rules
 
-    def reload(self, config: dict | None) -> None:
+    def reload(self, config: dict, rate: RateLimit) -> None:
         """Горячая перезагрузка правил из нового config БЕЗ пересоздания файрвола.
 
         Fail-closed: битый конфиг — не выключенный файрвол, а прежние рабочие правила; причина уходит
@@ -90,7 +97,11 @@ class Firewall:
         поэтому все держатели (в т.ч. Transport) сразу видят новые правила; рантайм-счётчики rate-limit
         и баны IP при этом сбрасываются.
         """
-        self._assign(self._make_rules(config))
+        self._assign(self._make_rules(config, rate))
+
+    def reload_declared(self, path: Path) -> None:
+        """Перезагрузка по декларации через дверь: битый раздел — отказ двери до подмены, прежние правила целы."""
+        self.reload(*_declaration(path))
 
     def check(self, request: FirewallRequest) -> FirewallResult:
         """Проверка запроса через все правила: первое сработавшее и решает исход."""
@@ -99,6 +110,7 @@ class Firewall:
             return FirewallResult(
                 decision=FirewallDecision.BLOCK,
                 reason=f"IP {request.ip} заблокирован",
+                rule="ip_blocklist",
             )
 
         rate_result = self.rate_limiter.check(request.ip, request.timestamp)
@@ -111,6 +123,8 @@ class Firewall:
             return FirewallResult(
                 decision=FirewallDecision.RATE_LIMIT,
                 reason=f"Превышен лимит запросов для {request.ip}",
+                rule="rate_limit",
+                retry_after_sec=math.ceil(rate_result.reset_in),
             )
 
         # 3. Детекция prompt injection
@@ -121,6 +135,7 @@ class Firewall:
             return FirewallResult(
                 decision=FirewallDecision.BLOCK,
                 reason="Обнаружена prompt injection",
+                rule="injection_detection",
             )
 
         # 4. Детекция аномалий
@@ -129,6 +144,7 @@ class Firewall:
             return FirewallResult(
                 decision=FirewallDecision.BLOCK,
                 reason=anomaly.reason,
+                rule="anomaly_detection",
             )
 
         # Пропускаем — но сигнал log-only обязан доехать наружу причиной: иначе деструктивный
@@ -159,3 +175,10 @@ class Firewall:
             "anomalies_detected": self.anomaly_detector.get_detected(),
             "dangerous_tools_watched": len(self.anomaly_detector.dangerous_tools)
         }
+
+
+def _declaration(path: Path) -> tuple[dict, RateLimit]:
+    """Декларация файрвола через дверь: разделы правил — данными файла, раздел лимита — своей схемой (нет ключа, не тот
+    тип — DECLARATION_INVALID с путём ключа, без значений)."""
+    door = Declaration(path, ContractError, "«firewall»", f"Заведи config/{path.name} — по нему сервер судит входящие.")
+    return door.data, door.section(*RATE_LIMIT.section, schema=RATE_LIMIT.schema)

@@ -12,9 +12,11 @@ from pathlib import Path
 
 from core.contracts import Fact, ToolResult
 from core.engine import Engine
+from core.jobs import Tasks
 from core.montage import RenderLedger, SceneBook, SceneScript, SceneTemplate
 from core.paths import Files
-from core.providers.ffmpeg import FfmpegEngine
+from core.providers.ffmpeg import FfmpegEngine, SceneSpec
+from core.providers.ffmpeg.engine import PLACE as RENDER_PLACE
 from tools._context import ANNOTATIONS_MODIFY, ToolContext
 
 
@@ -25,6 +27,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
     ledger = RenderLedger(ctx.state_manager, ctx.config_path, ctx.id_generator)
     script = SceneScript(book)
     templates = SceneTemplate(book, ctx.id_generator)
+    tasks = Tasks(engine)
 
     def _output(table: str, scene_id: str, stage: str, container: str, given: str) -> Path:
         """Куда лечь файлу: названное вызовом или объявленное место внутри сущности видео."""
@@ -36,12 +39,13 @@ def register(engine: Engine, ctx: ToolContext) -> None:
 
     async def montage_render_scene(table: str, scene_id: str, profile_id: str = "",
                                    output: str = "", subtitles: str = "") -> "ToolResult":
-        """Собрать сцену в видеофайл по строкам её элементов и звука.
+        """Собрать сцену в видеофайл по строкам её элементов и звука — заданием узла заданий.
 
         Берёт слои из листа элементов (положение, размер, время появления, движение), дорожки из
-        листа звука, параметры кодирования из профиля рендера канала — и отдаёт файл, ПРОВЕРЕННЫЙ
-        ffprobe. Приёмка внутри: длительность и кадр сверяются с замыслом, а строка результата
-        пишется только после этого. Сцена без звука — обычный случай, а не отказ.
+        листа звука, параметры кодирования из профиля рендера канала. Сцена, профиль, команда и советы
+        судятся в вызове — по книге на момент вызова; рендер, приёмка ffprobe и строка результата —
+        работа задания (`RENDER_PLACE`). Ответ — статус задания и путь к итогу. Сцена без звука — обычный
+        случай, а не отказ.
         """
         ok, profile = ctx.safe(lambda: book.profile(table, profile_id))
         if not ok:
@@ -61,17 +65,34 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         if not ok:
             return built
         spec, counts = built
-        timeout = int((book.config.get("render") or {}).get("timeout_sec") or 1800)
-        ok, outcome = ctx.safe(lambda: FfmpegEngine(timeout_sec=timeout).render_scene(spec))
+        render = FfmpegEngine()
+        ok, prepared = ctx.safe(lambda: render.build(spec))
         if not ok:
-            return outcome
-        relative = str(path.relative_to(ctx.workspace_path))
-        ok, written = ctx.safe(lambda: ledger.record(table, {
-            "stage": stage, "profile": report["profile_id"], "format_label": report["profile_id"],
-            "file_path": relative, "file_name": path.name, "status": str(target["status_ready"]),
-            "duration": int(round(outcome.duration_sec)), "verified": True}))
+            return prepared
+        argv, span = prepared
+
+        def work(pulse) -> dict:
+            """Рендер, приёмка и строка результата; путь клиенту — дверью корня, а не `relative_to` (ссылки ФС)."""
+            outcome = render.execute(spec, argv, span, pulse, owner=pulse.record.task.task_id)   # остаток — свой у задания
+            relative = Files(ctx.workspace_path).name(path)
+            written = ledger.record(table, {
+                "stage": stage, "profile": report["profile_id"], "format_label": report["profile_id"],
+                "file_path": relative, "file_name": path.name, "status": str(target["status_ready"]),
+                "duration": int(round(outcome.duration_sec)), "verified": True})
+            return {"file_path": relative, "duration_sec": outcome.duration_sec,
+                    "frame": f"{outcome.width}x{outcome.height}", "file_verified": True,
+                    "render_row_id": written["row_id"], "facts": [{"type": "RenderCompleted", "data": {
+                        "scene_id": scene_id, "render_id": written["row_id"], "file_path": relative,
+                        "duration_sec": outcome.duration_sec, "profile_id": report["profile_id"],
+                        "elements": counts["elements"], "audio": counts["audio"]}}]}
+
+        params = {"table": table, "scene_id": scene_id, "profile_id": report["profile_id"], "output": output,
+                  "subtitles": subtitles}
+        ok, entry = ctx.safe(lambda: tasks.begin("montage_render_scene", params, RENDER_PLACE, work,
+                                                  key={"argv": argv, "inputs": _versions(spec)}))
         if not ok:
-            return written
+            return entry
+        task = tasks.settle(entry["task_id"], 0).get("task") or {}
         ok, state = ctx.safe(lambda: book.variants_state(table, scene_id))
         state = state if ok else {"advice_key": ""}
         advice = (ctx.advice.get(state["advice_key"], table=table, scene_id=scene_id,
@@ -80,14 +101,14 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         return ToolResult(status="success", data={
             **({"recommendations": advice} if advice else {}),
             "variants_enabled": state.get("variants_enabled"),
-            "table": table, "scene_id": scene_id, "file_path": relative,
-            "duration_sec": outcome.duration_sec, "frame": f"{outcome.width}x{outcome.height}",
-            "file_verified": True, "render_row_id": written["row_id"],
-            "subtitles_mode": profile.subtitles_mode, **report, **counts,
-        }, facts=[Fact(type="RenderCompleted", data={
-            "scene_id": scene_id, "render_id": written["row_id"], "file_path": relative,
-            "duration_sec": outcome.duration_sec, "profile_id": report["profile_id"],
-            "elements": counts["elements"], "audio": counts["audio"]})])
+            "table": table, "scene_id": scene_id, "subtitles_mode": profile.subtitles_mode, **report, **counts,
+            **task,
+            "next": (f"Рендер идёт заданием сервера. Итог и ход — опрос task_status(task_ids=['{entry['task_id']}']): "
+                     "ответ сразу, повторяй до completed; в итоге — путь файла, принятого ffprobe, и строка листа "
+                     "рендеров. wait=true держит вызов до смены статуса — только клиенту без короткого срока вызова. "
+                     "Ненужный или слишком долгий рендер снимает task_cancel."),
+        }, facts=_subject(task, {"task_id": entry["task_id"], "table": table, "scene_id": scene_id,
+                                 "profile_id": report["profile_id"]}))
 
 
     async def montage_scene_script(table: str, scene_id: str, profile_id: str = "",
@@ -203,9 +224,14 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "render_profile. Двигать и подгонять НЕ нужно вызовами: положение, размер, тайминг, "
             "громкость и скорость — это значения в строке, и правятся они обычным table_set, "
             "после чего сцену пересобирают этим же инструментом. "
-            "Результат принимается ffprobe внутри вызова: длительность и размер кадра сверяются с "
-            "замыслом, и только тогда в лист рендеров ложится строка с file_verified. Успех здесь "
-            "означает «файл годен», а не «файл создан». "
+            "Сцена, профиль и команда судятся сразу — отказ входа приходит этим же вызовом. Сам рендер идёт "
+            "заданием сервера: ответ — статус задания (task_id); ход (кадр из обещанных, доля) и итог — "
+            "опросом task_status (wait=true — только клиенту без короткого срока вызова); долгий или ненужный "
+            "рендер снимает "
+            "task_cancel, срока у рендера нет. Результат принимается ffprobe: длительность и размер кадра "
+            "сверяются с замыслом, и только тогда в лист рендеров ложится строка с file_verified; итог "
+            "задания — «файл годен», а не «файл создан». Повтор того же вызова при тех же входах — то же "
+            "задание, второй рендер не идёт. "
             "Сцена без музыки и звуков собирается нормально — пустой звук не отказ. Снятие фона "
             "нейросетью делает media_generate ДО монтажа: ffmpeg режет фон только по цвету."),
         input_schema={"type": "object", "properties": {
@@ -216,3 +242,21 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "subtitles": {"type": "string", "description": "Путь к .srt (пусто → без субтитров); режим задаёт профиль"},
         }, "required": ["table", "scene_id"]},
         handler=montage_render_scene, group="montage", annotations=ANNOTATIONS_MODIFY)
+
+
+def _subject(task: dict, started: dict) -> list[Fact]:
+    """Ровно один факт-предмет вызова: задание кончилось к ответу — факты его результата (RenderCompleted); иначе —
+    RenderStarted: предмет — задание, его статус наблюдает task_status."""
+    if task.get("status") == "completed":
+        return [Fact(**fact) for fact in task["result"]["facts"]]
+    return [Fact(type="RenderStarted", data=started)]
+
+
+def _versions(spec: SceneSpec) -> list[list]:
+    """Версия каждого входа сцены — размер, время правки (нс) и узел файла: перегенерированный ассет — новая работа, а не
+    старый файл (AD-21). Хеш содержимого гигабайтного видео на каждый вызов дорог. Предел: на ФС с грубым временем
+    правки (FAT — 2 с) замена файла того же размера на том же узле в те же секунды не видна."""
+    inputs = [*(layer.asset_path for layer in spec.layers), *(track.asset_path for track in spec.audio),
+              *([spec.subtitles_path] if spec.subtitles_path else [])]
+    return [[str(path), seen.st_size, seen.st_mtime_ns, seen.st_ino]
+            for path in dict.fromkeys(inputs) for seen in (path.stat(),)]

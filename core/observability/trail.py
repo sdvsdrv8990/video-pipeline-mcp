@@ -76,6 +76,31 @@ class Trail:
             data=redact(getattr(result, "data", None)) or {},
         ))
 
+    def cancelled(self, tool: str, klass: str, elapsed_sec: float, by: str) -> None:
+        """Вызов отменён до ответа — улика, а не повторимый шаг (как `socket`): инструмент, класс места, сколько шёл и кто
+        отменил (`by`: обрыв клиента или остановка сервера — по метке остановки движка). Параметров вызова нет: исхода у
+        вызова нет, сценарий из записи не собирается."""
+        if not self.enabled:
+            return
+        if self.max_bytes and self._written >= self.max_bytes:
+            return
+        self._step += 1
+        self._append(TrailRecord(
+            ts=round(time.time(), 3),
+            scenario=f"trail-{self.run}",
+            step=self._step,
+            level="cancel",
+            tool=tool,
+            args={},
+            ok=False,
+            code="",
+            message="",
+            reaction_class="",
+            recovery={},
+            facts=[],
+            data={"klass": klass, "elapsed_sec": round(elapsed_sec, 3), "by": by},
+        ))
+
     def refusal(self, level: str, code: str, message: str, rpc: str = "", args: dict | None = None) -> None:
         """Отказ ДО диспетчера: периметр, личность, файрвол.
 

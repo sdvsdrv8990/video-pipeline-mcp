@@ -4,13 +4,18 @@
 входах, отказ бинаря переводится в код реестра, а готовый файл проходит приёмку — иначе успех
 означал бы «файл есть», а не «файл годен». Ни книги, ни листов движок не знает, на вход приходит
 замысел сцены. Оболочка не используется: аргументы уходят списком, поэтому текст из книги остаётся
-значением, а не командой.
+значением, а не командой. Срока у рендера нет: живость — ход ffmpeg (`-progress`), остановка — снятие задания.
 """
 
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
+
+from core.capacity import Capacity
+from core.environment import child_spawn
+from core.paths import Files
 
 from .command import SceneCommand
 from .dictionary import FfmpegDictionary
@@ -18,7 +23,8 @@ from .errors import FfmpegError
 from .probe import MediaFacts, accept, facts
 from .spec import SceneSpec
 
-RENDER_TIMEOUT_SEC = 1800
+PLACE = "render"                # класс места работы рендера: число мест — resources.yaml `work`
+_GROWTH = ("out_time_sec", "frame", "total_size")   # рост любого из них с прошлого блока хода — работа
 
 
 @dataclass(frozen=True)
@@ -36,11 +42,10 @@ class FfmpegEngine:
     """Сборка и исполнение команд ffmpeg с приёмкой результата."""
 
     def __init__(self, dictionary: FfmpegDictionary | None = None, binary: str = "ffmpeg",
-                 probe: str = "ffprobe", timeout_sec: int = RENDER_TIMEOUT_SEC):
+                 probe: str = "ffprobe"):
         self.dict = dictionary or FfmpegDictionary()
         self.binary_name = binary
         self.probe_name = probe
-        self.timeout_sec = timeout_sec
 
     # ═══ Бинарь ═══
 
@@ -83,32 +88,101 @@ class FfmpegEngine:
         return max(ends)
 
     def build(self, spec: SceneSpec) -> tuple[list[str], float]:
+        """Команда сцены и её длительность; контейнер профиля судится здесь (muxer словаря) — отказ до запуска."""
+        self.dict.muxer(spec.profile.container)
         known = self.inspect(spec)
         span = self.duration(spec, known)
         return SceneCommand(spec, known, self.dict, span).build(self.binary()), span
 
     # ═══ Запуск ═══
 
-    def run(self, argv: list[str]) -> str:
-        """Запуск без оболочки. Ненулевой код — отказ кодом реестра, а не сырым текстом наружу."""
+    def live(self, argv: list[str]) -> list[str]:
+        """Команда запуска: ход — в stdout (`-progress pipe:1 -nostats` после `-nostdin`), потоки кодирования — доля
+        ядер процесса на одно место рендера (`-threads` перед `-y`, `Capacity.share`)."""
+        at, out = argv.index("-nostdin") + 1, argv.index("-y")
+        return [*argv[:at], "-progress", "pipe:1", "-nostats", *argv[at:out],
+                "-threads", str(Capacity().share(PLACE)), *argv[out:]]
+
+    def run(self, argv: list[str], pulse=None, frames: int | None = None) -> str:
+        """Запуск без оболочки и без срока. Ход — блоками `-progress` в `pulse` (работа — рост времени выхода, кадра
+        или размера, а не сам блок; доля — кадр из обещанных замыслом `frames`: время выхода в блоке отстаёт от кадра);
+        снятие задания убивает процесс (`pulse.on_cancel`) и кончается отказом снятия. Ненулевой код — отказ кодом
+        реестра, а не сырым текстом наружу."""
+        proc = subprocess.Popen(self.live(argv), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                **child_spawn("replace"))
+        said: list[str] = []
+        drain = threading.Thread(target=lambda: said.append(proc.stderr.read() if proc.stderr else ""), daemon=True)
+        drain.start()
+        if pulse is not None:
+            pulse.on_cancel(proc.kill)
         try:
-            done = subprocess.run(argv, capture_output=True, text=True, timeout=self.timeout_sec)
-        except subprocess.TimeoutExpired as exc:
-            raise FfmpegError(
-                "RENDER_TIMEOUT", f"Рендер не уложился в {self.timeout_sec} с.",
-                reason="Процесс снят, файл не готов. Раздели сцену или подними лимит времени.") from exc
-        if done.returncode != 0:
-            tail = (done.stderr or "").strip().rsplit("\n", 1)[-1] or "причина не названа"
-            raise FfmpegError(self.dict.failure_code(done.stderr or ""),
+            self._follow(proc, pulse, frames)
+        except BaseException:
+            proc.kill()                         # ход не записался — процесс не остаётся сиротой
+            raise
+        finally:
+            proc.wait()
+            drain.join()
+        if pulse is not None and pulse.cancelled.is_set():
+            raise pulse.refusal()
+        stderr = "".join(said)
+        if proc.returncode != 0:
+            tail = stderr.strip().rsplit("\n", 1)[-1] or "причина не названа"
+            raise FfmpegError(self.dict.failure_code(stderr),
                               f"ffmpeg отказался: {tail}",
                               reason="Строка отказа — слова самого ffmpeg о том, что ему помешало.")
-        return done.stderr or ""
+        return stderr
 
-    def render_scene(self, spec: SceneSpec) -> RenderOutcome:
+    @staticmethod
+    def _follow(proc: subprocess.Popen, pulse, frames: int | None) -> None:
+        """Блоки хода из stdout до его конца: блок кончается строкой `progress=`."""
+        block: dict[str, str] = {}
+        last: dict = {}
+        for line in proc.stdout or ():
+            key, _, value = line.strip().partition("=")
+            block[key] = value
+            if key != "progress":
+                continue
+            seen = _progress(block, frames)
+            if pulse is not None:
+                pulse(seen, working=any((seen.get(k) or 0) > (last.get(k) or 0) for k in _GROWTH))
+            last, block = seen, {}
+
+    def render_scene(self, spec: SceneSpec, pulse=None) -> RenderOutcome:
         """Сцена из книги → проверенный файл. Успех означает, что результат принят ffprobe."""
         argv, span = self.build(spec)
-        spec.output.parent.mkdir(parents=True, exist_ok=True)
-        self.run(argv)
-        got = accept(spec.output, span, spec.profile.size, probe=self.probe_name)
-        return RenderOutcome(path=spec.output, duration_sec=got.duration_sec or 0.0,
-                             width=got.width or 0, height=got.height or 0, argv=argv)
+        return self.execute(spec, argv, span, pulse)
+
+    def execute(self, spec: SceneSpec, argv: list[str], span: float, pulse=None, owner: str = "render") -> RenderOutcome:
+        """Собранная команда → файл, принятый ffprobe: сборку (`build`) вызов делает сам, до задания — отказы входа
+        приходят сразу. Пишет в остаток владельца `owner` рядом с выходом (`-f` — muxer контейнера: по имени остатка
+        формат не угадать) и ставит его на место дверью файлов только после приёмки: снятие, отказ ffmpeg или приёмки —
+        остаток снят, по пути выхода ничего нового."""
+        files = Files(spec.output.parent)
+        part = files.remnant(spec.output.name, owner)
+        part.parent.mkdir(parents=True, exist_ok=True)
+        to_part = [*argv[:-1], "-f", self.dict.muxer(spec.profile.container), str(part)]   # последний — путь выхода
+        try:
+            self.run(to_part, pulse, round(span * spec.profile.fps))
+            got = accept(part, span, spec.profile.size, probe=self.probe_name)
+        except BaseException:
+            part.unlink(missing_ok=True)
+            raise
+        files.publish(spec.output.name, owner)
+        return RenderOutcome(path=spec.output, duration_sec=got.duration_sec, width=got.width, height=got.height,
+                             argv=argv)
+
+
+def _progress(block: dict[str, str], frames: int | None) -> dict:
+    """Ход рендера из блока `-progress`: кадр, время выхода, размер, скорость; доля — кадр из обещанных замыслом.
+    Значение «N/A» — None, а не 0."""
+    out_us, frame = _number(block.get("out_time_us")), _number(block.get("frame"))
+    seen: dict = {"frame": frame, "total_size": _number(block.get("total_size")),
+                  "out_time_sec": None if out_us is None else round(out_us / 1e6, 3), "speed": block.get("speed")}
+    if frames and frame is not None:
+        seen["share"] = round(frame / frames, 3)
+    return seen
+
+
+def _number(raw: str | None) -> int | None:
+    return int(raw) if raw and raw.lstrip("-").isdigit() else None

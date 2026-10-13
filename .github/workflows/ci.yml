@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
         python-version: ["3.11", "3.12"]
     defaults:
       run:
@@ -38,15 +38,13 @@ jobs:
         run: mypy
       - name: import-linter (архитектурные контракты)
         run: lint-imports
+      # Сверка с объявленными сломами коммита (трейлер API-Break): исход — событие с перечнем или понятный отказ.
       - name: griffe (слом публичной поверхности)
-        run: |
-          git rev-parse HEAD~1 >/dev/null 2>&1 || { echo "нет предыдущей ревизии — сравнить не с чем"; exit 1; }
-          griffe check core -s . -a HEAD~1 -b HEAD
-          griffe check tools -s . -a HEAD~1 -b HEAD
+        run: python scripts/guards/api_breaks.py core tools --base HEAD~1 --head HEAD
 
   studio-app:
     name: studio-app (tsc + eslint + сборка)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: studio
@@ -71,7 +69,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Ubuntu закреплена версией: переезд образа (ubuntu-latest → 26.04) — разница двух ячеек, а не внезапный красный.
+        os: [ubuntu-24.04, ubuntu-26.04, macos-latest, windows-latest]
         python-version: ["3.11", "3.12"]
     defaults:
       run:
@@ -124,13 +123,33 @@ jobs:
           path: coverage.xml
           if-no-files-found: ignore
 
+  # Машина владельца: Fedora 44, системный Python 3.14, ffmpeg полный из RPM Fusion (не ffmpeg-free), LibreOffice.
+  test-fedora:
+    name: test (in-process, script exit-code = gate) · fedora-44 · 3.14
+    runs-on: ubuntu-24.04
+    container: registry.fedoraproject.org/fedora:44  # реестр Fedora: тот же образ, что у локальной пробы чистой машины
+    steps:
+      - name: system packages (git, python, ffmpeg из RPM Fusion, LibreOffice)
+        run: |
+          dnf install -y --setopt=install_weak_deps=False git python3 python3-pip libreoffice-calc \
+            "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm"
+          dnf install -y --allowerasing ffmpeg
+      - uses: actions/checkout@v7
+      # Наборы — не от root: root обходит права доступа, и проверки закрытых каталогов дали бы ложное.
+      - name: tests (pytest gate) от обычного пользователя
+        env:
+          VPM_FFMPEG_REQUIRED: "1"
+        run: |
+          useradd -m runner && chown -R runner:runner "$GITHUB_WORKSPACE"
+          su runner -c "cd '$GITHUB_WORKSPACE' && python3 -m venv .venv-ci && .venv-ci/bin/pip install -q -e '.[dev]' && VPM_FFMPEG_REQUIRED=1 .venv-ci/bin/python -m pytest"
+
   conformance:
     name: conformance (спека MCP, сторонний клиент) · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     defaults:
       run:
         shell: bash
@@ -150,11 +169,12 @@ jobs:
       - name: conformance (@modelcontextprotocol/conformance)
         env:
           VPM_CONFORMANCE_REQUIRED: "1"
-        run: python tests/conformance/test_conformance.py
+        # Через гейт наборов: среда набора (UTF-8 Mode и прочее) решается одним местом — suite_env (tests/test_suites.py).
+        run: python -m pytest tests/test_suites.py -k conformance
 
   security:
     name: security (bandit + pip-audit)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -173,7 +193,7 @@ jobs:
 
   gitleaks:
     name: gitleaks (secrets)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:

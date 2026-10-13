@@ -82,9 +82,9 @@ def pick(entries: list[dict], tool: str | None, code: str | None) -> int:
         entry = entries[i]
         if entry.get("ok"):
             continue
-        # Удержание соединений — УЛИКА, а не воспроизводимый отказ: запросом его не повторить,
-        # и сделать вид, что повторили, значит выдать другой сценарий за этот.
-        if entry.get("level") == "socket":
+        # Удержание соединений и отменённый вызов (обрыв клиента, остановка сервера) — УЛИКИ, а не воспроизводимые
+        # отказы: запросом их не повторить, и сделать вид, что повторили, значит выдать другой сценарий за этот.
+        if entry.get("level") in ("socket", "cancel"):
             continue
         if tool and entry.get("tool") != tool:
             continue
@@ -97,6 +97,8 @@ def pick(entries: list[dict], tool: str | None, code: str | None) -> int:
 # Заголовки, которыми воспроизводится отказ периметра. Ключ сюда не попадает: он замаскирован
 # в самой записи, и подставлять вместо него что-то своё значит воспроизводить другой отказ.
 PERIMETER_HEADERS = ("Host", "Origin", "Content-Type")
+# Чужой ключ повтора: значение ключа в записи замаскировано, а причина AUTH_FAILED — любой несовпавший ключ.
+FOREIGN_KEY = "заведомо-чужой-ключ"
 
 
 def as_steps(entries: list[dict]) -> list[dict]:
@@ -117,6 +119,9 @@ def as_steps(entries: list[dict]) -> list[dict]:
         if level == "socket":
             raise SystemExit("удержание соединений шагом не воспроизводится: это наблюдение нижнего "
                              "слоя, а не запрос — возьми отказ уровнем выше")
+        if level == "cancel":
+            raise SystemExit(f"отменённый вызов {entry.get('tool')} шагом не воспроизводится: исхода у него нет "
+                             f"({(entry.get('data') or {}).get('by')}) — возьми отказ с кодом")
         if level == "engine":
             steps.append({"call": entry["tool"], "with": entry.get("args") or {}, "expect": expect})
             continue
@@ -126,9 +131,9 @@ def as_steps(entries: list[dict]) -> list[dict]:
         if headers:
             step["headers"] = headers
         if level == "identity":
-            # Ключ в записи замаскирован — воспроизводим отсутствием, а не выдумкой. Отказ тот же
-            # по коду, но это ДРУГАЯ его причина, и знать об этом читающему обязательно.
-            step["token"] = ""
+            # Ключ в записи замаскирован — воспроизводим причину, а не значение: нет ключа — пустым, чужой — заведомо
+            # чужим. У двух причин разные коды реестра, и повтор обязан дать тот же код, что запись.
+            step["token"] = "" if entry.get("code") == "AUTH_REQUIRED" else FOREIGN_KEY
         steps.append(step)
     return steps
 

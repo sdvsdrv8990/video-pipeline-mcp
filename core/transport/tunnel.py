@@ -23,7 +23,7 @@ from pydantic_core import PydanticCustomError
 from core.contracts import ContractError
 from core.declaration import Declaration
 from core.declaration_schemas import TUNNEL_PROBE
-from core.environment import child_environ
+from core.environment import child_spawn
 from core.providers.download import answers
 from core.transport.diagnostics import каталог_проверок, путь_бинаря
 
@@ -160,7 +160,7 @@ class CloudflaredTunnel:
 
         named — два пути (по требованиям Cloudflare):
           • token: `cloudflared tunnel run` — дашбордовый туннель; токен уходит средой ребёнка
-            (`_child_env`), а не аргументом: argv процесса читает любой локальный пользователь;
+            (`_child_spawn`), а не аргументом: argv процесса читает любой локальный пользователь;
             ingress (домен → 127.0.0.1:port) настроен на стороне Cloudflare.
           • credentials: `cloudflared tunnel run --url <url> <id|name>` c
             --credentials-file — локально управляемый туннель, DNS-маршрут привязан
@@ -375,11 +375,10 @@ class CloudflaredTunnel:
         self._proc_started = time.time()
         return subprocess.Popen(
             self._build_command(),
-            env=self._child_env(),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
             bufsize=1,
+            **self._child_spawn(),
         )
 
     # ── Backoff ─────────────────────────────────────────────────────────────
@@ -567,13 +566,13 @@ class CloudflaredTunnel:
         """Режим токена — одно решение для argv и среды ребёнка."""
         return self.mode == "named" and bool(self.tunnel_token)
 
-    def _child_env(self) -> dict[str, str]:
-        """Среда ребёнка решается здесь, а не наследуется: любое имя `_IDENTITY_ENV` главнее объявленного файла
-        учётных данных и подняло бы не тот туннель; токен уходит средой, а не argv, который читает любой (`ps`)."""
-        среда = {k: v for k, v in child_environ().items() if k not in _IDENTITY_ENV}
-        if self._by_token():
-            среда[_TOKEN_ENV] = self.tunnel_token
-        return среда
+    def _child_spawn(self) -> dict:
+        """Аргументы порождения туннеля — из узла (среда без секретов сервера, вывод в utf-8; строки журнала — replace:
+        битый байт не должен убить поток супервизора); своё — имена личности поставщика сняты из базы среды, а токен
+        ставится только в режиме токена: каждое имя `_IDENTITY_ENV` главнее объявленного файла учётных данных."""
+        без_личности = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
+        свой = {_TOKEN_ENV: self.tunnel_token} if self._by_token() else {}
+        return child_spawn("replace", свой, environ=без_личности)
 
 
 def declared_hostname(config_path: str | Path | None) -> str:

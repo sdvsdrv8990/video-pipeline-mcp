@@ -11,13 +11,12 @@
 
 import argparse
 import sys
-import time
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from core import jobs                                             # noqa: E402
 from core.contracts import ContractError                          # noqa: E402
 from core.providers.catalog import ModelCatalog, OnlineCatalog    # noqa: E402
 from core.providers.installer import ModelInstaller               # noqa: E402
@@ -138,7 +137,7 @@ def cmd_pull(args) -> int:
 
 def cmd_install(args) -> int:
     """Поставить модель той же работой, что задание сервера (`ModelInstaller.work`): чужую установку той же модели
-    дожидается, пока та подаёт признаки работы; молчит дольше срока простоя — выход с кодом STALLED и причиной."""
+    дожидается до её конца; прервать ожидание может только человек (Ctrl-C)."""
     cat = _catalog()
     already = None if args.force else cat.installed_as(args.id, args.kind)
     if already:
@@ -148,12 +147,7 @@ def cmd_install(args) -> int:
     место = cat.место_под(args.id, args.kind, force=args.force)
     _предупредить_о_расчёте(cat, место)
     installer = ModelInstaller(cat, heartbeat_sec=cat.install_policy().progress.heartbeat_sec)
-    installer.linked()
-    try:
-        got = installer.work(место, _Признак(), progress=lambda m: print(f"  {m}"))
-    except _Простой as e:
-        print(f"✗ {args.id}: {e}. Повтори, когда та установка кончится.")
-        return STALLED
+    got = installer.work(место, _Признак(), progress=lambda m: print(f"  {m}"))
     print(f"✓ {args.id} — {round(got['mb'])} МБ, {got['path']}")
     for skip in got["refused"]:
         print(f"  ⚠ пропущено: {skip['file']} — {skip['reason']}")
@@ -178,31 +172,15 @@ def _мб(value) -> str:
     return "не известно" if value is None else f"{value} МБ"
 
 
-STALLED = 3                     # код выхода: чужая установка той же модели держит замок и молчит дольше срока простоя
-
-
-class _Простой(Exception):
-    """Чужая установка той же модели держит её замок и молчит дольше объявленного срока простоя."""
-
-
 class _Признак:
-    """Признак работы установки из CLI: тишину судит то же правило узла заданий (`jobs.stale`, `config/jobs.yaml`
-    `stale_after_sec`), что у задания сервера; простой ожидания чужого замка — отказ с причиной, а не вечное ожидание."""
+    """Признак работы установки из CLI: шаги печатает `progress` работы, вердикта по тишине нет — чужую установку той же
+    модели команда ждёт до её конца, снять ожидание может только человек (Ctrl-C)."""
 
-    def __init__(self, clock=time.time) -> None:
-        self.clock = clock
-        self.work = clock()
+    def __init__(self) -> None:
+        self.cancelled = threading.Event()      # не взводится: у CLI нет снятия, кроме прерывания человеком
 
     def __call__(self, progress: dict | None = None, working: bool = True) -> None:
-        if working:
-            self.work = self.clock()
-
-    def quiet(self) -> bool:
-        return jobs.stale(self.clock() - self.work)
-
-    def stall(self) -> _Простой:
-        return _Простой(f"замок модели держит другая установка, и она молчит {int(self.clock() - self.work)} с — "
-                        "дольше срока простоя (config/jobs.yaml stale_after_sec)")
+        """Ход задания узла CLI не пишет: записи задания у установки из CLI нет."""
 
 
 def _kinds() -> str:
@@ -241,8 +219,8 @@ def main(argv: list[str]) -> int:
     p.set_defaults(func=cmd_pull)
 
     p = sub.add_parser("install", help="поставить модель по имени",
-                       epilog=f"Код выхода {STALLED}: замок модели держит другая установка, и она молчит дольше срока "
-                              "простоя (config/jobs.yaml stale_after_sec); 2 — отказ кодом реестра.")
+                       epilog="Код выхода 2 — отказ кодом реестра. Замок модели держит другая установка — команда ждёт "
+                              "её конца; прервать ожидание — Ctrl-C.")
     p.add_argument("id")
     p.add_argument("--kind", required=True, help=kinds)
     p.add_argument("--force", action="store_true",

@@ -17,6 +17,7 @@ from pathlib import Path
 from packaging.requirements import Requirement
 
 from core.contracts import ContractError
+from core.environment import child_spawn
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ class Packages:
         planned = [p["requirement"] for p in before["plan"]]
         command = [sys.executable, "-m", "pip", "install", *planned, *(["--extra-index-url", index] if index else [])]
         announce(command)
-        done = subprocess.run(command, cwd=self.project, capture_output=True, text=True, check=False)
+        done = subprocess.run(command, cwd=self.project, capture_output=True, check=False, **child_spawn("replace"))
         if done.returncode != 0:
             log.error("установщик пакетов вернул %s: %s", done.returncode, (done.stderr or done.stdout)[-4000:])
             raise PackageError("PACKAGE_INSTALL_FAILED", facts={"exit_code": done.returncode,

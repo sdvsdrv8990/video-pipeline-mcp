@@ -13,6 +13,7 @@ from pathlib import Path
 
 from core.paths import Files
 from core.contracts import ContractError
+from core.environment import child_spawn
 
 # Ссылка в формуле: необязательный лист (`META!` / `'Мой лист'!`), затем ячейка или
 # диапазон (`B2`, `$B$2`, `A2:D9`). Границы обязательны: без них `LOG10(` в `=LOG10(x)`
@@ -441,7 +442,7 @@ class ExcelEngine:
             subprocess.run(
                 [soffice, "--headless", "--calc", f"-env:UserInstallation=file://{td}/profile",
                  "--convert-to", "xlsx:Calc MS Excel 2007 XML", "--outdir", str(td), str(src)],
-                check=True, capture_output=True, timeout=120,
+                check=True, capture_output=True, timeout=120, **child_spawn("replace"),
             )
         except subprocess.TimeoutExpired as e:
             shutil.rmtree(td, ignore_errors=True)

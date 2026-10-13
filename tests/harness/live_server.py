@@ -162,13 +162,13 @@ def live_server(**kw) -> LiveServer:
 
 def declarations_copy(changes: dict[str, dict[str, object]] | None = None, root: Path | None = None) -> Path:
     """Копия деклараций проекта в `<root>/config` (инструменты считают корнем проекта родителя каталога; без `root` —
-    свой временный, он убирается при выходе процесса), значения заменены по путям ключей (`spoil_slot`); боевой каталог
-    не трогается. Машинные декларации — их проект не ведёт (роль машины, туннель владельца) — в копию не идут:
-    прогон не зависит от машины, на которой идёт."""
+    свой временный), значения заменены по путям ключей (`spoil_slot`); боевой каталог не трогается. При выходе процесса
+    убирается то, что положила копия: свой временный корень целиком, а в чужом `root` — только `config` (корень
+    принадлежит вызывающему). Машинные декларации — их проект не ведёт (роль машины, туннель владельца) — в копию не
+    идут: прогон не зависит от машины, на которой идёт."""
     source = declarations_root()
     copy = Path(root or tempfile.mkdtemp(prefix="vpm-decl-")) / "config"
-    if root is None:
-        atexit.register(shutil.rmtree, copy.parent, ignore_errors=True)
+    atexit.register(shutil.rmtree, copy.parent if root is None else copy, ignore_errors=True)
     shutil.copytree(source, copy, ignore=_machine_files(source))
     for name, values in (changes or {}).items():
         data = yaml.safe_load((copy / name).read_text(encoding="utf-8"))

@@ -1289,7 +1289,7 @@ ok(_m46.status == "success" and (_w46 / "flink_moved.txt").is_symlink()
 (_w46 / "link_again").symlink_to(_w46 / "data")
 _m46 = call("fs_move", source="move46/link_again", destination="move46/moved_link")
 ok(_m46.status == "success" and (_w46 / "moved_link").is_symlink() and (_w46 / "data" / "ценное.txt").is_file()
-   and not (_w46 / "link_again").exists(follow_symlinks=False),
+   and not _os43.path.lexists(_w46 / "link_again"),  # Path.exists(follow_symlinks=) — только с 3.12
    "fs_move ссылки перенёс саму ссылку, каталог-цель на месте")
 
 
