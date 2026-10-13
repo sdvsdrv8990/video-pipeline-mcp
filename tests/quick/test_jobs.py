@@ -15,6 +15,8 @@ import sys
 import tempfile
 import threading
 import time
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,10 +24,12 @@ sys.path.insert(0, str(ROOT))
 
 import yaml
 
-from core.contracts import ContractError, ToolResult
+from core.capacity import Capacity
+from core.contracts import ContractError, Later, ToolResult
+from core.contracts.task_status import TaskStatus
 from core.declaration_schemas import Resources
 from core.engine.engine import Engine
-from core.jobs import Tasks, issue, issued
+from core.jobs import Tasks, _Record, issue, issued
 from core.reactions import Reactions
 from tests.harness.live_server import declarations_copy
 
@@ -171,6 +175,233 @@ check("вызов, снятый с цикла в поток, отменён по
       "кончил — место отдано: отмена ожидающего не пускает вторую работу поверх живой",
       held3 and freed3, (held3, freed3))
 
+print("== 3б. Место ⇒ поток (B16): снятые с цикла вызовы идут на все места своих классов и на малой машине; чтение без "
+      "места не встаёт за ними ==")
+RES16 = Capacity().resources                    # места — из декларации прогона, а не литерал теста
+LOAD16 = [(next(tool for tool, of in RES16.tools.items() if of == klass), klass)
+          for klass, body in RES16.classes.items() if body.offload for _ in range(body.max_concurrent or 0)]
+
+
+def _round16(cpus: int | None) -> tuple[list[str], list[str]]:
+    """`cpus` — малая машина для формулы пула библиотеки: число ядер читается при создании пула, поэтому под подменой
+    строится и движок — пул, сложенный по ядрам, а не по местам, тоже выходит малым."""
+    saved = {name: getattr(os, name) for name in ("cpu_count", "process_cpu_count") if hasattr(os, name)}
+    try:
+        for name in saved if cpus else ():
+            setattr(os, name, lambda: cpus)
+        return _crowd16()
+    finally:
+        for name, real in saved.items():
+            setattr(os, name, real)
+
+
+def _crowd16() -> tuple[list[str], list[str]]:
+    """Все места снятых классов разом, тела стоят у ворот; пока стоят — чтение без места через пул цикла по умолчанию.
+    Ответ: классы вошедших тел и порядок «чтение» / «ворота»."""
+    eng16 = Engine(resources=RES16)
+    inside: list[str] = []
+    gate, entered = threading.Event(), threading.Condition()
+
+    def held(klass: str):
+        async def body():
+            with entered:
+                inside.append(klass)
+                entered.notify_all()
+            gate.wait(15)                       # дольше обоих потолков наблюдения (5 + 5): тело не уходит, пока проба смотрит
+            return ToolResult(status="success", data={})
+        return body
+
+    for name, klass in dict(LOAD16).items():
+        eng16.register(name, "проба места ⇒ поток", {"type": "object", "properties": {}}, held(klass))
+
+    def all_in() -> None:
+        with entered:
+            entered.wait_for(lambda: len(inside) >= len(LOAD16), 5)
+
+    async def crowd() -> tuple[list[str], list[str]]:
+        calls = [asyncio.create_task(eng16.call(name, {})) for name, _ in LOAD16]
+        with ThreadPoolExecutor(1) as aside:    # ожидание тел — вне пулов, которые меряем
+            await asyncio.get_running_loop().run_in_executor(aside, all_in)
+        got, order = list(inside), []
+        read = asyncio.ensure_future(asyncio.to_thread(order.append, "чтение"))
+        await asyncio.wait({read}, timeout=5)
+        order.append("ворота")
+        gate.set()
+        await read
+        await asyncio.gather(*calls)
+        return got, order
+
+    return asyncio.run(crowd())
+
+
+want16 = Counter(klass for _, klass in LOAD16)
+for title16, cpus16 in (("машина прогона", None), ("малая машина, одно ядро", 1)):
+    got16, order16 = _round16(cpus16)
+    check(f"{title16}: снятые с цикла вызовы идут на все места разом — вошло {len(got16)} из {len(LOAD16)}, "
+          f"по классам {dict(Counter(got16))}", Counter(got16) == want16, dict(want16))
+    check(f"{title16}: чтение без места (пул цикла по умолчанию) отвечает, пока места заняты — порядок {order16}",
+          order16[:1] == ["чтение"], order16)
+
+
+def _threadless16() -> tuple:
+    """Система не дала поток пулу движка (предел задач процесса — так отказывает запуск потока): ответ клиенту, места
+    класса после вызова, записи журнала движка уровня ошибки (трасса)."""
+    name, klass = LOAD16[0]
+    eng = Engine(reactions=Reactions(ROOT / "config" / "server_reactions.yaml"), resources=RES16)
+    eng.register(name, "проба без потока", {"type": "object", "properties": {}}, _quick)
+    caught: list[logging.LogRecord] = []
+    catcher = logging.Handler(logging.ERROR)
+    catcher.emit = caught.append
+    logging.getLogger("core.engine.engine").addHandler(catcher)
+    def refuse(self):
+        raise RuntimeError("can't start new thread")
+
+    start = threading.Thread.start
+    threading.Thread.start = refuse
+    try:
+        answer = asyncio.run(eng.call(name, {}))
+    finally:
+        threading.Thread.start = start
+        logging.getLogger("core.engine.engine").removeHandler(catcher)
+    places = RES16.classes[klass].max_concurrent or 0
+    return answer, klass, sum(eng.slots.take(klass) for _ in range(places)) == places, len(caught)
+
+
+answer16, klass16, free16, traced16 = _threadless16()
+check("система не дала поток под место — отказ WORKER_UNAVAILABLE с работой, классом и объявленным числом потоков, "
+      "текст по шаблону реестра, место вернулось, трассы в журнале нет (инструмент не запускался — не «упал»)",
+      answer16.error is not None and answer16.error.code == "WORKER_UNAVAILABLE"
+      and answer16.error.facts == {"work": LOAD16[0][0], "klass": klass16, "threads": sum(want16.values())}
+      and LOAD16[0][0] in answer16.error.message and "{" not in answer16.error.message and free16 and not traced16,
+      (answer16.error and (answer16.error.code, answer16.error.facts, answer16.error.message), free16, traced16))
+
+
+def _threadless_task16() -> tuple[str, list]:
+    """Система не дала поток заданию узла (предел задач процесса): код отказа и записи хранилища после."""
+    node = Tasks(Engine(reactions=Reactions(ROOT / "config" / "server_reactions.yaml")), root=scratch("threadless16_"))
+
+    def refuse(self):
+        raise RuntimeError("can't start new thread")
+
+    start = threading.Thread.start
+    threading.Thread.start = refuse
+    try:
+        node.begin("генерация", {"n": 1}, "", lambda pulse: {"ok": 1})
+        said = "задание заведено"
+    except ContractError as e:
+        said = f"{e.code} {e.facts}"
+    finally:
+        threading.Thread.start = start
+    return said, node.status()
+
+
+said16t, left16t = _threadless_task16()
+check("система не дала поток заданию узла — WORKER_UNAVAILABLE с работой и классом, записи в хранилище нет",
+      said16t == "WORKER_UNAVAILABLE {'work': 'генерация', 'klass': ''}" and left16t == [], (said16t, left16t))
+
+
+def _loop_free16(tool: str) -> bool:
+    """Тело `tool` (по классу из декларации прогона) стоит у ворот; пока стоит — доходит ли цикл событий до своей
+    корутины. Судит наблюдатель в своём потоке: тело на цикле держит его, и тика нет до потолка."""
+    eng = Engine(resources=RES16)
+    inside, ticked, gate = threading.Event(), threading.Event(), threading.Event()
+    seen: list[bool] = []
+
+    async def body():
+        inside.set()
+        gate.wait(15)                           # дольше потолков наблюдения: тело не уходит, пока проба смотрит
+        return ToolResult(status="success", data={})
+
+    eng.register(tool, "проба цикла", {"type": "object", "properties": {}}, body)
+
+    def watch() -> None:
+        inside.wait(5)
+        seen.append(ticked.wait(5))
+        gate.set()
+
+    async def beat() -> None:
+        await asyncio.to_thread(inside.wait, 5)
+        ticked.set()
+
+    async def run() -> None:
+        watcher = threading.Thread(target=watch)
+        watcher.start()
+        heart = asyncio.ensure_future(beat())
+        await eng.call(tool, {})
+        await heart
+        watcher.join(15)
+
+    asyncio.run(run())
+    return bool(seen and seen[0])
+
+
+# Одна работа — обход таблиц планировщиком запросов с пулом поиска (QueryPlanner.execute_plan): законный — объявленный
+# класс, больной — инструмент той же работы без строки в декларации.
+for tool16 in ("search_tables", "search_quick"):
+    check(f"{tool16} (класс по декларации: {RES16.tools.get(tool16) or 'нет строки — на цикле'}) — тело стоит у ворот, "
+          "цикл событий отвечает другим", _loop_free16(tool16), RES16.tools.get(tool16))
+
+
+def _waiting_calls16() -> tuple[list, bool, list]:
+    """Гибрид (AD-20 б): вход вызова в потоке пула ставит задание и отдаёт `Later`, ожидание итога — на цикле движка.
+    Два ждущих media_generate; пока ждут — media_models и установка. Ответ: коды отказов вызовов, свободны ли все места
+    классов во время ожидания, статусы итогов после ворот работы."""
+    eng = Engine(reactions=Reactions(ROOT / "config" / "server_reactions.yaml"), resources=RES16)
+    node = Tasks(eng, root=scratch("later16_"))
+    gate, waiting = threading.Event(), {1: asyncio.Event(), 2: asyncio.Event()}
+
+    def work(pulse):
+        gate.wait(15)                           # дольше потолка наблюдения: работа идёт, пока проба смотрит
+        return {"ok": 1}
+
+    async def generate(n: int):
+        task_id = node.begin("генерация", {"n": n}, "любой", work)["task_id"]
+
+        async def finish():
+            waiting[n].set()
+            entry = (await node.until_end([task_id], 15))[0]
+            return ToolResult(status="success", data={"task": entry.get("task")})
+        return Later(finish)
+
+    async def light():
+        return ToolResult(status="success", data={})
+
+    eng.register("media_generate", "проба гибрида", {"type": "object", "properties": {"n": {"type": "integer"}}},
+                 generate)
+    for name in ("media_models", "media_model_install"):
+        eng.register(name, "проба места", {"type": "object", "properties": {}}, light)
+
+    async def run() -> tuple[list, bool, list]:
+        waits = []
+        for n in (1, 2):                        # второй входит, когда первый уже ждёт итог: гонки входов здесь нет
+            waits.append(asyncio.create_task(eng.call("media_generate", {"n": n})))
+            try:
+                await asyncio.wait_for(waiting[n].wait(), 5)
+            except TimeoutError:
+                pass
+        calls = [await eng.call(name, {}) for name in ("media_models", "media_model_install")]
+        taken = {k: [eng.slots.take(k) for _ in range(b.max_concurrent or 0)] for k, b in RES16.classes.items()
+                 if b.max_concurrent}
+        for k, got in taken.items():
+            for _ in filter(None, got):
+                eng.slots.give(k)
+        gate.set()
+        done = await asyncio.gather(*waits)
+        refused = [r.error.code for r in calls + done if isinstance(r, ToolResult) and r.error]
+        ends = [((r.data or {}).get("task") or {}).get("status") if isinstance(r, ToolResult) else type(r).__name__
+                for r in done]
+        return refused, all(all(got) for got in taken.values()), ends
+
+    return asyncio.run(run())
+
+
+refused16, free_wait16, ends16 = _waiting_calls16()
+check(f"два вызова ждут итог задания, пока ждут — media_models и установка идут: отказов {refused16 or 'нет'}",
+      not refused16, refused16)
+check("ожидание итога не держит ни места, ни потока: пока вызовы ждут, все места классов свободны (место ⇒ поток)",
+      free_wait16, free_wait16)
+check(f"после ворот работы ожидания кончились итогом задания ({ends16})", ends16 == ["completed", "completed"], ends16)
+
 print("== 4. Узел: занято — pending; отказ работы — в задании; прерванное, простой; плохой id и битая — в элементе ==")
 JOBS = yaml.safe_load((ROOT / "config" / "jobs.yaml").read_text(encoding="utf-8"))
 now = [1000.0]
@@ -191,8 +422,10 @@ def settle(task_id: str, wanted: set[str]) -> dict:
     return entry.get("task") or entry
 
 
-def held(gate: threading.Event, result: dict):
+def held(gate: threading.Event, result: dict, began: threading.Event | None = None):
     def work(beat):
+        if began is not None:
+            began.set()                         # статус уже processing: «начало работы» пишется до работы
         beat({"шаг": 1})
         gate.wait(5)
         return result
@@ -334,8 +567,10 @@ node6 = Tasks(reng, root=scratch("tasks6_"), clock=lambda: now6[0])
 runs: list[str] = []
 
 
-def counted(name: str, gate: threading.Event | None = None):
+def counted(name: str, gate: threading.Event | None = None, began: threading.Event | None = None):
     def work(beat):
+        if began is not None:
+            began.set()                         # статус уже processing: «начало работы» пишется до работы
         runs.append(name)
         if gate is not None:
             gate.wait(5)
@@ -393,8 +628,9 @@ quick = node6.settle(node6.begin("проба", {"x": 5}, "любой", counted("
 quick_sec = time.monotonic() - started
 check("settle: работа кончилась — элемент сразу по событию, а не по сроку ожидания",
       (quick.get("task") or {}).get("status") == "completed" and quick_sec < 1, f"{quick_sec:.3f} с")
-gate_slow = threading.Event()
-slow_id = node6.begin("проба", {"x": 6}, "любой", counted("медленный", gate_slow))["task_id"]
+gate_slow, began_slow = threading.Event(), threading.Event()
+slow_id = node6.begin("проба", {"x": 6}, "любой", counted("медленный", gate_slow, began_slow))["task_id"]
+began_slow.wait(5)                              # работа идёт — событием, а не сроком: диск под нагрузкой медлит
 started = time.monotonic()
 slow = node6.settle(slow_id, 0.2)
 slow_sec = time.monotonic() - started
@@ -615,6 +851,15 @@ def said8(seen: dict) -> list:
     return [(e.get("task") or {}).get("status") for e in seen.get("entries", [])]
 
 
+def started8(tool: str, params: dict, gate: threading.Event, result: dict) -> str:
+    """Задание, чья работа уже идёт: ждать событие входа в работу (processing записан до неё), а не срок — ожидание,
+    начатое после, видит прежний статус и под медленным диском."""
+    began = threading.Event()
+    task_id = node8.begin(tool, params, "любой", held(gate, result, began))["task_id"]
+    began.wait(5)
+    return task_id
+
+
 hold8 = node8.begin("держит", {"m": 1}, "загрузка", holding)["task_id"]
 began8.wait(5)
 pend8 = node8.begin("ждёт", {"m": 2}, "загрузка", queued8)["task_id"]
@@ -649,8 +894,7 @@ check("законный: живых исполнителей этого проц
       and time.monotonic() - started < 1, idle8)
 
 gate_own8 = threading.Event()
-own8 = node8.begin("своё", {"m": 10}, "любой", held(gate_own8, {"ok": "своё"}))["task_id"]
-node8.settle(own8, 0.2)
+own8 = started8("своё", {"m": 10}, gate_own8, {"ok": "своё"})
 on_own, seen_own = waited([own8])
 node8.settle(node8.begin("чужое", {"m": 11}, "любой", lambda pulse: {"ok": "чужое"})["task_id"], 5)
 on_own.join(0.2)
@@ -678,8 +922,7 @@ async def _abandon(task_id: str) -> tuple[int, int, bool]:
 
 
 gate_ab8 = threading.Event()
-left8 = node8.begin("брошенное", {"m": 12}, "любой", held(gate_ab8, {"ok": 1}))["task_id"]
-node8.settle(left8, 0.2)
+left8 = started8("брошенное", {"m": 12}, gate_ab8, {"ok": 1})
 heard_before, heard_after, was_cancelled = asyncio.run(_abandon(left8))
 gate_ab8.set()
 node8.settle(left8, 5)
@@ -716,8 +959,7 @@ async def _dropped(cancel_on_drop: bool, task_id: str) -> tuple[int, int]:
 
 
 gate_drop8 = threading.Event()
-drop8 = node8.begin("оборванное", {"m": 13}, "любой", held(gate_drop8, {"ok": 1}))["task_id"]
-node8.settle(drop8, 0.2)
+drop8 = started8("оборванное", {"m": 13}, gate_drop8, {"ok": 1})
 cut_before, cut_after = asyncio.run(_dropped(True, drop8))
 kept_before, kept_after = asyncio.run(_dropped(False, drop8))
 gate_drop8.set()
@@ -778,8 +1020,7 @@ async def _dropped_traced(task_id: str, trail_dir: Path, stop: bool = False) -> 
 
 
 gate_trace8 = threading.Event()
-trace8 = node8.begin("след обрыва", {"m": 14}, "любой", held(gate_trace8, {"ok": 1}))["task_id"]
-node8.settle(trace8, 0.2)
+trace8 = started8("след обрыва", {"m": 14}, gate_trace8, {"ok": 1})
 traced8 = asyncio.run(_dropped_traced(trace8, scratch("trail8_")))
 gate_trace8.set()
 node8.settle(trace8, 5)
@@ -790,8 +1031,7 @@ check("обрыв клиента на ожидании — в следе зап�
       and traced8[0].get("data", {}).get("elapsed_sec", 0) >= 0.2 and traced8[0]["data"].get("by") == "обрыв клиента",
       traced8)
 gate_stop8 = threading.Event()
-stop8 = node8.begin("след остановки", {"m": 15}, "любой", held(gate_stop8, {"ok": 1}))["task_id"]
-node8.settle(stop8, 0.2)
+stop8 = started8("след остановки", {"m": 15}, gate_stop8, {"ok": 1})
 stopped8 = asyncio.run(_dropped_traced(stop8, scratch("trail8s_"), stop=True))
 gate_stop8.set()
 node8.settle(stop8, 5)
@@ -842,6 +1082,83 @@ stdout8, stderr8 = other.communicate(timeout=10)
 check("конец трубы — конец чужой работы: completed, процесс вышел сам",
       other.returncode == 0 and (node8.status([foreign_id])[0].get("task") or {}).get("status") == "completed",
       stderr8[-300:])
+
+
+class Watched:
+    """Дверь файлов судьи: перед ожиданием замка (блокирующий захват) ставит `moved` — проба по нему отпускает того, кто
+    замок держит; захват без ожидания (timeout=0) — как есть."""
+
+    def __init__(self, files, moved: threading.Event):
+        self._files, self._moved = files, moved
+
+    def lock(self, path, **kwargs):
+        lock, moved = self._files.lock(path, **kwargs), self._moved
+
+        class Told:
+            def acquire(self, timeout=-1, **more):
+                if timeout != 0:
+                    moved.set()
+                return lock.acquire(timeout=timeout, **more)
+
+            def release(self):
+                lock.release()
+
+            def __enter__(self):
+                self.acquire()
+                return self
+
+            def __exit__(self, *_):
+                self.release()
+        return Told()
+
+    def __getattr__(self, name):
+        return getattr(self._files, name)
+
+
+def _two_judges8() -> tuple[str | None, list[str]]:
+    """Исполнителя незаконченного задания нет ни в одном процессе (замок записи свободен). Судья A пишет прерывание под
+    замком и стоит на воротах внутри записи; судья B судит ту же запись. A отпускается, когда B сдвинулся: ответил или
+    встал ждать замок. Ответ: статус, который отдал B, и файлы задания после retain_sec."""
+    clock, store8 = [time.time()], scratch("judges8_")
+    judge_a, judge_b = (Tasks(eng7, root=store8, clock=lambda: clock[0]) for _ in range(2))
+    dead, inside, go, moved = issue(), threading.Event(), threading.Event(), threading.Event()
+    judge_a._write(_Record(tool="прерванное", klass="любой", created=clock[0], heartbeat=clock[0],
+                           task=TaskStatus(task_id=dead, status="processing", params={})))
+    saving = judge_a._save
+
+    def held_save(record, **changes):
+        inside.set()                            # A держит замок и вот-вот запишет TASK_INTERRUPTED
+        go.wait(5)
+        return saving(record, **changes)
+
+    judge_a._save, judge_b.files = held_save, Watched(judge_b.files, moved)
+    first = threading.Thread(target=judge_a.status, args=([dead],))
+    first.start()
+    inside.wait(5)
+    said: dict = {}
+    second = threading.Thread(target=lambda: (said.update(b=judge_b.status([dead])[0]), moved.set()))
+    second.start()
+    moved.wait(5)
+    go.set()
+    first.join(5)
+    second.join(5)
+    clock[0] += JOBS["retain_sec"] + 1
+    judge_b.status()
+    left = sorted(p.name for p in (store8 / JOBS["store"]).iterdir() if p.name.startswith(dead))
+    return ((said.get("b") or {}).get("task") or {}).get("status"), left
+
+
+judged8, judged_left8 = _two_judges8()
+check(f"исполнителя нет ни в одном процессе: судья, пока другой судья пишет прерывание, не отдаёт живой статус — ждёт "
+      f"и видит конец ({judged8})", judged8 == "failed", judged8)
+check("прерванное после retain_sec убрано целиком: ни записи, ни замков на диске", judged_left8 == [], judged_left8)
+gate_live8 = threading.Event()
+live8 = started8("живое", {"m": 16}, gate_live8, {"ok": 1})
+alive8 = (Tasks(eng7, root=root8).status([live8])[0].get("task") or {}).get("status")
+gate_live8.set()
+node8.settle(live8, 5)
+check(f"законный: исполнитель жив и держит запись — судья другого узла отдаёт processing, а не прерывание ({alive8})",
+      alive8 == "processing", alive8)
 
 print(f"\nРЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

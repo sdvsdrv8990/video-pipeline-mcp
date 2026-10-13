@@ -18,6 +18,7 @@ from pathlib import Path
 
 from core.paths import Files
 
+from core.capacity import Capacity
 from core.declaration import Declaration
 from .resolver import ProviderError
 
@@ -136,6 +137,21 @@ class AdapterRegistry:
         чего он не выпускал.
         """
         return str((self._entry(provider, resource_type) or {}).get("key_source") or "")
+
+    def place(self, provider: str, resource_type: str = "") -> str:
+        """Класс места работы генерации (`adapters.place`, пара «провайдер:вид» первой); null — пустое имя: работа без
+        места, одновременность держит другая сторона. Строки нет или не строка — отказ двери с путём ключа; класс не
+        объявлен в resources.yaml — отказ связи двух деклараций (иначе работа молча шла бы без предела)."""
+        table = self.need("adapters", "place", kind=dict)
+        key = next((k for k in (f"{provider}:{resource_type}", provider) if k in table), provider)
+        if table.get(key, "") is None:
+            return ""
+        klass = self.need("adapters", "place", key, kind=str)
+        capacity = Capacity()
+        if klass not in capacity.resources.classes and klass not in capacity.resources.work:
+            raise self._decl.link_refused("class_undeclared", "класс места объявлен в resources.yaml (classes или work)",
+                                          [("adapters", "place", key)], capacity.declaration, [("classes",), ("work",)])
+        return klass
 
     def spec(self, provider: str, resource_type: str = "") -> str:
         """Объявленный путь адаптера. Пара «провайдер:ресурс» точнее одного имени и ищется первой."""

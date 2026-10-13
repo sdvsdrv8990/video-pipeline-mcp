@@ -6,16 +6,18 @@
 """
 
 import asyncio
+import contextvars
 import inspect
 import logging
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Awaitable
 from dataclasses import dataclass
 
 import jsonschema
 
-from core.contracts import ContractError, ToolResult, ErrorDetail, Recovery
+from core.contracts import ContractError, Later, ToolResult, ErrorDetail, Recovery
 from core.capacity import Capacity, Slots
 from core.declaration_schemas import Resources
 
@@ -31,7 +33,7 @@ class ToolDefinition:
     name: str
     description: str
     input_schema: dict
-    handler: Callable[..., Awaitable[ToolResult]]
+    handler: Callable[..., Awaitable[ToolResult | Later]]
     title: str = ""
     group: str = "general"
     annotations: dict | None = None
@@ -67,6 +69,9 @@ class Engine:
         self._offload = {name for name, klass in self._klass.items() if classes[klass].offload}
         # Места — один счёт на процесс у узла ёмкости: его же берут задания узла заданий (CP-05).
         self.slots = Capacity(resources).slots() if resources else Slots({})
+        # Поток под каждое место снятого с цикла класса: пул строит тот же узел ёмкости (B16), а не формула библиотеки.
+        self._threads = Capacity(resources).offload_threads() if resources else 0
+        self._pool = ThreadPoolExecutor(self._threads, thread_name_prefix="offload") if self._threads else None
         self._retry_after = {name: body.retry_after_sec for name, body in classes.items() if body.retry_after_sec}
 
     async def _invoke(self, tool: ToolDefinition, params: dict) -> ToolResult:
@@ -87,25 +92,35 @@ class Engine:
                                Recovery(reason=f"Повтори не раньше чем через {wait} с либо займись другой задачей."))
         if tool.name not in self._offload:
             try:
-                return await tool.handler(**params)
+                answer = await tool.handler(**params)
             finally:
                 self.slots.give(klass)
+            return await self._told(answer)
         try:
             # `handler` объявлен как Awaitable, а не Coroutine: обёртка делает из любого ожидаемого
             # настоящую корутину, которую можно запустить своим циклом в потоке.
             awaitable = tool.handler(**params)
 
-            async def _run() -> ToolResult:
+            async def _run() -> ToolResult | Later:
                 return await awaitable
 
-            work = asyncio.ensure_future(asyncio.to_thread(lambda: asyncio.run(_run())))
+            # Свой пул движка, а не пул цикла по умолчанию: поток есть у каждого места (B16); контекст — как у to_thread.
+            try:
+                work = asyncio.get_running_loop().run_in_executor(self._pool, contextvars.copy_context().run,
+                                                                  lambda: asyncio.run(_run()))
+            except RuntimeError as e:
+                # Система не дала поток (предел задач процесса): инструмент не запускался — отказ кодом, а не «упал».
+                if inspect.iscoroutine(awaitable):
+                    awaitable.close()
+                raise ContractError("WORKER_UNAVAILABLE",
+                                    facts={"work": tool.name, "klass": klass, "threads": self._threads}) from e
         except BaseException:
             self.slots.give(klass)
             raise
         # Место отдаёт конец потока, а не выход ожидающего: отменённый вызов (обрыв клиента) поток не останавливает,
         # и место, отданное раньше его конца, пустило бы вторую работу поверх живой (на карте — OOM).
         work.add_done_callback(lambda done: self._released(klass, done))
-        return await asyncio.shield(work)
+        return await self._told(await asyncio.shield(work))
 
     def _released(self, klass: str, done: asyncio.Future) -> None:
         """Место назад по концу потока; исход брошенного вызова забирается здесь — не «исключение, которое никто не
@@ -113,6 +128,12 @@ class Engine:
         self.slots.give(klass)
         if not done.cancelled():
             done.exception()
+
+    @staticmethod
+    async def _told(answer: ToolResult | Later) -> ToolResult:
+        """Ответ обработчика как есть; `Later` — досказать на цикле движка: место и поток вызова уже отданы, ожидание
+        итога идёт событием (AD-20 б)."""
+        return await answer.finish() if isinstance(answer, Later) else answer
 
     def _error(self, code: str, message: str, recovery: "Recovery", facts: dict | None = None,
                errors: list[dict] | None = None) -> ToolResult:
@@ -129,7 +150,7 @@ class Engine:
         name: str,
         description: str,
         input_schema: dict,
-        handler: Callable[..., Awaitable[ToolResult]],
+        handler: Callable[..., Awaitable[ToolResult | Later]],
         title: str = "",
         group: str = "general",
         annotations: dict | None = None
@@ -331,7 +352,7 @@ class Engine:
         return event
 
 
-def _unbindable(handler: Callable[..., Awaitable[ToolResult]], params: dict) -> str:
+def _unbindable(handler: Callable[..., Awaitable[ToolResult | Later]], params: dict) -> str:
     """Чем параметры не ложатся на сигнатуру обработчика — только имена, без значений; пусто — ложатся."""
     signature = inspect.signature(handler)
     try:

@@ -46,7 +46,7 @@ _КОДЫ = {
     "MODEL_UNLOADABLE", "BOOK_ROW_INVALID",
     "MODEL_NO_DISK_SPACE", "DISK_SPACE_UNKNOWN", "MODEL_SIZE_UNKNOWN", "TASK_NOT_FOUND",
     "TASK_INTERRUPTED", "TASK_RECORD_INVALID", "TASK_CANCELLED", "TASK_FINISHED", "TASK_FOREIGN",
-    "RESOURCE_BUSY",
+    "RESOURCE_BUSY", "WORKER_UNAVAILABLE",
     # Объявлены в server_reactions.yaml и реально бросаются, но выпали отсюда —
     # ErrorDetail предупреждал «код не в реестре» на штатных отказах поиска и пересчёта
     "PATH_NOT_FOUND", "QUERY_NOT_FOUND", "RECALC_UNAVAILABLE",
@@ -82,6 +82,10 @@ _КОДЫ = {
     "FILE_TYPE_FORBIDDEN",
     # Слой файлов: предел из объявления, не текст, место на диске под запись
     "FILE_TOO_LARGE", "FILE_NOT_TEXT", "NO_DISK_SPACE",
+    # Провод: результат вызова больше бюджета ответа клиента (transport.yaml → answer.chars)
+    "RESULT_TOO_LARGE",
+    # Чтение строками: строка длиннее памяти одного места поиска у узла ёмкости (resources.yaml → work.search)
+    "LINE_TOO_LONG",
     # Подтверждение необратимой операции
     "CONFIRM_REQUIRED",
     # Монтаж: словарь ffmpeg, сборка команды, запуск и приёмка результата

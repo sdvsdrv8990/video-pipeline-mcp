@@ -14,10 +14,11 @@
 
 import json
 from collections import defaultdict
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 
-from core.contracts import ContractError, Fact, ToolResult
+from core.contracts import ContractError, ErrorDetail, Fact, Later, ToolResult
 from core.engine import Engine
 from core.engine.table_materializer import declared_rows
 from core.jobs import Tasks
@@ -481,6 +482,25 @@ def register(engine: Engine, ctx: ToolContext) -> None:
 
     tasks = Tasks(engine)
 
+    def _later(task_id: str, done: Callable[[dict], ToolResult]) -> Later:
+        """Ответ вызова, поставившего задание (AD-20 б): ждать его конца событием в пределах срока вызова клиента
+        (`client_budget.call_sec`; не объявлен — 0, ожидания нет). Кончилось — `done(итог)` с `task_id`; отказ или
+        снятие — отказ задания; не кончилось — статус, `task_id` и `next`."""
+        async def finish() -> ToolResult:
+            entry = (await tasks.until_end([task_id], ctx.client_budget.call_sec))[0]
+            task = entry.get("task") or {}
+            refused = entry.get("error") or task.get("error")
+            if refused:
+                return ToolResult(status="error", error=ErrorDetail.model_validate(refused), data={"task_id": task_id})
+            if task.get("status") == "completed":
+                result = done(task["result"])
+                return result.model_copy(update={"data": {**(result.data or {}), "task_id": task_id}})
+            return ToolResult(status="success", data={"task_id": task_id, "task": task, "next": (
+                f"Задание идёт дольше срока вызова клиента — итог по id: task_status(task_ids=['{task_id}']) отвечает "
+                "сразу; wait=true держит вызов до смены статуса — только клиенту без короткого срока вызова. Долго или "
+                "молчит (idle_sec в статусе) — task_cancel.")})
+        return Later(finish)
+
     def _installer() -> ModelInstaller:
         """Установщик моделей на узле заданий: тик наблюдения — раз в `local.install.progress.heartbeat_sec`; ход — в
         факты статуса задания, вердикта по тишине у сервера нет."""
@@ -549,22 +569,33 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "failed": [{"model": r["params"]["model_id"], "code": r["error"]["code"]}
                        for r in rows if r["status"] == "failed"]})])
 
-    async def media_runner(action: str = "status", mode: str = "process") -> "ToolResult":
+    async def media_runner(action: str = "status", mode: str = "process") -> "ToolResult | Later":
         """Поднять, остановить или прозвонить раннер локальных моделей.
 
         Раннер считает модели в ОТДЕЛЬНОМ процессе: его падение или нехватка памяти не роняют
-        сервер и не рвут связь. Сам он не поднимается никогда — только этой командой.
+        сервер и не рвут связь. Сам он не поднимается никогда — только этой командой. Подъём — задание узла (ожидание
+        готовности событием, снятие — task_cancel); ответ ждёт готовности в пределах срока вызова клиента (AD-20 б).
         """
         if action not in ("start", "stop", "status"):
             return ctx.err(
                 "VALIDATION_ERROR", f"Неизвестное действие раннера: '{action}'.",
                 "Действия ровно три: start (поднять), stop (остановить), status (прозвонить).")
-        calls = {"start": lambda: _supervisor().start(ctx.workspace_path, mode=mode),
-                 "stop": lambda: _supervisor().stop(),
-                 "status": lambda: _supervisor().status()}
-        ok, state = ctx.safe(calls[action])
+        if action != "start":
+            ok, state = ctx.safe({"stop": lambda: _supervisor().stop(), "status": lambda: _supervisor().status()}[action])
+            return _runner_answer(state, action) if ok else state
+        ok, current = ctx.safe(lambda: _supervisor().running())
+        if not ok or current:
+            return _runner_answer(current, action) if ok else current
+        # Повтор старта после остановки — новый подъём, а не прежний итог (fresh); второй spawn поверх живого ловит running().
+        ok, entry = ctx.safe(lambda: tasks.begin(
+            "media_runner", {"action": action, "mode": mode}, "",
+            lambda pulse: _supervisor().launch(ctx.workspace_path, pulse, mode=mode), fresh=True))
         if not ok:
-            return state
+            return entry
+        return _later(entry["task_id"], lambda state: _runner_answer(state, action))
+
+    def _runner_answer(state: dict, action: str) -> ToolResult:
+        """Ответ раннера — один для вызова и для итога задания подъёма: состояние, действие, подсказка, факт RunnerState."""
         return ToolResult(status="success", data={
             **state, "action": action,
             "hint": ("Считать в раннере или в самом сервере — выбор строки канала: провайдер "
@@ -582,7 +613,9 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "Управляет раннером — отдельным процессом, в котором считаются локальные модели. "
             "Зачем он: инференс в самом сервере роняет сервер вместе с собой (нехватка памяти или "
             "сбой в графе рвут связь с клиентом), а рестарт сервера теряет поднятые модели. "
-            "action=start поднимает раннер и ждёт, пока он ответит; stop останавливает; status "
+            "action=start поднимает раннер заданием сервера и ждёт его готовности в пределах срока вызова клиента: "
+            "успел — ответ о готовом раннере, не успел — id задания и статус (итог — task_status, снять — "
+            "task_cancel: процесс остановится); stop останавливает; status "
             "показывает фазу (running, exited, stopped), pid, время работы и что раннер держит "
             "поднятым. Упавший раннер виден как exited вместе с хвостом его журнала — сам он не "
             "перезапускается, потому что тихий подъём спрятал бы причину падения. "

@@ -4,8 +4,12 @@
 - scenario: rcode_resource_class_busy_refuses_second_call
   why: класс ресурса с одним местом занят — второй вызов сразу получает «занято» с подсказкой повтора, а не ждёт за пределом клиента
   род: отрицательный
+  # Обновлено в 2a (66, 2026-10-13): media_runner перешёл с gpu (одно место) на control (два) — класс с одним местом
+  # теперь объявляет сам сценарий, а не берёт случайно из боевой декларации; ожидание то же.
   given:
     fixtures: [hold_slot]
+    declarations:
+      resources.yaml: {classes.control.max_concurrent: 1}
   when:
     - python: busy_while_held
       with: {tool: media_runner, args: {action: status}}

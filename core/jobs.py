@@ -22,7 +22,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from filelock import Timeout
 from pydantic import BaseModel, ValidationError
@@ -45,6 +45,7 @@ _PULSES: dict[str, Pulse] = {}                  # исполнители это�
 _HEARD: set[Callable[[], None]] = set()         # слушатели смены статуса в этом процессе: их будит `_changed`
 _HEARD_LOCK = threading.Lock()
 log = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 def _changed() -> None:
@@ -182,6 +183,19 @@ class Pulse:
         return True
 
 
+def paced(probe: Callable[[], T | None], pulse: Pulse, pauses: Iterator[float]) -> T:
+    """Ожидание внешнего состояния в работе задания: проба — исход (значение), «ещё нет» (None) или отказ (исключение);
+    между пробами — пауза темпом `pauses`, снятие задания её прерывает отказом снятия. Срока по часам нет: ход — число
+    проб в `pulse`, предел — у другой стороны (её отказ, конец процесса) и у того, кто снимает."""
+    tries = 0
+    while (outcome := probe()) is None:
+        tries += 1
+        pulse({"проб": tries})
+        if pulse.cancelled.wait(next(pauses)):
+            raise pulse.refusal()
+    return outcome
+
+
 class Tasks:
     """Узел заданий над движком: задание — запись в хранилище и поток-исполнитель; статус — чтение записей."""
 
@@ -202,10 +216,19 @@ class Tasks:
             if twin is not None:
                 return twin
             task_id, written = issue(), threading.Event()
-            threading.Thread(target=self._run, args=(task_id, tool, params, klass, work, mark, fresh, written),
-                             daemon=True, name=f"task-{task_id}").start()
+            try:
+                threading.Thread(target=self._run, args=(task_id, tool, params, klass, work, mark, fresh, written),
+                                 daemon=True, name=f"task-{task_id}").start()
+            except RuntimeError as e:   # система не дала поток (предел задач процесса): работа не запускалась, записи нет
+                raise ContractError("WORKER_UNAVAILABLE", facts={"work": tool, "klass": klass}) from e
             written.wait()
         return self._view(task_id)
+
+    def twin(self, tool: str, params: dict, *, key: dict | None = None) -> dict | None:
+        """Элемент задания того же вызова в окне повтора (как у `begin`) или None — до отказов входа, которые зависят от
+        состояния, меняемого самим двойником (место на диске у установки): повтор отдаёт тот же id, а не отказ.
+        `begin` судит двойника снова под своим замком."""
+        return self._twin(_fingerprint(tool, params if key is None else key))
 
     def settle(self, task_id: str, within: float) -> dict:
         """Элемент задания, как только его исполнитель в этом процессе кончил работу, но не позже `within` секунд: ждёт
@@ -237,6 +260,19 @@ class Tasks:
                 woke.clear()
                 entries = await asyncio.to_thread(self.status, ids)
             return entries
+
+    async def until_end(self, task_ids: list[str], within: float) -> list[dict]:
+        """Статусы названных заданий, как только каждое кончилось (конечный статус, снятие — тоже), но не позже `within`
+        секунд — бюджета вызова клиента: ждёт событием (`waiting`), без потока и без места; бюджет вышел или ждать нечего
+        (исполнителя этого процесса нет) — статусы как есть."""
+        entries = await asyncio.to_thread(self.status, task_ids)
+        try:
+            async with asyncio.timeout(within):
+                while any(i in _PULSES and s in _LIVE for i, s in zip(task_ids, _said(entries))):
+                    entries = await self.waiting(task_ids)
+        except TimeoutError:
+            entries = await asyncio.to_thread(self.status, task_ids)
+        return entries
 
     def cancel(self, task_ids: list[str]) -> list[dict]:
         """Снять задания — элемент на id (`TaskEntry`). Живое задание исполнителя этого процесса — конечный `cancelled`
@@ -352,28 +388,32 @@ class Tasks:
                 continue
             if record.finished is not None and now - record.finished > retain:
                 self.files.remove(path)
-                if self.files.place(f"{path}.lock").exists():
-                    self.files.remove(f"{path}.lock")
+                for lock in (f"{path}.lock", f"{path}.judge.lock"):      # замок исполнителя и замок судей (`_live`)
+                    if self.files.place(lock).exists():
+                        self.files.remove(lock)
                 continue
             found.append((task_id, record))
         return found
 
     def _live(self, path: str, record: _Record) -> _Record:
         """Незаконченное задание: замок записи свободен — исполнителя нет ни в одном процессе, задание прервано (это
-        пишется, факт, а не срок); держится — исполнитель жив, запись как есть: молчание судит клиент по фактам хода."""
-        lock = self.files.lock(path)
-        try:
-            lock.acquire(timeout=0)
-        except Timeout:
-            return record
-        try:
-            current = self._load(path)          # исполнитель мог дописать запись между чтением и замком
-            if current.task.status not in _LIVE:
-                return current
-            error = self._error(current.tool, "TASK_INTERRUPTED", task_id=current.task.task_id, tool=current.tool)
-            return self._save(current, status="failed", error=error, finished=True)
-        finally:
-            lock.release()
+        пишется, факт, а не срок); держится — исполнитель жив, запись как есть: молчание судит клиент по фактам хода.
+        Судьи идут по очереди через свой замок: замок записи держит только исполнитель — занят он, значит, жив исполнитель,
+        а не судья, который сейчас пишет прерывание."""
+        with self.files.lock(f"{path}.judge"):
+            lock = self.files.lock(path)
+            try:
+                lock.acquire(timeout=0)
+            except Timeout:
+                return record
+            try:
+                current = self._load(path)      # исполнитель или прежний судья мог дописать запись до замка
+                if current.task.status not in _LIVE:
+                    return current
+                error = self._error(current.tool, "TASK_INTERRUPTED", task_id=current.task.task_id, tool=current.tool)
+                return self._save(current, status="failed", error=error, finished=True)
+            finally:
+                lock.release()
 
     def _save(self, record: _Record, *, finished: bool = False, alive: bool = True, **changes) -> _Record:
         """Запись с изменённым статусом: признак работы — сейчас, если работа шла (`alive`); конец — если задание

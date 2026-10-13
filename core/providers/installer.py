@@ -38,6 +38,9 @@ class ModelInstaller:
         already = None if force else self.catalog.installed_as(model_id, kind)
         if already:
             return TaskStatus(task_id=None, status="completed", params=params, result=already).model_dump()
+        twin = tasks.twin(tool, params)         # до суда места: остаток идущей установки его уже съел
+        if twin is not None:
+            return twin["task"]
         место = self.catalog.место_под(model_id, kind, force=force)
         return tasks.begin(tool, params, PLACE, lambda pulse: self.work(место, pulse))["task"]
 

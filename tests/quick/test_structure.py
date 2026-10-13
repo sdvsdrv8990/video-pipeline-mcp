@@ -1362,6 +1362,15 @@ def _call47(tool, **args):
     return asyncio.run(_eng.call(tool, args))
 
 
+def _pages_of(call, path):
+    """Страницы fs_read_file по next_offset до последней; страница без продвижения — конец (событие его судит)."""
+    pages, offset = [call("fs_read_file", path=path, offset=0)], 0
+    while pages[-1].status == "success" and pages[-1].data.get("next_offset", offset) > offset:
+        offset = pages[-1].data["next_offset"]
+        pages.append(call("fs_read_file", path=path, offset=offset))
+    return pages
+
+
 # Под пределом ответ прежний: ровно поля content и size, один факт FileRead.
 (_w47 / "мало.md").write_text("короткий текст — ё", encoding="utf-8")
 _r47 = _call47("fs_read_file", path="lim47/мало.md")
@@ -1369,15 +1378,18 @@ ok(_r47.status == "success" and _r47.data == {
        "content": _untrusted47("короткий текст — ё", "workspace:lim47/мало.md", _ctx.injection_flagger).model_dump(),
        "size": len("короткий текст — ё")} and [f.type for f in _r47.facts] == ["FileRead"],
    f"под пределом fs_read_file отвечает прежними полями и одним фактом ({_r47.error or sorted(_r47.data)})")
-# Больше предела — голова до предела, обрезание названо полями и фактом; срез посреди символа — не порча.
+# Больше предела — голова до предела, обрезание названо полями и фактом; срез посреди символа — не порча. Голова больше
+# бюджета ответа клиента — страницами: склейка страниц по next_offset — вся голова, обрезание названо на каждой.
 _big47 = "a" + "я" * _rl47  # 1 + 2·предел байт: граница предела режет «я» пополам
 (_w47 / "много.md").write_text(_big47, encoding="utf-8")
-_r47 = _call47("fs_read_file", path="lim47/много.md")
-_head47 = (_r47.data.get("content") or {}).get("value", "") if _r47.status == "success" else ""
-ok(_r47.status == "success" and _r47.data.get("truncated") is True and _r47.data.get("limit") == _rl47
-   and _r47.data.get("file_bytes") == len(_big47.encode("utf-8")) and _big47.startswith(_head47)
-   and len(_head47.encode("utf-8")) == _rl47 - 1,
-   f"больше предела: голова {len(_head47.encode('utf-8'))} байт при пределе {_rl47}, поля обрезания ({_r47.error})")
+_pages47 = _pages_of(_call47, "lim47/много.md")
+_r47 = _pages47[-1]
+_head47 = "".join((p.data.get("content") or {}).get("value", "") for p in _pages47 if p.status == "success")
+ok(all(p.status == "success" and p.data.get("truncated") is True and p.data.get("limit") == _rl47
+       and p.data.get("file_bytes") == len(_big47.encode("utf-8")) for p in _pages47)
+   and _big47.startswith(_head47) and len(_head47.encode("utf-8")) == _rl47 - 1,
+   f"больше предела: голова {len(_head47.encode('utf-8'))} байт при пределе {_rl47} — {len(_pages47)} стр.,"
+   f" поля обрезания ({_r47.error})")
 ok([f.data for f in _r47.facts if f.type == "FileTruncated"]
    == [{"path": "lim47/много.md", "limit": _rl47, "file_bytes": len(_big47.encode("utf-8"))}],
    "обрезание — отдельный факт FileTruncated в канале фактов, а не только поле данных")
@@ -1421,12 +1433,15 @@ ok(_r47.status == "success" and {"reason": "FILE_TOO_LARGE", "name": "lim47/кр
                                   "size": len(_over47.encode("utf-8")), "limit": _wl47} in _r47.data["skipped"]
    and not (_w47 / "крупно.md").exists() and (_w47 / "мелко.md").is_file(),
    f"фрагмент больше предела — в skipped кодом и фактами, соседний создан ({_r47.data.get('skipped')})")
-# Поиск по содержимому: файл больше предела не «не совпал», а назван непрочитанным.
+# Поиск по содержимому идёт потоком строк: файл больше прежнего предела чтения (1 МиБ) не «непрочитан», а найден по
+# слову в своём конце.
 (_w47 / "искомое.md").write_text("ключ-47", encoding="utf-8")
+(_w47 / "длинный.md").write_text("строка без слова\n" * 80_000 + "в конце ключ-47\n", encoding="utf-8")
 _r47 = _call47("fs_smart_search", directory="lim47", keyword="ключ-47")
-ok(_r47.status == "success" and [r["path"] for r in _r47.data["results"]] == ["lim47/искомое.md"]
-   and {"path": "lim47/много.md", "reason": "FILE_TOO_LARGE"} in _r47.data["unreadable"],
-   f"поиск: совпадение найдено, файл больше предела назван в unreadable ({_r47.data.get('unreadable')})")
+ok(_r47.status == "success" and (_w47 / "длинный.md").stat().st_size > 2**20
+   and sorted(r["path"] for r in _r47.data["results"]) == ["lim47/длинный.md", "lim47/искомое.md"]
+   and not _r47.data["unreadable"],
+   f"поиск: файл больше прежнего 1 МиБ найден по слову в конце, непрочитанных нет ({_r47.data.get('unreadable')})")
 
 print("== 48. Пределы чтения и записи — разные ключи объявления: равные числа подмену ключа не прячут (FS-12) ==")
 from tests.harness.live_server import declarations_copy as _decl_copy48
@@ -1445,6 +1460,190 @@ ok(_w48.status == "success" and (_ws48 / "mid.md").read_text(encoding="utf-8") =
 ok(_r48.status == "success" and _r48.data.get("truncated") is True and _r48.data.get("limit") == 64 * 1024
    and _r48.data.get("file_bytes") == 100 * 1024,
    f"чтение того же файла при пределе чтения 64 КБ — с обрезанием ({_r48.error or {k: _r48.data.get(k) for k in ('truncated', 'limit')}})")
+
+print("== 49. Ответ по бюджету клиентов установки (transport.yaml → clients): страницы fs_read_file и отказ провода ==")
+import json as _json49
+import os as _os49
+
+from core.transport import Transport as _Transport49
+from core.transport.transport import answer as _answer49
+from core.transport.transport import client_budget as _budget49
+
+_B49 = 3000  # испорченный малый бюджет claude_ai в знаках: страниц много при малых файлах; копия без install.yaml — все клиенты
+_cfg49 = _decl_copy48({"transport.yaml": {"clients.claude_ai.answer_chars": _B49}})
+
+
+def _load49(result):
+    """Доля бюджета установки копии, которую ответ занял бы на проводе; больше 1 — не влезет."""
+    return _budget49(_cfg49).load(result)
+
+
+_ws49 = Path(tempfile.mkdtemp(prefix="vpm_ws49_"))
+_sm49, _ids49 = StateManager(_ws49), IDGenerator()
+_eng49 = Engine(reactions=Reactions(_cfg49 / "server_reactions.yaml"), state_manager=_sm49)
+_fs_group.register(_eng49, ToolContext(_eng49, _ids49, _sm49, None, ExcelEngine(_ws49),
+                                       TemplateEngine(_ws49, _ids49, TPL_DIR), LinkRegistry(_ws49), _ws49, _cfg49))
+_tr49 = _Transport49(engine=_eng49, config_path=_cfg49)
+
+
+def _call49(tool, **args):
+    return asyncio.run(_eng49.call(tool, args))
+
+
+def _wire49(tool, **args):
+    """Ответ tools/call так, как его получает клиент: результат JSON-RPC после провода."""
+    raw = asyncio.run(_tr49.handle_request(_json49.dumps(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}})))
+    return _json49.loads(raw)["result"]
+
+
+# (что за текст, текст, граница страницы посреди слова ждётся): склейка страниц — сам текст, каждый ответ в бюджете,
+# на последней странице next_offset нет
+_TEXTS49 = [
+    ("кириллица", "Съешь же ещё этих мягких французских булок, да выпей чаю. " * 300, True),
+    ("экранирование раздувает ответ (кавычки, обратная черта, табуляция, управляющий символ, перевод строки)",
+     'строка "в кавычках"\t\\путь\x01\n' * 600, False),
+]
+for _what49, _text49, _mid49 in _TEXTS49:
+    _name49 = f"текст_{len(_text49)}.md"
+    (_ws49 / _name49).write_text(_text49, encoding="utf-8")
+    _pages49 = _pages_of(_call49, _name49)
+    _joined49 = "".join((p.data.get("content") or {}).get("value", "") for p in _pages49 if p.status == "success")
+    _cuts49 = [(p.data or {}).get("next_offset", 0) for p in _pages49[:-1]]  # отказ вместо страницы — провал, не трасса
+    ok(_joined49 == _text49 and len(_pages49) > 1 and "next_offset" not in (_pages49[-1].data or {})
+       and all(_load49(p) <= 1 for p in _pages49),
+       f"{_what49}: {len(_pages49)} стр., склейка == файл, ответы в бюджете (доли {[round(_load49(p), 3) for p in _pages49]})")
+    if _mid49:
+        ok(any(_text49[c - 1].isalpha() and _text49[c].isalpha() for c in _cuts49),
+           f"{_what49}: граница страницы посреди слова — склейку это не портит (границы {_cuts49[:5]}…)")
+
+# offset ровно в конце — пустая страница без next_offset; за концом и меньше нуля — отказ кодом, длина головы — фактом
+(_ws49 / "ёж.md").write_text("ёж", encoding="utf-8")
+_end49 = _call49("fs_read_file", path="ёж.md", offset=2)
+ok(_end49.status == "success" and _end49.data["content"]["value"] == "" and "next_offset" not in _end49.data,
+   f"offset в конце головы — пустая страница без next_offset ({_end49.error or _end49.data})")
+for _off49 in (3, -1):
+    _past49 = _call49("fs_read_file", path="ёж.md", offset=_off49)
+    ok(_past49.status == "error" and _past49.error.code == "VALIDATION_ERROR"
+       and [e.get("field") for e in _past49.error.errors or []] == ["offset"],
+       f"offset {_off49} вне головы — VALIDATION_ERROR по полю offset ({_past49.error})")
+
+# Провод: страница доходит до клиента в бюджете, кириллица текстом как есть
+_cyr49 = _wire49("fs_read_file", path=f"текст_{len(_TEXTS49[0][1])}.md")
+_said49 = _cyr49["content"][0]["text"]
+ok(not _cyr49.get("isError") and len(_json49.dumps(_cyr49, ensure_ascii=False)) <= _B49 and "Съешь" in _said49
+   and "\\u04" not in _said49,
+   f"провод: страница fs_read_file в бюджете {_B49}, кириллица без \\uXXXX ({len(_json49.dumps(_cyr49, ensure_ascii=False))})")
+
+# Инструмент без страниц, чей ответ больше бюджета: работа сделана, клиенту — отказ RESULT_TOO_LARGE с длиной и бюджетом
+for _i49 in range(400):
+    (_ws49 / "дерево" / f"узел_{_i49:03d}").mkdir(parents=True)
+_tree49 = _wire49("fs_get_directory_tree", path="дерево")
+_err49 = (_tree49.get("structuredContent") or {}).get("error") or {}
+_f49 = _err49.get("facts") or {}
+# Доля в отказе — от знаков ответа и бюджета claude_ai копии: истина считается из фактов и объявленного числа
+ok(_tree49.get("isError") is True and _err49.get("code") == "RESULT_TOO_LARGE" and _f49.get("tool") == "fs_get_directory_tree"
+   and _f49.get("chars", 0) > _B49 and _f49.get("load") == round(100 * _f49["chars"] / _B49)
+   and len(_json49.dumps(_tree49, ensure_ascii=False)) <= _B49,
+   f"дерево больше бюджета — RESULT_TOO_LARGE с tool, chars, bytes, load; сам отказ в бюджете ({_f49})")
+
+# Правка бюджета видна странице и проводу разом (одна дверь): бюджет меньше пустой страницы — отказ провода, не обрезок
+_decl49 = _cfg49 / "transport.yaml"
+_was49 = _decl49.stat().st_mtime_ns
+_body49 = _y.safe_load(_decl49.read_text(encoding="utf-8"))
+_body49["clients"]["claude_ai"]["answer_chars"] = 50
+_decl49.write_text(_y.safe_dump(_body49, allow_unicode=True), encoding="utf-8")
+_os49.utime(_decl49, ns=(_was49 + 10**9, _was49 + 10**9))
+
+
+def _under49(facts, budget):
+    """Отказ посчитан от этого бюджета знаков: доля в фактах — знаки ответа на бюджет."""
+    return facts.get("load") == round(100 * facts.get("chars", 0) / budget)
+
+
+_tiny49 = _wire49("fs_read_file", path="ёж.md")
+_terr49 = (_tiny49.get("structuredContent") or {}).get("error") or {}
+ok(_tiny49.get("isError") is True and _terr49.get("code") == "RESULT_TOO_LARGE" and _under49(_terr49.get("facts") or {}, 50),
+   f"бюджет 50 после правки файла: страница не влезает и пустой — провод отказывает с новым бюджетом ({_terr49.get('facts')})")
+# Страница без продвижения не уходит и мимо провода: инструмент сам отказывает, а не отдаёт пустую с next_offset == offset
+_stuck49 = _call49("fs_read_file", path="ёж.md")
+ok(_stuck49.status == "error" and _stuck49.error.code == "RESULT_TOO_LARGE" and _under49(_stuck49.error.facts, 50),
+   f"бюджет меньше одного символа: инструмент отказывает, пустой страницы нет ({_stuck49.error or _stuck49.data})")
+_tree49 = _wire49("fs_get_directory_tree", path="дерево")
+ok(_under49((((_tree49.get("structuredContent") or {}).get("error") or {}).get("facts") or {}), 50),
+   "транспорт судит дерево новым бюджетом 50 — правку файла видит и провод, а не только страница")
+
+# Установка только с консолью (install.yaml: MCP есть, туннеля нет) — действует Claude Code: бюджет тела в байтах UTF-8
+# (испорченный малый — 4000). Кириллица — 2 байта на знак: страница в байтах в бюджете, бюджета знаков claude.ai нет.
+_cfg49c = _decl_copy48({"transport.yaml": {"clients.claude_code": {"reached": "loopback", "answer_bytes": 4000,
+                                                                   "error_chars": 10000}}})
+(_cfg49c / "install.yaml").write_text("mcp: true\ntunnel: none\n", encoding="utf-8")
+_ws49c = Path(tempfile.mkdtemp(prefix="vpm_ws49c_"))
+_eng49c = Engine(reactions=Reactions(_cfg49c / "server_reactions.yaml"), state_manager=StateManager(_ws49c))
+_fs_group.register(_eng49c, ToolContext(_eng49c, _ids49, StateManager(_ws49c), None, ExcelEngine(_ws49c),
+                                        TemplateEngine(_ws49c, _ids49, TPL_DIR), LinkRegistry(_ws49c), _ws49c, _cfg49c))
+_text49c = "Съешь же ещё этих мягких французских булок, да выпей чаю. " * 300
+(_ws49c / "кириллица.md").write_text(_text49c, encoding="utf-8")
+_pages49c = _pages_of(lambda tool, **a: asyncio.run(_eng49c.call(tool, a)), "кириллица.md")
+_sizes49c = [len(_json49.dumps(_answer49(p), ensure_ascii=False).encode("utf-8")) for p in _pages49c]
+ok(_budget49(_cfg49c) == _budget49(_cfg49c).__class__(chars=None, bytes=4000, call_sec=0, error_chars=10000)
+   and "".join(p.data["content"]["value"] for p in _pages49c) == _text49c and max(_sizes49c) <= 4000,
+   f"только консоль: бюджет — байты 4000, срока нет (ожидания 0); склейка == файл, байты страниц ≤ 4000 ({_sizes49c[:4]}…)")
+
+# Причина в месте рождения → дверь fs_smart_search: строка длиннее предела (шов снимка памяти) и файл, пропавший между
+# обходом и чтением (сосед удаляет его ровно перед чтением — обёртка ссылки, которой пользуется поиск): ответ инструмента
+# называет непрочитанное кодом, а не «не совпало» и не трасса
+import core.providers.hardware as _hw49
+import core.search.fs_searcher as _fss49
+from core.capacity import Capacity as _Cap49
+
+(_ws49 / "поиск").mkdir()
+(_ws49 / "поиск" / "длинная.md").write_text("ключ-49 " + "ж" * 5000 + "\n", encoding="utf-8")
+_real_mem49 = _hw49.process_memory
+_hw49.process_memory = lambda *a, **k: (1000 * 4 * (_Cap49().places("search") or 1), "проба: шов снимка")
+try:
+    _long49 = _call49("fs_smart_search", directory="поиск", keyword="ключ-49")
+finally:
+    _hw49.process_memory = _real_mem49
+ok(_long49.status == "success" and _long49.data["results"] == []
+   and {"path": "поиск/длинная.md", "reason": "LINE_TOO_LONG"} in _long49.data["unreadable"],
+   f"дверь поиска: строка длиннее предела — в unreadable LINE_TOO_LONG ({_long49.error or _long49.data.get('unreadable')})")
+(_ws49 / "поиск" / "длинная.md").unlink()
+(_ws49 / "поиск" / "уйдёт.md").write_text("ключ-49\n", encoding="utf-8")
+_real_has49 = _fss49.contains_all
+
+
+def _neighbour49(path, *rest, **kw):
+    """Сосед удаляет файл ровно между обходом и чтением; дальше — настоящее чтение того же пути."""
+    path.unlink()
+    return _real_has49(path, *rest, **kw)
+
+
+_fss49.contains_all = _neighbour49
+try:
+    _gone49 = _call49("fs_smart_search", directory="поиск", keyword="ключ-49")
+finally:
+    _fss49.contains_all = _real_has49
+ok(_gone49.status == "success" and _gone49.data["results"] == []
+   and [u.get("path") for u in _gone49.data["unreadable"]] == ["поиск/уйдёт.md"],
+   f"дверь поиска: файл пропал между обходом и чтением — назван в unreadable, а не «не совпало» "
+   f"({_gone49.error or _gone49.data.get('unreadable')})")
+
+# Декларация провода сломана посреди работы сервера (правка на живой машине): бюджет судится до вызова — клиенту
+# кодовый отказ двери деклараций, инструмент записи не исполнялся (файла нет), а не падение провода после записи
+_body49b = _y.safe_load(_decl49.read_text(encoding="utf-8"))
+_body49b["clients"]["claude_ai"]["answer_chars"] = "много"
+_decl49.write_text(_y.safe_dump(_body49b, allow_unicode=True), encoding="utf-8")
+_os49.utime(_decl49, ns=(_was49 + 2 * 10**9, _was49 + 2 * 10**9))
+try:
+    _broken49 = _wire49("fs_write_file", path="не_записан.md", content="x")
+except Exception as _crash49:  # исключение мимо двери — провал этой проверки, а не падение набора
+    _broken49 = {"crash": repr(_crash49)[:200]}
+_berr49 = (_broken49.get("structuredContent") or {}).get("error") or {}
+ok(_broken49.get("isError") is True and _berr49.get("code") == "DECLARATION_INVALID"
+   and not (_ws49 / "не_записан.md").exists() and "много" not in _json49.dumps(_broken49, ensure_ascii=False),
+   f"битая декларация провода посреди работы: отказ DECLARATION_INVALID до вызова, файла нет, значения в ответе нет "
+   f"({_berr49.get('code')}, {_berr49.get('errors')})")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

@@ -9,7 +9,7 @@
 from .fact import Fact
 from .errors import ContractError
 from .error_detail import ErrorDetail, Recovery
-from .tool_result import ToolResult
+from .tool_result import Later, ToolResult
 from .task_status import TaskStatus
 from .untrusted import UntrustedText, as_untrusted
 
@@ -23,6 +23,7 @@ __all__ = [
     "ErrorDetail",
     # Основные (используют базовые)
     "ToolResult",
+    "Later",
     "TaskStatus",
     # Провенанс чужого текста в выводе
     "UntrustedText",

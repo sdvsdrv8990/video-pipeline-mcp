@@ -314,6 +314,56 @@ ok(_e10 is not None and _e10.code == "PROVIDER_TIMEOUT"
    f"каждый опрос получил остаток срока ожидания, после срока опросов нет, ожидание кончилось в срок "
    f"({len(_clock10['asked'])} опросов, последний {_clock10['asked'][-1:]}, конец {_clock10['now']} из {_limit10})")
 
+# Прозвонка в задании узла (2a): нашего срока нет — конец — итог провайдера или снятие; пауза темпом poll прерывается.
+import threading as _thr10
+from core.contracts import ContractError as _CE10
+from tests.harness.live_server import declarations_copy as _decl10
+
+
+class _Pulse10:
+    """Работа задания без узла: ход — счётчик проб (список рос бы без предела под мутантом, глухим к снятию), снятие —
+    событие."""
+
+    def __init__(self):
+        self.cancelled, self.beats = _thr10.Event(), 0
+
+    def __call__(self, progress=None, working=True):
+        self.beats += 1
+
+    def refusal(self):
+        return _CE10("TASK_CANCELLED", facts={})
+
+
+def _paced10(seconds: float) -> TaskCycle:
+    """Прозвонка с темпом `seconds` — копия деклараций; боевой темп растянул бы набор на минуты."""
+    pace = {"poll.interval_sec": seconds, "poll.max_interval_sec": seconds}
+    return TaskCycle(_decl10({"media_tasks.yaml": pace}) / "media_tasks.yaml")
+
+
+_long10 = [{"status": "крутится"}] * 80 + [{"status": "succeeded"}]
+_seq10, _pulse10 = iter(_long10), _Pulse10()
+_f10 = _paced10(0.001).follow(lambda tid, within: next(_seq10), "T5", _pulse10) or {}  # None — без исхода
+ok(_f10.get("outcome") == "done" and _f10.get("attempts") == len(_long10) and _pulse10.beats == len(_long10) - 1,
+   f"прозвонка в задании: нашего срока и предела попыток нет — {_f10.get('attempts')} опросов (прежний предел max_attempts "
+   f"— 60), готово по слову провайдера; ход — {_pulse10.beats} проб в pulse")
+_asked10, _pulse10s, _end10 = _thr10.Event(), _Pulse10(), {}
+
+
+def _cut10():
+    try:
+        _paced10(30).follow(lambda tid, within: (_asked10.set(), {"status": "крутится"})[1], "T6", _pulse10s)
+    except _CE10 as e:
+        _end10["code"] = e.code
+
+
+_waiter10 = _thr10.Thread(target=_cut10, daemon=True)
+_waiter10.start()
+_asked10.wait(5)
+_pulse10s.cancelled.set()
+_waiter10.join(5)
+ok(not _waiter10.is_alive() and _end10.get("code") == "TASK_CANCELLED",
+   f"снятие посреди паузы прозвонки (темп 30 с) — отказ снятия сразу, а не после паузы ({_end10})")
+
 _dws = Path(tempfile.mkdtemp(prefix="dl_"))
 (_dws / "a.wav").write_bytes(b"12345")
 _v = _tc.verify_download("a.wav", _dws, declared_bytes=5)
@@ -1184,6 +1234,38 @@ ok(_again_twice["task_id"] == _first_twice["task_id"] and _twice_cat.runs == 1,
    f"повтор того же вызова, пока установка идёт, — тот же task_id и одна загрузка (AD-21) "
    f"({_first_twice['task_id']}, {_again_twice['task_id']}, загрузок {_twice_cat.runs}; задания при повторе {_at_repeat})")
 
+
+class _Tight(_Counted):
+    """Двойник: места на диске ровно на одну модель; работа пишет её часть до ворот — свободное место съедено остатком."""
+
+    def __init__(self):
+        super().__init__()
+        self.free_mb = 0.002
+
+    def место_под(self, model_id, kind, force=False):
+        if self.free_mb < 0.002:
+            raise ProviderError("MODEL_NO_DISK_SPACE", facts={"model": model_id, "need_mb": 0.002, "free_mb": self.free_mb})
+        return super().место_под(model_id, kind, force)
+
+    def install_planned(self, место, progress=lambda _m: None, mark=None, held=lambda: None, pulse=None):
+        self.free_mb = 0.0
+        return super().install_planned(место, progress, mark, held, pulse)
+
+
+_tight_cat = _Tight()
+_node_tight, _first_tight = _install16(_tight_cat, "модель-9")
+_tight_cat.entered.wait(10)
+try:
+    _again_tight = ModelInstaller(_tight_cat, heartbeat_sec=0.02).begin(_node_tight, "media_model_install", "модель-9",
+                                                                         "tts")["task_id"]
+except ProviderError as _e:
+    _again_tight = _e.code
+_tight_cat.gate.set()
+_node_tight.settle(_first_tight["task_id"], 10)
+ok(_again_tight == _first_tight["task_id"] and _tight_cat.runs == 1,
+   f"повтор, пока первая установка пишет остаток и съела место, — тот же task_id, а не отказ места: двойник ищется до суда "
+   f"входа, который меняет сам двойник (AD-21) ({_first_tight['task_id']}, {_again_tight}, загрузок {_tight_cat.runs})")
+
 _RES16 = _srv._load_resources(ROOT / "config" / "resources.yaml")
 _eng_res16 = _Eng(reactions=_REACTIONS, resources=_RES16)
 _node_res16 = _Tasks16(_eng_res16, root=_врем("inst16res_"))
@@ -1528,10 +1610,14 @@ ok(_bound["cpu_count"] == 3 and _bound["cpu_source"] == "os.process_cpu_count"
    and _system["cpu_count"] == os.cpu_count() and _system["cpu_source"] == "os.cpu_count",
    f"ядра — доступные процессу, источник назван; без process_cpu_count и psutil — ядра системы "
    f"({_bound['cpu_count']} {_bound['cpu_source']} / {_system['cpu_count']} {_system['cpu_source']})")
-ok(_stepped["cpu_count"] == _affinity,
-   f"process_cpu_count вернул None — число со ступени ниже, привязка через psutil, а не 0 ({_stepped['cpu_count']})")
-ok(_stepped["cpu_source"] == "psutil.Process().cpu_affinity",
-   f"источник — ступень, которая ответила, а не та, что промолчала ({_stepped['cpu_source']})")
+import psutil as _psutil18  # привязка ядер в API psutil есть не везде (macOS — нет)
+
+_has_affinity18 = hasattr(_psutil18.Process, "cpu_affinity")
+_answered18 = "psutil.Process().cpu_affinity" if _has_affinity18 else "os.cpu_count"
+ok(_stepped["cpu_count"] == (_affinity if _has_affinity18 else os.cpu_count()),
+   f"process_cpu_count вернул None — число со ступени ниже ({_answered18}), а не 0 ({_stepped['cpu_count']})")
+ok(_stepped["cpu_source"] == _answered18,
+   f"источник — ступень, которая ответила, а не та, что промолчала ({_stepped['cpu_source']}, ждали {_answered18})")
 ok(_no_psutil["cpu_count"] == os.cpu_count() and _no_psutil["cpu_source"] == "os.cpu_count",
    f"psutil нет — ступень ниже, ядра системы ({_no_psutil['cpu_count']} {_no_psutil['cpu_source']})")
 ok(_blind["cpu_count"] == 1 and _blind["cpu_source"].startswith("минимум 1"),
@@ -2724,8 +2810,13 @@ ok("MCP_RUNNER_TOKEN" in _docker17 and not any("MCP_RUNNER_TOKEN=" in a for a in
 ok("--device" in _docker17 and "/dev/kfd" in _dstr17,
    "карта пробрасывается устройствами ядра — системный ROCm внутрь не ставится")
 _gid17 = _docker17[_docker17.index("--group-add") + 1] if "--group-add" in _docker17 else ""
-ok(_gid17.isdigit(),
-   f"группа доступа к карте взята у устройства ЧИСЛОМ, а не именем, которого в образе нет ({_gid17 or 'её нет'})")
+# Группу берут у устройства на ЭТОЙ машине: без устройства (macOS, контейнер CI) брать не у кого — пропуск с причиной.
+_devs17 = [Path(a) for i, a in enumerate(_docker17) if i and _docker17[i - 1] == "--device"]
+if any(d.exists() for d in _devs17):
+    ok(_gid17.isdigit(),
+       f"группа доступа к карте взята у устройства ЧИСЛОМ, а не именем, которого в образе нет ({_gid17 or 'её нет'})")
+else:
+    print(f"  ⚠ объявленных устройств нет на машине ({', '.join(map(str, _devs17))}) — группа по числу не проверена")
 # Обновлено в шаге 1 рендера (R2): рабочая область через ссылку ФС монтируется настоящим путём — сверка по нему.
 ok(_dstr17.count("-v ") >= 2 and "vendor/models" in _dstr17 and str(_ws.resolve()) in _dstr17,
    "веса и рабочая область приезжают ТОМАМИ, а не слоями образа")
@@ -2736,10 +2827,11 @@ ok("providers.yaml:ro" in _dstr17 and "tunnel.yaml" not in _dstr17,
 # разрешает супервизор. Боевой vendor/ не трогаем — иначе тест поднимал бы раннер поверх настоящего и стирал его запись.
 _p17 = _sock17.socket(); _p17.bind(("127.0.0.1", 0)); _port17 = _p17.getsockname()[1]; _p17.close()
 _tmp17 = Path(tempfile.mkdtemp(prefix="runner_"))
-_cfg17 = declarations_copy({"providers.yaml": {"online.http.Local_runner.url": f"http://127.0.0.1:{_port17}/run",
-                                               "local.runner.state_file": "state.json",
-                                               "local.runner.log_file": "runner.log",
-                                               "local.models_dir": str(_reg.models_dir)}}, root=_tmp17)
+_runner_decl17 = {"online.http.Local_runner.url": f"http://127.0.0.1:{_port17}/run", "local.runner.state_file": "state.json",
+                  "local.runner.log_file": "runner.log", "local.models_dir": str(_reg.models_dir)}
+# Срок вызова клиента (transport.yaml clients) — у всех объявленных: подъём раннера укладывается в него (AD-20 б).
+_cfg17 = declarations_copy({"providers.yaml": _runner_decl17, "transport.yaml": {"clients.claude_code.call_sec": 240}},
+                           root=_tmp17)
 
 _row17 = {**_row_bg, "provider": "Local_runner"}
 (_ws / "pic" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
@@ -2764,13 +2856,15 @@ try:
        "прозвонка не поднятого раннера отвечает «не поднят», а не молчит")
 
     _start17 = _c17("media_runner", action="start")
-    ok(_start17.status == "success" and _start17.data["phase"] == "running" and _start17.data["pid"],
-       f"инструмент поднял раннер ({_start17.data.get('phase') if _start17.status == 'success' else _start17.error.code})")
+    _up17 = _start17.status == "success" and _start17.data.get("phase") == "running"
+    ok(_up17 and _start17.data.get("pid") and _start17.data.get("task_id"),
+       f"инструмент поднял раннер заданием и дождался готовности в пределах срока вызова клиента — готов в одном вызове, "
+       f"с id задания подъёма ({_start17.data.get('phase') if _start17.status == 'success' else _start17.error.code})")
     _state17 = _tmp17 / "state.json"
     ok(_start17.status != "success" or _state17.is_file(),
        f"состояние раннера легло от корня проекта копии — state_file объявлен путём от корня ({_state17})")
 
-    if _start17.status == "success" and _state17.is_file():
+    if _up17 and _state17.is_file():
         _tok17 = _json.loads(_state17.read_text(encoding="utf-8"))["token"]
         _base17 = f"http://127.0.0.1:{_port17}"
 
@@ -2868,6 +2962,29 @@ try:
         ok(_c17("media_runner", action="stop").data["phase"] == "stopped",
            "остановка убирает за собой и не спотыкается о мёртвый процесс")
 
+        # Срок вызова клиента не объявлен (клиент без срока) — ожидания нет: ответ сразу с id, итог — task_status (AD-20 б).
+        _srv.CONFIG_PATH = declarations_copy({"providers.yaml": _runner_decl17},
+                                             root=Path(tempfile.mkdtemp(prefix="runner_s_")))
+        _eng17s = _Eng(reactions=_REACTIONS, state_manager=_sm)
+        _register(_eng17s, _IDG(), _sm)
+        try:
+            _slow17 = _aio.run(_eng17s.call("media_runner", {"action": "start"}))
+            _slow_id17 = (_slow17.data or {}).get("task_id")
+            _said17s, _last17s = [((_slow17.data or {}).get("task") or {}).get("status")], {}
+            for _ in range(3):                  # pending → processing → completed: каждая смена — ответ wait
+                if _said17s[-1] not in ("pending", "processing"):
+                    break
+                _seen17s = _aio.run(_eng17s.call("task_status", {"task_ids": [_slow_id17], "wait": True}))
+                _last17s = (((_seen17s.data or {}).get("tasks") or [{}])[0].get("task") or {})
+                _said17s.append(_last17s.get("status"))
+            ok(_slow17.status == "success" and _slow_id17 and _said17s[0] in ("pending", "processing")
+               and _said17s[-1] == "completed" and (_last17s.get("result") or {}).get("phase") == "running",
+               f"срок вызова клиента не объявлен — ответ сразу с id задания подъёма, итог — task_status(wait=true) смена за "
+               f"сменой: {_said17s}, раннер {(_last17s.get('result') or {}).get('phase')}")
+        finally:
+            _aio.run(_eng17s.call("media_runner", {"action": "stop"}))
+            _srv.CONFIG_PATH = _cfg17
+
     # И обратно: строка канала переключает расчёт в сервер тем же table_update, без рестарта.
     if _bg_model:
         (_ws / "pic" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
@@ -2888,7 +3005,7 @@ _wire17r: list = []
 _said17r: list[str] = []
 _clock17r = {"now": 0.0}
 _health17r = yaml.safe_load(CFG.read_text(encoding="utf-8"))["local"]["runner"]
-_ready17r = float(_health17r["ready_timeout_sec"])
+_ready17r = 60.0      # прежний срок подъёма ready_timeout_sec (providers.yaml в 442bd13, снят в 2a): подъём его переживает
 _phase17r = min(_health17r["health"]["timeout_sec"], _health17r["health"]["deadline_sec"] / 2)
 
 
@@ -2910,6 +3027,7 @@ def _runner17r(url: str, cls=_Sup17):
     cfg = declarations_copy({"providers.yaml": {"online.http.Local_runner.url": url,
                                                 "local.runner.state_file": "state.json",
                                                 "local.runner.log_file": "runner.log",
+                                                "local.runner.poll_sec": 0.01,   # темп проб стенда: ход — число проб
                                                 "local.models_dir": str(_reg.models_dir)}}, root=root)
     return cls(AdapterRegistry(cfg / "providers.yaml", root), root)
 
@@ -2957,19 +3075,31 @@ try:
         _h17r = _runner17r("http://127.0.0.1:8770/run")._probe()
         ok(_h17r == {} and any(_code17r in s for s in _said17r),
            f"{_case17r}: молчание — {{}}, а причина — в журнале кодом {_code17r} ({_said17r})")
-    _clock17r["now"], _wire17r[:] = 0.0, []
-    _Sup17.transport = _wire17r_reply("hung")
+    _clock17r["now"], _probes17r = 0.0, {"n": 0}
+    _beyond17r = _thr16.Event()
+
+    def _hung_beyond17r(request):
+        _probes17r["n"] += 1
+        _clock17r["now"] += request.extensions["timeout"]["connect"]     # молчит: фаза двери съедена целиком
+        if _clock17r["now"] > _ready17r:
+            _beyond17r.set()
+        raise _hx17.ConnectTimeout("порт молчит")
+
+    _Sup17.transport = _hx17.MockTransport(_hung_beyond17r)
     _sleeper17r = _runner17r("http://127.0.0.1:8770/run", cls=_Sleeper17r)
-    try:
-        _sleeper17r.start(_ws)
-        _e17r = None
-    except _CE17 as e:
-        _e17r = e
-    ok(_e17r is not None and _e17r.code == "PROVIDER_TIMEOUT" and len(_wire17r) > 2
-       and _clock17r["now"] <= _phase17r + _ready17r + 1e-6,
-       f"процесс жив, /health молчит — прозвонки готовности уложены в остаток ready_timeout_sec: конец "
-       f"{_clock17r['now']:.2f} с ≤ первая прозвонка состояния {_phase17r:g} + {_ready17r:g} "
-       f"({len(_wire17r)} прозвонок, {_e17r and _e17r.code})")
+    _node17r = _Tasks16(_eng16, root=_врем("runner17r_"))
+    _job17r = _node17r.begin("media_runner", {"action": "start"}, "",
+                             lambda pulse: _sleeper17r.launch(_ws, pulse))["task_id"]
+    _beyond17r.wait(10)
+    _pid17r = _json.loads(_sleeper17r.state_file.read_text(encoding="utf-8"))["pid"]
+    _going17r = (_node17r.status([_job17r])[0].get("task") or {}).get("status")
+    _cut17r = (_node17r.cancel([_job17r])[0].get("task") or {}).get("status")
+    _node17r.settle(_job17r, 10)
+    ok(_beyond17r.is_set() and _going17r == "processing" and _cut17r == "cancelled" and not _Sup17._alive(_pid17r),
+       f"Обновлено в 2a (66, 2026-10-13): прежде подъём кончался PROVIDER_TIMEOUT за ready_timeout_sec — срок по часам "
+       f"снят (живость — ход работы, слово владельца). Процесс жив, /health молчит: подъём идёт дольше прежнего срока "
+       f"({_clock17r['now']:.0f} с > {_ready17r:g} с, {_probes17r['n']} прозвонок) и остаётся {_going17r}; снятие — "
+       f"{_cut17r} сразу, процесс остановлен (pid {_pid17r})")
 finally:
     _Sup17.transport, _Sup17.resolve, _Sup17.clock, _Sup17.sleep = _seams17r
     _logger17r.removeHandler(_journal17r)

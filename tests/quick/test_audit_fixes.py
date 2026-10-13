@@ -191,7 +191,7 @@ async def main():
     from core.contracts import ContractError as _Refusal
     from pathlib import Path as _P
     _ws = _P(S.WORKSPACE_PATH).resolve(); _ws.mkdir(exist_ok=True)
-    _fs = FsSearcher(_ws, read_bytes=_decl_fw["file_limits"]["read_bytes"])
+    _fs = FsSearcher(_ws)
     def _esc(root):
         try:
             _fs.search(FsSearchTask(id="t", root=root, content_keywords=["root"]))

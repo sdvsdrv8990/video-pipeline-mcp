@@ -9,6 +9,7 @@ pid, порт и токен лежат в файле только для вла�
 
 import contextlib
 import functools
+import itertools
 import json
 import logging
 import os
@@ -27,6 +28,7 @@ from core.contracts import ContractError
 from core.declaration import Declaration
 from core.declaration_schemas import RUNNER_HEALTH, ProviderUrl
 from core.environment import child_spawn
+from core.jobs import paced
 from core.paths import Files
 from core.providers.download import answers
 from core.providers.resolver import ProviderError
@@ -187,46 +189,6 @@ class RunnerSupervisor:
 
     # ═══ Запуск ═══
 
-    def start(self, workspace: Path, mode: str = "process") -> dict:
-        """Поднять раннер и дождаться, пока он ответит. Уже поднят — вернуть как есть."""
-        current = self.status()
-        if current["phase"] in ("running", "running_silent"):
-            return {**current, "already": True}
-        if current["phase"] == "foreign":
-            raise ProviderError("RUNNER_PORT_TAKEN", facts={"url": self.base_url})
-
-        token = secrets.token_urlsafe(32)
-        self.log_file.parent.mkdir(parents=True, exist_ok=True)
-        command = self._command(mode, workspace)
-        with self.log_file.open("a", encoding="utf-8") as log:
-            log.write(f"\n=== запуск {time.strftime('%Y-%m-%d %H:%M:%S')} ({mode}) ===\n")
-            log.flush()
-            proc = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, cwd=str(self.root),
-                                    **child_spawn("replace", {TOKEN_ENV: token}))
-        state = {"pid": proc.pid, "token": token, "mode": mode, "started": time.time(),
-                 "workspace": str(workspace), "command": command}
-        self._write(state)
-
-        # Срок готовности идёт вниз: прозвонка получает остаток, пауза его не перешагивает (повтор — здесь, не в двери).
-        deadline = self.clock() + float(self.rules.get("ready_timeout_sec") or 60)
-        pause = float(self.rules.get("poll_sec") or 0.3)
-        while (left := deadline - self.clock()) > 0:
-            if self._probe(token, within=left).get("ok"):
-                return {**self.status(), "already": False}
-            if proc.poll() is not None:
-                # Умер, не начав отвечать: причина уже в журнале, и она важнее нашей догадки.
-                self.state_file.unlink(missing_ok=True)
-                raise ProviderError(
-                    "LOCAL_INFERENCE_FAILED",
-                    f"Раннер завершился при запуске (код {proc.returncode}).",
-                    reason=f"Последнее, что он сказал:\n{self._log_tail()}\nЧастая причина — не "
-                           "поставлена среда инференса: pip install -e \".[local]\".")
-            self.sleep(min(pause, max(deadline - self.clock(), 0.0)))
-        self.stop()
-        raise ProviderError(
-            "PROVIDER_TIMEOUT", f"Раннер не ответил за {self.rules.get('ready_timeout_sec', 60)} с.",
-            reason=f"Процесс поднимался, но готовности не сообщил. Журнал: {self.log_file}.")
-
     def _command(self, mode: str, workspace: Path) -> list[str]:
         """Чем поднимать: своим интерпретатором или контейнером (изоляция зависимостей)."""
         if mode == "process":
@@ -274,6 +236,52 @@ class RunnerSupervisor:
                 if gid != "0" and gid not in gids:
                     gids.append(gid)
         return gids
+
+    def _exited(self, proc: subprocess.Popen) -> ProviderError:
+        """Раннер умер, не начав отвечать: запись о запуске убрана, причина — хвост его журнала, она важнее догадки."""
+        self.state_file.unlink(missing_ok=True)
+        return ProviderError(
+            "LOCAL_INFERENCE_FAILED",
+            f"Раннер завершился при запуске (код {proc.returncode}).",
+            reason=f"Последнее, что он сказал:\n{self._log_tail()}\nЧастая причина — не "
+                   "поставлена среда инференса: pip install -e \".[local]\".")
+
+    def running(self) -> dict | None:
+        """Раннер уже отвечает или встаёт — его состояние (`already`); на порту чужой — отказ; не поднят — None."""
+        current = self.status()
+        if current["phase"] in ("running", "running_silent"):
+            return {**current, "already": True}
+        if current["phase"] == "foreign":
+            raise ProviderError("RUNNER_PORT_TAKEN", facts={"url": self.base_url})
+        return None
+
+    def launch(self, workspace: Path, pulse, mode: str = "process") -> dict:
+        """Поднять раннер работой задания (`pulse` — узел заданий) и дождаться готовности: /health ответил — состояние;
+        процесс вышел — отказ с хвостом журнала; задание снято — процесс остановлен, отказ снятия. Срока по часам нет:
+        живой процесс — ход, пауза проб — `local.runner.poll_sec` (`jobs.paced`)."""
+        token = secrets.token_urlsafe(32)
+        self.log_file.parent.mkdir(parents=True, exist_ok=True)
+        command = self._command(mode, workspace)
+        with self.log_file.open("a", encoding="utf-8") as log:
+            log.write(f"\n=== запуск {time.strftime('%Y-%m-%d %H:%M:%S')} ({mode}) ===\n")
+            log.flush()
+            proc = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, cwd=str(self.root),
+                                    **child_spawn("replace", {TOKEN_ENV: token}))
+        self._write({"pid": proc.pid, "token": token, "mode": mode, "started": time.time(),
+                     "workspace": str(workspace), "command": command})
+
+        def ready() -> dict | None:
+            if self._probe(token).get("ok"):
+                return {**self.status(), "already": False}
+            if proc.poll() is not None:
+                raise self._exited(proc)
+            return None
+
+        try:
+            return paced(ready, pulse, itertools.repeat(self.registry.need("local", "runner", "poll_sec", kind=float)))
+        except BaseException:
+            self.stop()                         # не дождались готовности: процесс не остаётся без задания
+            raise
 
     # ═══ Остановка ═══
 

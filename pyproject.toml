@@ -175,7 +175,7 @@ Repository = "https://github.com/sdvsdrv8990/video-pipeline-mcp"
 # установки (они и так приходят с сервером), а для снятия: убрав такую строку из `dependencies`,
 # ломаешь не только сервер, и узнать об этом надо ДО, а не по красному гейту. Обе стороны держит
 # `tests/quick/test_dependencies.py`: незаявленное заимствование и заявленное, которого уже нет.
-borrowed_by_tests = ["aiohttp", "httpx", "huggingface-hub", "jsonschema", "openpyxl", "pillow", "platformdirs", "pydantic", "pyyaml"]
+borrowed_by_tests = ["aiohttp", "httpx", "huggingface-hub", "jsonschema", "openpyxl", "pillow", "platformdirs", "psutil", "pydantic", "pyyaml"]
 # Модуль, который даёт дистрибутив, — ОБЪЯВЛЕНИЕМ. Связать `import piper` с `piper-tts` можно
 # только через установленный пакет, а необязательная группа (модели, ускоритель) не стоит ни
 # здесь, ни в CI: там ставится ровно `.[dev]`. Без этой строки «не проверено» превращалось в

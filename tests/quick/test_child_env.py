@@ -12,6 +12,7 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -80,7 +81,25 @@ print("== 3. Раннер: свой токен средой ребёнка, се
 
 class _Registry:
     config_file = Path("providers.yaml")
-    config = {"local": {"runner": {"provider": "r"}}, "online": {"http": {"r": {"url": "http://127.0.0.1:9/run"}}}}
+    config = {"local": {"runner": {"provider": "r", "poll_sec": 0.01}},
+              "online": {"http": {"r": {"url": "http://127.0.0.1:9/run"}}}}
+
+    def need(self, *path, kind=None):
+        node = self.config
+        for key in path:
+            node = node[key]
+        return node
+
+
+class _Pulse:
+    """Подъём без узла заданий: ход — мимо, снятия нет."""
+    cancelled = threading.Event()
+
+    def __call__(self, progress=None, working=True):
+        pass
+
+    def refusal(self):
+        return RuntimeError("снято")
 
 
 class _Double(RunnerSupervisor):
@@ -104,7 +123,7 @@ else:
     with tempfile.TemporaryDirectory() as tmp:
         runner = _Double(_Registry(), tmp)
         try:
-            runner.start(Path(tmp) / "workspace")
+            runner.launch(Path(tmp) / "workspace", _Pulse())
             pid, issued = int(runner._read()["pid"]), runner.token()
             child = environ_of(pid)
         finally:
@@ -133,12 +152,12 @@ else:
             return {"ok": True} if type(self).calls > 1 and self.mark.exists() else {}
 
     class _Grace(_Registry):
-        config = {**_Registry.config, "local": {"runner": {"provider": "r", "stop_grace_sec": 0.3}}}
+        config = {**_Registry.config, "local": {"runner": {"provider": "r", "poll_sec": 0.01, "stop_grace_sec": 0.3}}}
 
     with tempfile.TemporaryDirectory() as tmp:
         stubborn = _Stubborn(_Grace(), tmp)
         try:
-            stubborn.start(Path(tmp) / "workspace")
+            stubborn.launch(Path(tmp) / "workspace", _Pulse())
             pid = int(stubborn._read()["pid"])
         finally:
             said = stubborn.stop()

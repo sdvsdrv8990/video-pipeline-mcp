@@ -57,10 +57,11 @@ tools:
   fs_search_multi: cpu_heavy
   search_tables: cpu_heavy
   search_multi: cpu_heavy
+  search_quick: cpu_heavy           # та же работа (QueryPlanner.execute_plan, пул поиска): без строки шла на цикле событий
 
   # ── Медиа: подъём моделей на карте ──
   media_generate: gpu
-  media_runner: gpu
+  media_runner: control             # статус, стоп, постановка подъёма — управление; подъём — задание без места (AD-20 б)
 
   # ── Медиа: каталог и установка моделей — сеть источника и снимок железа ──
   media_models: network

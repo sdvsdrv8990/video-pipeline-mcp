@@ -5,8 +5,48 @@
 """
 
 import json
+from dataclasses import dataclass
+from functools import cache
+from pathlib import Path
 from typing import Any
 
+from core.contracts import ContractError, ToolResult
+from core.declaration import Declared
+from core.declaration_schemas import TRANSPORT, TransportDeclaration
+
+
+@cache
+def _door(path: Path) -> Declared[TransportDeclaration]:
+    return Declared(path, ContractError, "«transport»",
+                    f"Заведи config/{path.name} — что сервер обещает клиенту на проводе, объявлено там.",
+                    schema=TRANSPORT.schema)
+
+
+def declared_transport(config_path: Path) -> TransportDeclaration:
+    """Обещания провода по схеме у двери — одной на каталог деклараций: origins сервера, бюджет ответа транспорта и
+    страниц инструментов читают один объект; правка файла — новый объект по mtime, битая — отказ с путём ключа."""
+    return _door(Path(config_path) / TRANSPORT.file).model
+
+
+def answer(result: ToolResult) -> dict[str, Any]:
+    """Результат tools/call в форме MCP: у успеха — данные текстом и факты (типы реестра фактов), у отказа — код, класс,
+    рецепт и ErrorDetail целиком под `error` (факты причины, ошибки ввода; EB-11): одно имя — один тип."""
+    # По схеме спеки structuredContent — объект; отсутствие структурированной части выражается ОТСУТСТВИЕМ поля, а не
+    # `null` (иначе валидатор провода красит ответ).
+    if result.status == "success":
+        payload: dict[str, Any] = {
+            # Текст — как есть: экранирование \uXXXX клиент видит буквально, и кириллица стоит ему 6 символов.
+            "content": [{"type": "text", "text": json.dumps(result.data or {}, ensure_ascii=False)}]}
+        if result.facts:
+            payload["structuredContent"] = {"facts": [f.model_dump() for f in result.facts]}
+        return payload
+    payload = {"content": [{"type": "text", "text": result.error.message if result.error else "Unknown error"}],
+               "isError": True}
+    if result.error:
+        detail = {key: value for key, value in result.error.model_dump().items() if value is not None}
+        payload["structuredContent"] = {**{key: detail[key] for key in ("code", "reaction_class", "recovery")},
+                                        "error": detail}
+    return payload
 
 
 class Transport:
@@ -19,15 +59,17 @@ class Transport:
         firewall: Файрвол (опционально)
     """
 
-    def __init__(self, engine=None, firewall=None):
+    def __init__(self, engine=None, firewall=None, *, config_path: Path):
         """Инициализация.
 
         Args:
             engine: Движок инструментов
             firewall: Файрвол (опционально)
+            config_path: Каталог деклараций — бюджет ответа клиента (`transport.yaml → answer.chars`)
         """
         self.engine = engine
         self.firewall = firewall
+        self.config_path = config_path
 
     async def handle_request(self, raw_request: str) -> str | None:
         """Обработка JSON-RPC запроса.
@@ -103,30 +145,16 @@ class Transport:
         name = params.get("name", "")
         arguments = params.get("arguments", {})
 
+        # Бюджет судится до вызова: битая декларация провода или установки — кодовый отказ, и инструмент не исполнялся.
+        try:
+            budget = client_budget(self.config_path)
+        except ContractError as refused:
+            return self._success_response(request_id, answer(self.engine.failure(name, refused)))
         result = await self.engine.call(name, arguments)
-
-        # Конвертируем ToolResult в MCP формат с structuredContent: у успеха — факты (типы реестра фактов), у отказа —
-        # код, класс, рецепт и ErrorDetail целиком под `error` (факты причины, ошибки ввода; EB-11): одно имя — один тип.
-        # По схеме спеки structuredContent — объект; отсутствие структурированной части
-        # выражается ОТСУТСТВИЕМ поля, а не `null` (иначе валидатор провода красит ответ).
-        if result.status == "success":
-            payload: dict[str, Any] = {
-                # Текст — как есть: экранирование \uXXXX клиент видит буквально, и кириллица стоит ему 6 символов.
-                "content": [{"type": "text", "text": json.dumps(result.data or {}, ensure_ascii=False)}]}
-            if result.facts:
-                payload["structuredContent"] = {"facts": [f.model_dump() for f in result.facts]}
-            return self._success_response(request_id, payload)
-        else:
-            payload = {
-                "content": [{"type": "text",
-                             "text": result.error.message if result.error else "Unknown error"}],
-                "isError": True,
-            }
-            if result.error:
-                detail = {key: value for key, value in result.error.model_dump().items() if value is not None}
-                payload["structuredContent"] = {
-                    **{key: detail[key] for key in ("code", "reaction_class", "recovery")}, "error": detail}
-            return self._success_response(request_id, payload)
+        # Ответ больше бюджета клиентов установки не шлётся: клиент обрезал бы или отверг его молча — отказ называет вес.
+        if budget.load(result) > 1:
+            result = self.engine.failure(name, budget.refused(name, result))
+        return self._success_response(request_id, answer(result))
 
     # Версии протокола, которые сервер понимает (по убыванию новизны).
     SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
@@ -195,3 +223,41 @@ class Transport:
                 "message": message
             }
         }, ensure_ascii=False)
+
+
+def client_budget(config_path: Path) -> "Budget":
+    """Бюджет ответа и срок вызова этой установки. Клиенты — по её фактам (install.yaml): клиентский конец туннеля —
+    `tunnel`, MCP на этой машине — `loopback`; не подходит ни один — все объявленные. По каждой мере — самый тесный."""
+    from core import deploy  # здесь, а не сверху: файл установки ищется в том же каталоге деклараций, что и transport.yaml
+    mcp, end = deploy.install(Path(config_path) / "install.yaml")
+    ways = ({"tunnel"} if end in ("client", "both") else set()) | ({"loopback"} if mcp else set())
+    declared = list(declared_transport(config_path).clients.values())
+    clients = [c for c in declared if c.reached in ways] or declared
+    return Budget(chars=min((c.answer_chars for c in clients if c.answer_chars), default=None),
+                  bytes=min((c.answer_bytes for c in clients if c.answer_bytes), default=None),
+                  call_sec=min((c.call_sec or 0 for c in clients), default=0),
+                  error_chars=min((c.error_chars for c in clients if c.error_chars), default=None))
+
+
+@dataclass(frozen=True)
+class Budget:
+    """Бюджет ответа установки — самый тесный из её клиентов по каждой мере: знаки (`chars`) и байты UTF-8 тела
+    (`bytes`); None — мера не ограничена. `call_sec` — срок вызова самого тесного клиента; клиент без объявленного срока —
+    0: ожидания нет. `error_chars` — сколько знаков текста отказа клиент принимает целым (None — не режет)."""
+
+    chars: int | None
+    bytes: int | None
+    call_sec: int
+    error_chars: int | None = None
+
+    def load(self, result: ToolResult) -> float:
+        """Доля бюджета, которую занимает ответ так, как его шлёт провод; больше 1 — не влезет."""
+        text = json.dumps(answer(result), ensure_ascii=False)
+        return max(len(text) / self.chars if self.chars else 0.0,
+                   len(text.encode("utf-8")) / self.bytes if self.bytes else 0.0)
+
+    def refused(self, tool: str, result: ToolResult) -> ContractError:
+        """Отказ RESULT_TOO_LARGE: сколько ответ весит в каждой мере и какую долю бюджета занял бы."""
+        text = json.dumps(answer(result), ensure_ascii=False)
+        return ContractError("RESULT_TOO_LARGE", facts={
+            "tool": tool, "chars": len(text), "bytes": len(text.encode("utf-8")), "load": round(100 * self.load(result))})

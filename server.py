@@ -23,12 +23,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from core.contracts import ContractError
 from core.declaration import Declaration, Declared, declarations_root, instance_home, workspace_root
-from core.declaration_schemas import RESOURCES, TRANSPORT, Resources, TransportDeclaration
+from core.declaration_schemas import RESOURCES, Resources
 from core.engine import Engine
 from core.environment import child_spawn
 from core.observability import Logs, wire
 from core.firewall import Firewall, FirewallRequest, FirewallDecision
 from core.transport import Transport
+from core.transport.transport import declared_transport
 from core.transport.tunnel import declared_hostname
 from core.reactions import Reactions
 from core.auth import (ENV_FILE, check_auth, digest_fingerprint, ensure_digest, rotate_token,
@@ -124,13 +125,6 @@ def _load_resources(path: Path) -> Resources:
                     f"Заведи config/{path.name} — по нему тяжёлые вызовы снимаются с цикла.", schema=RESOURCES.schema).model
 
 
-def _load_transport(path: Path) -> TransportDeclaration:
-    """Обещания провода — по схеме у двери: битая декларация — отказ при старте, а не прежний список молча."""
-    return Declared(path, ContractError, "«transport»",
-                    f"Заведи config/{path.name} — по нему сервер решает, кто может звать его из браузера.",
-                    schema=TRANSPORT.schema).model
-
-
 def create_server() -> tuple[Engine, Transport, Firewall]:
     """Создание и настройка сервера."""
     # Реестр реакций подключается к движку — иначе он лишь объект в памяти,
@@ -156,8 +150,8 @@ def create_server() -> tuple[Engine, Transport, Firewall]:
     # Регистрация базовых инструментов
     register_basic_tools(engine, id_generator, state_manager)
 
-    # Транспорт
-    transport = Transport(engine=engine, firewall=firewall)
+    # Транспорт: бюджет ответа клиента — декларация провода в том же каталоге деклараций.
+    transport = Transport(engine=engine, firewall=firewall, config_path=CONFIG_PATH)
 
     return engine, transport, firewall
 
@@ -253,7 +247,7 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
     # Битое объявление туннеля — отказ старта: сервер, отвечающий 403 на каждый запрос через туннель, хуже неподнятого.
     allowed_hosts = _allowed_hosts()
     # Кто может звать из браузера: объявленные источники провода и добавка машины из среды.
-    origins = (*_load_transport(CONFIG_PATH / TRANSPORT.file).origins.allowed, *ALLOWED_ORIGINS)
+    origins = (*declared_transport(CONFIG_PATH).origins.allowed, *ALLOWED_ORIGINS)
     engine, transport, firewall = create_server()
 
     print("=== MCP-сервер видеопайплайна ===")

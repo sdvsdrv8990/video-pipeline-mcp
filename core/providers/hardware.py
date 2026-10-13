@@ -360,6 +360,16 @@ def _cpu_quota(proc: Path, fs_root: Path) -> tuple[int | None, str]:
     return best, where
 
 
+def process_memory(proc: Path = PROC, fs_root: Path = FS_ROOT) -> tuple[int, str]:
+    """ОЗУ, которое ЭТОТ процесс может взять сейчас, в байтах — числом всегда — и его источник. Не ответило ничего —
+    консервативный 0 (HW-05): «не влезет», а не «влезет». Открытая дверь снимка памяти для предела чтения строк
+    (`core.search.lines`)."""
+    memory = _memory(proc, fs_root)
+    if memory["available"] is None:
+        return 0, f"0: {memory['source']}"
+    return memory["available"], memory["source"]
+
+
 def _memory(proc: Path = PROC, fs_root: Path = FS_ROOT) -> dict:
     """ОЗУ, которое может взять ЭТОТ процесс (HW-02), в байтах — {total, available, limit, source}.
 

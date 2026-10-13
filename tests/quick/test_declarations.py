@@ -23,7 +23,7 @@ from pydantic import BaseModel, ValidationError, create_model
 
 from core.contracts import ContractError
 from core.declaration import Declaration, Declared
-from core.declaration_schemas import ONLINE_CALL, PACKAGES, REACTIONS, SLOTS, STRICT, Resources
+from core.declaration_schemas import ONLINE_CALL, PACKAGES, REACTIONS, SLOTS, STRICT, TRANSPORT, Resources
 from core.engine import Engine
 from core.reactions import Reactions
 
@@ -71,6 +71,21 @@ CASES = [
     ("предел без срока повтора", spoil(("classes", "gpu"), {"offload": True, "max_concurrent": 1}),
      "classes.gpu.retry_after_sec", "retry_missing"),
     ("предел ноль", spoil(("classes", "gpu", "max_concurrent"), 0), "classes.gpu.max_concurrent", "greater_than"),
+]
+
+# Те же формы порчи на transport.yaml: пределы клиентов (что испорчено, порча, путь ключа в отказе, правило)
+TRANSPORT_CASES = [
+    ("бюджет ноль", spoil(("clients", "claude_ai", "answer_chars"), 0), "clients.claude_ai.answer_chars", "greater_than"),
+    ("бюджет строкой", spoil(("clients", "claude_ai", "answer_chars"), MARK), "clients.claude_ai.answer_chars", "int_type"),
+    ("клиентов нет", spoil(("clients",), drop=True), "clients", "missing"),
+    ("клиенты пусты", spoil(("clients",), {}), "clients", "too_short"),
+    ("у клиента нет бюджета", spoil(("clients", "claude_ai", "answer_chars"), drop=True), "clients.claude_ai", "budget_one"),
+    ("бюджет в двух единицах", spoil(("clients", "claude_code", "answer_chars"), 1), "clients.claude_code", "budget_one"),
+    ("предел текста отказа ноль", spoil(("clients", "claude_code", "error_chars"), 0), "clients.claude_code.error_chars",
+     "greater_than"),
+    ("путь клиента не из объявленных", spoil(("clients", "claude_ai", "reached"), "radio"), "clients.claude_ai.reached",
+     "literal_error"),
+    ("опечатка ключа", spoil(("clients", "claude_ai", "answer_char"), 1), "clients.claude_ai.answer_char", "extra_forbidden"),
 ]
 
 # (что испорчено, тело декларации, путь чтения `need`, тип чтения): истина — поле и правило схемы двери на том же файле
@@ -146,6 +161,19 @@ def main():
     check("готовую модель узел судит по ней, а не по файлу: describe 3 из модели при 8 в декларации",
           Capacity(given).places("describe") == 3 != declared.work["describe"].max_concurrent,
           (Capacity(given).places("describe"), declared.work["describe"].max_concurrent))
+    # Память места работы — снимок узла поровну на объявленные места (CP-01): снимок — шов, иначе он плывёт между чтениями
+    import core.providers.hardware as hw
+    real_memory = hw.process_memory
+    try:
+        hw.process_memory = lambda *a, **k: (12_000_000, "проба: шов снимка")
+        shares = (live.memory_share("search"), live.memory_share("inline"))
+        hw.process_memory = lambda *a, **k: (0, "0: ни одна ступень не ответила")
+        silent = live.memory_share("search")
+    finally:
+        hw.process_memory = real_memory
+    check("память места работы — ОЗУ процесса поровну на объявленные места поиска; класс без предела — вся; снимок "
+          "молчит — 0, а не «влезет»", shares == (12_000_000 // declared.work["search"].max_concurrent, 12_000_000)
+          and silent == 0, (shares, silent))
 
     print("\n== больное: порча — отказ при загрузке с путём и правилом, через путь доставки ==")
     for label, apply, field, rule in CASES:
@@ -176,6 +204,30 @@ def main():
         check("сервер: битый resources.yaml — старт отказывает, а не идёт без пределов", False, "загрузилось")
     except ContractError as e:
         check("сервер: битый resources.yaml — старт отказывает, а не идёт без пределов", e.code == CODE, e.code)
+
+    print("\n== провод: пределы клиентов — схема у одной двери (сервер, транспорт, страницы инструментов) ==")
+    from core.transport.transport import client_budget, declared_transport
+    from tests.harness.live_server import declarations_copy
+    wire = yaml.safe_load((ROOT / "config" / TRANSPORT.file).read_text(encoding="utf-8"))
+    kinds = wire["clients"].values()
+    got = client_budget(declarations_copy())  # копия без машинного install.yaml — установка не объявлена: все клиенты
+    check("боевой transport.yaml, установка не объявлена: действуют все клиенты, по каждой мере самый тесный, срок — 0 "
+          "при клиенте без срока",
+          (got.chars, got.bytes, got.call_sec, got.error_chars)
+          == (min((c["answer_chars"] for c in kinds if "answer_chars" in c), default=None),
+              min((c["answer_bytes"] for c in kinds if "answer_bytes" in c), default=None),
+              0 if any("call_sec" not in c for c in kinds) else min(c["call_sec"] for c in kinds),
+              min((c["error_chars"] for c in kinds if "error_chars" in c), default=None)), got)
+    for n, (label, apply, field, rule) in enumerate(TRANSPORT_CASES):
+        cfg = work / f"wire{n}"
+        cfg.mkdir()
+        write(cfg / TRANSPORT.file, apply(wire), 3_000_000_000)
+        said, heard, cause = refusal_of(engine, lambda cfg=cfg: declared_transport(cfg))
+        check(f"transport.yaml, {label}: {CODE}, {field} ({rule}), значения нет ни в ответе, ни в журнале",
+              said is not None and said.code == CODE
+              and any(x.get("field") == field and x.get("rule") == rule for x in said.errors or [])
+              and MARK not in repr(said.model_dump()) and not any(MARK in line for line in heard),
+              said and f"{said.code} · {said.errors}")
 
     print("\n== одна точка: need и битый YAML — тот же отказ двери тем же словом, что у схемы ==")
     for n, (label, body, path, kind) in enumerate(NEED_CASES):

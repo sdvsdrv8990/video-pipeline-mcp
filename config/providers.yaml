@@ -93,6 +93,26 @@ adapters:
     # Пара «провайдер:вид ресурса» точнее одного имени и ищется первой — для этого она и есть.
     Fal:bg_removals: {adapter: img.http_image:HttpImageAPI, requires_key: true}
     Fal:upscales: {adapter: img.http_image:HttpImageAPI, requires_key: true}
+  # Класс места РАБОТЫ генерации — задания узла (media_generate); ключ — как в by_provider, пара ищется первой. Класс
+  # обязан быть объявлен в resources.yaml (classes или work) — связь двух файлов судит media_generate.
+  # Локальный расчёт — класс карты: у карты один счёт мест (CP-05), раннер считает на той же карте. Онлайн — null, без
+  # места: одновременность держат лимитер периметра (firewall.yaml) и сам провайдер — 429 по его политике (online.call);
+  # своего числа мест у нас нет — у него нет источника.
+  place:
+    Local_piper: gpu
+    Local_whisper: gpu
+    Local_diffusers: gpu
+    Local_onnx_bg: gpu
+    Local_onnx_upscale: gpu
+    Local_runner: gpu
+    ElevenLabs: null
+    OpenAI: null
+    Fal: null
+    RemoveBg: null
+    Bria: null
+    Replicate: null
+    Fal:bg_removals: null
+    Fal:upscales: null
 
 # ═══ ЧТО МОДЕЛЬ УМЕЕТ (спецификация параметров) ═══
 # Строку канала заполняет ИИ, а какие параметры модель принимает и в каких пределах — знает
@@ -462,13 +482,14 @@ local:
     # workspace: это состояние СЕРВЕРА, а не данные канала.
     state_file: vendor/runner/state.json
     log_file: vendor/runner/runner.log     # причина падения обязана пережить сам процесс
-    ready_timeout_sec: 60       # подъём процесса + импорт torch — это секунды, а не миллисекунды
+    # Подъём — задание узла: срока по часам нет (живость — ход: процесс жив, пробы идут), конец — готовность, выход
+    # процесса или снятие (task_cancel). Темп проб снятие прерывает сразу.
     poll_sec: 0.3               # как часто спрашивать /health, пока раннер встаёт
     stop_grace_sec: 5           # сколько ждать после terminate, прежде чем kill
     # Прозвонка /health — тем же загрузчиком сервера (Fetcher.answer), что и любой ответ API в память. Адрес — от
     # online.http.<provider>.url, хост — его IP-литерал петли; внутреннюю сеть «петля» не открывает: block_private: false
-    # загрузчик принимает только при хосте-литерале петли. Повтор — у цикла готовности (start), не у двери: один слой;
-    # срок цикла идёт вниз — каждая прозвонка получает его остаток.
+    # загрузчик принимает только при хосте-литерале петли. Повтор — у цикла готовности (launch, jobs.paced), не у двери:
+    # один слой; срок прозвонки — её deadline_sec ниже.
     health:
       schemes: [http]           # петля без TLS — то же послабление, что call.schemes вызова раннера
       block_private: false

@@ -14,6 +14,7 @@ from datetime import datetime
 
 from core.paths import Files  # обход через дверь: секреты и ссылки наружу вне выдачи
 from core.contracts import ContractError
+from core.search.lines import contains_all, line_limit
 
 
 @dataclass
@@ -66,14 +67,12 @@ class FsSearcher:
         workspace: путь к workspace/
     """
 
-    def __init__(self, workspace: str | Path, registry=None, taxonomy=None, *, read_bytes: int):
+    def __init__(self, workspace: str | Path, registry=None, taxonomy=None):
         self.workspace = Path(workspace)
         # Личность файлов живёт в реестре, а не в их именах. Без реестра поиск
         # продолжает работать, но ID/владельца отдать неоткуда.
         self.registry = registry
         self.taxonomy = taxonomy
-        # Сколько байт файла читать ради совпадения по содержимому (`firewall.yaml → file_limits.read_bytes`).
-        self.read_bytes = read_bytes
 
     def _path_index(self) -> dict:
         """Снимок реестра «путь → запись» один раз на поиск (а не на каждый файл)."""
@@ -101,6 +100,10 @@ class FsSearcher:
         """Выполнение задачи поиска."""
         task.status = "running"
         try:
+            # Слово с переводом строки построчно не найдётся никогда: отказ на входе, а не молчаливое «не найдено».
+            if any("\n" in word or "\r" in word for word in task.content_keywords):
+                raise ContractError("VALIDATION_ERROR", errors=[{"field": "content_keywords", "rule": "line_break"}])
+            limit = line_limit() if task.content_keywords else 0
             # task.root под контролем клиента → обход слоя: каждый элемент через дверь; пусто — сам корень.
             files = Files(self.workspace)
             walk = files.walk(task.root or "")
@@ -149,18 +152,18 @@ class FsSearcher:
                     if not re.search(task.name_pattern, named.name):
                         continue
 
-                # Фильтр по содержимому
+                # Фильтр по содержимому — строка за строкой, без файла целиком в памяти
                 if task.content_keywords:
                     try:
-                        content = files.read(entry.path, self.read_bytes, whole=True, errors="ignore").text
+                        found = contains_all(entry.real, task.content_keywords, limit, name=entry.path)
                     except OSError as e:
                         # Не прочитали ≠ не совпало: считаем потерю поимённо и отдаём наверх.
                         task.unreadable.append(files.unread(entry.path, e))
                         continue
-                    except ContractError as e:  # больше предела — тоже не прочитан, а не «не совпал»
+                    except ContractError as e:  # строка длиннее предела — тоже не прочитан, а не «не совпал»
                         task.unreadable.append({"path": entry.path, "reason": e.code})
                         continue
-                    if not all(kw.lower() in content.lower() for kw in task.content_keywords):
+                    if not found:
                         continue
 
                 # Личность берётся из РЕЕСТРА по вместимости, а не из имени файла.

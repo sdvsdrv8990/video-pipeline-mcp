@@ -74,7 +74,9 @@ def _failure(suite: Path, p: subprocess.CompletedProcess) -> str:
 @pytest.mark.parametrize("suite", list(_params()))  # pytest 10 снимет поддержку генераторов
 def test_suite_passes(suite: Path, repo_root: Path, suite_env: dict[str, str], owner_logs: dict):
     """Набор отрабатывает с exit 0; иначе — строки его провала и хвост вывода попадают в отчёт."""
-    p = subprocess.run(_cmd(suite), cwd=repo_root, capture_output=True, text=True, timeout=900, env=suite_env)
+    # Вывод наборов — UTF-8 при любой локали: на Windows (cp1252) поток читался в None, и падал уже отчёт о провале.
+    p = subprocess.run(_cmd(suite), cwd=repo_root, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       timeout=900, env=suite_env)
     assert p.returncode == 0, _failure(suite, p)
 
 

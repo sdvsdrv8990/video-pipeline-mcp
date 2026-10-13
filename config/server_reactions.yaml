@@ -272,11 +272,17 @@ RESOURCE_BUSY:
     suggested_tool: "tools/list"
     reason: "Ждать в вызове нельзя — ожидание за пределом клиента даёт отказ без кода. Займись другой задачей и повтори позже; через сколько — сказано в сообщении отказа. Если задача обязана встать в очередь, это решение человека, а не сервера."
 
+WORKER_UNAVAILABLE:
+  class: server_recoverable
+  message_template: "Система не дала поток под работу «{work}»: работа не запускалась."
+  recovery:
+    reason: "Работа не запускалась — исхода нет, повтор безопасен. Класс места и число потоков пула (у вызова) — в фактах отказа. Если повторяется — предел задач процесса (cgroup pids.max, ulimit -u) ниже мест, объявленных в config/resources.yaml: подними предел машины или убавь места классов."
+
 PROVIDER_TIMEOUT:
   class: server_recoverable
   message_template: "Провайдер не ответил за отведённое время."
   recovery:
-    reason: "Какой предел истёк — в тексте и фактах отказа. Ожидание задачи — poll.timeout_sec/max_attempts в config/media_tasks.yaml; вызов провайдера — timeout_sec (фаза) и deadline_sec (весь вызов) в config/providers.yaml → online.call или в блоке call провайдера, либо столбец timeout строки канала; подъём раннера — local.runner.ready_timeout_sec. Подними предел, если работа штатно дольше. Вызов, оборванный по сроку после отправки, мог выполниться: проверь задачу на стороне провайдера. Повтор без изменения предела даст тот же результат."
+    reason: "Какой предел истёк — в тексте и фактах отказа. Ожидание задачи — poll.timeout_sec/max_attempts в config/media_tasks.yaml; вызов провайдера — timeout_sec (фаза) и deadline_sec (весь вызов) в config/providers.yaml → online.call или в блоке call провайдера, либо столбец timeout строки канала. Подними предел, если работа штатно дольше. Вызов, оборванный по сроку после отправки, мог выполниться: проверь задачу на стороне провайдера. Повтор без изменения предела даст тот же результат."
 
 DOWNLOAD_INCOMPLETE:
   class: server_recoverable
@@ -637,6 +643,18 @@ FILE_TOO_LARGE:
   message_template: "Файл {path} больше объявленного предела: {size} байт при пределе {limit}."
   recovery:
     reason: "Предел проверяется до действия, файл на диске не тронут. Запись — раздели содержимое на несколько файлов; чтение целиком (память) — файл не читается частями, его разбирает человек; fs_read_file отдаёт голову такого файла с пометкой truncated. Пределы — config/firewall.yaml → file_limits."
+
+RESULT_TOO_LARGE:
+  class: ai_recoverable
+  message_template: "Ответ {tool} — {chars} знаков ({bytes} байт UTF-8) — {load}% бюджета ответа клиентов этой установки: целиком клиент его не примет."
+  recovery:
+    reason: "Работа сделана, не доставлен только ответ. Сузь запрос: каталог глубже, меньше строк, поиск точнее; файл читается страницами — fs_read_file с offset из next_offset прошлого ответа. Пределы клиентов — config/transport.yaml → clients; какие клиенты у установки — install.yaml."
+
+LINE_TOO_LONG:
+  class: ai_recoverable
+  message_template: "Строка {line} файла {path} длиннее {limit} символов — столько сервер держит в памяти разом."
+  recovery:
+    reason: "Файл читается строка за строкой, а строка такой длины заняла бы память общего процесса сервера. Сплошной текст без переводов строки (минифицированный JSON и подобное) читается страницами — fs_read_file с offset; формат со структурой — по разделу. Предел — память процесса на одно место поиска (config/resources.yaml → work.search)."
 
 FILE_NOT_TEXT:
   class: ai_recoverable

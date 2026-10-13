@@ -12,8 +12,6 @@ import tempfile
 import shutil
 from pathlib import Path
 
-import yaml
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from core.search.fs_searcher import FsSearcher, FsSearchTask, FsSearchError
@@ -23,8 +21,6 @@ from core.engine import Engine
 from core.reactions import Reactions
 
 TPL_DIR = Path(__file__).resolve().parents[2] / "config" / "templates" / "workspace"
-# Предел чтения содержимого — из объявления, как у сервера, а не числом в тесте.
-READ_BYTES = yaml.safe_load((TPL_DIR.parents[1] / "firewall.yaml").read_text(encoding="utf-8"))["file_limits"]["read_bytes"]
 from core.search.query_planner import QueryPlanner, QueryPlan
 
 _ENGINE = Engine(reactions=Reactions(Path(__file__).resolve().parents[2] / "config" / "server_reactions.yaml"))
@@ -67,7 +63,7 @@ def _mkworkspace():
 def main():
     ws = _mkworkspace()
     try:
-        fs = FsSearcher(ws, read_bytes=READ_BYTES)
+        fs = FsSearcher(ws)
 
         print("== FsSearcher: happy-path поиск ==")
         r_txt = fs.search(FsSearchTask(id="t", root="", extensions=[".txt"]))
@@ -111,7 +107,7 @@ def main():
         (ws / vpath / "read.json").write_text("{}")
         reg_ws = LinkRegistry(ws)
         reg_ws.register({"id": vid_id, "type": "video", "name": "v", "path": vpath, "parent_ids": []})
-        fs_reg = FsSearcher(ws, registry=reg_ws, taxonomy=Taxonomy(TPL_DIR), read_bytes=READ_BYTES)
+        fs_reg = FsSearcher(ws, registry=reg_ws, taxonomy=Taxonomy(TPL_DIR))
         hits = fs_reg.search(FsSearchTask(id="t", root="", id_pattern=vid_id))
         check("поиск по РЕАЛЬНОМУ ID находит файлы сущности (раньше 0)", len(hits) == 2, f"got {len(hits)}")
         check("имя файла больше ни при чём — найдены оба файла видео",
@@ -126,7 +122,7 @@ def main():
                          "path": "niches/gaming", "parent_ids": []})
         reg_ws.register({"id": "NET_" + "c" * 32, "type": "network", "name": "n1",
                          "path": "niches/gaming/networks/n1", "parent_ids": ["NICHE_" + "b" * 32]})
-        fs_reg2 = FsSearcher(ws, registry=reg_ws, taxonomy=Taxonomy(TPL_DIR), read_bytes=READ_BYTES)
+        fs_reg2 = FsSearcher(ws, registry=reg_ws, taxonomy=Taxonomy(TPL_DIR))
         in_net = fs_reg2.search(FsSearchTask(id="t", root="", chain_prefix="NICHE_" + "b" * 32 + "/NET_" + "c" * 32))
         check("chain_prefix отбирает поддерево сетки", len(in_net) == 2, f"got {len(in_net)}")
         check("chain_prefix чужой сетки → пусто",
@@ -135,7 +131,7 @@ def main():
               in_net[0].chain.startswith("NICHE_" + "b" * 32 + "/NET_"), in_net[0].chain)
         check("тип сущности выводится из таксономии", hits[0].entity_type == "video", hits[0].entity_type)
         check("без таксономии тип не выдумывается",
-              FsSearcher(ws, read_bytes=READ_BYTES).search(FsSearchTask(id="t", root="docs"))[0].entity_type == "unknown")
+              FsSearcher(ws).search(FsSearchTask(id="t", root="docs"))[0].entity_type == "unknown")
 
         print("== FsSearcher: adversarial D36 (path traversal) ==")
         def esc(root):
@@ -171,6 +167,57 @@ def main():
         finally:
             _locked.chmod(0o644)
             _locked.unlink()
+
+        print("== FsSearcher: содержимое строка за строкой — без стыков, без регистра по Unicode D145, предел строки ==")
+        import io as _io
+        import tracemalloc as _tm
+        import unicodedata as _ud
+        _cw = ws / "строки"
+        _cw.mkdir()
+        _pad = "ё" * (_io.DEFAULT_BUFFER_SIZE // 2 - 3)  # слово начнётся за 6 байт до конца первого куска чтения
+        # (что, байты файла, слова, найдено ли — истина по стандарту, а не по коду поиска)
+        _cases = [
+            ("кириллическое слово поперёк байтовой границы куска", (_pad + "пароль\n").encode(), ["пароль"], True),
+            ("İ (U+0130) и «i̇stanbul»", "Город İSTANBUL\n".encode(), ["i̇stanbul"], True),
+            ("ß и «SS»", "Straße 5\n".encode(), ["STRASSE"], True),
+            ("NFD «й» в файле и NFC «й» в слове", _ud.normalize("NFD", "мой ключ\n").encode(), ["мой"], True),
+            ("слова в разных строках", "альфа\nбета\n".encode(), ["альфа", "бета"], True),
+            ("второго слова нет", "альфа\n".encode(), ["альфа", "гамма"], False),
+            ("битый байт между половинами слова — не склейка", "пар".encode() + b"\xff" + "оль\n".encode(), ["пароль"],
+             False),
+        ]
+        for _n, (_what, _body, _words, _want) in enumerate(_cases):
+            (_cw / f"{_n}.txt").write_bytes(_body)
+            _hit = [h.path for h in fs.search(FsSearchTask(id="t", root="строки", content_keywords=_words))]
+            check(f"{_what}: {'найдено' if _want else 'не найдено'}", (f"строки/{_n}.txt" in _hit) == _want, _hit)
+        check("слово с переводом строки — отказ на входе, а не «не найдено»",
+              refused(lambda: fs.search(FsSearchTask(id="t", root="строки", content_keywords=["аль\nфа"])))
+              == "VALIDATION_ERROR")
+
+        # Предел строки — память одного места поиска у узла ёмкости. Шов снимка памяти в месте рождения: процессу доступно
+        # столько, что на место поиска приходится около 1000 знаков худшей ширины.
+        import core.providers.hardware as _hw
+        from core.capacity import Capacity as _Capacity
+        _real_memory = _hw.process_memory
+        _hw.process_memory = lambda *a, **k: (1000 * 4 * (_Capacity().places("search") or 1), "проба: шов снимка")
+        try:
+            (_cw / "длинная.txt").write_text("ключ " + "ж" * 5000 + "\n", encoding="utf-8")
+            _cap_task = FsSearchTask(id="t", root="строки", content_keywords=["ключ"])
+            _cap_hits = [h.path for h in fs.search(_cap_task)]
+        finally:
+            _hw.process_memory = _real_memory
+        check("строка длиннее предела — названа в потерях LINE_TOO_LONG, а не «не совпало» и не память процесса",
+              "строки/длинная.txt" not in _cap_hits
+              and {"path": "строки/длинная.txt", "reason": "LINE_TOO_LONG"} in _cap_task.unreadable, _cap_task.unreadable)
+
+        # Поиск не держит файл: пик памяти — строка, а не файл
+        (_cw / "большой.log").write_text("запись журнала номер 12345 без искомого слова\n" * 200_000, encoding="utf-8")
+        _tm.start()
+        fs.search(FsSearchTask(id="t", root="строки", extensions=[".log"], content_keywords=["искомое-нет"]))
+        _peak = _tm.get_traced_memory()[1]
+        _tm.stop()
+        _size = (_cw / "большой.log").stat().st_size
+        check(f"поиск по файлу {_size} байт держит не больше десятой его доли (пик {_peak})", _peak < _size // 10)
 
         print("== FsSearcher: load_query (YAML-строка, не путь) ==")
         task = fs.load_query("root: docs\nextensions: ['.txt']\nname_pattern: 'a'\nlimit: 5")
@@ -262,7 +309,7 @@ def main():
               [r["_row_id"] for r in got] == ["R3", "R2", "R1"], [r["_row_id"] for r in got])
 
         print("== FsSearcher: _detect_entity_type — все уровни иерархии ==")
-        fs_tx = FsSearcher(ws, taxonomy=Taxonomy(TPL_DIR), read_bytes=READ_BYTES)
+        fs_tx = FsSearcher(ws, taxonomy=Taxonomy(TPL_DIR))
         def det(rel):
             return fs_tx._detect_entity_type(ws / rel / "x.yaml")
         check("тип уровня: ниша", det("niches/gaming") == "niche", det("niches/gaming"))

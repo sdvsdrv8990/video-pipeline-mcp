@@ -26,6 +26,11 @@ class Capacity:
     def resources(self) -> Resources:
         return self._given if self._given is not None else _DECLARED.model
 
+    @property
+    def declaration(self) -> Declared:
+        """Дверь `resources.yaml` — для отказа связи с ключами другой декларации (судит потребитель обоих файлов)."""
+        return _DECLARED
+
     def places(self, name: str) -> int | None:
         """Сколько работы класса `name` идёт разом: внутренняя работа — `work`, класс инструмента — `classes`;
         None — класс инструмента без предела (законно только у неснимаемого с цикла)."""
@@ -40,11 +45,23 @@ class Capacity:
         from core.providers.hardware import process_cpus     # здесь, а не сверху: пакет провайдеров сам зовёт узел ёмкости
         return max(1, process_cpus()[0] // (self.places(name) or 1))
 
+    def memory_share(self, name: str) -> int:
+        """Сколько байт ОЗУ приходится на одно место работы `name`: память, которую процесс может взять сейчас
+        (`process_memory`), поровну на объявленные места; класс без предела — вся. Не ответила ни одна ступень снимка —
+        0 (HW-05): «не влезет», а не «влезет»."""
+        from core.providers.hardware import process_memory   # здесь, а не сверху: пакет провайдеров сам зовёт узел ёмкости
+        return process_memory()[0] // (self.places(name) or 1)
+
     def slots(self) -> "Slots":
         """Счёт мест классов инструментов и внутренней работы: его держит движок, им же пользуется узел заданий — один
         на процесс (CP-05). Работа задания, которой клиент «занято» не слышит (загрузка весов), ждёт место класса `work`."""
         resources = self.resources
         return Slots({name: n for name in (*resources.classes, *resources.work) if (n := self.places(name))})
+
+    def offload_threads(self) -> int:
+        """Сколько вызовов снято с цикла событий разом — сумма мест классов с `offload`: столько потоков у пула движка,
+        место ⇒ поток (B16). Пул цикла по умолчанию (формула библиотеки по ядрам) этим вызовам не служит."""
+        return sum(n for body in self.resources.classes.values() if body.offload and (n := body.max_concurrent))
 
 
 class Slots:

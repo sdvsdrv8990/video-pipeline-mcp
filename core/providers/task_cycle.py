@@ -8,12 +8,14 @@
 """
 
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 from core.paths import Files
 
 from core.declaration import Declaration
 from core.contracts import ContractError
+from core.jobs import paced
 
 
 class TaskCycleError(ContractError):
@@ -75,10 +77,7 @@ class TaskCycle:
                         "unknown_status": sorted(set(unknown)),
                         "waited_sec": round(self._now() - started, 3)}
             if kind == "failed":
-                raise TaskCycleError(
-                    "PROVIDER_FAILED", f"Провайдер сообщил об отказе задачи: {status}",
-                    reason=(answer.get("error") or "Ответ провайдера не содержит причины — "
-                            "смотри его журнал; повтор того же запроса даст тот же отказ."))
+                raise self._provider_failed(status, answer)
             if str(status).lower() not in known:
                 unknown.append(str(status))
             left = timeout - (self._now() - started)
@@ -88,6 +87,47 @@ class TaskCycle:
             interval = min(interval * backoff, max_interval)
             if self._now() - started >= timeout:
                 raise self._overdue(task_id, attempts, started, status)
+
+    def follow(self, poll, task_id: str, pulse) -> dict:
+        """Прозвонка задачи провайдера в работе задания узла (`pulse`) до её итога: готово — последний ответ и журнал
+        опросов; отказ — PROVIDER_FAILED с причиной провайдера; неизвестный статус не обрывает и не выдаётся за успех —
+        копится в отчёте. Нашего срока нет: предел — итог провайдера и снятие задания (`jobs.paced`: пауза темпом `poll`
+        прерывается снятием); сбой самого опроса повторяет его дверь."""
+        statuses = self.config.get("statuses") or {}
+        known = {str(s).lower() for kind in ("done", "failed") for s in statuses.get(kind) or []}
+        started, attempts = self._now(), [0]
+        unknown: set[str] = set()
+
+        def answered() -> dict | None:
+            attempts[0] += 1
+            answer = poll(task_id, None) or {}
+            status = answer.get("status", "")
+            kind = self.classify(status)
+            if kind == "done":
+                return {"outcome": "done", "attempts": attempts[0], "answer": answer,
+                        "unknown_status": sorted(unknown), "waited_sec": round(self._now() - started, 3)}
+            if kind == "failed":
+                raise self._provider_failed(status, answer)
+            if str(status).lower() not in known:
+                unknown.add(str(status))
+            return None
+
+        def pauses() -> Iterator[float]:
+            interval = self._decl.need("poll", "interval_sec", kind=float)
+            while True:
+                yield interval
+                interval = min(interval * self._decl.need("poll", "backoff", kind=float),
+                               self._decl.need("poll", "max_interval_sec", kind=float))
+
+        return paced(answered, pulse, pauses())
+
+    @staticmethod
+    def _provider_failed(status: str, answer: dict) -> TaskCycleError:
+        """Провайдер сообщил об отказе задачи: его слово статуса и причина из ответа, если он её назвал."""
+        return TaskCycleError(
+            "PROVIDER_FAILED", f"Провайдер сообщил об отказе задачи: {status}",
+            reason=(answer.get("error") or "Ответ провайдера не содержит причины — "
+                    "смотри его журнал; повтор того же запроса даст тот же отказ."))
 
     def _overdue(self, task_id: str, attempts: int, started: float, status: str) -> TaskCycleError:
         """Срок ожидания задачи вышел: сколько опросов, сколько секунд и что провайдер ответил последним."""

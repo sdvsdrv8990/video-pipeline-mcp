@@ -6,3 +6,27 @@
 origins:
   allowed:
     - https://claude.ai     # коннектор Claude AI Web: строгая проверка Origin ему не даёт подняться (claude.com/docs/connectors/building/troubleshooting)
+
+# Сколько ответа клиент берёт в один результат вызова инструмента (текст и structuredContent вместе) — больше он обрежет
+# или отвергнет, поэтому сервер такой ответ не шлёт: fs_read_file отдаёт страницами (offset → next_offset), прочим
+# инструментам — отказ RESULT_TOO_LARGE. Клиенты MCP и их пределы — в их же единицах. Источник: claude.com/docs/connectors/building, таблица «Design within the
+# size and timeout limits» (прочитано 2026-10-13): claude.ai and Desktop — «~150,000 characters», «240 seconds per tool
+# call»; Claude Code — «25,000 tokens, configurable with MAX_MCP_OUTPUT_TOKENS», срок — «Configurable with
+# MCP_TOOL_TIMEOUT» (числа на странице нет — не объявлен, ожидания нет). Какие клиенты у этой установки — по её фактам
+# (install.yaml): клиентский конец туннеля → `tunnel`, MCP на этой машине → `loopback`; нет объявления — все. Действует
+# самый тесный из клиентов установки: ни один клиент не получит больше своего.
+# Claude Code (code.claude.com/docs/en/mcp, «MCP output limits and warnings», установлен 2.1.296, прочитано
+# 2026-10-13): успешный итог сверх 25 000 токенов или 50 000 знаков не обрезается — «saves it to a file and replaces it
+# in the conversation with a message that names the file path»; теряется тело больше 16 MB — «stops reading a response …
+# once one JSON response body … passes 16 MB after decompression. The request that response answers fails». Текст
+# отказа (isError) длиннее ~11 000 знаков режется: «keeps only its first 5,000 and last 5,000 characters» — целым
+# остаётся 10 000. Срок вызова не объявлен: без MCP_TOOL_TIMEOUT у клиента «about 28 hours» — его умолчание, не наш срок.
+clients:
+  claude_ai:
+    reached: tunnel
+    answer_chars: 150000
+    call_sec: 240
+  claude_code:
+    reached: loopback
+    answer_bytes: 16000000
+    error_chars: 10000

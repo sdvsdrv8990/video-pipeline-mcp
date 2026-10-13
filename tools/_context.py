@@ -25,6 +25,7 @@ from core.paths import Files, configure_secret_dirs
 from core.secrets import ChannelSecrets
 from core.state import StateManager
 from core.tables import TableEngine
+from core.transport.transport import Budget, client_budget
 
 # Аннотации MCP для инструментов (помогают клиенту определить уровень доступа)
 ANNOTATIONS_READONLY = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
@@ -84,6 +85,12 @@ class ToolContext:
     def read_limit(self) -> int:
         """Сколько байт файла читать в ответ (FS-12): `firewall.yaml → file_limits.read_bytes`, без запасного числа."""
         return _firewall(self.config_path).need("file_limits", "read_bytes", kind=int)
+
+    @property
+    def client_budget(self) -> Budget:
+        """Бюджет ответа и срок вызова клиентов этой установки (`transport.yaml → clients` по фактам install.yaml) — та
+        же дверь, что у транспорта: страница под бюджет и проверка ответа на проводе не расходятся."""
+        return client_budget(self.config_path)
 
     @property
     def injection_flagger(self) -> InjectionDetector:

@@ -21,6 +21,8 @@ sys.path.insert(0, str(ROOT))
 
 from types import SimpleNamespace
 
+import psutil
+
 from core.auth import ensure_digest
 from core.contracts import ContractError
 from core.declaration import Declaration
@@ -447,23 +449,28 @@ def main():
           and not (ws / "тип.md").exists(), said)
 
     print("== остаток записи на платформе без chmod по дескриптору (Windows до 3.13) и отказ посреди записи ==")
+
+    def open_fds() -> int:
+        # Через psutil: /proc/self/fd есть только в Linux; num_fds — POSIX, num_handles — Windows.
+        proc = psutil.Process()
+        return proc.num_fds() if hasattr(proc, "num_fds") else proc.num_handles()
+
     real_supports, real_fsync, real_fchmod = os.supports_fd, os.fsync, os.fchmod
     os.supports_fd = real_supports - {os.chmod}
     del os.fchmod  # факты Windows до 3.13: ни fchmod, ни chmod по дескриптору
-    fds_before, modes = len(os.listdir("/proc/self/fd")), []
+    fds_before, modes = open_fds(), []
     try:
         said = refused(lambda: modes.extend(first_bytes(lambda: files.create("win/ключ.key", "секрет", mode=0o600))))
     finally:
         os.supports_fd, os.fchmod = real_supports, real_fchmod
     check("без chmod по дескриптору права ставятся по пути — 0o600 уже в момент первого байта",
           said is None and modes == [0o600], (said, modes))
-    check("и дескриптор не теряется", len(os.listdir("/proc/self/fd")) == fds_before,
-          (fds_before, len(os.listdir("/proc/self/fd"))))
+    check("и дескриптор не теряется", open_fds() == fds_before, (fds_before, open_fds()))
 
     def _fsync_fails(fd):
         raise OSError(5, "сбой диска в пробе")
 
-    fds_before = len(os.listdir("/proc/self/fd"))
+    fds_before = open_fds()
     os.fsync = _fsync_fails
     try:
         said = refused(lambda: files.create("win/сбой.key", "x", mode=0o600))
@@ -471,8 +478,7 @@ def main():
         os.fsync = real_fsync
     check("отказ посреди записи: остатка нет, имени нет — удаление после закрытия файла (Windows не удаляет открытый)",
           leftovers(ws / "win") == [] and not (ws / "win" / "сбой.key").exists(), leftovers(ws / "win"))
-    check("отказ посреди записи не теряет дескриптор", len(os.listdir("/proc/self/fd")) == fds_before,
-          (fds_before, len(os.listdir("/proc/self/fd")), said))
+    check("отказ посреди записи не теряет дескриптор", open_fds() == fds_before, (fds_before, open_fds(), said))
 
     had_binary, real_open, opened = hasattr(os, "O_BINARY"), os.open, []
     if not had_binary:

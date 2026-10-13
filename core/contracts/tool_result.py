@@ -6,6 +6,9 @@
 по-разному.
 """
 
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+
 from pydantic import BaseModel, model_validator
 from typing import Literal
 
@@ -29,3 +32,11 @@ class ToolResult(BaseModel):
         if self.status == "success" and self.error is not None:
             self.error = None  # success + error = молча убираем error
         return self
+
+
+@dataclass(frozen=True)
+class Later:
+    """Ответ обработчика, который досказывает движок на своём цикле событий после конца вызова: место и поток вызова
+    отданы до ожидания, `finish` ждёт событием (итог задания в пределах бюджета клиента) и отдаёт ToolResult."""
+
+    finish: Callable[[], Awaitable[ToolResult]]

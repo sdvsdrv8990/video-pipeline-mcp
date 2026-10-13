@@ -465,12 +465,36 @@ class Origins(BaseModel):
         return self
 
 
+class Client(BaseModel):
+    """Клиент MCP и его пределы в его же единицах: как он доходит до сервера (`tunnel` — через клиентский конец туннеля,
+    `loopback` — с этой машины), сколько ответа берёт (знаки или байты тела — ровно одно), сколько знаков текста отказа
+    принимает целым (не объявлено — не режет) и срок вызова (не объявлен — ожидания нет)."""
+
+    model_config = STRICT
+
+    reached: Literal["tunnel", "loopback"]
+    answer_chars: int | None = Field(default=None, gt=0)
+    answer_bytes: int | None = Field(default=None, gt=0)
+    error_chars: int | None = Field(default=None, gt=0)
+    call_sec: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _one_budget(self) -> "Client":
+        # Бюджет ответа — в одной единице клиента: без него ответ не с чем сравнить, две — двусмысленность.
+        if (self.answer_chars is None) == (self.answer_bytes is None):
+            raise ValidationError.from_exception_data(type(self).__name__, [_gap(
+                "budget_one", "ровно один из answer_chars, answer_bytes", ())])
+        return self
+
+
 class TransportDeclaration(BaseModel):
-    """`config/transport.yaml`: что сервер обещает клиенту на проводе — кто может звать его из браузера."""
+    """`config/transport.yaml`: что сервер обещает клиенту на проводе — кто может звать его из браузера и какие клиенты
+    сколько ответа берут и сколько ждут вызов."""
 
     model_config = STRICT
 
     origins: Origins
+    clients: Annotated[Mapping[StrictStr, Client], Field(min_length=1), ReadOnly]
 
 
 M = TypeVar("M", bound=BaseModel)

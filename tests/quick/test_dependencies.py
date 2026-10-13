@@ -48,7 +48,10 @@ def bare(spec: str) -> str:
 
 
 def sources() -> list[Path]:
-    return [p for p in ROOT.rglob("*.py") if not (SKIP_PARTS & set(p.parts))]
+    # Окружение Python — по факту, pyvenv.cfg в его корне (PEP 405), а не по имени: CI fedora ставит .venv-ci в корень.
+    venvs = {cfg.parent for cfg in ROOT.rglob("pyvenv.cfg")}
+    return [p for p in ROOT.rglob("*.py")
+            if not (SKIP_PARTS & set(p.parts)) and not any(v in p.parents for v in venvs)]
 
 
 def own_names() -> set[str]:
