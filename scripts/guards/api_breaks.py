@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import PurePath
 
 TRAILER = "API-Break"
 WORKTREE = "WORKTREE"  # --head: рабочее дерево вместо ревизии — строки трейлера до коммита
@@ -46,7 +47,9 @@ def found(packages: list[str], base: str, head: str) -> dict[str, str]:
         if p.returncode != 0 and not lines:
             raise Unmeasured(f"griffe check {pkg} отказал сам (код {p.returncode}): {p.stderr.strip()[-400:]}")
         for m in lines:
-            out[f"{m['path']}: {m['obj']}: {m['msg'].split(': ', 1)[0]}"] = m.group(0)
+            # griffe печатает путь ОС (на Windows — «\»), трейлер и git — всегда «/».
+            path = PurePath(m["path"]).as_posix()
+            out[f"{path}: {m['obj']}: {m['msg'].split(': ', 1)[0]}"] = m.group(0)
     return out
 
 

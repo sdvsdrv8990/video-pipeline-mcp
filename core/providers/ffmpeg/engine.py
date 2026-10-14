@@ -10,6 +10,7 @@
 import shutil
 import subprocess
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,8 +20,8 @@ from core.paths import Files
 
 from .command import SceneCommand
 from .dictionary import FfmpegDictionary
-from .errors import FfmpegError
-from .probe import MediaFacts, accept, facts
+from .errors import FfmpegError, FfmpegSaid
+from .probe import MediaFacts, accept, facts, own
 from .spec import SceneSpec
 
 PLACE = "render"                # класс места работы рендера: число мест — resources.yaml `work`
@@ -42,10 +43,12 @@ class FfmpegEngine:
     """Сборка и исполнение команд ffmpeg с приёмкой результата."""
 
     def __init__(self, dictionary: FfmpegDictionary | None = None, binary: str = "ffmpeg",
-                 probe: str = "ffprobe"):
+                 probe: str = "ffprobe", name: Callable[[Path], str] = own):
+        """`name` — как отказ называет файл клиенту: путь от корня даёт вызывающий (дверь файлов), без него — имя."""
         self.dict = dictionary or FfmpegDictionary()
         self.binary_name = binary
         self.probe_name = probe
+        self.name = name
 
     # ═══ Бинарь ═══
 
@@ -62,7 +65,7 @@ class FfmpegEngine:
     def inspect(self, spec: SceneSpec) -> dict[Path, MediaFacts]:
         """Факты о каждом входе, по одному разбору на файл: один ассет часто берут два слоя."""
         paths = [el.asset_path for el in spec.layers] + [tr.asset_path for tr in spec.audio]
-        return {path: facts(path, self.probe_name) for path in dict.fromkeys(paths)}
+        return {path: facts(path, self.probe_name, self.name) for path in dict.fromkeys(paths)}
 
     def duration(self, spec: SceneSpec, known: dict[Path, MediaFacts]) -> float:
         """Длительность сцены: сказанная книгой либо следующая из самих материалов."""
@@ -127,10 +130,10 @@ class FfmpegEngine:
             raise pulse.refusal()
         stderr = "".join(said)
         if proc.returncode != 0:
-            tail = stderr.strip().rsplit("\n", 1)[-1] or "причина не названа"
-            raise FfmpegError(self.dict.failure_code(stderr),
-                              f"ffmpeg отказался: {tail}",
-                              reason="Строка отказа — слова самого ffmpeg о том, что ему помешало.")
+            raise FfmpegError(self.dict.failure_code(stderr), f"ffmpeg завершился с кодом {proc.returncode}",
+                              facts={"exit_code": proc.returncode},
+                              reason="Слова ffmpeg о том, что ему помешало, — в журнале сервера.") \
+                from FfmpegSaid(stderr)
         return stderr
 
     @staticmethod
@@ -164,7 +167,7 @@ class FfmpegEngine:
         to_part = [*argv[:-1], "-f", self.dict.muxer(spec.profile.container), str(part)]   # последний — путь выхода
         try:
             self.run(to_part, pulse, round(span * spec.profile.fps))
-            got = accept(part, span, spec.profile.size, probe=self.probe_name)
+            got = accept(part, span, spec.profile.size, probe=self.probe_name, name=self.name)
         except BaseException:
             part.unlink(missing_ok=True)
             raise

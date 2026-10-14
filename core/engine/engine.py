@@ -325,12 +325,11 @@ class Engine:
     def refusal(self, exc: BaseException, name: str = "") -> ToolResult | None:
         """Единственный перевод исключения в отказ: объявленное ядром (`ContractError`, и отказы двери пути тоже) —
         своим кодом, текст и подсказка из реестра с фактами; чужое — None (падение решает граница). Отказ ожидаем: его
-        чужая причина (`raise … from e`) — в журнал строкой без трассировки."""
+        чужая причина (`raise … from e`) — в журнал строкой без трассировки, клиенту — номер события фактом `event`."""
         if not isinstance(exc, ContractError):
             return None
         if exc.__cause__ is not None and not isinstance(exc.__cause__, ContractError):
-            log.info("инструмент %s: отказ %s, причина: %s: %s", name, exc.code, type(exc.__cause__).__name__,
-                     exc.__cause__)
+            exc.with_facts(event=self._incident(name, exc.__cause__, exc.code))
         return self._error(exc.code, exc.message, Recovery(reason=exc.reason, suggested_tool=exc.suggested_tool),
                            facts=exc.facts, errors=exc.errors)
 
@@ -345,10 +344,15 @@ class Engine:
         return self._error("INTERNAL_ERROR", f"Инструмент {name} упал, событие {event}: причина в журнале сервера",
                            Recovery(reason="Внутренняя ошибка сервера"))
 
-    def _incident(self, name: str, exc: BaseException) -> str:
-        """Причина — в журнал сервера с трассировкой; номер события связывает ответ клиенту с записью."""
+    def _incident(self, name: str, exc: BaseException, code: str = "") -> str:
+        """Причина — в журнал сервера; номер события связывает ответ клиенту с записью. Падение — с трассировкой,
+        чужая причина объявленного отказа `code` — строкой: отказ ожидаем."""
         event = uuid.uuid4().hex[:8]
-        log.error("инструмент %s, событие %s", name, event, exc_info=exc, extra={"event": event})
+        if code:
+            log.info("инструмент %s: отказ %s, событие %s, причина: %s: %s", name, code, event, type(exc).__name__,
+                     exc, extra={"event": event})
+        else:
+            log.error("инструмент %s, событие %s", name, event, exc_info=exc, extra={"event": event})
         return event
 
 

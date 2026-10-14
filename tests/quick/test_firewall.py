@@ -3,6 +3,7 @@
 Сервер набор поднимает себе сам: свой порт, своя временная рабочая область, настоящий ключ.
 Проверки судят БЛОКИРОВКУ, а не «ответ пришёл»: второе зелено и на снятом файрволе.
 """
+import json
 import os
 import re
 import sys
@@ -140,16 +141,22 @@ with live_server() as srv:
 
     print("== 3. Контракт отказа доезжает до клиента целиком (G14/D30) ==")
     env = rpc.call_tool("fs_read_file", {"path": "нет-такого.txt"})
-    structured = rpc.structured(env["envelope"])
+    detail = rpc.detail(env["envelope"])
     ok(env["code"] == "FILE_NOT_FOUND", f"код реакции на проводе ({env['code']})")
-    ok(structured.get("reaction_class") == "ai_recoverable",
-       f"класс реакции доезжает, а не теряется в конверте ({structured.get('reaction_class')})")
-    ok((structured.get("recovery") or {}).get("reason"),
+    ok(detail.get("reaction_class") == "ai_recoverable",
+       f"класс реакции доезжает, а не теряется в конверте ({detail.get('reaction_class')})")
+    ok((detail.get("recovery") or {}).get("reason"),
        "recovery доезжает — иначе ИИ знает про отказ, но не знает, что делать")
+    # Каждое поле отказа — один раз, пустое не идёт (server-texts TX-03, TX-04).
+    ok(sorted(rpc.structured(env["envelope"])) == ["error"],
+       f"отказ — одна форма под error, без копий наверху ({sorted(rpc.structured(env['envelope']))})")
+    _said3 = rpc.text(env["envelope"])
+    ok(not [mark for mark in ("null", "{}", "[]") if mark in _said3],
+       f"в тексте отказа нет пустых полей ({_said3[:160]})")
     ok(rpc.error_code(rpc.call_raw("tools/call", {"name": "нет_такого", "arguments": {}}))
        == "TOOL_NOT_FOUND", "несуществующий инструмент → код реестра, а не пятисотка")
 
-    print("== 4. Успешный путь: данные в content, факты в structuredContent ==")
+    print("== 4. Успешный путь: итог целиком в structuredContent, content — его сериализация ==")
     srv.write("probe.txt", "живой сервер")
     env = rpc.call_tool("fs_read_file", {"path": "probe.txt"})
     ok(not env["is_error"] and env["data"].get("content", {}).get("value") == "живой сервер",
@@ -158,12 +165,21 @@ with live_server() as srv:
        f"факт контракта пережил конверт MCP ({[f['type'] for f in env['facts']]})")
     ok(env["data"].get("content", {}).get("trust") == "untrusted",
        "чужой текст помечен как ДАННЫЕ, а не инструкции (S3/OUT1)")
+    # Claude Code показывает модели structuredContent, если он есть: данные без него до модели не доходят.
+    ok((rpc.structured(env["envelope"]).get("content") or {}).get("value") == "живой сервер",
+       f"данные успеха в structuredContent, а не только факты ({sorted(rpc.structured(env['envelope']))})")
 
-    # По схеме спеки structuredContent — объект. Пустоту выражаем отсутствием поля,
-    # а не null, иначе валидатор провода красит самый обычный успешный ответ.
+    # По схеме спеки structuredContent — объект, не null; текст — та же сериализация (MCP 2025-06-18 «Structured Content»).
+    _refused = rpc.call_tool("fs_read_file", {"path": "нет_такого.txt"})["envelope"]["result"]
+    for _name, _got in (("успех", env["envelope"]["result"]), ("отказ", _refused)):
+        _said = rpc.text({"result": _got})
+        try:
+            _same = json.loads(_said) == _got.get("structuredContent")
+        except ValueError:
+            _same = False
+        ok(isinstance(_got.get("structuredContent"), dict) and _same,
+           f"{_name}: content — сериализация structuredContent ({_said[:120]})")
     _quiet = rpc.call_tool("structure_status", {})["envelope"]["result"]
-    ok("structuredContent" not in _quiet,
-       f"ответ без структурированной части не везёт null-поле ({_quiet.get('structuredContent', 'нет поля')})")
     ok(not [k for k, v in _quiet.items() if v is None],
        f"в конверте вообще нет полей со значением null ({[k for k, v in _quiet.items() if v is None]})")
 

@@ -6,7 +6,9 @@ tests/quick/test_montage_tools.py — сцена из книги станови�
 реестра, а имена листов, столбцов и ролей живут в декларации, а не в коде.
 """
 import asyncio
+import functools
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -443,6 +445,46 @@ else:
     ok(_box.status == "error" and _box.error.code == "RENDER_PROFILE_INVALID" and "avi" in _box.error.message,
        f"контейнер без muxer в словаре — отказ профиля этим же вызовом, до задания, а не упавшее задание "
        f"({_box.error.code if _box.error else (_box.data or {}).get('status')})")
+
+    # EB-03: причина рождается в ffprobe, следствие видно на двери — в ответе вызова и в журнале сервера.
+    _heard: list[logging.LogRecord] = []
+    _ear = logging.Handler(logging.INFO)
+    _ear.emit = _heard.append                   # type: ignore[method-assign]
+    _engine_log = logging.getLogger("core.engine.engine")
+    _engine_log.addHandler(_ear)
+    _engine_log.setLevel(logging.INFO)
+    (WS / "ch1/v1/assets/junk.mp4").write_bytes(b"\x00not a movie\n" * 8)     # ffprobe не разбирает: отказ вызова
+    (WS / "ch1/v1/assets/junk.png").write_bytes(b"\x00not a picture\n" * 8)   # ffprobe пропускает, ffmpeg — нет
+    _probe_said = subprocess.run(        # слова ffprobe — независимо от сервера, тем же бинарём
+        ["ffprobe", "-v", "error", str(WS / "ch1/v1/assets/junk.mp4")], capture_output=True,
+        text=True).stderr.strip().rsplit("\n", 1)[-1]
+    _now = functools.partial(call, "montage_render_scene")                 # отказ входа — самим вызовом
+    for _asset, _code, _ask in (("ch1/v1/assets/gone.png", "FILE_NOT_FOUND", _now),
+                                ("ch1/v1/assets/junk.mp4", "RENDER_INPUT_UNPREPARED", _now),
+                                ("ch1/v1/assets/junk.png", "", rendered)):
+        book({**ELEMENTS, "E1": {**ELEMENTS["E1"], "asset_path": _asset}}, AUDIO)
+        _heard.clear()
+        _bad = _ask(table="ch1/v1", scene_id="S01")
+        _shown = repr(_bad)
+        _facts = _bad.error.facts if _bad.error else {}
+        _logged = [r.getMessage() for r in _heard]
+        ok(_bad.status == "error" and (_bad.error.code == _code if _code else _facts.get("exit_code"))
+           and _facts.get("path", _asset) == _asset and str(WS) not in _shown and str(WS.resolve()) not in _shown,
+           f"вход {_asset}: отказ называет файл от корня и код выхода, места сервера в ответе нет "
+           f"({_bad.error.code if _bad.error else 'успех'}, {_facts})")
+        if _code == "RENDER_INPUT_UNPREPARED":
+            ok(bool(_probe_said) and _probe_said not in _shown and _facts.get("exit_code")
+               and any(str(_facts.get("event")) in m and _probe_said in m for m in _logged),
+               f"слова ffprobe — в журнале под номером события из фактов, не в ответе "
+               f"(событие {_facts.get('event')}, ffprobe: {_probe_said[-60:]!r}, журнал: {len(_logged)})")
+        if not _code:
+            _said = [m.split("FfmpegSaid: ", 1)[-1] for m in _logged
+                     if str(_facts.get("event")) in m and "FfmpegSaid: " in m]
+            ok(len(_said) == 1 and _said[0] and _said[0] not in _shown,
+               f"слова ffmpeg из задания — в журнале под номером события из фактов, не в ответе "
+               f"(событие {_facts.get('event')}, ffmpeg: {(_said or [''])[0][-60:]!r}, журнал: {len(_logged)})")
+    _engine_log.removeHandler(_ear)
+    book(ELEMENTS, AUDIO)
 
     book(ELEMENTS, AUDIO, meta={"video_id": "VID1"})
     _no_choice = rendered(table="ch1/v1", scene_id="S01")

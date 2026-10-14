@@ -95,7 +95,9 @@ class JsonRpc:
 
     @staticmethod
     def data(envelope: dict) -> dict:
-        """Данные из `content[0].text`. При отказе там текст сообщения — тогда пусто."""
+        """Данные успеха из `content[0].text` — сериализации `structuredContent`; у отказа данных нет — пусто."""
+        if JsonRpc.is_error(envelope):
+            return {}
         try:
             parsed = json.loads(JsonRpc.text(envelope))
         except ValueError:
@@ -110,7 +112,7 @@ class JsonRpc:
         if failure:
             data = failure.get("data")
             return str(data["code"]) if isinstance(data, dict) and data.get("code") else f"RPC_{failure.get('code')}"
-        return str(JsonRpc.structured(envelope).get("code") or "")
+        return str(JsonRpc.detail(envelope).get("code") or "")
 
     @staticmethod
     def facts(envelope: dict) -> list[dict]:

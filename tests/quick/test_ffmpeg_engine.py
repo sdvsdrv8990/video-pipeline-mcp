@@ -213,6 +213,11 @@ else:
                      layers=[Layer(element_id="ghost", asset_path=_tmp / "нет.png")])
     refuses(lambda: ENGINE.render_scene(_missing), "FILE_NOT_FOUND",
             "пропавший ассет отбивается до запуска бинаря")
+    try:
+        ENGINE.render_scene(_missing)
+    except FfmpegError as e:
+        ok(e.facts.get("path") == "нет.png" and str(_tmp) not in f"{e.message} {e.facts}",
+           f"вызывающий не дал корня — файл назван именем, без места сервера ({e.message!r}, {e.facts})")
 
     _neural = scene("neural", duration_sec=1.0, layers=[
         Layer(element_id="obj", asset_path=OBJ, alpha_mode="REMOVE_BG")])

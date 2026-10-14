@@ -212,6 +212,7 @@ print("== 9. Инструмент: кто исполняет и какой мо�
 import asyncio as _aio
 import json as _json
 import importlib.util as _ilu
+import logging as _logging
 from core.engine import Engine as _Eng
 from core.ids import IDGenerator as _IDG
 from core.reactions import Reactions as _Reactions
@@ -984,6 +985,10 @@ class _FakeKeyed:
             raise ProviderError("PROVIDER_FAILED",
                                 f"провайдер ответил: invalid api key '{request.api_key}'",
                                 reason=f"ключ {request.api_key} отклонён")
+        if request.input == "отказ с причиной":     # ключ в фактах и в тексте чужой причины — она идёт в журнал
+            raise ProviderError("PROVIDER_FAILED", "провайдер отказал",
+                                facts={"detail": f"ответ: ключ {request.api_key} отклонён"}) \
+                from RuntimeError(f"401 Unauthorized: Bearer {request.api_key}")
         if request.input in ("отказ прозвонки", "отказ забора"):
             return MediaOutcome(task_id=request.input)
         request.target.write_bytes(b"RIFF" + b"audio")
@@ -1052,6 +1057,29 @@ try:
         ok(_late.status == "error" and _late.error.code == "PROVIDER_FAILED" and _KEY not in _late_dump
            and fingerprint(_KEY) in _late_dump,
            f"{_stage}: ключ в тексте провайдера — в ответе только его отпечаток ({_late_dump[:160]})")
+
+    # Причина в провайдере (ключ в фактах и в тексте чужой причины) → следствие на двери и в журнале узла EB-03.
+    _kheard: list = []
+    _kear = _logging.Handler(_logging.INFO)
+    _kear.emit = _kheard.append                 # type: ignore[method-assign]
+    _klogger = _logging.getLogger("core.engine.engine")
+    _klevel = _klogger.level
+    _klogger.addHandler(_kear)
+    _klogger.setLevel(_logging.INFO)
+    try:
+        _caused = _kcall("media_generate", table="k", resource_type="tts_characters",
+                         input="отказ с причиной", scene_id="s4", video_slug="demo")
+    finally:
+        _klogger.removeHandler(_kear)
+        _klogger.setLevel(_klevel)
+    _cdump = _json.dumps(_caused.error.model_dump() if _caused.error else {}, ensure_ascii=False)
+    _cevent = str((_caused.error.facts if _caused.error else {}).get("event"))
+    _cheard = [r.getMessage() for r in _kheard]
+    ok(_caused.status == "error" and _KEY not in _cdump and fingerprint(_KEY) in _cdump
+       and _KEY not in " ".join(_cheard)
+       and any(_cevent in m and "401 Unauthorized" in m and fingerprint(_KEY) in m for m in _cheard),
+       f"ключ в фактах отказа и в чужой причине — ни в ответе, ни в журнале: там отпечаток под номером события "
+       f"({_cdump[:120]}; журнал: {[m[-90:] for m in _cheard]})")
 finally:
     _srv.CONFIG_PATH = _cfg_was
 
@@ -1550,18 +1578,22 @@ try:
        f"{_e17 and (_e17.code, _e17.facts)})")
 
     # Причина → следствие (TS-13): отказ двери доходит до клиента своим кодом, а не общим PROVIDER_FAILED.
-    for _case17, _script17, _code17, _facts17 in (
+    # Объявление 2026-10-14 (EB-03, узел Engine.refusal): у отказа с чужой причиной (JSONDecodeError) к фактам двери
+    # граница добавляет номер события `event`; у отказов без чужой причины фактов ровно столько, сколько дала дверь.
+    for _case17, _script17, _code17, _facts17, _event17 in (
             ("тело списка сверх 1 МБ", [(200, b"x" * (2**20 + 1), {})], "DOWNLOAD_TOO_LARGE",
-             {"limit_mb": 1.0, "key": "config/providers.yaml → online.answer.max_bytes"}),
+             {"limit_mb": 1.0, "key": "config/providers.yaml → online.answer.max_bytes"}, False),
             ("сжатое вопреки identity", [(200, b"\x1f\x8b", {"content-encoding": "gzip"})], "PROVIDER_FAILED",
-             {"host": "models.twin.example", "status": "Content-Encoding gzip"}),
+             {"host": "models.twin.example", "status": "Content-Encoding gzip"}, False),
             ("200 не JSON (прежде — трасса JSONDecodeError)", [(200, b"<html>", {})], "PROVIDER_FAILED",
-             {"host": "models.twin.example", "status": "ответ не JSON"})):
+             {"host": "models.twin.example", "status": "ответ не JSON"}, True)):
         _rows17, _e17 = _live17("https://models.twin.example/v1/models", script=_script17)
         _seen17 = _Eng(reactions=_REACTIONS).refusal(_e17) if _e17 else None
-        ok(_e17 is not None and _e17.code == _code17 and _e17.facts == _facts17
-           and _seen17 is not None and _seen17.error.code == _code17,
-           f"{_case17}: клиент видит {_code17} с фактами двери ({_e17 and (_e17.code, _e17.facts)})")
+        _said17 = dict(_seen17.error.facts) if _seen17 and _seen17.error else {}
+        ok(_e17 is not None and _e17.code == _code17 and _seen17 is not None and _seen17.error.code == _code17
+           and {k: v for k, v in _said17.items() if k != "event"} == _facts17 and ("event" in _said17) == _event17,
+           f"{_case17}: клиент видит {_code17} с фактами двери{' и номером события' if _event17 else ''} "
+           f"({_e17 and (_e17.code, _said17)})")
 finally:
     _OC.transport, _OC.resolve = _real_seams17
 

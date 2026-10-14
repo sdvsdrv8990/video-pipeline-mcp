@@ -65,7 +65,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         if not ok:
             return built
         spec, counts = built
-        render = FfmpegEngine()
+        render = FfmpegEngine(name=Files(ctx.workspace_path).name)
         ok, prepared = ctx.safe(lambda: render.build(spec))
         if not ok:
             return prepared

@@ -29,24 +29,31 @@ def declared_transport(config_path: Path) -> TransportDeclaration:
 
 
 def answer(result: ToolResult) -> dict[str, Any]:
-    """Результат tools/call в форме MCP: у успеха — данные текстом и факты (типы реестра фактов), у отказа — код, класс,
-    рецепт и ErrorDetail целиком под `error` (факты причины, ошибки ввода; EB-11): одно имя — один тип."""
-    # По схеме спеки structuredContent — объект; отсутствие структурированной части выражается ОТСУТСТВИЕМ поля, а не
-    # `null` (иначе валидатор провода красит ответ).
+    """Результат tools/call в форме MCP: `structuredContent` — итог целиком (у успеха — данные и факты типов реестра
+    фактов, у отказа — ErrorDetail под `error` один раз и без пустых полей: код, класс, текст, рецепт, факты причины,
+    ошибки ввода; EB-11), `content` — его сериализация: клиент, который показывает модели одно из двух, отдаёт тот же
+    итог (MCP 2025-06-18)."""
     if result.status == "success":
-        payload: dict[str, Any] = {
-            # Текст — как есть: экранирование \uXXXX клиент видит буквально, и кириллица стоит ему 6 символов.
-            "content": [{"type": "text", "text": json.dumps(result.data or {}, ensure_ascii=False)}]}
-        if result.facts:
-            payload["structuredContent"] = {"facts": [f.model_dump() for f in result.facts]}
-        return payload
-    payload = {"content": [{"type": "text", "text": result.error.message if result.error else "Unknown error"}],
-               "isError": True}
-    if result.error:
-        detail = {key: value for key, value in result.error.model_dump().items() if value is not None}
-        payload["structuredContent"] = {**{key: detail[key] for key in ("code", "reaction_class", "recovery")},
-                                        "error": detail}
-    return payload
+        whole: dict[str, Any] = {**(result.data or {}),
+                                 **({"facts": [f.model_dump() for f in result.facts]} if result.facts else {})}
+    elif result.error:
+        whole = {"error": _bare(result.error.model_dump())}
+    else:
+        return {"content": [{"type": "text", "text": "Unknown error"}], "isError": True}
+    # Текст — как есть: экранирование \uXXXX клиент видит буквально, и кириллица стоит ему 6 символов.
+    payload: dict[str, Any] = {"content": [{"type": "text", "text": json.dumps(whole, ensure_ascii=False)}],
+                               "structuredContent": whole}
+    return payload if result.status == "success" else {**payload, "isError": True}
+
+
+def _bare(value: Any) -> Any:
+    """Отказ без пустот на любой глубине: поле без значения (None, {}, []) клиенту не идёт."""
+    if isinstance(value, dict):
+        kept = {key: _bare(item) for key, item in value.items()}
+        return {key: item for key, item in kept.items() if item is not None and item != {} and item != []}
+    if isinstance(value, list):
+        return [_bare(item) for item in value]
+    return value
 
 
 class Transport:

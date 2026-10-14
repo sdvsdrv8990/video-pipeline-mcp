@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import stat
+import sys
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -78,6 +79,8 @@ def is_secret_path(path) -> bool:
 
 def _sync_dir(folder: Path) -> None:
     """Сброс каталога на диск: без него имя, появившееся через `os.replace`/`os.link`, может не пережить сбой питания."""
+    if sys.platform == "win32":
+        return  # каталог на Windows дескриптором не открыть (EACCES); так же atomicwrites `__init__.py:38-52`
     fd = os.open(folder, os.O_RDONLY)
     try:
         os.fsync(fd)
@@ -140,7 +143,7 @@ class Files:
         """Остаток владельца становится файлом (FS-06): сброс на диск, `os.replace` на место, заметка остатка снимается,
         сброс каталога."""
         target, part = self.place(path, secrets=secrets), self.remnant(path, owner, secrets=secrets)
-        with open(part, "rb") as f:
+        with open(part, "r+b") as f:  # на Windows fsync = FlushFileBuffers: дескриптор только на чтение — EBADF
             os.fsync(f.fileno())
         os.replace(part, target)
         self._note(path, owner, secrets).unlink(missing_ok=True)

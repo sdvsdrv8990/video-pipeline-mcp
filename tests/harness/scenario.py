@@ -673,7 +673,8 @@ class Runner:
             detail = rpc.detail(envelope)
             if step.tool:
                 observed = {"ok": not rpc.is_error(envelope), "code": rpc.error_code(envelope) or "",
-                            "message": rpc.text(envelope)[:400], "data": rpc.data(envelope) or {},
+                            "message": str(detail.get("message") or rpc.text(envelope))[:400],
+                            "data": rpc.data(envelope) or {},
                             "reaction_class": str(detail.get("reaction_class") or ""),
                             "recovery": detail.get("recovery") or {},
                             "facts": [str(f.get("type") or "") for f in (rpc.facts(envelope) or [])],

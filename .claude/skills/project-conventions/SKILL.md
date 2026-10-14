@@ -105,7 +105,7 @@ metadata:
 | Какие коды отказов существуют | `config/server_reactions.yaml` (ключ верхнего уровня = код; `DEFAULT` — фолбэк). Новый код заводится ТАМ, не строкой в коде |
 | Что советует сервер на успехе | `config/recommendations.yaml` + `ctx.advice.get("<ключ>", **контекст)` — второй канал рядом с реакциями (F59) |
 | Как отказ файрвола виден клиенту | НЕ кодом реакции: транспорт отвечает HTTP **403** (BLOCK) и **429** (RATE_LIMIT) — `server.py`, обработчик `/mcp`. Ассертить в тестах по статусу |
-| Где в ответе MCP что лежит | `content[0].text` — данные; `structuredContent` — `facts` на успехе и `code`/`reaction_class`/`recovery` на отказе; роль `status` играет родное `isError` |
+| Где в ответе MCP что лежит | `structuredContent` — итог целиком: данные и `facts` на успехе, `code`/`reaction_class`/`recovery` и `error` на отказе; `content[0].text` — его сериализация (MCP 2025-06-18 «Structured Content»: Claude Code показывает модели `structuredContent`, если он есть); роль `status` играет родное `isError` |
 | Как поднять живой сервер под тест | `with live_server() as srv:` (`tests/harness`) — свой порт, своя временная область (`MCP_WORKSPACE`), настоящий ключ; готовность по ОТВЕТУ на `tools/list` |
 | Как устроены наборы тестов | самостоятельные скрипты со своим счётчиком и `sys.exit`; гоняет их `tests/test_suites.py` подпроцессом (exit-код = вердикт), новый файл `tests/**/test_*.py` попадает в гейт сам |
 | Кто знает иерархию сущностей | `core/ids/taxonomy.py` — читает `id:`/`children:` из `config/templates/workspace/*.tpl.yaml`. Хардкода таксономии в поиске больше нет |

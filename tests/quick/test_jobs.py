@@ -250,9 +250,12 @@ def _threadless16() -> tuple:
     eng = Engine(reactions=Reactions(ROOT / "config" / "server_reactions.yaml"), resources=RES16)
     eng.register(name, "проба без потока", {"type": "object", "properties": {}}, _quick)
     caught: list[logging.LogRecord] = []
-    catcher = logging.Handler(logging.ERROR)
+    catcher = logging.Handler(logging.INFO)
     catcher.emit = caught.append
-    logging.getLogger("core.engine.engine").addHandler(catcher)
+    engine_log = logging.getLogger("core.engine.engine")
+    engine_log.addHandler(catcher)
+    was = engine_log.level
+    engine_log.setLevel(logging.INFO)          # причина ожидаемого отказа пишется строкой INFO
     def refuse(self):
         raise RuntimeError("can't start new thread")
 
@@ -262,18 +265,27 @@ def _threadless16() -> tuple:
         answer = asyncio.run(eng.call(name, {}))
     finally:
         threading.Thread.start = start
-        logging.getLogger("core.engine.engine").removeHandler(catcher)
+        engine_log.removeHandler(catcher)
+        engine_log.setLevel(was)
     places = RES16.classes[klass].max_concurrent or 0
-    return answer, klass, sum(eng.slots.take(klass) for _ in range(places)) == places, len(caught)
+    return answer, klass, sum(eng.slots.take(klass) for _ in range(places)) == places, caught
 
 
-answer16, klass16, free16, traced16 = _threadless16()
+# Объявление 2026-10-14 (EB-03, узел Engine.refusal): чужая причина объявленного отказа — строка журнала с номером
+# события, тот же номер едет фактом `event`; прежде факты были ровно {work, klass, threads}.
+answer16, klass16, free16, heard16 = _threadless16()
+event16 = answer16.error.facts.get("event") if answer16.error else None
 check("система не дала поток под место — отказ WORKER_UNAVAILABLE с работой, классом и объявленным числом потоков, "
-      "текст по шаблону реестра, место вернулось, трассы в журнале нет (инструмент не запускался — не «упал»)",
+      "текст по шаблону реестра, место вернулось, причина в журнале строкой под номером события из фактов, трассы нет "
+      "(инструмент не запускался — не «упал»)",
       answer16.error is not None and answer16.error.code == "WORKER_UNAVAILABLE"
-      and answer16.error.facts == {"work": LOAD16[0][0], "klass": klass16, "threads": sum(want16.values())}
-      and LOAD16[0][0] in answer16.error.message and "{" not in answer16.error.message and free16 and not traced16,
-      (answer16.error and (answer16.error.code, answer16.error.facts, answer16.error.message), free16, traced16))
+      and answer16.error.facts == {"work": LOAD16[0][0], "klass": klass16, "threads": sum(want16.values()),
+                                   "event": event16}
+      and LOAD16[0][0] in answer16.error.message and "{" not in answer16.error.message and free16
+      and not any(r.exc_info for r in heard16)
+      and any(str(event16) in r.getMessage() and "can't start new thread" in r.getMessage() for r in heard16),
+      (answer16.error and (answer16.error.code, answer16.error.facts, answer16.error.message), free16,
+       [r.getMessage() for r in heard16]))
 
 
 def _threadless_task16() -> tuple[str, list]:

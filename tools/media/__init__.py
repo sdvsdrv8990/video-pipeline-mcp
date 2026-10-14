@@ -133,13 +133,24 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         owner = ctx.secrets.owner_of(table)
         return ctx.secrets.get(owner, provider) if owner else ""
 
-    def _hide_key(result: "ToolResult", api_key: str) -> "ToolResult":
-        """Последний рубеж: провайдер способен процитировать присланный ключ в тексте отказа."""
-        if api_key and result.error:
-            result.error.message = redact(result.error.message, [api_key])
-            if result.error.recovery:
-                result.error.recovery.reason = redact(result.error.recovery.reason, [api_key])
-        return result
+    def _hidden(e: ContractError, api_key: str) -> ContractError:
+        """Ключ, который провайдер процитировал в отказе, не уходит ни клиенту, ни в журнал: текст, рецепт, факты и
+        чужая причина — со скрытым ключом до перевода отказа (вызов и задание узла переводят одним `Engine.refusal`)."""
+        if not api_key:
+            return e
+        e.message, e.reason = redact(e.message, [api_key]), redact(e.reason, [api_key])
+        e.facts = {k: redact(v, [api_key]) if isinstance(v, str) else v for k, v in e.facts.items()}
+        cause = e.__cause__
+        if cause is not None and not isinstance(cause, ContractError) and api_key in str(cause):
+            e.__cause__ = Exception(redact(f"{type(cause).__name__}: {cause}", [api_key]))
+        return e
+
+    def _keyless(call: Callable[[], object], api_key: str) -> object:
+        """Вызов провайдера, чей отказ проходит `_hidden` до перевода."""
+        try:
+            return call()
+        except ContractError as e:
+            raise _hidden(e, api_key)
 
     def _url_in(fields: tuple[str, ...], answer: dict) -> str:
         """Ссылка на результат в ответе задачи — первое непустое из полей, объявленных `download.fetch.url_fields`."""
@@ -286,9 +297,9 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             except ContractError as e:  # отказ обработки строки — с листом и строкой, которые знает резолвер
                 raise e.with_facts(sheet=sheet, row=decision["row_id"])
 
-        ok, outcome = ctx.safe(generate)
+        ok, outcome = ctx.safe(lambda: _keyless(generate, api_key))
         if not ok:
-            return _hide_key(outcome, api_key)
+            return outcome
 
         waited: dict = {}
         if outcome.task_id:
@@ -300,13 +311,13 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                     "Асинхронный провайдер обязан уметь прозвонить статус — иначе причина "
                     "отказа (модерация, лимит, недоступность) не вернётся никогда.")
             # Прозвонка нужна не «дождаться», а поймать причину отказа.
-            ok, polled = ctx.safe(lambda: cycle.wait(adapter.poll, outcome.task_id))
+            ok, polled = ctx.safe(lambda: _keyless(lambda: cycle.wait(adapter.poll, outcome.task_id), api_key))
             if not ok:
-                return _hide_key(polled, api_key)
+                return polled
             waited = polled
             answer = waited.get("answer") or {}
             if callable(getattr(adapter, "fetch", None)):
-                ok, fetched = ctx.safe(lambda: adapter.fetch(answer, target))
+                ok, fetched = ctx.safe(lambda: _keyless(lambda: adapter.fetch(answer, target), api_key))
             else:
                 # Адаптер не забирает файл сам — забираем по ссылке из ответа задачи.
                 ok, loader = ctx.safe(lambda: results(ctx.config_path / "media_tasks.yaml"))
@@ -318,10 +329,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                         "PROVIDER_FAILED", "Задача готова, но в ответе нет ссылки на результат.",
                         "Сервер ищет ссылку в полях, объявленных в config/media_tasks.yaml → "
                         "download.fetch.url_fields. Добавь туда поле этого провайдера.")
-                ok, fetched = ctx.safe(lambda: loader.fetch(
-                    url, Files(Path(target).parent), Path(target).name, "result"))
+                ok, fetched = ctx.safe(lambda: _keyless(lambda: loader.fetch(
+                    url, Files(Path(target).parent), Path(target).name, "result"), api_key))
             if not ok:
-                return _hide_key(fetched, api_key)
+                return fetched
             outcome.files = [target]
 
         verified = []
@@ -427,12 +438,13 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                         f"Ключа '{provider}' для этого канала нет — спросить его список нечем. "
                         "Ниже то, что знает реестр шлюза на день своей сборки.")}
                 else:
-                    ok, fresh = ctx.safe(lambda: online.merge(online.live(provider, key, kind), kind))
+                    ok, fresh = ctx.safe(lambda: _keyless(lambda: online.merge(online.live(provider, key, kind),
+                                                                               kind), key))
                     if ok:
                         rows, source = fresh[:limit] if limit else fresh, "provider"
                     else:
                         # Частичный результат помечаем: список из реестра остаётся, но он старее.
-                        hidden = _hide_key(fresh, key).error
+                        hidden = fresh.error
                         live_error = {"code": hidden.code if hidden else "INTERNAL_ERROR",
                                       "message": hidden.message if hidden else ""}
         else:
