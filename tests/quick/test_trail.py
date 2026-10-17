@@ -89,9 +89,12 @@ ok(not Logs.from_declaration({"logs": {"app": "x"}, "trail": {"enabled": True, "
    "неполное объявление гасит след, а не дописывается значением из кода")
 ok(not Logs.from_declaration({}, str(tmp)).trail.enabled, "нет объявления — нет следа")
 
-broken = _trail(Path("/proc/нельзя-сюда-писать"))
+blocked = Path(tempfile.mkdtemp(prefix="vpm-trail-blocked-")) / "trail"
+blocked.write_text("на месте каталога следа — файл", encoding="utf-8")
+broken = _trail(blocked)                        # каталог следа не создать на любой ОС: имя занято файлом
 broken.write("fs_read_file", {"path": "a"}, _Result())
-ok(not broken.enabled, "отказ записи гасит след")
+ok(not broken.enabled and blocked.read_text(encoding="utf-8") == "на месте каталога следа — файл",
+   "отказ записи гасит след, файл на месте каталога не тронут")
 broken.write("fs_read_file", {"path": "b"}, _Result())
 ok(True, "второй вызов после отказа НЕ падает: ломается наблюдение, а не работа владельца")
 

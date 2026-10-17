@@ -12,6 +12,7 @@ import ast
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,8 @@ import pytest
 from core.observability import Logs
 
 ROOT = Path(__file__).resolve().parents[1]
+# Граница одного набора — одно объявление (`[tool.vpm] suite_timeout_sec`), его же читает судья мутантов.
+SUITE_TIMEOUT_SEC = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["vpm"]["suite_timeout_sec"]
 
 # Наборы, которым нужен ЖИВОЙ сервер/туннель. Пусто: харнесс `tests/harness` поднимает
 # сервер сам — свой порт, своя временная область, настоящий ключ, — поэтому «живые» наборы больше
@@ -76,7 +79,7 @@ def test_suite_passes(suite: Path, repo_root: Path, suite_env: dict[str, str], o
     """Набор отрабатывает с exit 0; иначе — строки его провала и хвост вывода попадают в отчёт."""
     # Вывод наборов — UTF-8 при любой локали: на Windows (cp1252) поток читался в None, и падал уже отчёт о провале.
     p = subprocess.run(_cmd(suite), cwd=repo_root, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       timeout=900, env=suite_env)
+                       timeout=SUITE_TIMEOUT_SEC, env=suite_env)
     assert p.returncode == 0, _failure(suite, p)
 
 
@@ -147,9 +150,12 @@ def test_server_built_through_harness_door():
 
 def test_direct_run_writes_no_owner_logs(tmp_path: Path, repo_root: Path):
     """Набор, запущенный руками без MCP_LOGS, не создаёт журналов владельца. Владелец — подменённые каталоги пользователя
-    (HOME, XDG_STATE_HOME, LOCALAPPDATA); ожидаемый корень считает тот же platformdirs в той же среде."""
+    (HOME, XDG_STATE_HOME, LOCALAPPDATA); ожидаемый корень считает тот же platformdirs в той же среде. На Windows
+    platformdirs берёт каталог у ОС, а не из LOCALAPPDATA; подмена — его WIN_PD_OVERRIDE_LOCAL_APPDATA."""
+    local = str(tmp_path / "local")
     env = {k: v for k, v in os.environ.items() if k != "MCP_LOGS"} | {
-        "HOME": str(tmp_path / "home"), "XDG_STATE_HOME": str(tmp_path / "state"), "LOCALAPPDATA": str(tmp_path / "local")}
+        "HOME": str(tmp_path / "home"), "XDG_STATE_HOME": str(tmp_path / "state"), "LOCALAPPDATA": local,
+        "WIN_PD_OVERRIDE_LOCAL_APPDATA": local}
     probe = subprocess.run([sys.executable, "-c", "from core.observability import Logs; "
                             "print(Logs.from_config('config', None).root)"],
                            cwd=repo_root, env=env, capture_output=True, text=True, timeout=60)
@@ -157,7 +163,7 @@ def test_direct_run_writes_no_owner_logs(tmp_path: Path, repo_root: Path):
     assert probe.returncode == 0 and owner.is_relative_to(tmp_path), \
         f"корень журналов по умолчанию не подменился средой на этой ОС — замер невозможен: {owner} {probe.stderr[-300:]}"
     for suite in (Path("tests/quick/test_audit_fixes.py"), Path("tests/cache_overflow/test_cache_overflow.py")):
-        p = subprocess.run(_cmd(suite), cwd=repo_root, env=env, capture_output=True, text=True, timeout=900)
+        p = subprocess.run(_cmd(suite), cwd=repo_root, env=env, capture_output=True, text=True, timeout=SUITE_TIMEOUT_SEC)
         assert p.returncode == 0, _failure(suite, p)
     assert not owner.exists(), f"набор без MCP_LOGS создал журналы владельца: {sorted(map(str, owner.rglob('*')))}"
 

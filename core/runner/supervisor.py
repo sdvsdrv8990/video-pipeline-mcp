@@ -36,6 +36,7 @@ from core.providers.resolver import ProviderError
 log = logging.getLogger(__name__)
 
 TOKEN_ENV = "MCP_RUNNER_TOKEN"
+_CHILDREN: dict[int, subprocess.Popen] = {}     # раннеры, поднятые этим процессом: событие их конца и код — у владельца
 
 
 class RunnerSupervisor:
@@ -142,6 +143,9 @@ class RunnerSupervisor:
         """
         if not pid:
             return False
+        child = _CHILDREN.get(pid)
+        if child is not None:
+            return child.poll() is None         # свой ребёнок: конец и код — у владельца, а не проба ОС по pid
         try:
             proc = psutil.Process(pid)
             if proc.status() == psutil.STATUS_ZOMBIE:
@@ -267,6 +271,7 @@ class RunnerSupervisor:
             log.flush()
             proc = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, cwd=str(self.root),
                                     **child_spawn("replace", {TOKEN_ENV: token}))
+        _CHILDREN[proc.pid] = proc
         self._write({"pid": proc.pid, "token": token, "mode": mode, "started": time.time(),
                      "workspace": str(workspace), "command": command})
 
@@ -306,7 +311,15 @@ class RunnerSupervisor:
                     proc.kill()                       # не отдал по-хорошему — модель могла зависнуть
                     proc.wait()
             stopped = True
+        _CHILDREN.pop(pid, None)
         self.state_file.unlink(missing_ok=True)
         return {"phase": "stopped", "stopped": stopped, "pid": pid,
                 "note": ("Раннер остановлен — локальные модели снова считаются в сервере."
                          if stopped else "Раннер и не был поднят.")}
+
+    @staticmethod
+    def ended(pid: int) -> int | None:
+        """Конец своего раннера событием владельца: ждёт выхода процесса, поднятого этим сервером, и отдаёт код (сигнал на
+        POSIX — отрицательный); чужой pid — None. Своего предела нет: зависание ловит граница вызывающего."""
+        child = _CHILDREN.get(pid)
+        return None if child is None else child.wait()

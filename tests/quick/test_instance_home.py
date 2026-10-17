@@ -94,17 +94,66 @@ _ROW = {"resource_type": "tts_characters", "provider": "ElevenLabs", "fallback_p
 _KEY = "sk-проба-ключа-владельца"
 with live_server() as srv:
     srv.write("ключи/read.json", json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {"L1": _ROW}}}, ensure_ascii=False))
-    # Без управляющего терминала (новая сессия) getpass читает ввод из stdin.
-    entered = subprocess.run([sys.executable, str(ROOT / "scripts" / "set_provider_key.py"), "--channel", "ключи",
-                              "--provider", "ElevenLabs"], input=_KEY + "\n", cwd=ROOT, capture_output=True, text=True,
-                             start_new_session=True,
-                             env={**os.environ, "MCP_HOME": str(srv.workspace.parent), "MCP_WORKSPACE": str(srv.workspace)})
+    _script = [sys.executable, str(ROOT / "scripts" / "set_provider_key.py"), "--channel", "ключи",
+               "--provider", "ElevenLabs", "--stdin"]
+    _env = {**os.environ, "MCP_HOME": str(srv.workspace.parent), "MCP_WORKSPACE": str(srv.workspace)}
+    # Новая сессия — без терминала того, кто запустил набор: регресс ввода не повиснет на его терминале.
+    entered = subprocess.run(_script, input=_KEY + "\n", cwd=ROOT, capture_output=True, text=True, env=_env,
+                             start_new_session=True)
     status = srv.rpc.call_tool("media_provider_status", {"table": "ключи", "resource_type": "tts_characters"})["data"]
+    if os.name == "posix":
+        # Живой терминал без ввода — как консоль Windows: байт на нём значит, что скрипт ждёт терминал, а не stdin.
+        import pty
+        import selectors
+        _master, _slave = pty.openpty()      # свой конец держим до конца: без него чтение мастера — EIO раньше ребёнка
+        _lead = ("import fcntl, os, sys, termios; os.setsid(); fd = os.open(sys.argv[1], os.O_RDWR); "
+                 "fcntl.ioctl(fd, termios.TIOCSCTTY, 0); os.execv(sys.executable, [sys.executable, *sys.argv[2:]])")
+        _child = subprocess.Popen([sys.executable, "-c", _lead, os.ttyname(_slave), *_script[1:]], cwd=ROOT, env=_env,
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        _child.stdin.write((_KEY + "\n").encode())
+        _child.stdin.close()
+        _tty, _outb = b"", b""
+        with selectors.DefaultSelector() as _sel:   # первое из событий: байт на терминале или конец вывода ребёнка
+            _sel.register(_master, selectors.EVENT_READ, "tty")
+            _sel.register(_child.stdout, selectors.EVENT_READ, "out")
+            while not _tty:
+                _ready = {key.data for key, _ in _sel.select()}
+                if "tty" in _ready:
+                    _tty = os.read(_master, 1024)
+                elif not (_chunk := os.read(_child.stdout.fileno(), 4096)):
+                    break
+                else:
+                    _outb += _chunk
+        if _tty:
+            _child.kill()
+        _child.wait()
+        _child.stdout.close()
+        _out = _outb.decode(errors="replace")
+        os.close(_slave)
+        os.close(_master)
 key = ((status.get("resolved") or [{}])[0]).get("key") or {}
-check("скрипт ключей принял ключ без терминала", entered.returncode == 0 and "сохранён" in entered.stdout,
+check("скрипт ключей принял ключ из stdin по флагу", entered.returncode == 0 and "сохранён" in entered.stdout,
       (entered.returncode, entered.stdout[-200:], entered.stderr[-200:]))
 check("сервер видит ключ, внесённый скриптом: тот же ключ шифрования (дом) и тот же канал (рабочая область)",
       key.get("present") is True and key.get("fingerprint") == fingerprint(_KEY) and not key.get("unreadable"), key)
+if os.name == "posix":
+    check("ключ по флагу --stdin при живом терминале: терминал не тронут, ключ сохранён",
+          not _tty and _child.returncode == 0 and "сохранён" in _out, (_tty[:80], _child.returncode, _out[-200:]))
+    # Флаг при stdin-терминале: набранный ключ печатался бы эхом — отказ до чтения, в доме ничего не появляется.
+    import pty
+    _home4b = Path(tempfile.mkdtemp(prefix="stdin_tty_"))
+    atexit.register(shutil.rmtree, _home4b, ignore_errors=True)
+    _m4b, _s4b = pty.openpty()
+    os.write(_m4b, b"\n")   # строка уже в очереди терминала: чтение ключа с него кончается сразу, а не ждёт ввода
+    _echo = subprocess.run(_script, stdin=_s4b, cwd=ROOT, capture_output=True, text=True,
+                           env={**os.environ, "MCP_HOME": str(_home4b), "MCP_WORKSPACE": str(_home4b)})
+    os.close(_s4b)
+    os.close(_m4b)
+    check("--stdin со stdin-терминалом — отказ кодом 2 до чтения ключа, в доме ничего",
+          _echo.returncode == 2 and "--stdin" in _echo.stdout and not any(_home4b.iterdir()),
+          (_echo.returncode, _echo.stdout[-160:], sorted(p.name for p in _home4b.iterdir())))
+else:
+    print("  ── не судится: в ОС нет pty — живой терминал без ввода поднять нечем")
 
 print("== 5. --re-adopt присваивает рабочую область личности своего дома ==")
 _home5 = Path(tempfile.mkdtemp(prefix="readopt_home_"))

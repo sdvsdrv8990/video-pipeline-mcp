@@ -22,7 +22,7 @@ M = TypeVar("M", bound=BaseModel)
 
 
 class Declaration:
-    """YAML-декларация: перечитывается по mtime, отсутствие и битость — коды реестра."""
+    """YAML-декларация: перечитывается при смене содержимого, отсутствие и битость — коды реестра."""
 
     def __init__(self, config_file: str | Path, error_cls, subject: str, hint: str):
         self.config_file = Path(config_file)
@@ -30,7 +30,7 @@ class Declaration:
         self._subject = subject
         self._hint = hint
         self._data: dict | None = None
-        self._mtime: float = 0.0
+        self._raw: bytes | None = None
 
     @property
     def data(self) -> dict:
@@ -38,14 +38,14 @@ class Declaration:
             raise self._error(
                 "TEMPLATE_NOT_FOUND", f"Нет декларации {self._subject}: {self.config_file.name}",
                 reason=self._hint)
-        mtime = self.config_file.stat().st_mtime
-        if self._data is None or mtime != self._mtime:
+        raw = contents(self.config_file) or b""
+        if self._data is None or raw != self._raw:
             try:
-                data = yaml.safe_load(self.config_file.read_text(encoding="utf-8")) or {}
+                data = yaml.safe_load(raw.decode("utf-8")) or {}
             except yaml.YAMLError as e:
                 # Без цепочки причины: текст ошибки YAML несёт строку файла вместе со значениями.
                 raise self._invalid([_yaml_error(e)]) from None
-            self._data, self._mtime = data, mtime
+            self._data, self._raw = data, raw
         return self._data
 
     def _invalid(self, errors: list[dict]) -> Exception:
@@ -133,7 +133,7 @@ class Declaration:
 class Declared(Declaration, Generic[M]):
     """Декларация со схемой: файл проверяется целиком при загрузке, читатель получает неизменяемый объект.
 
-    Перечитывание по mtime собирает новый объект и переставляет ссылку — читатель видит объект целиком.
+    Перечитывание при смене содержимого собирает новый объект и переставляет ссылку — читатель видит объект целиком.
     Правка, не прошедшая проверку, — отказ на каждое чтение, пока её не починят, без тихого отката к прежнему.
     """
 
@@ -141,18 +141,18 @@ class Declared(Declaration, Generic[M]):
         super().__init__(config_file, error_cls, subject, hint)
         self._schema = schema
         self._model: M | None = None
-        self._model_mtime: float | None = None
+        self._model_raw: bytes | None = None
 
     @property
     def model(self) -> M:
         data = self.data
-        if self._model is None or self._model_mtime != self._mtime:
+        if self._model is None or self._model_raw is not self._raw:
             try:
                 model = self._schema.model_validate(data)
             except ValidationError as e:
                 # Без цепочки причины: текст ValidationError несёт пришедшие значения, а журнал отказа пишет причину.
                 raise self._invalid(_schema_errors(e)) from None
-            self._model, self._model_mtime = model, self._mtime
+            self._model, self._model_raw = model, self._raw
         return self._registered(self._model)       # реестр правят отдельно от декларации: сверка — на каждом чтении
 
 
@@ -160,6 +160,15 @@ def _schema_errors(error: ValidationError, prefix: tuple[str, ...] = ()) -> list
     """Ошибки проверки — путь ключа, правило и что ждали; пришедшее значение в ответ не идёт: в декларациях бывают адреса."""
     return [{"field": ".".join(str(part) for part in (*prefix, *x["loc"])), "rule": x["type"], "expected": x["msg"]}
             for x in error.errors()]
+
+
+def contents(path: Path) -> bytes | None:
+    """Содержимое декларации — ключ «сменилась ли» для двери и для горячей перезагрузки сервера: метка времени ФС бывает
+    грубее правки (NTFS — 100 нс, FAT — 2 с). Нет файла — None."""
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
 
 
 def _yaml_error(error: yaml.YAMLError) -> dict:
@@ -177,7 +186,7 @@ def _missing(path: tuple[str, ...]) -> list[dict]:
 @cache
 def _reactions(path: Path, error_cls) -> Declaration:
     """Дверь реестра реакций — одна на путь и класс отказа: разбор реестра дорог для каждого чтения раздела, а
-    перечитывает файл по mtime она сама."""
+    перечитывает файл при смене содержимого она сама."""
     return Declaration(path, error_cls, "реакций сервера", f"Заведи {REACTIONS} в каталоге деклараций — коды отказа объявлены там.")
 
 

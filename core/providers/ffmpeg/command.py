@@ -6,7 +6,7 @@
 проверку. Роли элементов движку не видны, снятие фона нейросетью — не его работа.
 """
 
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from .dictionary import FfmpegDictionary, fmt, guard
 from .errors import FfmpegError
@@ -33,9 +33,10 @@ def ramp(pts: list[tuple[float, ...]], idx: int) -> str:
     return f"if(lt(t,{fmt(pts[0][0])}),{fmt(pts[0][idx])},{expr})"
 
 
-def escape_path(path: Path) -> str:
-    """Путь ВНУТРИ строки фильтра: `\\` `:` `'` там разделители, а не буквы."""
-    text = str(path)
+def escape_path(path: PurePath) -> str:
+    """Путь ВНУТРИ строки фильтра: `\\` `:` `'` там разделители, а не буквы; разделитель каталогов — `/` на любой ОС
+    (ffmpeg Windows его принимает), двоеточие диска экранируется как прочие."""
+    text = path.as_posix()
     for char in ("\\", ":", "'"):
         text = text.replace(char, "\\" + char)
     return text

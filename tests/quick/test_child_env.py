@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from core.environment import SECRETS, child_spawn
+from core.environment import SECRETS, child_spawn, child_text
 from core.runner.supervisor import TOKEN_ENV, RunnerSupervisor
 
 _checks = 0
@@ -26,6 +26,19 @@ _fails: list[str] = []
 BROKEN = "import sys\nsys.stdout.buffer.write({payload!r})\n"
 # Секреты сервера — истина теста, а не перечень узла: событие, взявшее их из SECRETS, не видит, что узел потерял имя.
 SERVER_SECRETS = ("MCP_AUTH_TOKEN", "MCP_TUNNEL_TOKEN")
+
+
+def windows_read(cmd: list[str], **spawn) -> object:
+    """Вывод ребёнка так, как его читает `communicate` на Windows: поток-читатель `buffer.append(fh.read())` (CPython
+    Lib/subprocess.py `_readerthread`, v3.12.10:1598) — отказ декодирования гаснет в потоке вместе с выводом."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, **spawn)
+    buffer: list = []
+    reader = threading.Thread(target=lambda: buffer.append(proc.stdout.read()))
+    reader.start()
+    reader.join()
+    proc.wait()
+    proc.stdout.close()
+    return buffer[0] if buffer else None
 
 
 def check(label, cond, detail=""):
@@ -57,8 +70,10 @@ errors_param = inspect.signature(child_spawn).parameters["errors"]
 check("errors обязателен — молчаливой замены по умолчанию нет", errors_param.default is inspect.Parameter.empty,
       errors_param.default)
 args = child_spawn("strict", {"MCP_RUNNER_TOKEN": "свой"})
-check("узел даёт env, encoding utf-8 и выбранный errors; свой секрет кладёт выпускающий",
-      args.get("encoding") == "utf-8" and args.get("errors") == "strict"
+# Обновлено 2026-10-17 (Ч3 CI dce0461): strict отдаёт байты — на Windows текстовый strict гаснет в потоке-читателе.
+check("узел даёт env; strict — байты (текст собирает вызывающий), replace — utf-8 с заменой; свой секрет кладёт выпускающий",
+      "encoding" not in args and "errors" not in args
+      and {k: v for k, v in child_spawn("replace").items() if k != "env"} == {"encoding": "utf-8", "errors": "replace"}
       and args["env"].get("MCP_RUNNER_TOKEN") == "свой" and args["env"].get("PYTHONUTF8") == "1",
       {k: v for k, v in args.items() if k != "env"})
 check("двери-секреты узла называют секреты сервера", set(SERVER_SECRETS) <= SECRETS, sorted(SECRETS))
@@ -68,11 +83,13 @@ check("секреты сервера в среду ребёнка не идут"
 
 print("== 2. Вывод ребёнка: разбираемое место отказывает, журнальное заменяет ==")
 printer = [sys.executable, "-c", BROKEN.format(payload="привет ".encode() + bytes([0x81]))]
+_strict = windows_read(printer, **child_spawn("strict"))
 try:
-    subprocess.run(printer, capture_output=True, **child_spawn("strict"))
-    check("strict: битый байт — громкий отказ, а не тихий мусор", False, "декодировано")
+    _decoded = child_text(_strict, "strict") if isinstance(_strict, bytes) else None
+    check("strict: битый байт — громкий отказ у вызывающего, и при чтении как на Windows", False,
+          "декодировано" if _decoded is not None else f"вывод пропал в потоке-читателе ({_strict!r})")
 except UnicodeDecodeError:
-    check("strict: битый байт — громкий отказ, а не тихий мусор", True)
+    check("strict: битый байт — громкий отказ у вызывающего, и при чтении как на Windows", True)
 said = subprocess.run(printer, capture_output=True, **child_spawn("replace")).stdout
 check("replace: utf-8 цел, битый байт — U+FFFD", said == "привет �", repr(said))
 

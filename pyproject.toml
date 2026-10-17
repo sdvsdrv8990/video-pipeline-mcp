@@ -182,6 +182,9 @@ borrowed_by_tests = ["aiohttp", "httpx", "huggingface-hub", "jsonschema", "openp
 # «читателя нет» — обвинение, выведенное из отсутствия улики.
 provides_modules = {"piper-tts" = ["piper"], "diffusers" = ["diffusers"], "transformers" = ["transformers"], "torch" = ["torch"], "accelerate" = ["accelerate"], "triton" = ["triton"]}
 borrowed_by_scripts = ["pyyaml"]
+# Внешняя граница одного набора `tests/**` — у вызывающего (tests/test_suites.py, судья мутантов): зависание набора
+# ловится здесь, а не своим пределом внутри события.
+suite_timeout_sec = 900
 
 [tool.setuptools]
 py-modules = ["server"]

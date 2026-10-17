@@ -140,8 +140,9 @@ class RunnerService:
             return self._answer("LOCAL_INFERENCE_FAILED", 502, facts={"provider": provider, "event": event})
 
         self.calls += 1
+        files = Files(self.workspace)
         return web.json_response({
-            "files": [str(Path(p).resolve().relative_to(self.workspace)) for p in outcome.files],
+            "files": [files.name(files.place(p)) for p in outcome.files],
             "compute": outcome.meta.get("compute") or {},
             "engine": provider, "task_id": outcome.task_id,
         })

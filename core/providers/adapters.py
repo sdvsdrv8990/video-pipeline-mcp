@@ -221,7 +221,7 @@ class AdapterRegistry:
             return {**disk, "path": path}
         if not (path.is_dir() if must_be_dir else path.is_file()):
             raise ProviderError("LOCAL_MODEL_MISSING", facts={
-                "model": str(name), "path": str(path.relative_to(Path(self.models_dir).resolve()))})
+                "model": str(name), "path": Files(self.models_dir).name(path)})
         policy = self.need("local", "hand_placed", kind=str)
         if policy not in self.HAND_PLACED:
             raise ProviderError(

@@ -13,7 +13,10 @@ from pathlib import Path
 
 from core.paths import Files
 from core.contracts import ContractError
-from core.environment import child_spawn
+from core.declaration import Declaration, declarations_root
+from core.declaration_schemas import RECALC_ENGINE
+from core.engines import locate
+from core.environment import ChildSaid, child_spawn
 
 # Ссылка в формуле: необязательный лист (`META!` / `'Мой лист'!`), затем ячейка или
 # диапазон (`B2`, `$B$2`, `A2:D9`). Границы обязательны: без них `LOG10(` в `=LOG10(x)`
@@ -433,14 +436,17 @@ class ExcelEngine:
         import shutil
         import subprocess
         import tempfile
-        soffice = shutil.which("soffice") or shutil.which("libreoffice")
+        engines = Declaration(declarations_root() / RECALC_ENGINE.file, ExcelError, "движков сервера",
+                              "Заведи config/engines.yaml — где искать движки, объявлено там.")
+        soffice = locate(engines.section(*RECALC_ENGINE.section, schema=RECALC_ENGINE.schema))
         if not soffice:
             raise ExcelError("RECALC_UNAVAILABLE", "Движок пересчёта (LibreOffice) недоступен.",
                              reason="Установи libreoffice-calc для валидации формул реальным пересчётом.")
         td = Path(tempfile.mkdtemp(prefix="xlsx_recalc_"))
         try:
             subprocess.run(
-                [soffice, "--headless", "--calc", f"-env:UserInstallation=file://{td}/profile",
+                # URL профиля — as_uri: на Windows `file://C:\…` LibreOffice не разбирает (нужно file:///C:/…).
+                [soffice, "--headless", "--calc", f"-env:UserInstallation={(td / 'profile').as_uri()}",
                  "--convert-to", "xlsx:Calc MS Excel 2007 XML", "--outdir", str(td), str(src)],
                 check=True, capture_output=True, timeout=120, **child_spawn("replace"),
             )
@@ -450,9 +456,9 @@ class ExcelEngine:
                              reason="Файл слишком большой/сложный или LibreOffice завис.") from e
         except subprocess.CalledProcessError as e:
             shutil.rmtree(td, ignore_errors=True)
+            # Вывод — уже текст (child_spawn "replace"); слова LibreOffice несут пути хоста — причиной в журнал.
             raise ExcelError("RECALC_UNAVAILABLE", "Пересчёт формул не удался.",
-                             reason=f"LibreOffice вернул ошибку: "
-                                    f"{e.stderr.decode('utf-8', 'ignore')[:200]}") from e
+                             facts={"exit_code": e.returncode}) from ChildSaid(e.stderr or "")
         out = td / src.name
         if not out.exists():
             shutil.rmtree(td, ignore_errors=True)

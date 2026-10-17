@@ -22,10 +22,11 @@ from core.environment import SECRETS
 from core.transport.tunnel import CloudflaredTunnel, TunnelCancelled, TunnelError
 from tests.harness.live_server import declarations_copy
 
-# Декларация туннеля — у прогона, в копии деклараций харнесса: машинный config/tunnel.yaml владельца в копию не идёт,
-# и пороги отступа супервизора судятся по объявленным здесь, а не по чужой машине.
+# Декларация туннеля — у прогона, в копии деклараций харнесса: машинный config/tunnel.yaml владельца в копию не идёт.
+# Обновлено 2026-10-17: пороги отступа супервизора — политика сервера в tunnel_diagnostics.yaml → надзор (там те же
+# 2/60/60), машинный файл несёт только режим; ключ надзора в нём — отказ двери.
 CFG = declarations_copy() / "tunnel.yaml"
-CFG.write_text("mode: quick\nretry_base_seconds: 2\nretry_max_seconds: 60\nretry_reset_seconds: 60\n", encoding="utf-8")
+CFG.write_text("mode: quick\n", encoding="utf-8")
 results = []
 
 

@@ -324,10 +324,10 @@ class LinkRegistry:
                                 and any((a, ent.name) in anchor_names for a in (
                                     p[len("{parent:"):-1] for p in parts if p.startswith("{parent:"))):
                             continue
-                        rel = ent.relative_to(self.ws)
+                        rel = Files(self.ws).name(ent)
                         checked += 1
-                        if self._norm(str(rel)) not in registered:
-                            issues.append({"type": "unregistered_path", "path": str(rel),
+                        if self._norm(rel) not in registered:
+                            issues.append({"type": "unregistered_path", "path": rel,
                                            "container": cdir.name, "entity_type": cref["type"]})
                         _descend(ent, cref["type"])
 
@@ -336,10 +336,10 @@ class LinkRegistry:
             if not root:
                 continue
             for ent in _visible(self.ws / root):
-                rel = ent.relative_to(self.ws)
+                rel = Files(self.ws).name(ent)
                 checked += 1
-                if self._norm(str(rel)) not in registered:
-                    issues.append({"type": "unregistered_path", "path": str(rel),
+                if self._norm(rel) not in registered:
+                    issues.append({"type": "unregistered_path", "path": rel,
                                    "container": root, "entity_type": node_type})
                 _descend(ent, node_type)
         return {"issues": issues, "state": f"выполнен: узлов на диске {checked}"}

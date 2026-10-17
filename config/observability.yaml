@@ -18,6 +18,13 @@ logs:
     file: "session.md"
     max_bytes: 10485760
     backup_count: 5
+  # Что сервер говорит модулем logging, — в тот же журнал фактов: туда ответ клиенту отсылает владельца номером события
+  # (причина отказа, падение с трассировкой). `py.warnings` — предупреждения Python, `warnings` — действие фильтра:
+  # по умолчанию Python прячет DeprecationWarning вне __main__, и устаревание зависимости не видел никто (CI dce0461, П5).
+  heard:
+    loggers: ["core", "tools", "py.warnings"]
+    level: "INFO"
+    warnings: "default"
 
 trail:
   # По умолчанию включён: выключенный след не пишется ровно тогда, когда он нужен, —

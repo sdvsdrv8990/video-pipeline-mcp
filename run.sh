@@ -71,13 +71,17 @@ if [ -n "$STOP" ]; then
     exit $?
 fi
 
-# Что объявлено установщиком в config/install.yaml. Флаги выше — переопределение.
-УСТАНОВКА="$(python3 -c 'from core.deploy import install; m,t=install(); print(m,t)' 2>/dev/null || echo "True client")"
-MCP_STOIT="${УСТАНОВКА% *}"
-TUNNEL_END="${УСТАНОВКА#* }"
-if [ "$MCP_STOIT" != "True" ]; then
-    echo "✗ на этой машине объявлен только туннель ($TUNNEL_END), сервера MCP здесь нет."
-    echo "  Серверный конец: ./scripts/deploy_tunnel_server.sh --host <адрес сервера>"
+# Что объявлено установщиком в config/install.yaml. Флаги выше — переопределение. Нет файла — рабочая машина (core/deploy).
+if ! DECLARED="$(python3 -c 'from core.deploy import install; m,t=install(); print(m,t)')"; then
+    echo "✗ config/install.yaml не читается — причина выше. Объявить заново: python3 scripts/installer_tui.py"
+    exit 2
+fi
+MCP_HERE="${DECLARED% *}"
+TUNNEL_END="${DECLARED#* }"
+# Отказ называет объявление, а не факт машины: пакет сервера в .venv может стоять от прежней установки.
+if [ "$MCP_HERE" != "True" ]; then
+    echo "✗ сервер не запущен: config/install.yaml объявляет эту машину без сервера MCP (mcp: false, туннель: $TUNNEL_END)."
+    echo "  Сервер и туннель здесь — роль Local: VPM_INSTALL_CHOICE=local python3 scripts/installer_tui.py"
     exit 2
 fi
 # Клиент — консоль на этой машине: туннель не объявлен, сервер только по петле.

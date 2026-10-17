@@ -422,6 +422,27 @@ class RateLimit(BaseModel):
     ban_after_violations: StrictInt = Field(gt=0)
 
 
+class TunnelSupervision(BaseModel):
+    """`config/tunnel_diagnostics.yaml → надзор`: перезапуск cloudflared супервизором (пауза вдвое от `retry_base_seconds`
+    до потолка `retry_max_seconds`, прогон дольше `retry_reset_seconds` сбрасывает разгон) и первый подъём туннеля (предел
+    одной попытки и число попыток). Политика сервера, а не машины: закоммичена, умолчаний в коде нет."""
+
+    model_config = STRICT
+
+    retry_base_seconds: float = Field(gt=0)
+    retry_max_seconds: float = Field(gt=0)
+    retry_reset_seconds: float = Field(gt=0)
+    ready_timeout_seconds: float = Field(gt=0)
+    first_attempts: StrictInt = Field(ge=1)
+
+    @model_validator(mode="after")
+    def _coherent(self) -> "TunnelSupervision":
+        if self.retry_base_seconds > self.retry_max_seconds:
+            raise ValidationError.from_exception_data(type(self).__name__, [_gap(
+                "backoff_over_ceiling", "пауза перезапуска не выше retry_max_seconds", ("retry_base_seconds",))])
+        return self
+
+
 class TunnelBinaryFetch(BaseModel):
     """`config/tunnel_diagnostics.yaml → загрузка_клиента`: готовый бинарь клиентского конца туннеля — какой из `бинари`
     (`binary`: путь в дереве — его), адрес с подстановками `{system}` и `{arch}` (имена поставщика по системе и архитектуре
@@ -497,6 +518,18 @@ class TransportDeclaration(BaseModel):
     clients: Annotated[Mapping[StrictStr, Client], Field(min_length=1), ReadOnly]
 
 
+class EnginePlaces(BaseModel):
+    """`config/engines.yaml → <движок>`: имена бинаря и места установки по ОС, где искать после PATH, по порядку. Место —
+    шаблон пути с переменными среды ОС; ключ ОС — значение `sys.platform` (linux, darwin, win32)."""
+
+    model_config = STRICT
+
+    names: Annotated[tuple[StrictStr, ...], Listed, Field(min_length=1)]
+    linux: Annotated[tuple[StrictStr, ...], Listed]
+    darwin: Annotated[tuple[StrictStr, ...], Listed]
+    win32: Annotated[tuple[StrictStr, ...], Listed]
+
+
 M = TypeVar("M", bound=BaseModel)
 
 
@@ -522,9 +555,11 @@ TUNNEL_PROBE = Slot("tunnel_diagnostics.yaml", ("прозвонка",), ProbePol
 JOBS = Slot("jobs.yaml", (), Jobs)
 RATE_LIMIT = Slot("firewall.yaml", ("rate_limit",), RateLimit)
 TUNNEL_BINARY_FETCH = Slot("tunnel_diagnostics.yaml", ("загрузка_клиента",), TunnelBinaryFetch)
+TUNNEL_SUPERVISION = Slot("tunnel_diagnostics.yaml", ("надзор",), TunnelSupervision)
 TRANSPORT = Slot("transport.yaml", (), TransportDeclaration)
+RECALC_ENGINE = Slot("engines.yaml", ("recalc",), EnginePlaces)
 SLOTS = (RESOURCES, PACKAGES, MODEL_INSTALL, MODEL_FETCH, RESULT_FETCH, ONLINE_ANSWER, ONLINE_CALL, RESULT_ANSWER,
-         RUNNER_HEALTH, TUNNEL_PROBE, JOBS, RATE_LIMIT, TUNNEL_BINARY_FETCH, TRANSPORT)
+         RUNNER_HEALTH, TUNNEL_PROBE, JOBS, RATE_LIMIT, TUNNEL_BINARY_FETCH, TUNNEL_SUPERVISION, TRANSPORT, RECALC_ENGINE)
 
 
 def registry_codes(model: BaseModel) -> frozenset[str]:

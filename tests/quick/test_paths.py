@@ -23,6 +23,7 @@ from types import SimpleNamespace
 
 import psutil
 
+from core import owner_only
 from core.auth import ensure_digest
 from core.contracts import ContractError
 from core.declaration import Declaration
@@ -35,6 +36,7 @@ from core.runner import RunnerSupervisor
 from core.secrets import ChannelSecrets
 import core.write_policy as write_policy_module
 from core.write_policy import WritePolicy
+from tests.harness.access import mode
 
 _checks = 0
 _fails: list[str] = []
@@ -52,8 +54,12 @@ def check(label, cond, detail=""):
         _fails.append(label)
 
 
-def mode(p: Path) -> int:
-    return stat.S_IMODE(p.stat().st_mode)
+def posix_check(label, cond, detail=""):
+    """Проверка битов группы и прочих: на Windows их нет (режим — только флаг «только чтение»), там она не судится."""
+    if os.name == "nt":
+        print(f"  ── не судится на Windows: {label} — битов группы и прочих там нет")
+    else:
+        check(label, cond, detail)
 
 
 def leftovers(folder: Path) -> list[str]:
@@ -64,8 +70,8 @@ def leftovers(folder: Path) -> list[str]:
 class FirstByte:
     """Файл записи слоя: права на диске в момент первого байта — ключ не лежит под чужими правами ни мгновения."""
 
-    def __init__(self, f, modes: list):
-        self.f, self.modes, self.seen = f, modes, False
+    def __init__(self, f, modes: list, path: Path | None = None):
+        self.f, self.modes, self.path, self.seen = f, modes, path, False
 
     def __enter__(self):
         return self
@@ -76,7 +82,9 @@ class FirstByte:
     def write(self, data):
         if not self.seen:
             self.seen = True
-            self.modes.append(stat.S_IMODE(os.fstat(self.f.fileno()).st_mode))
+            # POSIX — по дескриптору; на Windows доступ — DACL, оракул читает его по пути.
+            on_path = os.name == "nt" and self.path is not None
+            self.modes.append(mode(self.path) if on_path else stat.S_IMODE(os.fstat(self.f.fileno()).st_mode))
         return self.f.write(data)
 
     def __getattr__(self, name):
@@ -86,12 +94,20 @@ class FirstByte:
 def first_bytes(call) -> list[int]:
     """Права каждого файла, который записал вызов, в момент его первого байта."""
     modes: list[int] = []
-    real_fdopen = os.fdopen
-    os.fdopen = lambda fd, *a, **kw: FirstByte(real_fdopen(fd, *a, **kw), modes)
+    born: dict[int, Path] = {}
+    real_fdopen, real_create = os.fdopen, owner_only.create
+
+    def creating(path, mode_):
+        fd = real_create(path, mode_)
+        born[fd] = Path(path)
+        return fd
+
+    os.fdopen = lambda fd, *a, **kw: FirstByte(real_fdopen(fd, *a, **kw), modes, born.get(fd))
+    owner_only.create = creating
     try:
         call()
     finally:
-        os.fdopen = real_fdopen
+        os.fdopen, owner_only.create = real_fdopen, real_create
     return modes
 
 
@@ -148,11 +164,11 @@ def main():
         files.replace("a/new.txt", "второе содержимое")
     finally:
         os.replace = real_replace
-    check("в момент появления имени — итоговые права", seen.get("mode") == 0o640, seen)
+    posix_check("в момент появления имени — итоговые права", seen.get("mode") == 0o640, seen)
     check("в момент появления имени — всё содержимое", seen.get("size") == len("второе содержимое".encode()), seen)
     check("временный — остаток слоя рядом (`<файл>.<владелец>.part`)",
           seen.get("src", "").startswith("new.txt.") and seen["src"].endswith(f".{REMNANT}"), seen)
-    check("права после замены сохранены", mode(ws / "a" / "new.txt") == 0o640, oct(mode(ws / "a" / "new.txt")))
+    posix_check("права после замены сохранены", mode(ws / "a" / "new.txt") == 0o640, oct(mode(ws / "a" / "new.txt")))
 
     print("== замена: процесс умер до os.replace — старый файл цел, остаток помечен обходом ==")
     (ws / "b").mkdir()
@@ -455,14 +471,17 @@ def main():
         proc = psutil.Process()
         return proc.num_fds() if hasattr(proc, "num_fds") else proc.num_handles()
 
-    real_supports, real_fsync, real_fchmod = os.supports_fd, os.fsync, os.fchmod
+    real_supports, real_fsync, real_fchmod = os.supports_fd, os.fsync, getattr(os, "fchmod", None)
     os.supports_fd = real_supports - {os.chmod}
-    del os.fchmod  # факты Windows до 3.13: ни fchmod, ни chmod по дескриптору
+    if real_fchmod is not None:
+        del os.fchmod  # факты Windows до 3.13: ни fchmod, ни chmod по дескриптору
     fds_before, modes = open_fds(), []
     try:
         said = refused(lambda: modes.extend(first_bytes(lambda: files.create("win/ключ.key", "секрет", mode=0o600))))
     finally:
-        os.supports_fd, os.fchmod = real_supports, real_fchmod
+        os.supports_fd = real_supports
+        if real_fchmod is not None:
+            os.fchmod = real_fchmod
     check("без chmod по дескриптору права ставятся по пути — 0o600 уже в момент первого байта",
           said is None and modes == [0o600], (said, modes))
     check("и дескриптор не теряется", open_fds() == fds_before, (fds_before, open_fds()))

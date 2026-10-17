@@ -27,6 +27,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--provider", default="", help="Имя провайдера из строки канала")
     ap.add_argument("--list", action="store_true", help="Показать, какие ключи стоят (без значений)")
     ap.add_argument("--remove", action="store_true", help="Убрать ключ провайдера")
+    ap.add_argument("--stdin", action="store_true",
+                    help="Ключ — первой строкой стандартного ввода (скрипт, тест); без флага — скрытый ввод в терминале")
     args = ap.parse_args(argv[1:])
 
     box = ChannelSecrets(WORKSPACE, instance_home(declarations_root()))
@@ -47,9 +49,14 @@ def main(argv: list[str]) -> int:
             print(f"Ключ {args.provider} {'убран' if box.remove(args.channel, args.provider) else 'и так не стоял'}.")
             return 0
 
+        if args.stdin and sys.stdin.isatty():   # ввод в терминале с флагом печатался бы эхом — ключ на экране
+            print("--stdin читает ключ из канала (скрипт, тест); в терминале запусти без флага — ввод будет скрыт.")
+            return 2
         print(f"Канал:     {args.channel}")
         print(f"Провайдер: {args.provider}")
-        value = getpass.getpass("Ключ (ввод скрыт, на экране не появится): ")
+        # getpass читает терминал (на Windows — консоль msvcrt), а не канал stdin: ввод из канала — только флагом.
+        value = (sys.stdin.readline().rstrip("\r\n") if args.stdin
+                 else getpass.getpass("Ключ (ввод скрыт, на экране не появится): "))
         if not value.strip():
             print("Пусто — ничего не сохранено.")
             return 1

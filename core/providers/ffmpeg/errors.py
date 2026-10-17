@@ -5,15 +5,12 @@
 """
 
 from core.contracts.errors import ContractError
+from core.environment import ChildSaid
 
 
 class FfmpegError(ContractError):
     """Отказ сборки, запуска или приёмки рендера: код реестра + пояснение."""
 
 
-class FfmpegSaid(Exception):
-    """Слова ffmpeg/ffprobe об отказе — причина (`raise … from`) для журнала сервера, а не текст ответа: в них пути
-    хоста. Слово — последняя строка stderr: ею бинарь называет, что помешало."""
-
-    def __init__(self, stderr: str):
-        super().__init__(stderr.strip().rsplit("\n", 1)[-1] or "причина не названа")
+class FfmpegSaid(ChildSaid):
+    """Слова ffmpeg/ffprobe об отказе — свой тип, чтобы журнал и тесты отличали монтаж от прочих детей сервера."""

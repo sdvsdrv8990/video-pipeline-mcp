@@ -415,7 +415,6 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         Используется когда родитель появился позже (напр. конкурент без канала → привязка к каналу).
         Физически перемещает папку и обновляет path в реестре.
         """
-        import shutil
         # Получаем текущий путь из реестра
         entity = ctx.link_registry.get(entity_id)
         if not entity:
@@ -423,17 +422,13 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                         "Сначала создай её через structure_create.", "structure_status")
         old_path = entity.get("path", "")
         # Проверяем что старый путь существует
-        old_full = ctx.resolve(old_path)
-        if not old_full.exists():
+        if not ctx.resolve(old_path).exists():
             return ctx.err("FILE_NOT_FOUND", f"Папка не найдена: {old_path}")
-        # Проверяем что новый путь не занят
-        new_full = ctx.resolve(new_path)
-        if new_full.exists():
-            return ctx.err("FILE_EXISTS", f"Путь уже существует: {new_path}")
-        # Физический перенос
-        new_full.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(old_full), str(new_full))
-        # shutil.move уносит ВСЁ поддерево, поэтому и в реестре переписывается поддерево:
+        # Занятое назначение — FILE_EXISTS самим переносом двери: проверка «нет назначения» до переноса — гонка (FS-14).
+        ok, moved_to = ctx.safe(lambda: Files(ctx.workspace_path).move(old_path, new_path))
+        if not ok:
+            return moved_to
+        # Перенос уносит ВСЁ поддерево, поэтому и в реестре переписывается поддерево:
         # иначе записи потомков указывают на каталоги, которых больше нет (как в fs_move).
         ok, moved = ctx.safe(lambda: ctx.link_registry.migrate_subtree(old_path, new_path))
         if not ok:
@@ -486,15 +481,11 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 "old_path": entity["path"], "new_path": f"{target_dir.rstrip('/')}/{entity['name']}"}
 
     def _move_entity(old_path: str, new_path: str) -> None:
-        """Физический перенос + переписывание поддерева в реестре. Бросает при любой помехе."""
-        import shutil
-        old_full, new_full = ctx.resolve(old_path), ctx.resolve(new_path)
-        if not old_full.exists():
+        """Физический перенос дверью слоя (занятое назначение — FILE_EXISTS с путём) + переписывание поддерева в реестре.
+        Бросает при любой помехе."""
+        if not ctx.resolve(old_path).exists():
             raise FileNotFoundError(f"нет каталога {old_path}")
-        if new_full.exists():
-            raise FileExistsError(f"путь занят: {new_path}")
-        new_full.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(old_full), str(new_full))
+        Files(ctx.workspace_path).move(old_path, new_path)
         ctx.link_registry.migrate_subtree(old_path, new_path)
 
     async def structure_reconcile(entity_id: str = "", anchor_name: str = "") -> "ToolResult":
@@ -534,7 +525,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             for child_id, parent_id in linked:
                 ctx.link_registry.unlink(child_id, parent_id)
             raise ContractError("RECONCILE_ROLLED_BACK", "Reconcile откачен: ни одна сущность не сдвинута",
-                                reason="Устрани помеху и повтори.", suggested_tool="structure_status") from e
+                                reason="Устрани помеху и повтори.", suggested_tool="structure_status",
+                                facts=e.facts if isinstance(e, ContractError) else {}) from e
 
         facts = [Fact(type="EntityLinked", data={
             "child_id": p["id"], "child_type": p["type"], "child_name": "",

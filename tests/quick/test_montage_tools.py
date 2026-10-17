@@ -455,9 +455,9 @@ else:
     _engine_log.setLevel(logging.INFO)
     (WS / "ch1/v1/assets/junk.mp4").write_bytes(b"\x00not a movie\n" * 8)     # ffprobe не разбирает: отказ вызова
     (WS / "ch1/v1/assets/junk.png").write_bytes(b"\x00not a picture\n" * 8)   # ffprobe пропускает, ffmpeg — нет
-    _probe_said = subprocess.run(        # слова ffprobe — независимо от сервера, тем же бинарём
-        ["ffprobe", "-v", "error", str(WS / "ch1/v1/assets/junk.mp4")], capture_output=True,
-        text=True).stderr.strip().rsplit("\n", 1)[-1]
+    _probe_said = subprocess.run(        # слова ffprobe — независимо от сервера, тем же бинарём и по настоящему пути, как
+        ["ffprobe", "-v", "error", os.path.realpath(WS / "ch1/v1/assets/junk.mp4")],   # его даёт серверу дверь
+        capture_output=True, text=True).stderr.strip().rsplit("\n", 1)[-1]
     _now = functools.partial(call, "montage_render_scene")                 # отказ входа — самим вызовом
     for _asset, _code, _ask in (("ch1/v1/assets/gone.png", "FILE_NOT_FOUND", _now),
                                 ("ch1/v1/assets/junk.mp4", "RENDER_INPUT_UNPREPARED", _now),

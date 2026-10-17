@@ -120,7 +120,8 @@ def door(path: Path) -> Declared[Resources]:
 
 
 def write(path: Path, data: dict, stamp: int) -> None:
-    """Запись декларации с объявленным временем правки: перечитывание судится по mtime, без часов теста."""
+    """Запись декларации с объявленным временем правки, без часов теста. Одна метка у двух правок — быстрая правка на ФС
+    с грубым шагом времени (NTFS — 100 нс, FAT — 2 с): перечитывание обязано видеть смену содержимого, а не метки."""
     path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
     os.utime(path, ns=(stamp, stamp))
 
@@ -343,7 +344,7 @@ def main():
     held = Declared(cfg / PACKAGES.file, ContractError, PACKAGES.file, "", schema=PACKAGES.schema)
     first, _, _ = refusal_of(engine, lambda: held.model)
     code = yaml.safe_load((cfg / PACKAGES.file).read_text(encoding="utf-8"))["index"]["fetch"]["codes"]["failed"]
-    write(cfg / REACTIONS, {k: v for k, v in registry.items() if k != code}, 4_000_000_001)
+    write(cfg / REACTIONS, {k: v for k, v in registry.items() if k != code}, 4_000_000_000)
     said, _, _ = refusal_of(engine, lambda: held.model)
     check("из реестра убрали код, декларация та же — следующее чтение отказывает с путём, а не держит прежнюю сверку",
           first is None and said is not None and said.code == CODE and "index.fetch.codes.failed (registry_code)" in said.message,
@@ -397,11 +398,11 @@ def main():
     watched = door(live)
     first = watched.model
     changed = spoil(("classes", "gpu", "max_concurrent"), 2)(real)
-    write(live, changed, 3_000_000_001)
+    write(live, changed, 3_000_000_000)
     second = watched.model
     check("правка прошла проверку — новый объект целиком", second is not first and second.classes["gpu"].max_concurrent == 2)
     check("прежний объект у того, кто его держит, не изменился", first.classes["gpu"].max_concurrent == real["classes"]["gpu"]["max_concurrent"])
-    write(live, spoil(("classes", "gpu", "offload"), "да")(real), 3_000_000_002)
+    write(live, spoil(("classes", "gpu", "offload"), "да")(real), 3_000_000_000)
     refused = 0
     for _ in range(2):
         try:
@@ -409,10 +410,10 @@ def main():
         except ContractError as e:
             refused += e.code == CODE
     check("битая правка — отказ на каждое чтение, без тихого отката к прежнему объекту", refused == 2, f"отказов {refused}/2")
-    write(live, changed, 3_000_000_003)
+    write(live, changed, 3_000_000_000)
     check("починили — снова объект", watched.model.classes["gpu"].max_concurrent == 2)
     live.write_text("classes: [не словарь\n", encoding="utf-8")
-    os.utime(live, ns=(3_000_000_004, 3_000_000_004))
+    os.utime(live, ns=(3_000_000_000, 3_000_000_000))
     try:
         watched.model
         check("битый YAML — отказ кодом", False, "загрузилось")

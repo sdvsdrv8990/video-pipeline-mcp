@@ -69,9 +69,9 @@ def imported() -> dict[str, set[str]]:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    out.setdefault(alias.name.split(".")[0], set()).add(str(src.relative_to(ROOT)))
+                    out.setdefault(alias.name.split(".")[0], set()).add(src.relative_to(ROOT).as_posix())
             elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-                out.setdefault(node.module.split(".")[0], set()).add(str(src.relative_to(ROOT)))
+                out.setdefault(node.module.split(".")[0], set()).add(src.relative_to(ROOT).as_posix())
     return out
 
 

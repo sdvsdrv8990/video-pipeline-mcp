@@ -11,11 +11,11 @@
 
 import hashlib
 import json
-import os
 import stat
 import time
 from pathlib import Path
 
+from core import owner_only
 from core.paths import Files
 from core.contracts import ContractError
 
@@ -59,7 +59,7 @@ class ChannelSecrets:
         path = self.home / BOX_KEY_FILE
         if not path.exists():  # проба — только чтобы не писать на каждом обращении; гонку держит create, он не затирает
             Files(self.home).create(BOX_KEY_FILE, Fernet.generate_key(), mode=SECRET_MODE)
-        os.chmod(path, SECRET_MODE)           # права чинятся при каждом обращении, а не однажды
+        owner_only.restrict(path, SECRET_MODE)   # права чинятся при каждом обращении, а не однажды
         return Fernet(path.read_bytes().strip())
 
     # ═══ Файл канала ═══
@@ -103,8 +103,7 @@ class ChannelSecrets:
         """Замок ОС на файл ключей канала: его меняют «прочитать — изменить — записать» сервер и
         scripts/set_provider_key.py. Каталог секретов рождается 0700 до замка — иначе его создал бы файл замка."""
         path = self.file_for(channel)
-        path.parent.mkdir(mode=stat.S_IRWXU, parents=True, exist_ok=True)
-        os.chmod(path.parent, stat.S_IRWXU)   # 0700: каталог секретов не для чужих глаз
+        owner_only.make_dir(path.parent)   # «только владелец» с рождения на любой ОС; уже есть — права чинятся
         return Files(self.workspace).lock(path, secrets=True)
 
     def _write(self, channel: str, data: dict) -> Path:

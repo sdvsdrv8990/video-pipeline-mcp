@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from core.environment import child_spawn
+from core.environment import child_spawn, child_text
 
 from .errors import FfmpegError, FfmpegSaid
 
@@ -54,20 +54,21 @@ def raw(path: Path, probe: str = "ffprobe", name: Callable[[Path], str] = own) -
         raise FfmpegError(
             "FILE_NOT_FOUND", f"Файл не найден: {named}", facts={"path": named},
             reason="Путь берётся из книги; проверь, что ассет создан и лежит там, где записано.")
-    try:
-        out = subprocess.run(
-            [binary(probe), "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
-            capture_output=True, timeout=PROBE_TIMEOUT_SEC, **child_spawn("strict"))
-    except UnicodeDecodeError as exc:       # разбираемый ответ: битые байты — громкий отказ, а не подмена знаком
-        raise FfmpegError("RENDER_UNVERIFIED", f"ffprobe ответил неразбираемым: {named}", facts={"path": named},
-                          reason=f"ответ ffprobe не в utf-8 (байт {exc.start})") from exc
+    out = subprocess.run(
+        [binary(probe), "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
+        capture_output=True, timeout=PROBE_TIMEOUT_SEC, **child_spawn("strict"))
     if out.returncode != 0:
         raise FfmpegError(
             "RENDER_INPUT_UNPREPARED", f"ffprobe не разбирает файл: {named}",
             facts={"path": named, "exit_code": out.returncode},
-            reason="Формат не опознан: слова ffprobe — в журнале сервера.") from FfmpegSaid(out.stderr)
+            reason="Формат не опознан: слова ffprobe — в журнале сервера.") from FfmpegSaid(child_text(out.stderr, "replace"))
     try:
-        return json.loads(out.stdout or "{}")
+        text = child_text(out.stdout, "strict")
+    except UnicodeDecodeError as exc:       # разбираемый ответ: битые байты — громкий отказ, а не подмена знаком
+        raise FfmpegError("RENDER_UNVERIFIED", f"ffprobe ответил неразбираемым: {named}", facts={"path": named},
+                          reason=f"ответ ffprobe не в utf-8 (байт {exc.start})") from exc
+    try:
+        return json.loads(text or "{}")
     except json.JSONDecodeError as exc:
         raise FfmpegError("RENDER_UNVERIFIED", f"ffprobe ответил неразбираемым: {named}", facts={"path": named},
                           reason="ответ ffprobe не JSON") from exc

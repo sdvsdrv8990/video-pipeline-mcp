@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 import time
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import yaml
 
@@ -109,6 +109,9 @@ ok(re.fullmatch(r"[0-9if(lt,t*+\-.)/]+", _expr.replace(" ", "")),
    "выражение движения состоит только из чисел и операций")
 ok(escape_path(Path("/tmp/a:b'c.srt")) == "/tmp/a\\:b\\'c.srt",
    "разделители внутри пути субтитров экранируются, а не остаются разделителями")
+_win = escape_path(PureWindowsPath(r"C:\Users\runner\sub's.srt"))
+ok(_win == "C\\:/Users/runner/sub\\'s.srt",
+   f"путь Windows в фильтре — каталоги через /, двоеточие диска экранировано, `\\` разделителем не уходит ({_win})")
 ok(tempo_steps(4.0) == [2.0, 2.0] and tempo_steps(1.0) == [],
    "темп вне диапазона atempo набирается цепочкой, ровный темп не даёт шага")
 

@@ -51,9 +51,12 @@
     - call: fs_create_file
       with: {path: niches/сведение/networks/сеть/competitors/наш/соперник/помеха.md, content: занято}
       expect: {ok: true}
+    # Обновлено 2026-10-17: перенос идёт дверью слоя, помеха — фактом path отката, а не номером события в журнале.
+    # Прогноз: зелёный и на Linux, и на семантике Windows у двери; без факта — красный этого шага.
     - call: structure_reconcile
       with: {anchor_name: наш}
-      expect: {ok: false, code: RECONCILE_ROLLED_BACK}
+      expect: {ok: false, code: RECONCILE_ROLLED_BACK,
+               detail: {facts.path: niches/сведение/networks/сеть/competitors/наш/соперник}}
     - call: fs_delete
       with: {path: niches/сведение/networks/сеть/competitors/наш/соперник, force: true}
       expect: {ok: true}

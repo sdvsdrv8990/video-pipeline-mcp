@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from core.contracts import ContractError
 from core.declaration import Declaration, Declared, declarations_root, instance_home, workspace_root
+from core.declaration import contents as declaration_contents
 from core.declaration_schemas import RESOURCES, Resources
 from core.engine import Engine
 from core.environment import child_spawn
@@ -137,6 +138,7 @@ def create_server() -> tuple[Engine, Transport, Firewall]:
     # Журналы под одним объявленным корнем: след вызовов (без него отказ в живой сессии не оставляет условий, по которым
     # его повторяют) и журнал фактов — его state_manager пишет по фактам, которые ему передаёт движок.
     logs = Logs.from_declaration(_load_yaml(CONFIG_PATH / "observability.yaml"), LOGS_OVERRIDE)
+    logs.hear()     # причина отказа с номером события и предупреждения — в журнал фактов, куда отсылает ответ клиенту
     print(f"📓 Журналы: {logs.root}")
     state_manager = StateManager(WORKSPACE_PATH, journal=logs.session)
 
@@ -515,8 +517,8 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
         # здесь только наблюдаем его status() и сообщаем переходы в консоль.
         prev = tunnel.status() if tunnel else {}  # dict: блок туннеля ниже под `if not tunnel: continue`
 
-        # Хот-релоад декларативного config без рестарта: следим за mtime файлов.
-        # firewall.yaml → firewall.reload() (fail-closed), server_reactions.yaml →
+        # Хот-релоад декларативного config без рестарта: «сменился ли файл» — по содержимому, тем же узлом, что у двери
+        # деклараций. firewall.yaml → firewall.reload() (fail-closed), server_reactions.yaml →
         # reactions.load(). tunnel.yaml НЕ входит: смена режима/порта требует
         # рестарта туннеля (честно). Код handlers/core тоже требует рестарта.
         reactions = getattr(engine, "reactions", None)
@@ -524,22 +526,17 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
             CONFIG_PATH / "firewall.yaml": "firewall",
             CONFIG_PATH / "server_reactions.yaml": "reactions",
         }
-        def _mtime(p: "Path") -> float:
-            try:
-                return p.stat().st_mtime if p.exists() else 0.0
-            except OSError:
-                return 0.0
-        cfg_mtime = {p: _mtime(p) for p in watched}
+        cfg_seen = {p: declaration_contents(p) for p in watched}
 
         while True:
             await asyncio.sleep(10)
 
-            # 0) Хот-релоад config по изменению mtime (работает и без туннеля).
+            # 0) Хот-релоад config по смене содержимого (работает и без туннеля).
             for cfg_path, kind in watched.items():
-                m = _mtime(cfg_path)
-                if m == cfg_mtime[cfg_path]:
+                seen = declaration_contents(cfg_path)
+                if seen == cfg_seen[cfg_path]:
                     continue
-                cfg_mtime[cfg_path] = m  # фиксируем сразу → битый конфиг не ретрайдим каждые 10с
+                cfg_seen[cfg_path] = seen  # фиксируем сразу → битый конфиг не ретрайдим каждые 10с
                 try:
                     if kind == "firewall" and firewall is not None:
                         firewall.reload_declared(cfg_path)   # битый — отказ двери с путём ключа, прежние правила целы

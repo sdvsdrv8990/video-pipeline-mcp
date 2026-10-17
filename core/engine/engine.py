@@ -86,10 +86,9 @@ class Engine:
         klass = self._klass.get(tool.name, "")
         if not self.slots.take(klass):
             wait = self._retry_after[klass]
-            return self._error("RESOURCE_BUSY",
-                               f"Класс ресурса '{klass}' занят: свободных мест нет, "
-                               f"повтор не раньше чем через {wait} с.",
-                               Recovery(reason=f"Повтори не раньше чем через {wait} с либо займись другой задачей."))
+            return self._error("RESOURCE_BUSY", "",
+                               Recovery(reason=f"Повтори не раньше чем через {wait} с либо займись другой задачей."),
+                               facts={"klass": klass, "retry_after_sec": wait})
         if tool.name not in self._offload:
             try:
                 answer = await tool.handler(**params)
@@ -195,11 +194,8 @@ class Engine:
     async def _dispatch(self, name: str, params: dict) -> ToolResult:
         """Разбор вызова: реестр, валидация схемы, исполнение, перевод исключений в отказы."""
         if name not in self.tools:
-            return self._error(
-                "TOOL_NOT_FOUND",
-                f"Инструмент '{name}' не найден",
-                Recovery(suggested_tool="tools/list", reason="Посмотри доступные инструменты"),
-            )
+            return self._error("TOOL_NOT_FOUND", "", Recovery(reason="Посмотри доступные инструменты"),
+                               facts={"tool": name})
 
         tool = self.tools[name]
 
@@ -211,11 +207,8 @@ class Engine:
         mismatch = _unbindable(tool.handler, params)
         if mismatch:
             # Вина клиента — только привязка параметров, и называются имена, а не значения; TypeError из тела — падение.
-            return self._error(
-                "VALIDATION_ERROR",
-                f"Неверные параметры: {mismatch}",
-                Recovery(suggested_tool="tools/list", reason="Сверь параметры со схемой инструмента"),
-            )
+            return self._error("VALIDATION_ERROR", "", Recovery(reason="Сверь параметры со схемой инструмента"),
+                               errors=mismatch)
 
         try:
             result = await self._invoke(tool, params)
@@ -243,12 +236,8 @@ class Engine:
         except jsonschema.ValidationError as e:
             where = ".".join(map(str, e.absolute_path)) or "параметры"
             rule = f"{e.validator}: {e.validator_value}"
-            return self._error(
-                "VALIDATION_ERROR",
-                f"Параметры не прошли валидацию схемы: {where} — правило «{rule}»",
-                Recovery(suggested_tool="tools/list", reason="Исправь параметры по input_schema инструмента"),
-                errors=[{"field": where, "rule": rule}],
-            )
+            return self._error("VALIDATION_ERROR", "", Recovery(reason="Исправь параметры по input_schema инструмента"),
+                               errors=[{"field": where, "rule": rule}])
         return None
 
     def list_tools(self) -> list[dict]:
@@ -329,7 +318,7 @@ class Engine:
         if not isinstance(exc, ContractError):
             return None
         if exc.__cause__ is not None and not isinstance(exc.__cause__, ContractError):
-            exc.with_facts(event=self._incident(name, exc.__cause__, exc.code))
+            exc.with_facts(event=incident(log, f"инструмент {name}", exc.__cause__, exc.code))
         return self._error(exc.code, exc.message, Recovery(reason=exc.reason, suggested_tool=exc.suggested_tool),
                            facts=exc.facts, errors=exc.errors)
 
@@ -340,24 +329,13 @@ class Engine:
         if refused is not None:
             return refused
         # Клиенту — общий текст с номером события, владельцу — причина с трассировкой: текст исключения несёт пути.
-        event = self._incident(name, exc)
+        event = incident(log, f"инструмент {name}", exc)
         return self._error("INTERNAL_ERROR", f"Инструмент {name} упал, событие {event}: причина в журнале сервера",
                            Recovery(reason="Внутренняя ошибка сервера"))
 
-    def _incident(self, name: str, exc: BaseException, code: str = "") -> str:
-        """Причина — в журнал сервера; номер события связывает ответ клиенту с записью. Падение — с трассировкой,
-        чужая причина объявленного отказа `code` — строкой: отказ ожидаем."""
-        event = uuid.uuid4().hex[:8]
-        if code:
-            log.info("инструмент %s: отказ %s, событие %s, причина: %s: %s", name, code, event, type(exc).__name__,
-                     exc, extra={"event": event})
-        else:
-            log.error("инструмент %s, событие %s", name, event, exc_info=exc, extra={"event": event})
-        return event
 
-
-def _unbindable(handler: Callable[..., Awaitable[ToolResult | Later]], params: dict) -> str:
-    """Чем параметры не ложатся на сигнатуру обработчика — только имена, без значений; пусто — ложатся."""
+def _unbindable(handler: Callable[..., Awaitable[ToolResult | Later]], params: dict) -> list[dict]:
+    """Чем параметры не ложатся на сигнатуру обработчика — ошибки ввода по именам, без значений; пусто — ложатся."""
     signature = inspect.signature(handler)
     try:
         signature.bind(**params)
@@ -366,6 +344,19 @@ def _unbindable(handler: Callable[..., Awaitable[ToolResult | Later]], params: d
         extra = [] if any(p.kind is p.VAR_KEYWORD for p in declared) else sorted(set(params) - set(signature.parameters))
         missing = [p.name for p in declared if p.default is p.empty and p.name not in params
                    and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)]
-        named = [f"лишние: {', '.join(extra)}"] * bool(extra) + [f"нет обязательных: {', '.join(missing)}"] * bool(missing)
-        return "; ".join(named) or "параметры не ложатся на сигнатуру"
-    return ""
+        return ([{"field": n, "rule": "unexpected"} for n in extra] + [{"field": n, "rule": "required"} for n in missing]
+                or [{"field": "параметры", "rule": "signature"}])
+    return []
+
+
+def incident(log: logging.Logger, name: str, exc: BaseException, code: str = "") -> str:
+    """Сбой — в журнал сервера под номером события (журнал места `log`), номер — наружу фактом `event`: один перевод для
+    вызова инструмента и фонового потока. Чужая причина объявленного отказа (`code`) — строкой без трассировки: отказ
+    ожидаем; падение — с трассировкой."""
+    event = uuid.uuid4().hex[:8]
+    if code:
+        log.info("%s: отказ %s, событие %s, причина: %s: %s", name, code, event, type(exc).__name__, exc,
+                 extra={"event": event})
+    else:
+        log.error("%s, событие %s", name, event, exc_info=exc, extra={"event": event})
+    return event

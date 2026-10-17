@@ -8,6 +8,7 @@
 
 from typing import ClassVar
 import json
+import logging
 import re
 import socket
 from pathlib import Path
@@ -17,11 +18,14 @@ from filelock import Timeout
 
 from core.contracts import ContractError
 from core.declaration import Declaration
+from core.engine.engine import incident
 from core.declaration_schemas import (MODEL_FETCH, MODEL_INSTALL, ONLINE_ANSWER, AnswerPolicy, FetchPolicy, InstallPolicy,
                                       ProviderUrl)
 from core.paths import Files
 from .download import Fetcher, answers, file_digest
 from .resolver import ProviderError
+
+log = logging.getLogger(__name__)
 
 
 class ModelCatalog:
@@ -216,23 +220,15 @@ class ModelCatalog:
         if declared:
             self._revisions[repo] = str(declared)
             return self._revisions[repo]
-        import httpx
-        from huggingface_hub import HfApi, constants
-        from huggingface_hub.errors import GatedRepoError, HfHubHTTPError, RepositoryNotFoundError
+        from huggingface_hub import HfApi
 
-        host = urlparse(constants.ENDPOINT).hostname
         try:
             sha = HfApi().repo_info(repo_id=repo, repo_type="model").sha
-        except GatedRepoError as e:                 # подкласс RepositoryNotFoundError: порядок от частного к общему
-            raise ProviderError("MODEL_GATED", facts={"model": repo}) from e
-        except RepositoryNotFoundError as e:
-            raise ProviderError("MODEL_NOT_IN_CATALOG", facts={"model": repo, "source": host}) from e
-        except HfHubHTTPError as e:
-            raise ProviderError("MODEL_REVISION_UNKNOWN",
-                                facts={"model": repo, "host": host, "status": e.response.status_code}) from e
-        except (httpx.HTTPError, OSError) as e:    # сеть; офлайн-режим hf — ConnectionError
-            raise ProviderError("MODEL_REVISION_UNKNOWN",
-                                facts={"model": repo, "host": host, "status": type(e).__name__}) from e
+        except Exception as e:
+            refusal = self._hub_refusal(repo, e)
+            if refusal is None:
+                raise
+            raise refusal from e
         self._revisions[repo] = str(sha or "")
         return self._revisions[repo]
 
@@ -346,8 +342,10 @@ class ModelCatalog:
         try:
             info = model_info(model_id, revision=self.pinned(model_id) or None, files_metadata=True)
         except Exception as e:  # сеть/закрытый репозиторий
-            # Не знаем — так и говорим: молча выкинуть модель значило бы соврать, что её нет.
-            return {"detail_error": str(e)[:120]}
+            # Не знаем — так и говорим: молча выкинуть модель значило бы соврать, что её нет. Причина — в журнал под номером.
+            refusal = self._hub_refusal(model_id, e)
+            code = refusal.code if refusal else ""
+            return {"detail_error": code or "INTERNAL_ERROR", "event": incident(log, f"детали модели {model_id}", e, code)}
         picked, _, chosen = self._pick([s.rfilename for s in info.siblings or []], tuple(want))
         try:
             sizes, unknown = self._part_sizes(model_id, info, picked)
@@ -456,6 +454,25 @@ class ModelCatalog:
         picked = fp16 + [n for n in keep if not n.endswith(".safetensors")] if fp16 else keep
         return picked, refused, self.prefer(picked) or (picked[0] if picked else "")
 
+    def _hub_refusal(self, repo: str, e: Exception) -> ProviderError | None:
+        """Сбой хаба по репозиторию — отказ кодом причины: закрыто автором, репозитория нет, источник ответил ошибкой или
+        не ответил; иное исключение — не сбой хаба (None)."""
+        import httpx
+        from huggingface_hub import constants
+        from huggingface_hub.errors import GatedRepoError, HfHubHTTPError, RepositoryNotFoundError
+
+        host = urlparse(constants.ENDPOINT).hostname
+        if isinstance(e, GatedRepoError):             # подкласс RepositoryNotFoundError: порядок от частного к общему
+            return ProviderError("MODEL_GATED", facts={"model": repo})
+        if isinstance(e, RepositoryNotFoundError):
+            return ProviderError("MODEL_NOT_IN_CATALOG", facts={"model": repo, "source": host})
+        if isinstance(e, HfHubHTTPError):
+            return ProviderError("MODEL_REVISION_UNKNOWN",
+                                 facts={"model": repo, "host": host, "status": e.response.status_code})
+        if isinstance(e, (httpx.HTTPError, OSError)):  # сеть; офлайн-режим hf — ConnectionError; имя класса — в журнал
+            return ProviderError("MODEL_SOURCE_UNREACHABLE", facts={"model": repo, "host": host})
+        return None
+
     # ═══ Правила установки ═══
 
     @property
@@ -530,7 +547,7 @@ class ModelCatalog:
         plan = entry["parts"] if force else self.judge(entry)["plan"]
         свободно = probe(self.models_dir)["disk_free_mb"]
         if свободно is None:
-            raise ProviderError("DISK_SPACE_UNKNOWN", facts={"model": model_id, "dir": str(self.models_dir)})
+            raise ProviderError("DISK_SPACE_UNKNOWN", facts={"model": model_id})
         нужно = round(sum(p["size"] for p in plan) / 1e6, 1)
         if свободно < нужно:
             raise ProviderError("MODEL_NO_DISK_SPACE", facts={"model": model_id, "need_mb": нужно, "free_mb": свободно})
@@ -758,7 +775,8 @@ class ModelCatalog:
                         for n in keep), key=lambda p: p["path"])
         graph = next((p["path"] for p in parts if p["path"].endswith(".onnx")), parts[0]["path"] if parts else "")
         return {"id": model_id, "kind": "tts", "repo": src["repo"], "revision": self.revision(src["repo"]),
-                "dest": dest, "path": str(Path(dest) / graph), "mb": mb, "parts": parts, "refused": refused}
+                "dest": dest, "path": Files(self.models_dir).name(Path(dest) / graph), "mb": mb, "parts": parts,
+                "refused": refused}
 
     def _manifest_hf(self, model_id: str, src: dict, kind: str) -> dict:
         from huggingface_hub import model_info
@@ -779,12 +797,13 @@ class ModelCatalog:
                                    *self._sibling_digest(siblings[n])) for n in picked), key=lambda p: p["path"])
         mb = self._mb(sizes.values())
         self.check_size(mb, model_id, unknown)
-        entry = {"id": name, "kind": kind, "repo": model_id, "revision": rev, "dest": str(dest), "mb": mb,
+        files = Files(self.models_dir)
+        entry = {"id": name, "kind": kind, "repo": model_id, "revision": rev, "dest": files.name(dest), "mb": mb,
                  "parts": parts, "refused": refused}
         if want:
-            return {**entry, "path": str(dest / Path(chosen).name), "file": Path(chosen).name}
+            return {**entry, "path": files.name(dest / Path(chosen).name), "file": Path(chosen).name}
         st = getattr(info, "safetensors", None)
-        return {**entry, "path": str(dest), "variant": "fp16" if any(".fp16." in n for n in picked) else "",
+        return {**entry, "path": entry["dest"], "variant": "fp16" if any(".fp16." in n for n in picked) else "",
                 # Число параметров — в опись сразу: по нему судят о пригодности железа без запроса к сети.
                 "params_total": getattr(st, "total", None),
                 "params_by_dtype": dict(getattr(st, "parameters", None) or {}),

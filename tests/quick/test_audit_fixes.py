@@ -133,6 +133,10 @@ async def main():
           r_req.error is not None and r_req.error.recovery is not None and bool(r_req.error.recovery.reason),
           "" if r_req.error else "отказа нет")
     rtn = await engine.call("nope_tool", {})
+    check("TOOL_NOT_FOUND: имя — фактом и в тексте реестра, рецепт без метода протокола (TX-05, TX-08)",
+          rtn.error is not None and rtn.error.facts == {"tool": "nope_tool"} and "«nope_tool»" in rtn.error.message
+          and not (rtn.error.recovery and rtn.error.recovery.suggested_tool),
+          (rtn.error.facts, rtn.error.message, rtn.error.recovery) if rtn.error else "отказа нет")
     check("TOOL_NOT_FOUND via registry",
           rtn.status == "error" and rtn.error.code == "TOOL_NOT_FOUND"
           and "инструмент" in (rtn.error.recovery.reason.lower() if rtn.error.recovery else ""))
@@ -328,21 +332,21 @@ async def main():
     # ═══ Ключ сервер выдаёт себе сам, fail-closed, секрет не утекает ═══
     print("== F14/S1: ключ доступа ==")
 
-    from core.auth import (DIGEST_VAR, TOKEN_VAR, check_auth, ensure_digest, rotate_token,
-                           token_digest, token_file_mode)
+    from core.auth import DIGEST_VAR, TOKEN_VAR, check_auth, ensure_digest, rotate_token, token_digest
+    from tests.harness.access import mode    # оракул прав — не функция сервера, которую он проверяет
 
     _d = _temp_dir("s1_")
     _env = _d / ".env"
     _dig, _issued = ensure_digest(_env, env={})
     check("первый старт выпускает ключ", bool(_issued) and len(_issued) >= 32, f"len={len(_issued)}")
-    check("файл секрета с правами 0600", token_file_mode(_env) == 0o600, oct(token_file_mode(_env)))
+    check("файл секрета с правами 0600", mode(_env) == 0o600, oct(mode(_env)))
     _dig2, _issued2 = ensure_digest(_env, env={})
     check("повторный старт НЕ перевыпускает ключ", _dig2 == _dig and not _issued2)
     _env.write_text(_env.read_text(encoding="utf-8") + "OTHER=1\n", encoding="utf-8")
     _new = rotate_token(_env)
     check("ротация меняет ключ", token_digest(_new) != _dig)
     check("ротация не трогает соседние переменные", "OTHER=1" in _env.read_text(encoding="utf-8"))
-    check("после ротации права сохранены", token_file_mode(_env) == 0o600)
+    check("после ротации права сохранены", mode(_env) == 0o600, oct(mode(_env)))
     check("переменная окружения имеет приоритет над файлом",
           ensure_digest(_env, env={TOKEN_VAR: "from-env"}) == (token_digest("from-env"), ""))
 
@@ -494,6 +498,10 @@ async def main():
     check("отказ несёт класс из реестра и срок повтора",
           _busy is not None and _busy.reaction_class == "server_recoverable" and "7 с" in _busy.message,
           f"{_busy.reaction_class} · {_busy.message[:60]}" if _busy else "отказа нет")
+    check("срок повтора — числом в факте, класс — фактом; рецепт не ведёт в метод протокола (TX-06, TX-08)",
+          _busy is not None and _busy.facts == {"klass": "пробный", "retry_after_sec": 7}
+          and not (_busy.recovery and _busy.recovery.suggested_tool),
+          (_busy.facts, _busy.recovery) if _busy else "отказа нет")
     await _running
     _after = await _eng.call("занятой", {})
     check("место освобождается после вызова", _after.status == "success",

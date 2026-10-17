@@ -1,0 +1,12 @@
+# Внешние движки сервера: имена бинаря и места установки по ОС, где искать после PATH (по порядку). Место — шаблон пути с
+# переменными среды ОС (%ProgramFiles% раскрывает os.path.expandvars). Не нашёлся — отказ кодом реестра, а где искали —
+# в журнал сервера: пути хоста клиенту не идут. Схема — core/declaration_schemas.py EnginePlaces.
+#
+# Установщик LibreOffice на Windows кладёт soffice в Program Files без PATH (проверка шага CI `test -f`, первоисточник
+# установщика не сверен); Homebrew на macOS — LibreOffice.app/Contents/MacOS (Homebrew/homebrew-cask
+# Casks/l/libreoffice.rb, blob 0331934b, command_wrapper "soffice").
+recalc:
+  names: ["soffice", "libreoffice"]
+  win32: ["%ProgramFiles%/LibreOffice/program", "%ProgramFiles(x86)%/LibreOffice/program"]
+  darwin: ["/Applications/LibreOffice.app/Contents/MacOS"]
+  linux: []

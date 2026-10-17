@@ -6,6 +6,7 @@
 именованный. Поток keepalive поднимает упавший процесс заново; секреты туннеля вне git.
 """
 
+import logging
 import os
 import re
 import shutil
@@ -17,15 +18,18 @@ from pathlib import Path
 from typing import Annotated, ClassVar, Literal, assert_never
 from urllib.parse import urlsplit
 
-from pydantic import AfterValidator
+from pydantic import AfterValidator, BeforeValidator
 from pydantic_core import PydanticCustomError
 
 from core.contracts import ContractError
 from core.declaration import Declaration
-from core.declaration_schemas import TUNNEL_PROBE
+from core.declaration_schemas import TUNNEL_PROBE, TUNNEL_SUPERVISION
+from core.engine.engine import incident
 from core.environment import child_spawn
 from core.providers.download import answers
 from core.transport.diagnostics import каталог_проверок, путь_бинаря
+
+log = logging.getLogger(__name__)
 
 
 # Словарь событий лога cloudflared объявлен ОДИН раз: и производитель (`_classify_line`), и оба
@@ -107,19 +111,13 @@ class CloudflaredTunnel:
         # Бинарь — путь каталога (`бинари.cloudflared.в_дереве`, одно решение с диагностикой), затем PATH.
         self.binary = путь_бинаря(каталог_проверок().data, "cloudflared") or "cloudflared"
 
-        # Параметры повторов (backoff), чтобы не упереться в лимиты Cloudflare.
-        self.retry_base = float(cfg.get("retry_base_seconds", 2))     # старт паузы
-        self.retry_max = float(cfg.get("retry_max_seconds", 60))      # потолок паузы
-        self.retry_reset = float(cfg.get("retry_reset_seconds", 60))  # «стабильный» прогон
-        # Предел ПЕРВОГО подъёма: cloudflared, которому режут путь до края (VPN, firewall), живёт
-        # и молчит — без предела ожидание было бесконечным, и вывод обрывался на полуслове.
-        # Запасное значение ПРОИЗВОДНОЕ, а не второй литерал: потолок пауз уже объявлен, и число,
-        # написанное здесь ещё раз, разошлось бы с декларацией молча.
-        self.ready_timeout = float(cfg.get("ready_timeout_seconds") or self.retry_max)
-        # Повтор ПЕРВОГО подъёма: супервизор сторожит только туннель, который хотя бы раз
-        # соединился, поэтому у самой хрупкой попытки повторов не было вовсе. Нет объявления —
-        # нет и повтора: одна попытка, как было до этой правки.
-        self.first_attempts = int(cfg.get("first_attempts") or 1)
+        # Надзор — политика сервера из закоммиченного каталога (`надзор`), а не из машинного файла: умолчаний в коде нет.
+        надзор = каталог_проверок().section(*TUNNEL_SUPERVISION.section, schema=TUNNEL_SUPERVISION.schema)
+        self.retry_base = надзор.retry_base_seconds         # старт паузы перезапуска
+        self.retry_max = надзор.retry_max_seconds           # потолок паузы
+        self.retry_reset = надзор.retry_reset_seconds       # «стабильный» прогон
+        self.ready_timeout = надзор.ready_timeout_seconds   # предел одной попытки первого подъёма
+        self.first_attempts = надзор.first_attempts         # попыток первого подъёма
 
         self._proc: subprocess.Popen | None = None
         self._public_url: str | None = None
@@ -132,6 +130,7 @@ class CloudflaredTunnel:
         self._connections = 0          # сколько connIndex зарегистрировано
         self._attempts = 0             # подряд неудачных перезапусков процесса
         self._last_error: str | None = None
+        self._supervision: dict = {"state": "идёт"}   # остановлен — с причиной и номером события в журнале
         self._proc_started: float | None = None
         # Кто убил процесс, знает только тот, кто убил: код -9 сам по себе неотличим от чужого
         # `kill`, и вердикт «завершился code=-9» ничего не объясняет тому, кто его читает.
@@ -149,6 +148,8 @@ class CloudflaredTunnel:
             "Заведи config/tunnel.yaml — режим, порт и hostname объявлены там.")
         if "tunnel_token" in дверь.data:
             дверь.need("tunnel_token", kind=_БЕЗ_СЕКРЕТА)
+        for ключ in sorted(set(дверь.data) & set(TUNNEL_SUPERVISION.schema.model_fields)):
+            дверь.need(ключ, kind=_ПЕРЕЕХАЛ)
         return дверь.data
 
     def _binary_available(self) -> bool:
@@ -438,40 +439,49 @@ class CloudflaredTunnel:
         процесса, чтобы не плодить подключения и не упереться в лимиты.
         """
         def _run():
-            while not self._stopping:
-                proc = self._proc
-                if proc is None or proc.stdout is None:
-                    break
+            try:
+                while not self._stopping:
+                    proc = self._proc
+                    if proc is None or proc.stdout is None:
+                        break
 
-                # Блокирующее чтение до EOF: дренаж + обновление статуса соединения.
-                for raw in proc.stdout:
+                    # Блокирующее чтение до EOF: дренаж + обновление статуса соединения.
+                    for raw in proc.stdout:
+                        if self._stopping:
+                            return
+                        self._apply_line(raw)
+
+                    # stdout закрылся → процесс cloudflared завершился (HP = down).
                     if self._stopping:
-                        return
-                    self._apply_line(raw)
-
-                # stdout закрылся → процесс cloudflared завершился (HP = down).
-                if self._stopping:
-                    break
-                uptime = (time.time() - self._proc_started) if self._proc_started else 0.0
-                with self._status_lock:
-                    self._connected = False
-                    self._connections = 0
-                    self._attempts = self._next_attempts(self._attempts, uptime)
-                    attempts = self._attempts
-
-                # Пауза перед повторным запуском (backoff+jitter) — прерываемая.
-                self._sleep_interruptible(self._backoff_delay(attempts))
-                if self._stopping:
-                    break
-                try:
-                    self._proc = self._spawn()
-                except Exception as e:
+                        break
+                    uptime = (time.time() - self._proc_started) if self._proc_started else 0.0
                     with self._status_lock:
-                        self._last_error = f"respawn failed: {e}"
-                    break
+                        self._connected = False
+                        self._connections = 0
+                        self._attempts = self._next_attempts(self._attempts, uptime)
+                        attempts = self._attempts
+
+                    # Пауза перед повторным запуском (backoff+jitter) — прерываемая.
+                    self._sleep_interruptible(self._backoff_delay(attempts))
+                    if self._stopping:
+                        break
+                    try:
+                        self._proc = self._spawn()
+                    except Exception as e:
+                        self._halted("перезапуск не удался", e)
+                        return
+            except Exception as e:              # прочий сбой потока надзора — тем же узлом, а не трассой в stderr
+                self._halted("поток надзора упал", e)
 
         self._supervisor = threading.Thread(target=_run, daemon=True)
         self._supervisor.start()
+
+    def _halted(self, причина: str, exc: BaseException) -> None:
+        """Надзор кончился сбоем: причина с трассировкой — в журнал сервера под номером события, состояние надзора —
+        «остановлен» с причиной и номером: сам туннель больше не поднимается, и `status()` это называет."""
+        event = incident(log, f"надзор туннеля: {причина}", exc)
+        with self._status_lock:
+            self._supervision = {"state": "остановлен", "reason": причина, "event": event}
 
     @staticmethod
     def _край_ответил(код: int, сервер: str) -> bool:
@@ -544,6 +554,7 @@ class CloudflaredTunnel:
                 "attempts": self._attempts,
                 "public_url": self._public_url,
                 "last_error": self._last_error,
+                "supervision": dict(self._supervision),
                 "uptime_sec": round((time.time() - self._proc_started), 1) if self._proc_started else 0.0,
             }
 
@@ -590,6 +601,16 @@ def _секрет_не_здесь(значение: str) -> str:
 
 
 _БЕЗ_СЕКРЕТА = Annotated[str, AfterValidator(_секрет_не_здесь)]
+
+
+def _переехал(значение: object) -> object:
+    """Ключ надзора в машинном файле — отказ двери с адресом переезда (до суда типа: число тоже): правка здесь молча
+    ничего бы не меняла."""
+    raise PydanticCustomError(
+        "moved_key", "политика надзора туннеля — в config/tunnel_diagnostics.yaml → надзор, не в машинном файле")
+
+
+_ПЕРЕЕХАЛ = Annotated[str, BeforeValidator(_переехал)]
 
 
 def main():

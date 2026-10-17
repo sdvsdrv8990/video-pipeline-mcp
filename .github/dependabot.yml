@@ -1,0 +1,25 @@
+# Версии действий CI, npm студии и pip сервера — под одним сторожем: прежде версии действий не сторожил никто,
+# и setup-node@v4 на снятом Node 20 жил рядом с @v7 (CI dce0461, предупреждение П1). Группа — одна PR на экосистему.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /studio
+    schedule:
+      interval: weekly
+    groups:
+      studio:
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]

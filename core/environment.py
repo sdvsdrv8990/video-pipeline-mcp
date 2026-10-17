@@ -43,10 +43,13 @@ def epilog() -> str:
 
 def child_spawn(errors: Literal["strict", "replace"], extra: Mapping[str, str] | None = None,
                 environ: Mapping[str, str] = os.environ) -> dict:
-    """Аргументы порождения ребёнка — среда узла и текст вывода в utf-8 (не кодировкой локали: на Windows она cp1252).
-    `errors` — выбор места по назначению вывода, умолчания нет: разбираемый вывод — strict (битые байты — громкий отказ),
-    вывод для человека или журнала — replace. `environ` — база среды, если место уже сняло из неё своё."""
-    return {"env": child_environ(extra, environ), "encoding": "utf-8", "errors": errors}
+    """Аргументы порождения ребёнка — среда узла и вывод. `errors` — выбор места по назначению вывода, умолчания нет:
+    вывод для человека или журнала — replace, текст utf-8 (не кодировкой локали: на Windows она cp1252) с заменой битых
+    байт; разбираемый вывод — strict, байты: их декодирует `child_text` в потоке вызывающего, и битый байт отказывает
+    громко (на Windows `communicate` декодирует в потоке-читателе, где отказ гаснет вместе с выводом). `environ` — база
+    среды, если место уже сняло из неё своё."""
+    env = child_environ(extra, environ)
+    return {"env": env} if errors == "strict" else {"env": env, "encoding": "utf-8", "errors": errors}
 
 
 def child_environ(extra: Mapping[str, str] | None = None, environ: Mapping[str, str] = os.environ) -> dict[str, str]:
@@ -56,3 +59,16 @@ def child_environ(extra: Mapping[str, str] | None = None, environ: Mapping[str, 
     среда = {k: v for k, v in environ.items() if k not in SECRETS}
     среда.setdefault("PYTHONUTF8", "1")
     return среда | dict(extra or {})
+
+
+def child_text(data: bytes, errors: Literal["strict", "replace"]) -> str:
+    """Вывод ребёнка, полученный байтами, — текстом utf-8 в потоке вызывающего; переводы строк — как в текстовом режиме."""
+    return data.decode("utf-8", errors).replace("\r\n", "\n").replace("\r", "\n")
+
+
+class ChildSaid(Exception):
+    """Слова ребёнка об отказе — причина (`raise … from`) для журнала сервера, а не текст ответа: в них пути хоста.
+    Слово — последняя строка stderr: ею бинарь называет, что помешало."""
+
+    def __init__(self, stderr: str):
+        super().__init__(stderr.strip().rsplit("\n", 1)[-1] or "причина не названа")

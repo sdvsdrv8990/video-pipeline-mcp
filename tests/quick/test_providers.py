@@ -905,8 +905,9 @@ _set = _box.set("ch", "ElevenLabs", _KEY)
 _encfile = _ws / "ch/.secrets/provider_keys.enc"
 ok(_encfile.is_file() and _KEY.encode("utf-8") not in _encfile.read_bytes(),
    "на диске лежит шифротекст, а не ключ")
-ok(oct(_encfile.stat().st_mode)[-3:] == "600" and oct(_encfile.parent.stat().st_mode)[-3:] == "700",
-   f"права файла и каталога закрыты ({oct(_encfile.stat().st_mode)[-3:]}/{oct(_encfile.parent.stat().st_mode)[-3:]})")
+from tests.harness.access import mode as _mode8   # оракул прав на любой ОС: на Windows — DACL, а не биты режима
+ok(_mode8(_encfile) == 0o600 and _mode8(_encfile.parent) == 0o700,
+   f"права файла и каталога закрыты ({oct(_mode8(_encfile))}/{oct(_mode8(_encfile.parent))})")
 ok(_set["fingerprint"] == fingerprint(_KEY) and _KEY not in str(_set),
    "наружу отдан отпечаток, а не значение")
 ok(_box.get("ch", "ElevenLabs") == _KEY, "сервер свой ключ читает — иначе провайдера не вызвать")
@@ -934,9 +935,12 @@ for _q in ({"directory": ".", "keyword": "sk-"}, {"directory": ".", "extension":
        f"поиск не выдаёт закрытый файл ({_q})")
 
 # Отказ должен объяснять, что двери НЕТ, иначе модель начнёт искать обход.
+# Обновлено 2026-10-17 (слово владельца, CM-14): команда хоста ИИ-клиенту не нужна — дверь называется владельцем, а что
+# стоит — инструментом сервера, который клиенту доступен.
 _dr = _call("fs_read_file", path="ch/.secrets/provider_keys.enc")
-ok("вручную" in _dr.error.recovery.reason and "set_provider_key" in _dr.error.recovery.reason,
-   "в отказе названа единственная законная дверь: владелец, вручную, скриптом")
+ok("владелец" in _dr.error.recovery.reason and "media_provider_status" in _dr.error.recovery.reason
+   and "set_provider_key" not in _dr.error.recovery.reason,
+   "в отказе названа единственная законная дверь — владелец — и что стоит видно media_provider_status; команды хоста нет")
 
 # Ротация: новый ключ занимает место старого, прежний отпечаток остаётся следом замены.
 _set2 = _box.set("ch", "ElevenLabs", "sk-НОВЫЙ-КЛЮЧ-0987654321")
@@ -2756,6 +2760,7 @@ print("== 17. Раннер: инференс в отдельном процес�
 import socket as _sock17
 import subprocess as _sp17
 import httpx as _hx17
+import core.jobs as _jobs17
 from core.providers.img.http_image import HttpImageAPI as _HTTP17
 from core.runner import RunnerSupervisor as _Sup17
 
@@ -2978,11 +2983,9 @@ try:
     # Падение раннера обязано быть ВИДНО: авто-подъёма нет намеренно — он спрятал бы причину.
     if _start17.status == "success":
         _pid17 = _start17.data["pid"]
-        _sp17.run(["kill", "-9", str(_pid17)], check=False)
-        for _ in range(50):
-            if not _Sup17._alive(_pid17):
-                break
-            _time.sleep(0.1)
+        _psutil18.Process(_pid17).kill()        # падение снаружи; ветку ОС держит psutil: SIGKILL на POSIX, TerminateProcess на Windows
+        _code17 = _Sup17.ended(_pid17)          # конец — событием владельца процесса (Popen супервизора), без своего предела
+        ok(_code17 not in (None, 0), f"конец убитого раннера пришёл событием владельца с кодом выхода ({_code17})")
         _dead17 = _c17("media_runner", action="status")
         ok(_dead17.data["phase"] == "exited",
            f"убитый раннер виден как exited, а не как молчание ({_dead17.data['phase']})")
@@ -2993,6 +2996,38 @@ try:
            f"вызов после падения отказывает подсказкой поднять, а не считает молча в сервере ({_after17.error.code if _after17.error else 'успех!'})")
         ok(_c17("media_runner", action="stop").data["phase"] == "stopped",
            "остановка убирает за собой и не спотыкается о мёртвый процесс")
+
+        # Дверь _later (Ч6): исполнитель подъёма кончил и ушёл между чтением узла и решением — ответ вызова итог (фаза
+        # раннера), а не processing и next. Подъём ждёт, пока ожидание прочтёт processing; шов ждёт конец исполнителя,
+        # не читая запись.
+        _seen17d, _launch17d, _read17d, _fired17d = _jobs17.Tasks._seen, _Sup17.launch, _thr.Event(), []
+
+        def _late17(self, tid):
+            got = _seen17d(self, tid)
+            if not _fired17d and (got[0].get("task") or {}).get("status") == "processing":
+                _fired17d.append(tid)
+                _pulse17d = _jobs17._PULSES.get(tid)
+                _read17d.set()
+                if _pulse17d is not None:
+                    _pulse17d.done.wait(60)
+            return got
+
+        def _held17(self, *args, **kwargs):
+            _read17d.wait(60)
+            return _launch17d(self, *args, **kwargs)
+
+        _jobs17.Tasks._seen, _Sup17.launch = _late17, _held17
+        try:
+            _door17 = _c17("media_runner", action="start")
+        finally:
+            _jobs17.Tasks._seen, _Sup17.launch = _seen17d, _launch17d
+        _door17_said = (_door17.data.get("phase") or (_door17.data.get("task") or {}).get("status")
+                        if _door17.status == "success" else _door17.error.code)
+        ok(bool(_fired17d) and _door17.status == "success" and _door17.data.get("phase") == "running"
+           and bool(_door17.data.get("task_id")),
+           f"дверь подъёма: исполнитель кончил и ушёл между чтением и решением — ответ вызова фаза раннера, а не "
+           f"processing и next ({_door17_said}, шов {'сработал' if _fired17d else 'не сработал'})")
+        _c17("media_runner", action="stop")
 
         # Срок вызова клиента не объявлен (клиент без срока) — ожидания нет: ответ сразу с id, итог — task_status (AD-20 б).
         _srv.CONFIG_PATH = declarations_copy({"providers.yaml": _runner_decl17},
@@ -3016,6 +3051,15 @@ try:
         finally:
             _aio.run(_eng17s.call("media_runner", {"action": "stop"}))
             _srv.CONFIG_PATH = _cfg17
+
+    # Законный случай владельца: процесс, которого супервизор не поднимал, судится по pid (psutil) — своего события нет.
+    # ended спрашивается после его смерти: событие не ждёт ответа, от которого зависит его же выход.
+    _other17 = _sp17.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=_sp17.PIPE)
+    _other_alive17 = _Sup17._alive(_other17.pid)
+    _other17.communicate()
+    _other_ended17 = _Sup17.ended(_other17.pid)
+    ok(_other_alive17 and _other_ended17 is None and not _Sup17._alive(_other17.pid),
+       f"чужой процесс: жив — по pid, конца владельца нет (ended {_other_ended17}), умер — не жив")
 
     # И обратно: строка канала переключает расчёт в сервер тем же table_update, без рестарта.
     if _bg_model:
@@ -4369,6 +4413,11 @@ def _model_fetch(work: Path, records: list[str]) -> None:
     try:
         got = {repo: outcome(lambda: cat.revision(repo)) for repo in raises}
         said = {repo: delivered(lambda: cat.revision(repo)) for repo in ("org/rev-none", "org/rev-busy", "org/rev-net")}
+        try:                                    # весь отказ, как его видит клиент: и message, и facts
+            cat.revision("org/rev-net")
+            net_wire = ""
+        except ProviderError as e:
+            net_wire = _json.dumps(engine.refusal(e).error.model_dump(), ensure_ascii=False)
         pinned = cat.revision("org/bg")
         _hf19.constants.ENDPOINT = "https://hf-mirror.example"          # как HF_ENDPOINT зеркала
         mirrored = delivered(lambda: cat.revision("org/rev-net"))
@@ -4376,12 +4425,50 @@ def _model_fetch(work: Path, records: list[str]) -> None:
         _hf19.HfApi, _hf19.constants.ENDPOINT = real_api, real_endpoint
     ok("hf-mirror.example" in mirrored and "huggingface.co" not in mirrored,
        f"источник — зеркало: отказ ревизии называет хост зеркала, а не huggingface.co ({mirrored})")
+    # Обновлено 2026-10-17 (слово владельца, EB-11): сбой сети — свой код MODEL_SOURCE_UNREACHABLE, а не «ревизия не
+    # узнана» с именем класса библиотеки в тексте; класс исключения — причиной в журнал под номером события (TX-02).
     ok(got == {"org/rev-gated": "MODEL_GATED", "org/rev-none": "MODEL_NOT_IN_CATALOG",
-               "org/rev-busy": "MODEL_REVISION_UNKNOWN", "org/rev-net": "MODEL_REVISION_UNKNOWN", "org/rev-odd": "ValueError"},
+               "org/rev-busy": "MODEL_REVISION_UNKNOWN", "org/rev-net": "MODEL_SOURCE_UNREACHABLE", "org/rev-odd": "ValueError"},
        f"код на причину: закрыто, нет, перегрузка, сеть — свои; чужое исключение не переименовано ({got})")
-    ok("huggingface.co" in said["org/rev-none"] and "503" in said["org/rev-busy"] and "ConnectError" in said["org/rev-net"],
-       f"клиент видит источник и ответ: код HTTP или имя сбоя сети ({said})")
+    ok("huggingface.co" in said["org/rev-none"] and "ответ 503" in said["org/rev-busy"]
+       and "huggingface.co" in said["org/rev-net"] and "ConnectError" not in said["org/rev-net"],
+       f"клиент видит источник и ответ: код HTTP; сбой сети — хост без имени класса библиотеки ({said})")
+    ok(net_wire and "ConnectError" not in net_wire and "huggingface.co" in net_wire,
+       f"имени класса библиотеки нет нигде в отказе сбоя сети — ни в тексте, ни в фактах ({net_wire})")
     ok(pinned == "rev-bg" and "org/bg" not in asked_rev, "закреплённая ревизия источник не спрашивает")
+
+    print("== 19t-2. Детали модели — тот же перевод сбоя хаба: строка списка несёт код и номер события, текст — в журнал ==")
+    heard19t: list = []
+    ear19t = _log19.Handler()
+    ear19t.emit = heard19t.append  # type: ignore[method-assign]
+    # Уровень — как у журнала сервера (config/observability.yaml → logs.heard): кодовый отказ пишется строкой INFO.
+    lg19t = _log19.getLogger("core.providers.catalog")
+    held19t = lg19t.level
+    lg19t.setLevel(yaml.safe_load((ROOT / "config" / "observability.yaml").read_text(encoding="utf-8"))
+                   ["logs"]["heard"]["level"])
+    lg19t.addHandler(ear19t)
+    real_info = _hf19.model_info
+
+    def broken_info(repo_id, revision=None, files_metadata=False, **_kw):
+        raise raises[repo_id]
+
+    _hf19.model_info = broken_info
+    try:
+        rows19t = {repo: cat._detail(repo, [".onnx"], False) for repo in raises}
+    finally:
+        _hf19.model_info = real_info
+        lg19t.removeHandler(ear19t)
+        lg19t.setLevel(held19t)
+    ok({repo: row.get("detail_error") for repo, row in rows19t.items()} == {**got, "org/rev-odd": "INTERNAL_ERROR"},
+       f"детали: код на ту же причину, что у ревизии; чужое исключение — INTERNAL_ERROR ({rows19t})")
+    traced = {repo: [r for r in heard19t if r.getMessage().find(str(row.get("event"))) >= 0]
+              for repo, row in rows19t.items()}
+    ok(all(_re.fullmatch(r"[0-9a-f]{8}", str(row.get("event", ""))) and traced[repo] for repo, row in rows19t.items())
+       and all(bool(r.exc_info) == (repo == "org/rev-odd") for repo, recs in traced.items() for r in recs),
+       f"номер события строки — в журнале сервера; трассировка — только у чужого исключения ({traced})")
+    wire19t = _json.dumps(rows19t, ensure_ascii=False)
+    ok(not any(t in wire19t for t in ("закрыто", "перегрузка", "сеть", "чужое", "Error", "huggingface.co")),
+       f"текста исключения, имени класса и хоста в строке списка нет ({wire19t})")
 
     print("== 19u. Имя того же вида занято другим репозиторием — отказ до записи, первая модель не тронута ==")
     info["org/foo"] = repo(put("org/foo", "model.onnx", b"1" * 200))

@@ -16,6 +16,9 @@ on:
 env:
   PYTHONUTF8: "1"
 
+# Версии зависимостей — по замку requirements-lock.txt (слово владельца 17.10, D22): CI и локальные гейты меряют один
+# набор, а не то, что каждая ячейка разрешила сама. Пересборка — команда в шапке замка; мажоры двигает dependabot PR.
+
 jobs:
   lint:
     name: lint (ruff + mypy) · ${{ matrix.os }} · ${{ matrix.python-version }}
@@ -30,13 +33,13 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 2      # griffe сравнивает поверхность с HEAD~1
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e ".[dev]"
+      - run: pip install -c requirements-lock.txt -e ".[dev]"
       - name: ruff
         run: ruff check .
       - name: mypy
@@ -54,8 +57,8 @@ jobs:
       run:
         working-directory: studio
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: "22"
           cache: npm
@@ -81,11 +84,11 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e ".[dev]"
+      - run: pip install -c requirements-lock.txt -e ".[dev]"
       # LibreOffice — движок пересчёта формул (`validate_formulas`). Без него тест скипается.
       # ffmpeg — САМ ПРОДУКТ оси P, а не вспомогательный инструмент: без бинаря наборы монтажа
       # пропускают прогонную половину с причиной, и гейт зеленеет, ничего не собрав. Замер на
@@ -100,7 +103,11 @@ jobs:
         run: brew install ffmpeg && brew install --cask libreoffice
       - name: install LibreOffice (formula recalc) + ffmpeg (montage) · Windows
         if: runner.os == 'Windows'
-        run: choco install -y --no-progress ffmpeg libreoffice-fresh
+        # Установщик LibreOffice кладёт soffice в Program Files без PATH — сервер находит его по config/engines.yaml, PATH не
+        # трогаем: так CI мерит поиск сервера. Нет файла на объявленном месте — шаг красный, а не тихий пропуск пересчёта.
+        run: |
+          choco install -y --no-progress ffmpeg libreoffice-fresh
+          test -f "$PROGRAMFILES/LibreOffice/program/soffice.exe"
       # I7 T0: единый раннер вместо ручного перечисления файлов (забытая строка = тест вне гейта).
       # tests/test_suites.py находит все наборы сам и гоняет каждый подпроцессом (exit-код = вердикт).
       # Маркер `live` больше никого не отсекает — сервер поднимает харнесс.
@@ -122,7 +129,7 @@ jobs:
           python -m coverage xml
       - name: coverage artifact
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: coverage-${{ matrix.os }}-${{ matrix.python-version }}
           path: coverage.xml
@@ -139,14 +146,14 @@ jobs:
           dnf install -y --setopt=install_weak_deps=False git python3 python3-pip libreoffice-calc \
             "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm"
           dnf install -y --allowerasing ffmpeg
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       # Наборы — не от root: root обходит права доступа, и проверки закрытых каталогов дали бы ложное.
       - name: tests (pytest gate) от обычного пользователя
         env:
           VPM_FFMPEG_REQUIRED: "1"
         run: |
           useradd -m runner && chown -R runner:runner "$GITHUB_WORKSPACE"
-          su runner -c "cd '$GITHUB_WORKSPACE' && python3 -m venv .venv-ci && .venv-ci/bin/pip install -q -e '.[dev]' && VPM_FFMPEG_REQUIRED=1 .venv-ci/bin/python -m pytest"
+          su runner -c "cd '$GITHUB_WORKSPACE' && python3 -m venv .venv-ci && .venv-ci/bin/pip install -q -c requirements-lock.txt -e '.[dev]' && VPM_FFMPEG_REQUIRED=1 .venv-ci/bin/python -m pytest"
 
   conformance:
     name: conformance (спека MCP, сторонний клиент) · ${{ matrix.os }}
@@ -159,12 +166,12 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.11"
-      - run: pip install -e ".[dev]"
-      - uses: actions/setup-node@v7
+      - run: pip install -c requirements-lock.txt -e ".[dev]"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: "22"
       # Сверка с эталонным набором спеки. Набор поднимает сервер сам (харнесс T2) и ходит
@@ -181,11 +188,11 @@ jobs:
     name: security (bandit + pip-audit)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.11"
-      - run: pip install -e ".[dev]"
+      - run: pip install -c requirements-lock.txt -e ".[dev]"
       - name: bandit (medium+)
         run: bandit -r core server.py -ll
       # Из advisory в ХАРД-ГЕЙТ. Полы в pyproject подняты выше известных CVE —
@@ -200,7 +207,7 @@ jobs:
     name: gitleaks (secrets)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
       # Официальный action требует GITLEAKS_LICENSE и fail-closed'ится при rate-limit проверки

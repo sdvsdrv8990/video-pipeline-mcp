@@ -17,6 +17,7 @@ from core.contracts import ContractError, ToolResult
 from core.engine.engine import Engine
 from core.paths import PathEscapeError
 from core.reactions import Reactions
+from core.transport.transport import answer
 
 _checks = 0
 _fails: list[str] = []
@@ -43,8 +44,8 @@ class _Records(logging.Handler):
 
 
 def _text(result: ToolResult) -> str:
-    e = result.error
-    return " ".join(filter(None, [e.message, e.recovery.reason if e.recovery else ""])) if e else ""
+    """Что видит клиент — текст провода: ErrorDetail целиком, с facts и errors (N1, N4), а не только message и reason."""
+    return "".join(c.get("text", "") for c in answer(result).get("content", [])) if result.error else ""
 
 
 async def main():
@@ -112,6 +113,9 @@ async def main():
     r = await engine.call("падает", {"bogus": "SECRETVALUE"})
     ok(r.status == "error" and r.error.code == "VALIDATION_ERROR", "лишний параметр — VALIDATION_ERROR")
     ok("bogus" in _text(r) and "SECRETVALUE" not in _text(r), "ошибка привязки называет имя, а не значение")
+    ok(r.error is not None and r.error.errors == [{"field": "bogus", "rule": "unexpected"}]
+       and "bogus" not in r.error.message,
+       f"имя лишнего параметра — в errors, а не текстом места поверх шаблона (TX-05, TX-09) ({r.error and r.error.errors})")
 
     for params, field in (({"path": "p", "width": "SECRETVALUE"}, "width"), ({"width": 1}, "path"),
                           ({"path": "p", "mode": "SECRETVALUE"}, "mode")):

@@ -21,6 +21,7 @@ from pathlib import Path
 
 from filelock import FileLock
 
+from core import owner_only
 from core.contracts import ContractError
 from core.write_policy import WritePolicy
 
@@ -111,14 +112,18 @@ class Files:
         return target
 
     def name(self, path: str | Path) -> str:
-        """Путь, как его называют клиенту: от корня ("" — сам корень), чтобы ответ не нёс место сервера.
-        Абсолютный путь вне корня приходит от клиента и остаётся его же текстом."""
+        """Путь, как его называют клиенту: от корня ("" — сам корень), чтобы ответ не нёс место сервера, и через `/` на
+        любой ОС. Сверка с корнем — сначала по написанному (ссылка внутри корня остаётся своим именем), затем по
+        настоящему пути (другой псевдоним того же корня). Абсолютный путь вне корня приходит от клиента и остаётся его
+        же текстом."""
         named = Path(path)
-        for base in (Path(self.root), Path(self.root).resolve()):
-            if named.is_absolute() and named.is_relative_to(base):
-                rel = named.relative_to(base).as_posix()
-                return "" if rel == "." else rel
-        return str(named)
+        if named.is_absolute():
+            real = Path(self.root).resolve()
+            for base, held in ((Path(self.root), named), (real, named), (real, Path(os.path.realpath(named)))):
+                if held.is_relative_to(base):
+                    rel = held.relative_to(base).as_posix()
+                    return "" if rel == "." else rel
+        return named.as_posix()
 
     def unread(self, path: str | Path, err: OSError) -> dict:
         """Непрочитанное фактами: путь от корня и код ОС (`EACCES`); текст ОС клиенту не уходит. Ошибка без кода ОС
@@ -184,8 +189,7 @@ class Files:
         """Остаток с содержимым на диске: создан исключительно (`O_EXCL`), права выставлены до первого байта."""
         part = self.remnant(target, uuid.uuid4().hex[:12], secrets=secrets)
         part.parent.mkdir(parents=True, exist_ok=True)
-        # O_BINARY есть только на Windows: без него дескриптор в текстовом режиме CRT, запись переводит \n в \r\n.
-        fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+        fd = owner_only.create(part, mode)
         try:
             with os.fdopen(fd, "wb") as f:
                 # chmod по дескриптору — где он поддержан (на Windows — с 3.13), иначе по пути: файл уже создан и пуст.
@@ -247,13 +251,14 @@ class Files:
 
     def remove(self, path: str | Path, *, secrets: bool = False) -> str:
         """Удалить названное (FS-14): ссылку — как ссылку, файл — как файл, `rmtree` — только по настоящему каталогу и там,
-        где он не ходит по ссылкам внутри. Корень не удаляется. Возвращает, что снято: link | file | dir."""
+        где он не ходит по ссылкам внутри; на Windows — и без этого: в junction он не заходит, гонка подмены принята
+        (FS-14). Корень не удаляется. Возвращает, что снято: link | file | dir."""
         target = self.named(path, secrets=secrets)
         if target == Path(self.root).resolve():
             raise ContractError("VALIDATION_ERROR", errors=[{"field": "path", "rule": "not_root"}])
         mode = os.lstat(target).st_mode
         if stat.S_ISDIR(mode):
-            if not shutil.rmtree.avoids_symlink_attacks:
+            if not shutil.rmtree.avoids_symlink_attacks and sys.platform != "win32":
                 raise OSError(errno.ENOTSUP, "rmtree на этой платформе идёт по ссылкам внутри дерева")
             shutil.rmtree(target)
             kind = "dir"
@@ -265,7 +270,8 @@ class Files:
 
     def move(self, src: str | Path, dst: str | Path, *, secrets: bool = False, policy: WritePolicy | None = None) -> Path:
         """Перенести названное без затирания (FS-14): файл и ссылка — `os.link` (он не затирает) и снятие старого имени;
-        каталог — исключительно занять имя назначения пустым каталогом и встать на него `os.rename`. Назначение занято —
+        каталог — исключительно занять имя назначения пустым каталогом и встать на него `os.rename` (на Windows `os.rename`
+        сам не затирает). Назначение занято —
         FILE_EXISTS, чужое не тронуто; корень и каталог внутрь самого себя — отказ ввода до первого действия. `policy` —
         у файла судится тип нового имени: перенос в `run.sh` не обходит список типов."""
         source, target = self.named(src, secrets=secrets), self.named(dst, secrets=secrets)
@@ -277,20 +283,24 @@ class Files:
         if policy is not None and source.is_file():
             policy.admit(self.name(target))
         target.parent.mkdir(parents=True, exist_ok=True)
+        # На Windows rename не затирает занятое имя (FileExistsError), занимать его заранее нельзя: заглушку он не заменит.
+        held = directory and sys.platform != "win32"
         try:
-            if directory:
+            if held:
                 os.mkdir(target)
+            elif directory:
+                os.rename(source, target)
             else:
                 os.link(source, target, follow_symlinks=False)
         except FileExistsError:
             raise ContractError("FILE_EXISTS", facts={"path": self.name(dst)}) from None
-        if directory:
+        if held:
             try:
                 os.rename(source, target)
             except BaseException:
                 os.rmdir(target)
                 raise
-        else:
+        elif not directory:
             os.unlink(source)
         _sync_dir(target.parent)
         _sync_dir(source.parent)

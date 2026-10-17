@@ -11,16 +11,14 @@
 
 TOOL_NOT_FOUND:
   class: ai_recoverable
-  message_template: "Инструмент не найден."
+  message_template: "Инструмента «{tool}» на сервере нет."
   recovery:
-    suggested_tool: "tools/list"
-    reason: "Посмотри доступные инструменты и вызови существующий."
+    reason: "Вызови инструмент из списка инструментов сервера."
 
 VALIDATION_ERROR:
   class: ai_recoverable
   message_template: "Параметры не соответствуют input_schema инструмента."
   recovery:
-    suggested_tool: "tools/list"
     reason: "Сверь параметры со схемой инструмента и повтори вызов."
 
 BOOK_ROW_INVALID:
@@ -62,7 +60,7 @@ FILE_EXISTS:
   class: ai_recoverable
   message_template: "Файл или каталог уже существует: {path}"
   recovery:
-    reason: "Удали существующий файл или используй другое имя."
+    reason: "Выбери другое имя: занятое не перезаписывается."
 
 TEMPLATE_NOT_FOUND:
   class: ai_recoverable
@@ -86,7 +84,7 @@ PROVIDER_FAILED:
   class: server_recoverable
   message_template: "Внешний провайдер не дал годного ответа."
   recovery:
-    reason: "Причина — в тексте и фактах отказа (хост, код ответа провайдера). Что провайдер не применил (запрос не ушёл, ответ 408/503 или объявленный провайдером), сервер уже повторил сам по retry_count/retry_delay строки канала. Запрос, который мог выполниться (создание задачи), сервер не повторяет — задача могла создаться и списаться: проверь её у провайдера, повтор — не раньше retry_after_sec из фактов, если он назван. Иначе — fallback_provider строки листа провайдеров книги канала; при исчерпании цепочки — человек."
+    reason: "Что можно было повторить, сервер уже повторил. Задачу, которая могла создаться, проверь у провайдера; повтор — не раньше retry_after_sec из фактов, иначе — fallback_provider канала; цепочка исчерпана — к владельцу."
 
 CONTENT_REJECTED:
   class: ai_recoverable
@@ -267,10 +265,9 @@ PROVIDER_EXHAUSTED:
 
 RESOURCE_BUSY:
   class: server_recoverable
-  message_template: "Класс ресурса занят: свободных мест нет."
+  message_template: "Класс ресурса «{klass}» занят: свободных мест нет, повтор не раньше чем через {retry_after_sec} с."
   recovery:
-    suggested_tool: "tools/list"
-    reason: "Ждать в вызове нельзя — ожидание за пределом клиента даёт отказ без кода. Займись другой задачей и повтори позже; через сколько — сказано в сообщении отказа. Если задача обязана встать в очередь, это решение человека, а не сервера."
+    reason: "Займись другой задачей и повтори после срока; ждать внутри вызова нельзя."
 
 WORKER_UNAVAILABLE:
   class: server_recoverable
@@ -324,7 +321,7 @@ SECRET_ACCESS_DENIED:
   class: integrity
   message_template: "Каталог секретов закрыт: ключи провайдеров не читаются инструментами."
   recovery:
-    reason: "Это не сбой и не вопрос прав конкретного вызова: ключи канала недоступны серверным инструментам по построению. Вносит и меняет их владелец вручную — python scripts/set_provider_key.py --channel <канал> --provider <имя>. Проверить, ЧТО стоит, можно через media_provider_status: он показывает отпечаток и дату, но никогда значение."
+    reason: "Ключи канала инструментам недоступны: вносит их владелец. Что стоит — media_provider_status (отпечаток и дата, не значение)."
 
 PROVIDER_KEY_MISSING:
   class: human_required
@@ -382,9 +379,9 @@ RUNNER_TOKEN_REJECTED:
 
 DISK_SPACE_UNKNOWN:
   class: human_required
-  message_template: "Хватит ли места под веса '{model}', не определить: свободное место в {dir} не прочитано."
+  message_template: "Хватит ли места под веса '{model}', не определить: свободное место на диске весов не прочитано."
   recovery:
-    reason: "Сервер не смог прочитать свободное место на диске весов (причина — в строке «НЕ ЗНАЕМ» вывода python scripts/models.py hardware), а качать вслепую он не станет. Другая модель здесь не поможет: владелец проверяет доступ к {dir} и его диск."
+    reason: "Вслепую сервер не качает, другая модель не поможет: сообщи владельцу — он проверяет диск весов."
 
 MODEL_SIZE_UNKNOWN:
   class: human_required
@@ -402,7 +399,7 @@ TASK_NOT_FOUND:
 
 TASK_INTERRUPTED:
   class: server_recoverable
-  message_template: "Задание «{task_id}» ({tool}) прервано: исполнителя нет — сервер перезапущен или его процесс умер."
+  message_template: "Задание «{task_id}» ({tool}) прервано: итог работы не записан, исполнитель задание больше не держит."
   recovery:
     reason: "Повтори вызов {tool} с теми же параметрами — задание начнётся заново."
 
@@ -455,9 +452,15 @@ MODEL_SOURCE_FAILED:
 
 MODEL_REVISION_UNKNOWN:
   class: server_recoverable
-  message_template: "Состояние репозитория '{model}' у «{host}» не узнать: {status}."
+  message_template: "Состояние репозитория '{model}' у «{host}» не узнать: ответ {status}."
   recovery:
     reason: "Без ревизии веса не тянутся: файлы одной модели могли бы приехать из разных состояний репозитория. Ничего не скачано, запрос сервер не повторял — повтори установку позже или проверь сеть сервера. Владелец может закрепить ревизию в config/providers.yaml → local.install.revisions: тогда источник о ней не спрашивается."
+
+MODEL_SOURCE_UNREACHABLE:
+  class: server_recoverable
+  message_template: "Источник «{host}» не ответил: состояние репозитория '{model}' не узнать."
+  recovery:
+    reason: "Ничего не скачано: повтори установку позже."
 
 MODEL_SOURCE_FORBIDDEN:
   class: ai_recoverable
@@ -539,7 +542,7 @@ RECALC_UNAVAILABLE:
   class: human_required
   message_template: "Движок пересчёта формул (LibreOffice) недоступен."
   recovery:
-    reason: "Установи libreoffice-calc в окружении сервера — валидация формул требует реального пересчёта."
+    reason: "Сообщи владельцу: проверка формул идёт реальным пересчётом LibreOffice (soffice в PATH сервера), без него её нет."
 
 # ═══ Структура: реестр связей / ORPHAN ═══
 

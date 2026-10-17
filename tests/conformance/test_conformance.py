@@ -78,7 +78,9 @@ def skip(reason: str) -> None:
     sys.exit(0)
 
 
-if not shutil.which("npx"):
+# Полный путь: на Windows npx — это npx.cmd, и голое имя CreateProcess не находит (WinError 2).
+NPX = shutil.which("npx")
+if not NPX:
     skip("нет `npx` (node) — сторонний conformance-клиент запустить нечем")
 
 # Конфиг прогона: копия БОЕВОГО, в которой поднят единственный порог — частота. Сторонний клиент
@@ -120,7 +122,7 @@ with live_server(env={"MCP_CONFIG": str(cfg_dir)}) as srv, AuthProxy(srv.url, sr
     # Прокси добавляет ключ за клиента, который его не умеет: калитка MCP_ALLOW_NO_AUTH сняла бы
     # проверяемый слой целиком. Host прокси передаёт как есть — на нём стоит проверка Host.
     out_dir = Path(tempfile.mkdtemp(prefix="conf_out_"))
-    run = subprocess.run(["npx", "-y", PACKAGE, "server", "--url", proxy.url, "-o", str(out_dir)],
+    run = subprocess.run([NPX, "-y", PACKAGE, "server", "--url", proxy.url, "-o", str(out_dir)],
                          capture_output=True, text=True, timeout=1200,
                          env={**os.environ, "npm_config_yes": "true"})
 

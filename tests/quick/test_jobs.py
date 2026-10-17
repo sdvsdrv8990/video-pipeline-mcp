@@ -6,6 +6,7 @@
 """
 import asyncio
 import atexit
+import contextvars
 import json
 import logging
 import os
@@ -32,6 +33,8 @@ from core.engine.engine import Engine
 from core.jobs import Tasks, _Record, issue, issued
 from core.reactions import Reactions
 from tests.harness.live_server import declarations_copy
+from tools._context import ToolContext
+from tools.tasks import register as register_tasks
 
 _checks = 0
 _fails: list[str] = []
@@ -413,6 +416,125 @@ check(f"два вызова ждут итог задания, пока ждут 
 check("ожидание итога не держит ни места, ни потока: пока вызовы ждут, все места классов свободны (место ⇒ поток)",
       free_wait16, free_wait16)
 check(f"после ворот работы ожидания кончились итогом задания ({ends16})", ends16 == ["completed", "completed"], ends16)
+
+
+def _left16(wait: str, *, unwritten: bool = False) -> tuple[dict, bool]:
+    """Шов порядка без часов: элемент, прочитанный processing, отдаётся ожидающему только после ухода исполнителя —
+    работа пущена воротами, ждётся событие конца исполнителя (`Pulse.done`) без чтения записи: чтение судило бы замок и
+    будило ожидающего само. Ожидание начинается, когда работа уже идёт; `unwritten` — итог работы не лёг в запись.
+    Ответ — задание, которым кончилось ожидание, и сработал ли шов."""
+    node = Tasks(Engine(reactions=Reactions(ROOT / "config" / "server_reactions.yaml"), resources=RES16),
+                 root=scratch("left16_"))
+    began, gate, fired, pulses = threading.Event(), threading.Event(), [], []
+
+    def work(pulse):
+        if unwritten:
+            put = pulse.put
+            pulse.put = lambda what, **changes: False if changes.get("finished") else put(what, **changes)
+        pulses.append(pulse)
+        began.set()
+        gate.wait(15)
+        return {"ok": 1}
+
+    task_id = node.begin("проба", {"шов": wait, "итог": not unwritten}, "любой", work)["task_id"]
+    began.wait(15)
+    seen = node._seen
+
+    def late(tid: str):
+        got = seen(tid)
+        if tid == task_id and not fired and (got[0].get("task") or {}).get("status") == "processing":
+            fired.append(tid)
+            gate.set()
+            pulses[0].done.wait(15)
+        return got
+
+    node._seen = late
+    ends = asyncio.run(node.until_end([task_id], 30) if wait == "until_end" else node.waiting([task_id]))
+    gate.set()
+    return ends[0].get("task") or {}, bool(fired)
+
+
+def _guarded16(probe, *args, **kwargs) -> tuple[dict, str]:
+    """Проба шва в своём потоке: висящее ожидание — исход события, а не зависший набор. Ответ — задание и что сказало
+    ожидание: статус или код отказа; не сработал шов или ожидание висит — так и названо."""
+    box: dict = {}
+    thread = threading.Thread(target=lambda: box.update(zip(("task", "fired"), probe(*args, **kwargs))), daemon=True)
+    thread.start()
+    thread.join(10)                             # сторож зависания, не порядок: ожидание будит уход исполнителя
+    if thread.is_alive():
+        return {}, "ожидание висит"
+    task = box["task"]
+    return task, (task.get("error") or {}).get("code") or task.get("status") if box["fired"] else "шов не сработал"
+
+
+class _Safe16:
+    """Контекст инструмента заданий: tools/tasks берёт у него только `safe` — тот же перевод отказа, что у сервера."""
+
+    safe = ToolContext.safe
+
+    def __init__(self, engine: Engine):
+        self.engine = engine
+
+
+def _door16() -> tuple[dict, bool]:
+    """Дверь task_status(wait=true): настоящий инструмент (tools/tasks), его узел — на временном доме (MCP_HOME только на
+    время регистрации). Ожидание начато на processing; шов на классе узла (экземпляр создаёт регистрация) отдаёт элемент,
+    прочитанный внутри ожидания, только после ухода исполнителя. Ответ — задание, которое увидел клиент, и сработал ли шов."""
+    home, saved = scratch("door16_").resolve(), os.environ.get("MCP_HOME")
+    os.environ["MCP_HOME"] = str(home)
+    try:
+        eng = Engine(reactions=Reactions(ROOT / "config" / "server_reactions.yaml"), resources=RES16)
+        register_tasks(eng, _Safe16(eng))   # type: ignore[arg-type]
+    finally:
+        if saved is None:
+            os.environ.pop("MCP_HOME", None)
+        else:
+            os.environ["MCP_HOME"] = saved
+    node = Tasks(eng, root=home)
+    began, gate, fired, pulses = threading.Event(), threading.Event(), [], []
+
+    def work(pulse):
+        pulses.append(pulse)
+        began.set()
+        gate.wait(15)
+        return {"ok": 1}
+
+    task_id = node.begin("проба", {"дверь": "task_status"}, "любой", work)["task_id"]
+    began.wait(15)
+    inside, waiting, seen = contextvars.ContextVar("inside16", default=False), Tasks.waiting, Tasks._seen
+
+    async def watched(self, task_ids=None):
+        inside.set(True)                        # чтение статуса инструментом до ожидания шов не будит
+        return await waiting(self, task_ids)
+
+    def late(self, tid: str):
+        got = seen(self, tid)
+        if inside.get() and not fired and (got[0].get("task") or {}).get("status") == "processing":
+            fired.append(tid)
+            gate.set()
+            pulses[0].done.wait(15)
+        return got
+
+    Tasks.waiting, Tasks._seen = watched, late
+    try:
+        answer = asyncio.run(eng.call("task_status", {"task_ids": [task_id], "wait": True}))
+    finally:
+        Tasks.waiting, Tasks._seen = waiting, seen
+        gate.set()
+    return ((answer.data or {}).get("tasks") or [{}])[0].get("task") or {}, bool(fired)
+
+
+for wait16 in ("until_end", "waiting"):
+    left16, said16 = _guarded16(_left16, wait16)
+    check(f"{wait16}: исполнитель записал итог и ушёл между чтением статуса и решением (шов без часов) — ожидание "
+          f"кончилось итогом, а не статусом, прочитанным до ухода ({said16})", said16 == "completed", left16)
+lost16, said16 = _guarded16(_left16, "waiting", unwritten=True)
+check("исполнитель ушёл, а итога в записи нет — ожидание проснулось его уходом и кончилось отказом с причиной, а не "
+      f"«ждать нечего» ({said16})", lost16.get("status") == "failed" and said16 == "TASK_INTERRUPTED", lost16)
+door16, said16 = _guarded16(_door16)
+check("дверь task_status(wait=true): ожидание начато на processing, исполнитель кончил и ушёл между чтением и решением — "
+      f"клиент получил итог, а не статус, прочитанный до ухода ({said16})",
+      said16 == "completed" and door16.get("result") == {"ok": 1}, door16)
 
 print("== 4. Узел: занято — pending; отказ работы — в задании; прерванное, простой; плохой id и битая — в элементе ==")
 JOBS = yaml.safe_load((ROOT / "config" / "jobs.yaml").read_text(encoding="utf-8"))
@@ -1090,7 +1212,14 @@ foreign = node8.cancel([foreign_id])[0]
 check("снятие задания, чей исполнитель в другом процессе (держит замок записи), — TASK_FOREIGN; задание идёт дальше",
       (foreign.get("error") or {}).get("code") == "TASK_FOREIGN"
       and (node8.status([foreign_id])[0].get("task") or {}).get("status") in ("pending", "processing"), foreign)
+on_foreign, seen_foreign = waited([foreign_id])
+on_foreign.join(5)                              # сторож зависания: ответ сразу, смену чужого процесса здесь не услышать
+check("законный: живое задание исполнителя другого процесса (метка процесса в записи) — ожидание отвечает сразу его "
+      f"статусом, а не ждёт смены, которую этот процесс не услышит ({said8(seen_foreign) or 'ожидание висит'})",
+      not on_foreign.is_alive() and said8(seen_foreign) in (["pending"], ["processing"]), seen_foreign)
 stdout8, stderr8 = other.communicate(timeout=10)
+_jobs._changed()                                # мутант без чужой ветки висит: будильник после конца чужой работы
+on_foreign.join(5)
 check("конец трубы — конец чужой работы: completed, процесс вышел сам",
       other.returncode == 0 and (node8.status([foreign_id])[0].get("task") or {}).get("status") == "completed",
       stderr8[-300:])

@@ -42,6 +42,7 @@ _DECLARED = Declared(declarations_root() / JOBS.file, ContractError, "«jobs»",
 _LIVE = ("pending", "processing")
 _BEGIN = threading.Lock()                       # поиск двойника и запись нового задания — один шаг для узлов процесса
 _PULSES: dict[str, Pulse] = {}                  # исполнители этого процесса: их конец ждёт `settle`, их снимает `cancel`
+_RUNNER = secrets.token_hex(8)                  # метка этого процесса в записи: смену чужого исполнителя здесь не услышать
 _HEARD: set[Callable[[], None]] = set()         # слушатели смены статуса в этом процессе: их будит `_changed`
 _HEARD_LOCK = threading.Lock()
 log = logging.getLogger(__name__)
@@ -112,8 +113,9 @@ class _Artifact(BaseModel):
 
 class _Record(BaseModel):
     """Запись задания на диске: статус для клиента и служебное узла; время — эпоха, она переживает процесс.
-    `fingerprint` — отпечаток вызова для повтора, `fresh` — слово «заново» при запуске. Граф подзадач (`parent`,
-    `children`) и их входы и выходы — место под восстановление по зависимостям (PLAN.md)."""
+    `fingerprint` — отпечаток вызова для повтора, `fresh` — слово «заново» при запуске, `runner` — метка процесса
+    исполнителя. Граф подзадач (`parent`, `children`) и их входы и выходы — место под восстановление по зависимостям
+    (PLAN.md)."""
 
     tool: str
     klass: str
@@ -123,6 +125,7 @@ class _Record(BaseModel):
     task: TaskStatus
     fingerprint: str | None = None
     fresh: bool = False
+    runner: str | None = None
     parent: str | None = None
     children: list[str] = []
     inputs: list[_Artifact] = []
@@ -247,32 +250,21 @@ class Tasks:
 
     async def waiting(self, task_ids: list[str] | None = None) -> list[dict]:
         """Статусы названных заданий (без id — тех, что есть сейчас), как только статус хоть одного сменился (тик хода
-        сменой не считается) или ждать нечего: среди них нет живого задания исполнителя этого процесса. Ждёт событие
+        сменой не считается) или ждать нечего: ни одно не идёт у исполнителя этого процесса (`_round`). Ждёт событие
         узла без потока и без места: слушатель смены будит цикл ожидающего, отмена ожидающего (обрыв клиента) снимает
         слушателя. Записи читаются в потоке пула — цикл не ждёт диск. Смену статуса у исполнителя другого процесса
         покажет следующий вызов."""
-        woke = asyncio.Event()
-        with _hearing(_soon(asyncio.get_running_loop(), woke.set)):
-            entries = await asyncio.to_thread(self.status, task_ids)
-            ids, said = [entry["task_id"] for entry in entries], _said(entries)
-            while _said(entries) == said and any(i in _PULSES and s in _LIVE for i, s in zip(ids, said)):
-                await woke.wait()
-                woke.clear()
-                entries = await asyncio.to_thread(self.status, ids)
-            return entries
+        return await self._rounds(task_ids, change=True)
 
     async def until_end(self, task_ids: list[str], within: float) -> list[dict]:
         """Статусы названных заданий, как только каждое кончилось (конечный статус, снятие — тоже), но не позже `within`
-        секунд — бюджета вызова клиента: ждёт событием (`waiting`), без потока и без места; бюджет вышел или ждать нечего
-        (исполнителя этого процесса нет) — статусы как есть."""
-        entries = await asyncio.to_thread(self.status, task_ids)
+        секунд — бюджета вызова клиента: ждёт событием, без потока и без места; бюджет вышел или ждать нечего (ни одно не
+        идёт у исполнителя этого процесса) — статусы как есть."""
         try:
             async with asyncio.timeout(within):
-                while any(i in _PULSES and s in _LIVE for i, s in zip(task_ids, _said(entries))):
-                    entries = await self.waiting(task_ids)
+                return await self._rounds(task_ids, change=False)
         except TimeoutError:
-            entries = await asyncio.to_thread(self.status, task_ids)
-        return entries
+            return await asyncio.to_thread(self.status, task_ids)
 
     def cancel(self, task_ids: list[str]) -> list[dict]:
         """Снять задания — элемент на id (`TaskEntry`). Живое задание исполнителя этого процесса — конечный `cancelled`
@@ -306,6 +298,7 @@ class Tasks:
                 try:
                     now = self.clock()
                     record = _Record(tool=tool, klass=klass, created=now, heartbeat=now, fingerprint=mark, fresh=fresh,
+                                     runner=_RUNNER,
                                      task=TaskStatus(task_id=task_id, status="pending", params=redact(params)))
                     pulse = _PULSES[task_id] = Pulse(self, record)  # до записи: живая запись без исполнителя — чужая
                     self._write(record)
@@ -330,22 +323,25 @@ class Tasks:
             _changed()                          # исполнителя больше нет: ждущим нечего ждать от него, даже без записи
 
     def _view(self, task_id: str) -> dict:
+        return self._seen(task_id)[0]
+
+    def _seen(self, task_id: str) -> tuple[dict, _Record | None]:
         """Элемент ответа (`TaskEntry`): задание — `task` (незаконченное без исполнителя — прерванное, живое молчащее —
         простой; у живого — факты хода); нет такого или запись не читается — `error` своего элемента, прочие отвечают
-        как обычно."""
+        как обычно. Рядом — запись, по которой элемент собран (отказ элемента — None)."""
         if not issued(task_id):
-            return self._refused(task_id, "TASK_NOT_FOUND", task_id=task_id)
+            return self._refused(task_id, "TASK_NOT_FOUND", task_id=task_id), None
         path = self._path(task_id)
         try:
             record = self._load(path)
         except FileNotFoundError:
-            return self._refused(task_id, "TASK_NOT_FOUND", task_id=task_id)
+            return self._refused(task_id, "TASK_NOT_FOUND", task_id=task_id), None
         except ValueError:
             # Статус по битой записи неизвестен: отказ элемента, а не «failed»; запись остаётся уликой.
             log.warning("задание %s: TASK_RECORD_INVALID, запись %s", task_id, path)
-            return self._refused(task_id, "TASK_RECORD_INVALID", path=path)
+            return self._refused(task_id, "TASK_RECORD_INVALID", path=path), None
         current = self._live(path, record) if record.task.status in _LIVE else record
-        return TaskEntry(task_id=task_id, task=self._facts(current)).model_dump()
+        return TaskEntry(task_id=task_id, task=self._facts(current)).model_dump(), current
 
     def _facts(self, record: _Record) -> TaskStatus:
         """Статус для клиента; у живого — факты хода: последний признак работы и сколько его нет на момент ответа
@@ -458,3 +454,28 @@ class Tasks:
 
     def _path(self, task_id: str) -> str:
         return f"{self._store()}/{task_id}.json"
+
+    async def _rounds(self, task_ids: list[str] | None, *, change: bool) -> list[dict]:
+        """Круги ожидания: проверка — чтение записей в потоке пула, дальше роутер по прочитанному (`_round`): новый круг
+        на событии смены или ответ; ветки итога и ошибки — у вызывающего. `change` — ответ и на первую смену статуса хоть
+        одного. Слушатель встаёт до первого чтения, будильник гасится до каждого: смена во время чтения будит круг."""
+        woke = asyncio.Event()
+        with _hearing(_soon(asyncio.get_running_loop(), woke.set)):
+            ids = task_ids if task_ids else await asyncio.to_thread(lambda: [task_id for task_id, _ in self._records()])
+            first = None
+            while True:
+                woke.clear()
+                seen = await asyncio.to_thread(lambda: [self._seen(task_id) for task_id in ids])
+                entries = [entry for entry, _ in seen]
+                if first is None:
+                    first = _said(entries)
+                if (change and _said(entries) != first) or not any(_round(record) for _, record in seen):
+                    return entries
+                await woke.wait()
+
+
+def _round(record: _Record | None) -> bool:
+    """Роутер ожидания по прочитанной записи: новый круг — задание идёт у исполнителя этого процесса, его смену разбудит
+    `_changed`. Кончилось или отказ элемента — ответ (итог или ошибка у вызывающего); ушёл без итога — TASK_INTERRUPTED
+    судом замка (`_live`); идёт у исполнителя другого процесса — событий здесь нет, ответ сейчас."""
+    return record is not None and record.task.status in _LIVE and record.runner == _RUNNER

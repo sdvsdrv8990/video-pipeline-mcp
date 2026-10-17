@@ -8,6 +8,7 @@
 ложной причине.
 """
 import json
+import os
 import socket
 import sys
 import time
@@ -338,6 +339,9 @@ def atk_shell_escape(c: Ctx):
 
 
 def atk_run_as_root(c: Ctx):
+    if not hasattr(os, "geteuid"):
+        return None, ("не судится: в ОС нет uid (os.geteuid — только POSIX, st_uid на Windows всегда 0); граница прав "
+                      "там — учётная запись службы, её судит установщик (SA-02)")
     env = c.call("fs_write_file", {"path": "uid.md", "content": "проба"})
     written = c.srv.workspace / "uid.md"
     owner_root = written.exists() and written.stat().st_uid == 0

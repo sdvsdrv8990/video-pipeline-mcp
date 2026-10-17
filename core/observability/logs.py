@@ -8,6 +8,10 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
+import traceback
+import warnings
 from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -21,6 +25,7 @@ from .trail import Trail
 
 _TRAIL = ("dir", "keep_files", "max_bytes", "record_args")
 _SESSION = ("file", "max_bytes", "backup_count")
+_HEARD = ("loggers", "level", "warnings")
 
 
 @dataclass(frozen=True)
@@ -30,6 +35,7 @@ class Logs:
     root: Path | None
     trail: Trail
     session: Journal | None
+    heard: dict | None = None
 
     @classmethod
     def from_declaration(cls, declaration: dict | None, override: str | None) -> Logs:
@@ -41,7 +47,8 @@ class Logs:
             print("⚠️  [logs] не объявлен logs.app и нет MCP_LOGS — журналы не пишутся")
             return cls(None, Trail(None), None)
         root = Path(override or platformdirs.user_log_dir(str(logs["app"]), appauthor=False))
-        return cls(root, _trail(decl.get("trail") or {}, root), _session(logs.get("session") or {}, root))
+        return cls(root, _trail(decl.get("trail") or {}, root), _session(logs.get("session") or {}, root),
+                   _heard(logs.get("heard") or {}))
 
     @classmethod
     def from_config(cls, config_dir: str | Path, override: str | None) -> Logs:
@@ -50,6 +57,24 @@ class Logs:
         declared = Declaration(Path(config_dir) / "observability.yaml", ContractError, "журналов сервера",
                                "Заведи config/observability.yaml — корень и пределы журналов объявлены там.")
         return cls.from_declaration(declared.optional(), override)
+
+    def hear(self) -> None:
+        """Записи logging объявленных логгеров и предупреждения Python — в журнал фактов: туда ответ клиенту отсылает
+        владельца номером события (EB-03, EB-05). Зовёт сборка сервера, а не любой читатель журналов; повторная сборка в
+        том же процессе заменяет обработчик, а не добавляет второй."""
+        for name, handler in _attached:
+            logging.getLogger(name).removeHandler(handler)
+        _attached.clear()
+        if self.session is None or self.heard is None:
+            return
+        handler = _Heard(self.session)
+        for name in self.heard["loggers"]:
+            logging.getLogger(name).addHandler(handler)
+            logging.getLogger(name).setLevel(self.heard["level"])
+            _attached.append((name, handler))
+        logging.captureWarnings(True)
+        warnings.simplefilter(self.heard["warnings"])
+        threading.excepthook = _thread_crash
 
 
 def _trail(cfg: dict, root: Path) -> Trail:
@@ -61,6 +86,25 @@ def _trail(cfg: dict, root: Path) -> Trail:
         return Trail(None)
     return Trail(root / str(cfg["dir"]), keep_files=cfg["keep_files"], max_bytes=cfg["max_bytes"],
                  record_args=cfg["record_args"])
+
+
+def _thread_crash(args: threading.ExceptHookArgs) -> None:
+    """Сетка под узлом границы потоков: необработанное исключение любого потока — запись журнала с трассировкой; stderr
+    остаётся (`threading.__excepthook__`)."""
+    name = args.thread.name if args.thread is not None else "—"
+    logging.getLogger("core.threads").error("поток %s упал мимо узла границы", name, exc_info=args.exc_value)
+    threading.__excepthook__(args)
+
+
+def _heard(cfg: dict) -> dict | None:
+    if not cfg:
+        print("⚠️  [journal] не объявлен logs.heard — записи logging и предупреждения в журнал не идут")
+        return None
+    missing = [k for k in _HEARD if k not in cfg]
+    if missing:
+        print(f"⚠️  [journal] logs.heard неполно ({', '.join(missing)}) — записи logging в журнал не идут")
+        return None
+    return {k: cfg[k] for k in _HEARD}
 
 
 def _session(cfg: dict, root: Path) -> Journal | None:
@@ -97,3 +141,29 @@ class Journal:
 class _Rotating(RotatingFileHandler):
     def handleError(self, record) -> None:  # ошибку записи — вызывающему: движок называет её один раз, а не глушит
         raise
+
+
+class _Heard(logging.Handler):
+    """Запись logging — записью журнала фактов: время, уровень, логгер, номер события, текст, трассировка. Сбой записи
+    уходит в stderr (`handleError`), а не в ответ инструмента: отказ клиенту не становится падением из-за журнала."""
+
+    def __init__(self, journal: Journal):
+        super().__init__()
+        self.journal = journal
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(record.created))
+            entry = f"\n## [{when}] {record.levelname} {record.name}\n"
+            event = getattr(record, "event", None)     # номер события — из extra узла incident (core/engine/engine.py)
+            if event:
+                entry += f"- **событие:** {event}\n"
+            entry += f"- **запись:** {record.getMessage()}\n"
+            if record.exc_info:
+                entry += "```\n" + "".join(traceback.format_exception(*record.exc_info)) + "```\n"
+            self.journal.write(entry)
+        except Exception:
+            self.handleError(record)
+
+
+_attached: list[tuple[str, logging.Handler]] = []
