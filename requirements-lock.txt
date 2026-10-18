@@ -71,7 +71,7 @@ et-xmlfile==2.0.0
     # via openpyxl
 fastuuid==0.14.0
     # via litellm
-filelock==3.32.7
+filelock==4.2.0
     # via
     #   video-pipeline-mcp (pyproject.toml)
     #   cachecontrol
@@ -115,7 +115,7 @@ httpx==0.28.1
     #   huggingface-hub
     #   litellm
     #   openai
-huggingface-hub==1.33.0
+huggingface-hub==2.2.0
     # via
     #   video-pipeline-mcp (pyproject.toml)
     #   litellm
@@ -132,7 +132,7 @@ idna==3.20
     #   yarl
 import-linter==2.15
     # via video-pipeline-mcp (pyproject.toml)
-importlib-metadata==8.9.0
+importlib-metadata==9.0.1
     # via litellm
 iniconfig==2.3.1
     # via pytest
@@ -184,7 +184,7 @@ numpy==2.5.4 ; python_full_version >= '3.12'
     #   onnxruntime
 onnxruntime==1.31.0
     # via video-pipeline-mcp (pyproject.toml)
-openai==2.54.0
+openai==3.31.0
     # via litellm
 openpyxl==3.1.5
     # via video-pipeline-mcp (pyproject.toml)
@@ -290,7 +290,7 @@ rpds-py==2026.9.1
     # via
     #   jsonschema
     #   referencing
-ruff==0.17.0
+ruff==0.17.1
     # via video-pipeline-mcp (pyproject.toml)
 s3transfer==0.19.2
     # via boto3
