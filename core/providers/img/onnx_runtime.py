@@ -31,9 +31,7 @@ class OnnxImage:
             try:
                 import onnxruntime as ort
             except ImportError as e:
-                raise ProviderError(
-                    "LOCAL_INFERENCE_FAILED", f"Среда локального инференса не установлена: {e}",
-                    reason="Поставь зависимости группы local (onnxruntime) в окружение сервера.") from e
+                raise ProviderError("LOCAL_INFERENCE_FAILED") from e
             try:
                 return ort.InferenceSession(str(model_path), providers=providers)
             except Exception as e:  # битый или чужой граф; причина — по цепочке `from e` в журнал, не клиенту
@@ -64,17 +62,12 @@ class OnnxImage:
         try:
             from PIL import Image
         except ImportError as e:
-            raise ProviderError(
-                "LOCAL_INFERENCE_FAILED", f"Среда работы с изображениями не установлена: {e}",
-                reason="Поставь зависимости группы local (pillow) в окружение сервера.") from e
+            raise ProviderError("LOCAL_INFERENCE_FAILED") from e
         try:
             image = Image.open(path)
             image.load()
         except Exception as e:  # не картинка/битый файл
-            raise ProviderError(
-                "CONTENT_REJECTED", f"Файл не читается как изображение: {e}",
-                reason="Передай путь к картинке внутри рабочей области — повтор того же файла "
-                       "даст тот же отказ.") from e
+            raise ProviderError("VALIDATION_ERROR", errors=[{"field": "input", "rule": "not_image"}]) from e
         return image
 
     def to_tensor(self, image, prep: dict, size: tuple[int, int] | None = None):
@@ -98,11 +91,7 @@ class OnnxImage:
         try:
             return session.run(None, {session.get_inputs()[0].name: tensor})[0]
         except Exception as e:  # память/размер/битый граф
-            raise ProviderError(
-                "LOCAL_INFERENCE_FAILED", f"Локальный инференс не выполнен: {e}",
-                reason="Проверь память машины и размер картинки; при повторе того же входа "
-                       "результат будет тем же. Уменьшить нагрузку можно столбцом tile строки "
-                       "провайдера — тогда картинка считается кусками.") from e
+            raise ProviderError("LOCAL_INFERENCE_FAILED") from e
 
     def compute(self, session) -> dict:
         """Где считалось. Без этого «медленно» неотличимо от «сломано»."""

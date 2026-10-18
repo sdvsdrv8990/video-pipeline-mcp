@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from core.engine import Engine, TemplateEngine, TemplateError
-from core.ids import ChainResolver, IDGenerator, LinkRegistry, LinkError, Taxonomy
+from core.ids import ChainResolver, IDGenerator, LinkRegistry, LinkError, Taxonomy, TaxonomyError
 from core.paths import PathRefused
 from core.reactions import Reactions
 
@@ -115,8 +115,9 @@ eng, ws = new_engine()
 try:
     eng.create_node("bogus", "x")
     ok(False, "должно было бросить TEMPLATE_NOT_FOUND")
-except TemplateError as e:
-    ok(e.code == "TEMPLATE_NOT_FOUND", "неизвестный тип → TEMPLATE_NOT_FOUND")
+except TaxonomyError as e:  # обновлено 2026-10-18: файл типа решает узел таксономии (Taxonomy.file), код тот же
+    ok(e.code == "TEMPLATE_NOT_FOUND" and "channel" in e.facts.get("known", []),
+       "неизвестный тип → TEMPLATE_NOT_FOUND с объявленными")
 
 print("== 7. пустое имя → VALIDATION_ERROR ==")
 eng, ws = new_engine()
@@ -1235,7 +1236,9 @@ for _tool45, _name45, _args45 in (
         ("memory_write", "memory_write.md", {"path": "write45/memory_write.md", "entry_date": "2026-10-05",
                                              "title": "т", "decision": "д", "reason": "п"})):
     _f45 = _w45 / _name45
-    _f45.write_text("## [2026-01-01] СТАРОЕ\n" * 50, encoding="utf-8")
+    # Обновлено 2026-10-18 (CI 098ddb9 Windows): байтами — write_text на Windows пишет \r\n, и сравнение байтов читателя
+    # с текстом через \n краснело не по двери, а по фикстуре.
+    _f45.write_bytes(("## [2026-01-01] СТАРОЕ\n" * 50).encode("utf-8"))
     _f45.chmod(0o640)
     with open(_f45, "rb", buffering=0) as _reader45:  # без буфера: остаток читается с диска, а не из памяти
         _head45 = _reader45.read(10)
@@ -1316,7 +1319,7 @@ ok(_m46.status == "success" and (_w46 / "flink_moved.txt").is_symlink()
 _m46 = call("fs_move", source="move46/link_again", destination="move46/moved_link")
 ok(_m46.status == "success" and (_w46 / "moved_link").is_symlink() and (_w46 / "data" / "ценное.txt").is_file()
    and not _os43.path.lexists(_w46 / "link_again"),  # Path.exists(follow_symlinks=) — только с 3.12
-   "fs_move ссылки перенёс саму ссылку, каталог-цель на месте")
+   f"fs_move ссылки перенёс саму ссылку, каталог-цель на месте ({_m46.status}, {_m46.error})")
 
 
 def _key46() -> Path:
@@ -1430,7 +1433,8 @@ ok(_r47.status == "error" and _r47.error.code == "VALIDATION_ERROR"
    and _r47.error.errors == [{"field": "path", "rule": "not_file"}], f"каталог — not_file ({_r47.error})")
 # Память нужна целиком: больше предела — отказ, файл не тронут (вставка в половину потеряла бы хвост).
 _mem47 = "# Память\n\n## [2026-01-01] Решение: старое\n" + "я" * _rl47
-(_w47 / "память.md").write_text(_mem47, encoding="utf-8")
+# Обновлено 2026-10-18 (CI 098ddb9 Windows): байтами — write_text на Windows дал \r\n, размер на 3 байта больше ожидания.
+(_w47 / "память.md").write_bytes(_mem47.encode("utf-8"))
 for _tool47, _args47 in (("memory_read", {"path": "lim47/память.md"}),
                          ("memory_write", {"path": "lim47/память.md", "entry_date": "2026-10-05", "title": "т",
                                            "decision": "д", "reason": "п"})):
@@ -1532,7 +1536,8 @@ _TEXTS49 = [
 ]
 for _what49, _text49, _mid49 in _TEXTS49:
     _name49 = f"текст_{len(_text49)}.md"
-    (_ws49 / _name49).write_text(_text49, encoding="utf-8")
+    # Обновлено 2026-10-18 (CI 098ddb9 Windows): байтами — с \r\n от write_text склейка страниц не равна тексту через \n.
+    (_ws49 / _name49).write_bytes(_text49.encode("utf-8"))
     _pages49 = _pages_of(_call49, _name49)
     _joined49 = "".join((p.data.get("content") or {}).get("value", "") for p in _pages49 if p.status == "success")
     _cuts49 = [(p.data or {}).get("next_offset", 0) for p in _pages49[:-1]]  # отказ вместо страницы — провал, не трасса
@@ -1670,6 +1675,37 @@ ok(_broken49.get("isError") is True and _berr49.get("code") == "DECLARATION_INVA
    and not (_ws49 / "не_записан.md").exists() and "много" not in _json49.dumps(_broken49, ensure_ascii=False),
    f"битая декларация провода посреди работы: отказ DECLARATION_INVALID до вызова, файла нет, значения в ответе нет "
    f"({_berr49.get('code')}, {_berr49.get('errors')})")
+
+print("== 50. Имя шаблона от ИИ не становится путём в config: ни у fs_create_project_structure, ни у узла таксономии ==")
+# Причина рождается в имени от ИИ, следствие — на двери: чужой YAML вне config с фрагментами не читается и не
+# раскладывается в workspace (прежде `../` и абсолютный путь читали любой *.yaml пользователя сервера). Параметр
+# template снят (мёртв с рождения: ни один объявленный шаблон не несёт fragments) — дверь движка называет поле.
+import os as _os50
+
+_out50 = Path(tempfile.mkdtemp())
+(_out50 / "чужой.yaml").write_text("fragments:\n  - {name: утекло50.md, type: file, content: чужой yaml}\n",
+                                   encoding="utf-8")
+_tpl50 = _ctx.config_path / "templates" / "workspace"
+_known50 = sorted(p.name[: -len(".tpl.yaml")] for p in _tpl50.glob("*.tpl.yaml"))   # оракул — файлы каталога
+_sick50 = (("../", _os50.path.relpath(_out50 / "чужой", _tpl50)), ("абсолютный путь", str(_out50 / "чужой")),
+           ("суффикс объявленного файла", f"{_known50[0]}.tpl"), ("объявленное имя", _known50[0]))
+for _label50, _name50 in _sick50:
+    _r50 = _call47("fs_create_project_structure", template=_name50)
+    ok(_r50.status == "error" and _r50.error.code == "VALIDATION_ERROR"
+       and {"field": "template", "rule": "unexpected"} in _r50.error.errors and not list(ws18.rglob("утекло50.md")),
+       f"{_label50}: template отбит дверью, чужой YAML не разложен ({_r50.error.code if _r50.error else _r50.data})")
+_r50 = _call47("fs_create_project_structure", fragments=[{"name": "шаблон50/годно.md", "type": "file", "content": "ок"}])
+ok(_r50.status == "success" and (ws18 / "шаблон50" / "годно.md").is_file(),
+   f"законный вызов списком фрагментов создаёт файл ({_r50.error.code if _r50.error else _r50.data})")
+for _label50, _name50 in _sick50[:3]:          # узел таксономии: тип — одно из объявленных, файл — из обхода каталога
+    try:
+        new_engine()[0].create_node(_name50, "x")
+        ok(False, f"узел таксономии: {_label50} — тип принят")
+    except TaxonomyError as e:
+        ok(e.code == "TEMPLATE_NOT_FOUND" and e.facts.get("known") == _known50,
+           f"узел таксономии: {_label50} — TEMPLATE_NOT_FOUND с объявленными")
+    except Exception as e:  # чтение по пути из имени — провал этой проверки, а не падение набора
+        ok(False, f"узел таксономии: {_label50} — {type(e).__name__} вместо отказа кодом")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

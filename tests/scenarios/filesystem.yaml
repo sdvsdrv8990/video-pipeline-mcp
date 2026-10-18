@@ -102,6 +102,10 @@
     - call: fs_create_project_structure
       with: {}
       expect: {ok: false, code: NO_FRAGMENTS, class: ai_recoverable, console_absent: Traceback}
+    # Обновлено 2026-10-18 (дыра R3 №1, слово 6a): параметр template снят — имя от ИИ уходило в путь config и читало
+    # чужой YAML; мёртв с рождения (объявленные шаблоны fragments не несут). Роды: отрицательный — отказ двери движка
+    # VALIDATION_ERROR с полем template вместо TEMPLATE_NOT_FOUND; положительный (fragments) — без изменений.
+    # Прогноз: шаг краснеет на старом коде (TEMPLATE_NOT_FOUND), на новом зелёный.
     - call: fs_create_project_structure
       with: {template: нет-такого-шаблона}
-      expect: {ok: false, code: TEMPLATE_NOT_FOUND, console_absent: Traceback}
+      expect: {ok: false, code: VALIDATION_ERROR, console_absent: Traceback}

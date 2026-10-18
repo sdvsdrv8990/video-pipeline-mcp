@@ -16,9 +16,7 @@ class OnnxUpscale(OnnxImage):
 
     def generate(self, request: MediaRequest) -> MediaOutcome:
         if request.source is None:
-            raise ProviderError(
-                "CONTENT_REJECTED", "Увеличивать нечего: не передан исходный файл.",
-                reason="Для этого вида ресурса input — путь к картинке внутри рабочей области.")
+            raise ProviderError("VALIDATION_ERROR", errors=[{"field": "input", "rule": "required"}])
         params = request.params
         model_path = self.registry.ready(params.get("model"))["path"]
         session = self.session(model_path)
@@ -38,9 +36,7 @@ class OnnxUpscale(OnnxImage):
                 out = Image.new("RGB", (image.width * scale, image.height * scale))
             out.paste(piece, (box[0] * scale, box[1] * scale))
         if out is None:
-            raise ProviderError(
-                "LOCAL_INFERENCE_FAILED", "Апскейл не дал ни одной плитки.",
-                reason="Картинка пуста или плитка больше самого кадра — проверь tile/tile_overlap.")
+            raise ProviderError("VALIDATION_ERROR", errors=[{"field": "input", "rule": "empty_image"}])
         request.target.parent.mkdir(parents=True, exist_ok=True)
         out.save(request.target)
         return MediaOutcome(files=[request.target], meta={

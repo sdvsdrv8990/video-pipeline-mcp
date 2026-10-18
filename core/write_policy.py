@@ -28,9 +28,7 @@ class WritePolicy:
 
     def __init__(self, config_path: Path):
         self.config_file = Path(config_path) / "firewall.yaml"
-        self._decl = Declaration(
-            self.config_file, WritePolicyError, "разрешённых к записи типов",
-            "Заведи config/firewall.yaml — какие типы файлов сервер вправе класть, объявлено там.")
+        self._decl = Declaration(self.config_file, WritePolicyError, "разрешённых к записи типов")
 
     def _config(self) -> dict:
         return self._decl.data.get(self.SECTION) or {}

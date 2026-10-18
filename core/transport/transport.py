@@ -17,9 +17,7 @@ from core.declaration_schemas import TRANSPORT, TransportDeclaration
 
 @cache
 def _door(path: Path) -> Declared[TransportDeclaration]:
-    return Declared(path, ContractError, "«transport»",
-                    f"Заведи config/{path.name} — что сервер обещает клиенту на проводе, объявлено там.",
-                    schema=TRANSPORT.schema)
+    return Declared(path, ContractError, "«transport»", schema=TRANSPORT.schema)
 
 
 def declared_transport(config_path: Path) -> TransportDeclaration:

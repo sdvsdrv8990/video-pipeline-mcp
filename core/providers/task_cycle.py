@@ -17,6 +17,8 @@ from core.declaration import Declaration
 from core.contracts import ContractError
 from core.jobs import paced
 
+from .resolver import ProviderSaid
+
 
 class TaskCycleError(ContractError):
     """Ошибка ожидания/загрузки в формате контракта (код из server_reactions.yaml)."""
@@ -29,9 +31,7 @@ class TaskCycle:
         self.config_file = Path(config_file)
         self._sleep = sleep          # инъекция: в тестах ожидание не должно занимать минуты
         self._now = now
-        self._decl = Declaration(
-            config_file, TaskCycleError, "ожидания",
-            "Заведи config/media_tasks.yaml — интервалы и статусы объявляются там.")
+        self._decl = Declaration(config_file, TaskCycleError, "ожидания")
 
     @property
     def config(self) -> dict:
@@ -123,20 +123,16 @@ class TaskCycle:
 
     @staticmethod
     def _provider_failed(status: str, answer: dict) -> TaskCycleError:
-        """Провайдер сообщил об отказе задачи: его слово статуса и причина из ответа, если он её назвал."""
-        return TaskCycleError(
-            "PROVIDER_FAILED", f"Провайдер сообщил об отказе задачи: {status}",
-            reason=(answer.get("error") or "Ответ провайдера не содержит причины — "
-                    "смотри его журнал; повтор того же запроса даст тот же отказ."))
+        """Провайдер сообщил об отказе задачи: его слово статуса — фактом, причина из ответа — в журнал."""
+        refused = TaskCycleError("PROVIDER_FAILED", facts={"status": status})
+        if answer.get("error"):
+            refused.__cause__ = ProviderSaid(str(answer["error"])[:300])
+        return refused
 
     def _overdue(self, task_id: str, attempts: int, started: float, status: str) -> TaskCycleError:
         """Срок ожидания задачи вышел: сколько опросов, сколько секунд и что провайдер ответил последним."""
-        return TaskCycleError(
-            "PROVIDER_TIMEOUT",
-            f"Задача '{task_id}' не завершилась за {attempts} опросов ({round(self._now() - started, 1)} с).",
-            reason=("Подними timeout_sec/max_attempts в config/media_tasks.yaml, если задача "
-                    "штатно дольше, или проверь задачу на стороне провайдера. "
-                    f"Последний статус: '{status}'."))
+        return TaskCycleError("PROVIDER_TIMEOUT", facts={
+            "task_id": task_id, "attempts": attempts, "elapsed_sec": round(self._now() - started, 1), "status": status})
 
     # ═══ Приёмка загрузки ═══
 
@@ -155,24 +151,20 @@ class TaskCycle:
         if rules.get("exists", True):
             checks["exists"] = target.is_file()
             if not checks["exists"]:
-                raise TaskCycleError(
-                    "DOWNLOAD_INCOMPLETE", f"Файл не появился на диске: {rel_path}",
-                    reason="Провайдер ответил успехом, но файла нет — загрузка не состоялась.")
+                raise TaskCycleError("DOWNLOAD_INCOMPLETE", facts={
+                    "path": rel_path, "got": 0, "expected": declared_bytes or "—"})
         size = target.stat().st_size if target.is_file() else 0
         min_bytes = int(rules.get("min_bytes", 0) or 0)
         if min_bytes:
             checks["min_bytes"] = size >= min_bytes
             if not checks["min_bytes"]:
-                raise TaskCycleError(
-                    "DOWNLOAD_INCOMPLETE", f"Файл пуст ({size} байт): {rel_path}",
-                    reason="Нулевой размер означает, что загрузки не было, даже если код ответа 200.")
+                raise TaskCycleError("DOWNLOAD_INCOMPLETE", facts={
+                    "path": rel_path, "got": size, "expected": declared_bytes or "—"})
         if rules.get("match_declared_size") and declared_bytes:
             checks["declared_size"] = size == int(declared_bytes)
             if not checks["declared_size"]:
-                raise TaskCycleError(
-                    "DOWNLOAD_INCOMPLETE",
-                    f"Размер не сошёлся: на диске {size}, провайдер обещал {declared_bytes}.",
-                    reason="Обрыв на середине выглядит как успешная загрузка — сверка размеров это ловит.")
+                raise TaskCycleError("DOWNLOAD_INCOMPLETE", facts={
+                    "path": rel_path, "got": size, "expected": int(declared_bytes)})
         return {"path": rel_path, "bytes": size, "checks": checks}
 
     def expected_name(self, base: str, provider_params: dict) -> str:

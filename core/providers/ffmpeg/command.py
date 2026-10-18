@@ -6,11 +6,12 @@
 проверку. Роли элементов движку не видны, снятие фона нейросетью — не его работа.
 """
 
+from collections.abc import Callable
 from pathlib import Path, PurePath
 
 from .dictionary import FfmpegDictionary, fmt, guard
 from .errors import FfmpegError
-from .probe import MediaFacts
+from .probe import MediaFacts, own
 from .spec import Layer, SceneSpec
 
 # Ключевые фильтры непрозрачности объявлены в словаре; движку нужно знать, какое имя брать по
@@ -46,11 +47,13 @@ class SceneCommand:
     """Сборка команды одной сцены: граф, входы, аргументы кодирования."""
 
     def __init__(self, spec: SceneSpec, facts: dict[Path, MediaFacts],
-                 dictionary: FfmpegDictionary, duration_sec: float):
+                 dictionary: FfmpegDictionary, duration_sec: float, name: Callable[[Path], str] = own):
+        """`name` — как отказ называет ассет клиенту (путь от корня даёт вызывающий), как у разбора ffprobe."""
         self.spec = spec
         self.facts = facts
         self.dict = dictionary
         self.duration = duration_sec
+        self.name = name
         self.inputs: list[str] = []
         self.graph: list[str] = []
         self._index = 0
@@ -100,11 +103,8 @@ class SceneCommand:
 
     def _chain(self, layer: Layer) -> list[str]:
         """Цепочка обработки слоя: непрозрачность, объявленные фильтры, размер, темп."""
-        if layer.alpha_mode == "REMOVE_BG":
-            raise FfmpegError(
-                "RENDER_INPUT_UNPREPARED", f"Слой {layer.element_id} просит снять фон нейросетью.",
-                reason="ffmpeg режет фон только по цвету. Подготовь ассет провайдером и подставь готовый файл.",
-                suggested_tool="media_generate")
+        if layer.alpha_mode == "REMOVE_BG":     # фон нейросетью снимает провайдер до монтажа
+            raise FfmpegError("RENDER_INPUT_UNPREPARED", facts={"path": self.name(layer.asset_path)})
         named = {f.name for f in layer.filters}
         steps = []
         if layer.alpha_mode == "CHROMAKEY" and not (named & {"chromakey", "colorkey"}):
@@ -131,23 +131,15 @@ class SceneCommand:
     def _slot_position(self, slot: str, seen: tuple[str, ...] = ()) -> tuple[str, str]:
         """Где стоит СЛОТ целиком. Кадры дорожки обязаны стоять в одной точке — иначе ребёнок,
         привязанный к слоту, поехал бы при смене варианта, а не при движении родителя."""
-        if slot in seen:
-            raise FfmpegError(
-                "VALIDATION_ERROR", f"Слоты замкнулись в кольцо: {' → '.join((*seen, slot))}",
-                reason="Родитель слота не может быть его же потомком — цепочка крепления обязана кончаться.")
+        if slot in seen:                        # цепочка крепления обязана кончаться
+            raise FfmpegError("VALIDATION_ERROR", errors=[
+                {"field": "parent_slot", "rule": "acyclic", "value": " → ".join((*seen, slot))}])
         frames = self.spec.tracks.get(slot) or []
-        if not frames:
-            raise FfmpegError(
-                "VALIDATION_ERROR", f"Слой ссылается на слот `{slot}`, которого в сцене нет.",
-                reason="Родительский слот обязан присутствовать в этой же сцене хотя бы одним кадром.",
-                suggested_tool="table_append")
+        if not frames:                          # родительский слот — хотя бы одним кадром в этой же сцене
+            raise FfmpegError("VALIDATION_ERROR", errors=[{"field": "parent_slot", "rule": "in_scene", "value": slot}])
         spots = {self._own_position(frame) for frame in frames}
-        if len(spots) > 1:
-            raise FfmpegError(
-                "VALIDATION_ERROR", f"Кадры дорожки `{slot}` стоят в разных точках.",
-                reason="Слот двигается целиком: положение задаётся дорожке, а не отдельному варианту. "
-                       "Сведи x/y (и движение) кадров слота к одному значению.",
-                suggested_tool="table_set")
+        if len(spots) > 1:                      # слот двигается целиком: положение — у дорожки, не у варианта
+            raise FfmpegError("VALIDATION_ERROR", errors=[{"field": "x, y, motion", "rule": "one_point", "value": slot}])
         return self._position(frames[0], (*seen, slot))
 
     def _position(self, layer: Layer, seen: tuple[str, ...] = ()) -> tuple[str, str]:

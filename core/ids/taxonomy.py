@@ -37,8 +37,7 @@ class Taxonomy:
             return self._types
         types: dict[str, dict] = {}
         for p in sorted(self.dir.glob("*.tpl.yaml")):
-            data = Declaration(p, TaxonomyError, "таксономии",
-                               "Шаблон типа — объявление иерархии; без него типа не существует.").data
+            data = Declaration(p, TaxonomyError, "таксономии").data
             node_type = p.name[: -len(".tpl.yaml")]
             body = data.get(node_type)
             if not isinstance(body, dict):
@@ -56,6 +55,7 @@ class Taxonomy:
                     "TEMPLATE_INVALID", f"Шаблон {p.name}: стратегия ID '{strategy}' не поддержана.",
                     f"Доступно: {', '.join(sorted(SUPPORTED_STRATEGIES))}.")
             types[node_type] = {
+                "file": p,
                 "prefix": id_block["prefix"],
                 "strategy": strategy,
                 "root_container": str(body.get("root_container", "")).strip("/"),
@@ -89,6 +89,10 @@ class Taxonomy:
 
     def strategy(self, node_type: str) -> str:
         return self._get(node_type)["strategy"]
+
+    def file(self, node_type: str) -> Path:
+        """Файл шаблона объявленного типа. Имя от клиента в путь не идёт: чужое имя — TEMPLATE_NOT_FOUND с известными."""
+        return self._get(node_type)["file"]
 
     def ancestors(self, node_type: str) -> list[dict]:
         """Объявленные предки сверху вниз: [{type, required, role}]."""
@@ -129,8 +133,7 @@ class Taxonomy:
             raise TaxonomyError(
                 "TEMPLATE_INVALID", f"Нет объявления классов файлов: {FILE_CLASSES_FILE}",
                 "Префиксы файлов объявляются декларативно, в коде их нет.")
-        data = Declaration(p, TaxonomyError, "классов файлов",
-                           "Префиксы файлов объявляются декларативно, в коде их нет.").data.get("file_classes")
+        data = Declaration(p, TaxonomyError, "классов файлов").data.get("file_classes")
         if not isinstance(data, dict) or not data:
             raise TaxonomyError(
                 "TEMPLATE_INVALID", f"{FILE_CLASSES_FILE}: пустой или неверный ключ file_classes.",

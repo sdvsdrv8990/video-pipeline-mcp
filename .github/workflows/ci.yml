@@ -51,19 +51,27 @@ jobs:
         run: python scripts/guards/api_breaks.py core tools --base HEAD~1 --head HEAD
 
   studio-app:
-    name: studio-app (tsc + eslint + сборка)
+    name: studio-app (возраст версий + tsc + eslint + сборка)
     runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: studio
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0  # гейт возраста сравнивает замок с базой правки — она должна быть в истории
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: studio/package-lock.json
       - run: npm ci
+      # Ручной подъём версии идёт мимо cooldown Dependabot: новые записи замка сверяются со сроком pyproject
+      # [tool.uv.pip] exclude-newer по времени публикации у реестра. База — через env, а не подстановкой в shell.
+      - name: возраст версий замка студии
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 ../scripts/release_age.py "$BASE"
       - name: tsc (настоящий разбор .tsx вместо текстового)
         run: npm run typecheck
       - name: eslint (правило хуков и полнота зависимостей)
@@ -121,6 +129,9 @@ jobs:
           # нет — значит установка сломалась, а зелёная джоба означала бы «не проверяли».
           # Тот же приём, что у conformance с node (VPM_CONFORMANCE_REQUIRED).
           VPM_FFMPEG_REQUIRED: "1"
+          # ВМ CI одноразовая — случай калитки суперпользователя: раннер Windows, если он администратор с повышением, без
+          # неё не поднял бы ни одного живого сервера. Отказ без калитки меряет раздел 11 test_firewall.
+          MCP_ALLOW_ROOT: ${{ runner.os == 'Windows' && '1' || '' }}
         run: |
           python -m coverage erase
           python -m pytest
@@ -181,6 +192,7 @@ jobs:
       - name: conformance (@modelcontextprotocol/conformance)
         env:
           VPM_CONFORMANCE_REQUIRED: "1"
+          MCP_ALLOW_ROOT: ${{ runner.os == 'Windows' && '1' || '' }}   # та же калитка, что у наборов: ВМ CI одноразовая
         # Через гейт наборов: среда набора (UTF-8 Mode и прочее) решается одним местом — suite_env (tests/test_suites.py).
         run: python -m pytest tests/test_suites.py -k conformance
 

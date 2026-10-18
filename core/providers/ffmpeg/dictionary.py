@@ -35,10 +35,8 @@ def fmt(value: float | int | str) -> str:
 
 def guard(value: str, where: str) -> str:
     """Значение, уезжающее в фильтрограф. Непроходное — отказ, а не экранирование."""
-    if not SAFE_VALUE.match(value):
-        raise FfmpegError(
-            "VALIDATION_ERROR", f"Значение `{value}` нельзя вставить в фильтр ffmpeg ({where}).",
-            reason="Разделители фильтрографа в значении запрещены: разбей замысел на параметры схемы.")
+    if not SAFE_VALUE.match(value):             # разделители фильтрографа в значении запрещены, значение не в ответ
+        raise FfmpegError("VALIDATION_ERROR", errors=[{"field": where, "rule": "filtergraph_safe"}])
     return value
 
 
@@ -46,9 +44,7 @@ class FfmpegDictionary:
     """Переходы и фильтры: наше имя → исполнитель ffmpeg; жалоба бинаря → код реестра."""
 
     def __init__(self, config_file: str | Path | None = None):
-        self._decl = Declaration(
-            config_file or CONFIG, FfmpegError, "фильтров ffmpeg",
-            "Заведи config/ffmpeg_filters.yaml — чем объявленное имя является для ffmpeg, сказано там.")
+        self._decl = Declaration(config_file or CONFIG, FfmpegError, "фильтров ffmpeg")
 
     @property
     def data(self) -> dict:
@@ -61,10 +57,7 @@ class FfmpegDictionary:
         section = self.data.get("transitions") or {}
         by_name = section.get("by_name") or {}
         if name not in by_name:
-            raise FfmpegError(
-                "FILTER_UNKNOWN", f"Переход `{name}` не объявлен.",
-                reason=f"Допустимые: {', '.join(sorted(by_name))}. Словарь закрыт намеренно.",
-                suggested_tool="fs_read_file")
+            raise FfmpegError("FILTER_UNKNOWN", facts={"name": name, "known": ", ".join(sorted(by_name))})
         spec = dict(by_name[name])
         default = (section.get("defaults") or {}).get("duration_sec", 0.0)
         return {"video_filter": section.get("video_filter"),
@@ -77,10 +70,7 @@ class FfmpegDictionary:
     def filter_spec(self, name: str) -> dict:
         by_name = (self.data.get("filters") or {}).get("by_name") or {}
         if name not in by_name:
-            raise FfmpegError(
-                "FILTER_UNKNOWN", f"Фильтр `{name}` не объявлен.",
-                reason=f"Допустимые: {', '.join(sorted(by_name))}. Незнакомое имя в фильтрограф не уходит.",
-                suggested_tool="fs_read_file")
+            raise FfmpegError("FILTER_UNKNOWN", facts={"name": name, "known": ", ".join(sorted(by_name))})
         return by_name[name]
 
     def filter_expr(self, name: str, params: dict | None = None) -> str:
@@ -89,10 +79,9 @@ class FfmpegDictionary:
         schema = spec.get("params") or {}
         given = dict(params or {})
         errors = sorted(Draft202012Validator(schema).iter_errors(given), key=lambda e: str(e.path))
-        if errors:
-            raise FfmpegError(
-                "VALIDATION_ERROR", f"Параметры фильтра `{name}` не проходят его схему: {errors[0].message}",
-                reason="Схема параметров объявлена в config/ffmpeg_filters.yaml — сверься с ней.")
+        if errors:                              # поле и правило схемы, без пришедшего значения (EB-04)
+            raise FfmpegError("VALIDATION_ERROR", facts={"filter": name}, errors=[
+                {"field": ".".join([name, *map(str, e.path)]), "rule": str(e.validator)} for e in errors])
         pairs = []
         for key, prop in (schema.get("properties") or {}).items():
             value = given.get(key, prop.get("default"))
@@ -108,20 +97,15 @@ class FfmpegDictionary:
         section = (self.data.get("codecs") or {}).get("video") or {}
         by_name = section.get("by_name") or {}
         if codec not in by_name:
-            raise FfmpegError(
-                "RENDER_PROFILE_INVALID", f"Кодек `{codec}` не объявлен.",
-                reason=f"Допустимые: {', '.join(sorted(by_name))}. Поправь строку профиля рендера.",
-                suggested_tool="table_set")
+            raise FfmpegError("RENDER_PROFILE_INVALID", facts={"column": "codec", "allowed": ", ".join(sorted(by_name))})
         return guard(str(by_name[codec]), "codec")
 
     def muxer(self, container: str) -> str:
         """Контейнер профиля → muxer ffmpeg (`-f`). Человек пишет расширение `mkv`, ffmpeg зовёт формат `matroska`."""
         by_name = (self.data.get("containers") or {}).get("by_name") or {}
         if container not in by_name:
-            raise FfmpegError(
-                "RENDER_PROFILE_INVALID", f"Контейнер `{container}` не объявлен.",
-                reason=f"Допустимые: {', '.join(sorted(by_name))}. Поправь строку профиля рендера.",
-                suggested_tool="table_set")
+            raise FfmpegError("RENDER_PROFILE_INVALID",
+                              facts={"column": "container", "allowed": ", ".join(sorted(by_name))})
         return guard(str(by_name[container]), "container")
 
     def output_defaults(self) -> dict:

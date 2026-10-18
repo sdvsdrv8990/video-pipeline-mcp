@@ -122,7 +122,12 @@ try:
     ok(False, "неизвестный ресурс должен падать")
 except ProviderError as e:
     ok(e.code == "PROVIDER_NOT_CONFIGURED", f"нет провайдера → PROVIDER_NOT_CONFIGURED ({e.code})")
-    ok(e.suggested_tool == "table_append", "recovery ведёт к добавлению строки, а не к правке кода")
+    # Обновлено 2026-10-18 (П3 плана текста места): рецепт — строки реестра (место его больше не пишет), вид ресурса —
+    # фактом.
+    from core.reactions import Reactions as _Reactions5
+    _said5 = _Reactions5(ROOT / "config" / "server_reactions.yaml").get_error(e.code, facts=e.facts)
+    ok(_said5.recovery.suggested_tool == "table_append" and e.facts.get("resource_type") == "нет_такого_ресурса",
+       f"recovery ведёт к добавлению строки, а не к правке кода ({_said5.recovery.suggested_tool}, {e.facts})")
 _r = rows()
 _r[0]["current_usage"] = 500
 _r[1]["current_usage"] = 200
@@ -131,7 +136,9 @@ try:
     ok(False, "исчерпание всех провайдеров должно падать")
 except ProviderError as e:
     ok(e.code == "PROVIDER_EXHAUSTED", f"все исчерпаны → PROVIDER_EXHAUSTED ({e.code})")
-    ok("Fal" in e.message and "OpenAI" in e.message, "в отказе перечислено, кто именно исчерпан")
+    # Обновлено 2026-10-18 (П3): цепочка исчерпанных — фактом chain, а не текстом места.
+    ok("Fal" in e.facts.get("chain", "") and "OpenAI" in e.facts.get("chain", ""),
+       f"в отказе перечислено, кто именно исчерпан ({e.facts})")
 
 print("== 6. Кольцо в данных не зацикливает (данные правит ИИ) ==")
 _r = rows()
@@ -145,7 +152,8 @@ except ProviderError as e:
     ok(e.code == "PROVIDER_EXHAUSTED", "кольцо A→B→A завершается кодом, а не бесконечным обходом")
     # Наблюдаемое следствие защиты: провайдер не перечисляется в цепочке дважды. Ограничение
     # глубины оборвало бы обход и без неё, но отчёт стал бы врать про число попыток.
-    ok(e.message.count("Fal") == 1, f"в отчёте провайдер назван ОДИН раз, а не по кругу ({e.message})")
+    ok(e.facts.get("chain", "").split(", ").count("Fal") == 1,
+       f"в отчёте провайдер назван ОДИН раз, а не по кругу ({e.facts})")  # обновлено 2026-10-18 (П3): факт chain
 
 print("== 7. Битая декларация не глушится ==")
 _bad = Path(tempfile.mkdtemp()) / "providers.yaml"
@@ -281,15 +289,18 @@ try:
     _tc.wait(lambda tid, within: {"status": "failed", "error": "модерация"}, "T2")
     ok(False, "отказ провайдера должен падать")
 except TaskCycleError as e:
-    ok(e.code == "PROVIDER_FAILED" and "модерация" in e.reason,
-       "отказ провайдера → код реестра, причина провайдера сохранена")
+    # Обновлено 2026-10-18 (П3 плана текста места): слово статуса — фактом, причина провайдера — причиной в журнал
+    # (ProviderSaid), а не рецептом клиенту.
+    ok(e.code == "PROVIDER_FAILED" and e.facts.get("status") == "failed" and "модерация" in str(e.__cause__),
+       f"отказ провайдера → код реестра, причина провайдера сохранена в журнале ({e.facts}, {e.__cause__!r})")
 _stuck = iter([{"status": "крутится"}] * 500)
 try:
     _tc.wait(lambda tid, within: next(_stuck), "T3")
     ok(False, "вечная задача должна обрываться пределом")
 except TaskCycleError as e:
-    ok(e.code == "PROVIDER_TIMEOUT" and "крутится" in e.reason,
-       "предел ожидания срабатывает и называет последний статус, а не молчит")
+    # Обновлено 2026-10-18 (П3): последний статус, задача, опросы и секунды — фактами (TX-05), а не текстом места.
+    ok(e.code == "PROVIDER_TIMEOUT" and e.facts.get("status") == "крутится" and e.facts.get("task_id") == "T3",
+       f"предел ожидания срабатывает и называет последний статус, а не молчит ({e.facts})")
 
 # Срок идёт вниз: опрос получает остаток poll.timeout_sec, пауза его не перешагивает, после срока опроса нет.
 _clock10 = {"now": 0.0, "asked": []}
@@ -455,11 +466,15 @@ for _cloud, _rt in (("ElevenLabs", "tts_characters"), ("OpenAI", "images"), ("Fa
         _reg.load(_cloud, _rt)
         ok(False, f"{_cloud} без адаптера обязан отказать, а не сделать вид, что исполнил")
     except ProviderError as _ec:
-        ok(_ec.code == "PROVIDER_ADAPTER_MISSING" and "media_provider_status" in (_ec.suggested_tool or ""),
-           f"{_cloud}: отказ назван и есть чем разбираться ({_ec.code})")
+        # Обновлено 2026-10-18 (план текста места, П1): исполнимые имена — фактом known, рецепт — строкой реестра с ним
+        # (table_update); прежде рецепт писало место, и до клиента он не доезжал — реестр его перекрывал.
+        _said12 = _Eng(reactions=_REACTIONS).refusal(_ec).error
+        ok(_ec.code == "PROVIDER_ADAPTER_MISSING" and _said12.recovery.suggested_tool == "table_update"
+           and str(_ec.facts.get("known")) in _said12.recovery.reason,
+           f"{_cloud}: отказ назван, рецепт называет исполнимых ({_ec.code}, {_said12.recovery.reason[:80]})")
         # Рецепт называет ТОЛЬКО имена с исполнителем — иначе он ведёт на тот же отказ.
         # Сверка по элементам, а не подстрокой: пара «Fal:bg_removals» исполнима, голый «Fal» — нет.
-        _named = [s.strip() for s in (_ec.reason or "").split("исполнять:")[-1].split(".")[0].split(",")]
+        _named = [s.strip() for s in str(_ec.facts.get("known", "")).split(",")]
         ok("Local_piper" in _named and _cloud not in _named,
            f"{_cloud}: в рецепте только исполнимое, без безадаптерных ({', '.join(_named[:4])})")
 
@@ -768,8 +783,20 @@ class _FakeLink:
         return {"status": "succeeded", "audio_url": _FakeLink.url}
 
 
+class _FakeNoPoll:
+    """Провайдер, который отвечает задачей, а прозвонить её нечем: исполнитель не умеет нужного."""
+
+    def __init__(self, models_dir):
+        self.models_dir = models_dir
+
+    def generate(self, request):
+        from core.providers import MediaOutcome
+        return MediaOutcome(task_id="TASK-3")
+
+
 _fake._FakeAsync = _FakeAsync
 _fake._FakeLink = _FakeLink
+_fake._FakeNoPoll = _FakeNoPoll
 sys.modules["core.providers.fake_async"] = _fake
 
 # Живой HTTP-сервер: ссылку провайдера забирает САМ сервер, через свои проверки.
@@ -801,7 +828,8 @@ from tests.harness.live_server import declarations_copy
 # Тестовый провайдер живёт на петле — послабление объявлено в КОПИИ конфига, боевой запрет цел.
 _acfg_dir = declarations_copy({
     "providers.yaml": {"adapters.by_provider.Обл_async": "fake_async:_FakeAsync",
-                       "adapters.by_provider.Обл_link": "fake_async:_FakeLink"},
+                       "adapters.by_provider.Обл_link": "fake_async:_FakeLink",
+                       "adapters.by_provider.Обл_nopoll": "fake_async:_FakeNoPoll"},
     "media_tasks.yaml": {"download.fetch.schemes": ["http", "https"], "download.fetch.block_private": False}})
 
 (_ws / "a").mkdir()
@@ -823,6 +851,11 @@ try:
     _gl = _aio.run(_eng_a.call("media_generate", {
         "table": "a", "resource_type": "tts_characters", "input": "ссылка",
         "scene_id": "s2", "video_slug": "demo"}))
+    (_ws / "a" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+        "A1": {**_arow, "provider": "Обл_nopoll"}}}}), encoding="utf-8")
+    _gn = _aio.run(_eng_a.call("media_generate", {
+        "table": "a", "resource_type": "tts_characters", "input": "без прозвонки",
+        "scene_id": "s3", "video_slug": "demo"}))
 finally:
     _srv.CONFIG_PATH = _cfg_was
     _httpd.shutdown()
@@ -830,6 +863,12 @@ finally:
 ok(_gl.status == "success" and (_ws / _gl.data["files"][0]).read_bytes() == _Serve.body,
    f"провайдер отдал только ссылку — файл забрал сервер, содержимое совпало ({_gl.error.code if _gl.error else 'ok'})")
 
+_gn_e = _gn.error
+ok(_gn.status == "error" and _gn_e is not None and _gn_e.code == "PROVIDER_ADAPTER_BROKEN"
+   and _gn_e.facts.get("provider") == "Обл_nopoll" and _re.fullmatch(r"[0-9a-f]{8}", str(_gn_e.facts.get("event", "")))
+   and "вернул задачу" not in _gn_e.message,
+   f"задача без прозвонки — исполнитель не поднимает нужного: код, провайдер и номер события фактами, устройство — "
+   f"в журнал ({_gn_e and (_gn_e.code, _gn_e.facts, _gn_e.message)})")
 ok(_ga.status == "success", f"асинхронная задача доведена до файла ({_ga.error.code if _ga.error else 'ok'})")
 ok(_ga.data["task"]["attempts"] == 3 and _ga.data["task"]["outcome"] == "done",
    f"прозвонка шла внутри ЭТОГО вызова, пока задача не была готова ({_ga.data['task'].get('attempts')} опроса)")
@@ -1106,6 +1145,57 @@ ok(len(OnlineCatalog().providers("image")) > 3,
    f"видно, кто вообще умеет картинки, ДО того как заводить ключ ({OnlineCatalog().providers('image')[:4]}…)")
 ok(_KEY not in _json.dumps(_online, ensure_ascii=False),
    "список онлайн-моделей виден без ключа — ключ нужен для вызова, а не для списка")
+
+# Реестр шлюза — карта цен установленной версии litellm (решение 6a 18.10: одна дверь NI-09, один вход — один ответ): при
+# обрыве сети и при живой — тот же ответ двери, попыток сети на импорте нет. Два свежих ребёнка: litellm читает имя только
+# при импорте; среда детей — без него, иначе его принёс бы этот процесс, где каталог уже работал.
+import subprocess as _sp15n
+_child15n = r'''
+import asyncio, hashlib, json, socket, sys, tempfile
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+state, tries = sys.argv[2], []
+real_gai, real_connect = socket.getaddrinfo, socket.socket.connect
+def gai(host, *args, **kwargs):
+    tries.append(f"dns {host}")
+    if state == "обрыв":
+        raise socket.gaierror("сеть оборвана")
+    return real_gai(host, *args, **kwargs)
+def connect(self, address):
+    tries.append(f"connect {address}")
+    if state == "обрыв":
+        raise ConnectionResetError("сеть оборвана")
+    return real_connect(self, address)
+socket.getaddrinfo, socket.socket.connect = gai, connect
+from core.engine import Engine
+from core.ids import IDGenerator
+from core.reactions import Reactions
+from core.state import StateManager
+from tests.harness.inprocess import register_basic_tools
+ws = Path(tempfile.mkdtemp(prefix="online15n_")) / "workspace"
+ws.mkdir(parents=True)
+sm = StateManager(ws)
+engine = Engine(reactions=Reactions(Path(sys.argv[1]) / "config" / "server_reactions.yaml"), state_manager=sm)
+register_basic_tools(engine, IDGenerator(), sm)
+said = asyncio.run(engine.call("media_models", {"scope": "online", "kind": "image", "limit": 0}))
+ids = sorted(m["id"] for m in (said.data or {}).get("models", []))
+print(json.dumps({"status": said.status, "n": len(ids), "sha": hashlib.sha256("\n".join(ids).encode()).hexdigest()[:16],
+                  "tries": tries}, ensure_ascii=False))
+'''
+_env15n = {k: v for k, v in os.environ.items() if k != OnlineCatalog.LOCAL_PRICES}
+_said15n: dict = {}
+for _state15n in ("обрыв", "сеть как есть"):
+    _run15n = _sp15n.run([sys.executable, "-c", _child15n, str(ROOT), _state15n], capture_output=True, text=True,
+                         encoding="utf-8", env=_env15n, cwd=str(ROOT))
+    _lines15n = _run15n.stdout.strip().splitlines()
+    _said15n[_state15n] = (_json.loads(_lines15n[-1]) if _run15n.returncode == 0 and _lines15n else
+                           {"status": f"rc {_run15n.returncode}", "err": _run15n.stderr.strip()[-200:]})
+_cut15n, _live15n = _said15n["обрыв"], _said15n["сеть как есть"]
+ok(_cut15n.get("status") == "success" and _cut15n.get("n", 0) > 0 and not _cut15n.get("tries")
+   and not _live15n.get("tries") and (_cut15n.get("n"), _cut15n.get("sha")) == (_live15n.get("n"), _live15n.get("sha")),
+   f"реестр шлюза — карта цен установленной версии: при обрыве сети и при живой тот же ответ двери "
+   f"({_cut15n.get('n')} / {_live15n.get('n')} моделей, sha {_cut15n.get('sha')} / {_live15n.get('sha')}), попыток сети "
+   f"{len(_cut15n.get('tries') or [])} / {len(_live15n.get('tries') or [])} {_cut15n.get('err') or _live15n.get('err') or ''}")
 
 _mcat = ModelCatalog(CFG, ROOT / "vendor" / "models")
 # Правила установки — чистая проверка, сети не требует.
@@ -1442,7 +1532,7 @@ def _section16(change) -> str:
     path = _врем("install_decl_") / "providers.yaml"
     path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
     try:
-        _Decl16(path, _CE13, "провайдеров", "").section(*_MI16.section, schema=_MI16.schema)
+        _Decl16(path, _CE13, "провайдеров").section(*_MI16.section, schema=_MI16.schema)
         return ""
     except _CE13 as e:
         return f"{e.code}: {e.facts.get('details', '')}"
@@ -1580,10 +1670,12 @@ try:
        "знакомой реестр добавляет смысл: режим вызова и эндпоинт")
 
     _rows17, _e17 = _live17("https://models.twin.example/v1/models", key="WRONG")
-    ok(_e17 is not None and _e17.code == "AUTH_FAILED" and "set_provider_key.py" in _e17.reason
+    # Обновлено 2026-10-18 (план текста места, П1, решение 6a): ключ отклонён ПРОВАЙДЕРОМ — свой код
+    # PROVIDER_KEY_REJECTED; прежний AUTH_FAILED — «ключ не совпал с ключом сервера» с рецептом перевыпуска НАШЕГО ключа.
+    ok(_e17 is not None and _e17.code == "PROVIDER_KEY_REJECTED" and _e17.facts.get("status") == 401
        and len(_Models.seen) == 1,
-       f"ключ отклонён (401) — AUTH_FAILED с рецептом ключа, без повтора "
-       f"({_e17 and (_e17.code, _e17.reason[:60])}, запросов {len(_Models.seen)})")
+       f"ключ отклонён (401) — PROVIDER_KEY_REJECTED со статусом, без повтора "
+       f"({_e17 and (_e17.code, _e17.facts)}, запросов {len(_Models.seen)})")
 
     # Смена поведения: перегрузку списка дверь повторяет по online.answer (прежде — сразу PROVIDER_FAILED).
     _rows17, _e17 = _live17("https://models.twin.example/v1/models", script=[(503, b"", {"Retry-After": "0"})])
@@ -1613,9 +1705,12 @@ finally:
 
 (_ws / "clean").mkdir(exist_ok=True)
 _no_key = _call("media_models", scope="online", kind="image", provider="OpenAI", table="clean", limit=3)
+# Обновлено 2026-10-18 (П1 плана текста места): «ключа нет» решает тот, кому нужен ключ (OnlineCatalog.live), текст —
+# строкой реестра; причина рядом со списком несёт факты отказа (провайдер), а не литерал места.
 ok(_no_key.status == "success" and _no_key.data["live_error"]["code"] == "PROVIDER_KEY_MISSING"
-   and _no_key.data["source"] == "gateway_registry",
-   "без ключа список приходит из реестра шлюза, и НАЗВАНО, почему он может быть старее")
+   and _no_key.data["live_error"].get("facts", {}).get("provider") == "OpenAI"
+   and "OpenAI" in _no_key.data["live_error"]["message"] and _no_key.data["source"] == "gateway_registry",
+   f"без ключа список приходит из реестра шлюза, и НАЗВАНО, почему он может быть старее ({_no_key.data['live_error']})")
 ok("реестр" in _no_key.data["note"], "частичность помечена текстом, а не молчанием")
 
 print("== 18. Влезет ли модель: параметры + железо, и всё это БЕЗ root ==")
@@ -2014,8 +2109,10 @@ try:
     _http12._decl("Неизвестный")
     ok(False, "неизвестный провайдер обязан отказать")
 except ProviderError as _e13:
-    ok(_e13.code == "PROVIDER_ADAPTER_MISSING",
-       f"необъявленного провайдера сервер не вызывает ({_e13.code})")
+    # Обновлено 2026-10-18 (план текста места, П1): исполнитель http_image есть, блока online.http нет — порвана
+    # декларация (DECLARATION_INVALID с путём ключа и правилом), а не «нет исполнителя».
+    ok(_e13.code == "DECLARATION_INVALID" and "online.http.Неизвестный (http_undeclared)" in _e13.facts.get("details", ""),
+       f"необъявленного провайдера сервер не вызывает ({_e13.code}, {_e13.facts.get('details')})")
 
 print("== 13. Платные агрегаторы: стенд по их контракту (ключей нет — есть их API-контракт) ==")
 # Живой платный вызов упирается в аккаунт, а не в код, поэтому проверяется НАШ путь против
@@ -2268,10 +2365,15 @@ try:
        f"ответ статуса больше объявленного предела — клиент видит DOWNLOAD_TOO_LARGE, а не простыню в памяти "
        f"({_eh13 and (_eh13.code, _eh13.facts)})")
     _ansg13, _eg13 = _poll13("gone")
-    ok(_eg13 is not None and _eg13.code == "PROVIDER_FAILED" and "404" in _eg13.message
-       and "prediction not found" in _eg13.message and len(_seen["gets"]) == 1,
-       f"отказ на прозвонке — кодом с ответом поставщика (тело прочитано дверью в пределе), без повтора "
-       f"({_eg13 and (_eg13.code, _eg13.message[:60])}{'' if _eg13 else f', ответ {_ansg13}'})")
+    # Обновлено 2026-10-18 (П1 плана текста места): ответ поставщика — причиной в журнал под номером события, клиенту —
+    # хост и статус фактами (TX-02); прежде тело шло в текст отказа.
+    # Имя хоста, а не судимый IP соединения (дверь несёт имя в SNI) — как у отказов самой двери (§13).
+    ok(_eg13 is not None and _eg13.code == "PROVIDER_FAILED" and _eg13.facts.get("status") == 404
+       and _eg13.facts.get("host") == "api.replicate.com"
+       and "prediction not found" in str(_eg13.__cause__) and "prediction not found" not in _eg13.message
+       and len(_seen["gets"]) == 1,
+       f"отказ на прозвонке — кодом со статусом и именем хоста, тело ответа — причиной в журнал, без повтора "
+       f"({_eg13 and (_eg13.code, _eg13.facts)}{'' if _eg13 else f', ответ {_ansg13}'})")
     _ansm13, _em13 = _poll13("moved", key="secret-key")
     _inner13 = [g["url"] for g in _seen["gets"] if "127.0.0.1" in g["url"]]
     ok(_em13 is not None and _em13.code == "PROVIDER_FAILED"
@@ -2446,7 +2548,8 @@ try:
             provider="Replicate"))
         ok(False, "неверный ключ обязан отказать")
     except ProviderError as _e401:
-        ok(_e401.code == "AUTH_FAILED" and _calls401["n"] == 1,
+        # Обновлено 2026-10-18 (П1, решение 6a): отказ ключа провайдером — PROVIDER_KEY_REJECTED, а не AUTH_FAILED.
+        ok(_e401.code == "PROVIDER_KEY_REJECTED" and _calls401["n"] == 1,
            f"отказ по ключу не повторяется — платный лимит не жжём ({_e401.code}, попыток {_calls401['n']})")
     _stand13["post"] = _stand_request
     ok(not _seen.get("bypass"), f"ни одного запроса мимо двери загрузчика за весь §13 ({_seen.get('bypass')})")
@@ -2466,7 +2569,11 @@ try:
                      source=_big, api_key="k", provider="Replicate"))
     ok(False, "файл сверх предела обязан отказать до отправки")
 except ProviderError as _ebig:
-    ok(_ebig.code == "CONTENT_REJECTED", f"файл сверх предела отклонён до сети ({_ebig.code})")
+    # Обновлено 2026-10-18 (П3, решение 6a): свой код PROVIDER_INPUT_TOO_LARGE с размером и пределом фактами;
+    # прежний CONTENT_REJECTED говорил «модерация».
+    ok(_ebig.code == "PROVIDER_INPUT_TOO_LARGE" and _ebig.facts.get("limit_mb") == 0.001
+       and _ebig.facts.get("provider") == "Replicate" and _ebig.facts.get("size_mb", 0) > 0.001,
+       f"файл сверх предела отклонён до сети ({_ebig.code}, {_ebig.facts})")
 
 print("== 14. Что модель умеет: спека параметров и отказ ДО вызова (S24) ==")
 from core.providers import ModelSpec
@@ -2897,6 +3004,68 @@ ok(_dstr17.count("-v ") >= 2 and "vendor/models" in _dstr17 and str(_ws.resolve(
    "веса и рабочая область приезжают ТОМАМИ, а не слоями образа")
 ok("providers.yaml:ro" in _dstr17 and "tunnel.yaml" not in _dstr17,
    "декларации монтируются живые и только для чтения, а секреты внутрь не едут")
+
+# Раннер от root (6a, 18.10): процесс контейнера пишет в тома хоста пользователем сервера, а не root. Ветки — по режиму
+# демона (docker docs rootless/uid-gid-mapping.md:11-16): с root — `--user` uid:gid сервера; rootless — без него (uid 0
+# пространства имён и есть пользователь хоста); сервер root или ОС без uid — nobody. Всегда — без возможностей ядра,
+# без повышения прав, образ только на чтение (OWASP Docker Security Cheat Sheet #3, #4, #8).
+import core.runner.supervisor as _rsup17
+
+_harden17 = ("--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--tmpfs=/tmp", "HOME=/tmp")
+ok(all(flag in _docker17 for flag in _harden17),
+   f"контейнер раннера без возможностей ядра, без повышения прав, образ только на чтение "
+   f"({[flag for flag in _harden17 if flag not in _docker17] or 'всё на месте'})")
+
+
+def _user17(rootless: bool, uid: int | None) -> list[str]:
+    """`--user` собранной команды при демоне rootless/с root и uid сервера `uid` (None — ОС без uid)."""
+    real_rootless, real_os = _Sup17.__dict__["_rootless"], _rsup17.os
+    _Sup17._rootless = staticmethod(lambda: rootless)
+    _rsup17.os = (_types.SimpleNamespace(getgid=lambda: 0) if uid is None else
+                  _types.SimpleNamespace(getuid=lambda: uid, getgid=lambda: uid))
+    try:
+        built = _Sup17(_reg, ROOT)._command("docker", _ws)
+    finally:
+        _Sup17._rootless, _rsup17.os = real_rootless, real_os
+    return built[built.index("--user"):built.index("--user") + 2] if "--user" in built else []
+
+
+_users17 = {case: _user17(*args) for case, args in {"демон с root, сервер 1000": (False, 1000),
+                                                    "rootless": (True, 1000), "сервер root": (False, 0),
+                                                    "ОС без uid": (False, None)}.items()}
+ok(_users17 == {"демон с root, сервер 1000": ["--user", "1000:1000"], "rootless": [],
+                "сервер root": ["--user", _rsup17.NOBODY], "ОС без uid": ["--user", _rsup17.NOBODY]},
+   f"пользователь контейнера по режиму демона: {_users17}")
+
+# Следствие на двери: файл, который процесс контейнера записал в смонтированную область, принадлежит пользователю сервера.
+# Из собранной команды сняты только приметы этой машины (имя, порт, устройства, тома кроме области); образ —
+# python:3.14-slim; пределы памяти и CPU — правило владельца для контейнеров (docker вне среза агентов).
+_docker_ok17 = bool(shutil.which("docker")) and _sp17.run(["docker", "info"], capture_output=True).returncode == 0
+if not hasattr(os, "getuid") or not _docker_ok17:
+    print("  ⚠ владелец файла из контейнера не судится: "
+          + ("в ОС нет uid" if not hasattr(os, "getuid") else "docker недоступен (нет демона или клиента)"))
+else:
+    _wsd17 = Path(tempfile.mkdtemp(prefix="runner_owner_")) / "workspace"
+    _wsd17.mkdir(parents=True)
+    _built17 = _Sup17(_reg, ROOT)._command("docker", _wsd17)
+    _keep17, _at17 = [], 0
+    while _at17 < len(_built17) - 1:
+        _arg17 = _built17[_at17]
+        if _arg17 in ("--name", "-p", "--device", "--group-add") or (
+                _arg17 == "-v" and not _built17[_at17 + 1].startswith(f"{_wsd17.resolve()}:")):
+            _at17 += 2
+            continue
+        _keep17.append(_arg17)
+        _at17 += 1
+    _inner17 = next(part.split(":", 1)[1] for part in _built17 if part.startswith(f"{_wsd17.resolve()}:"))
+    _ran17 = _sp17.run(_keep17[:2] + ["--memory", "512m", "--cpus", "1"] + _keep17[2:]
+                       + ["python:3.14-slim", "python", "-c", f"open('{_inner17}/owner.txt', 'w').write('x')"],
+                       capture_output=True, text=True)
+    _made17 = _wsd17 / "owner.txt"
+    _owner17 = _made17.stat().st_uid if _made17.exists() else None
+    ok(_ran17.returncode == 0 and _owner17 == os.getuid(),
+       f"файл, записанный раннером в область, принадлежит пользователю сервера (uid {os.getuid()}), а не root: "
+       f"владелец {_owner17} ({_ran17.stderr.strip()[-160:]})")
 
 # Стенд: свободный порт + КОПИЯ конфига в своём корне проекта; состояние и журнал — путями от этого корня, как их
 # разрешает супервизор. Боевой vendor/ не трогаем — иначе тест поднимал бы раннер поверх настоящего и стирал его запись.
@@ -3471,15 +3640,19 @@ def _stt_req(target_name, source, model="whisper-tiny", **params):
                         source=source, resource_type="transcriptions")
 
 
-for _case, _req, _code in (
-        ("исходника нет", _stt_req("a.json", None), "CONTENT_REJECTED"),
-        ("формат не объявлен", _stt_req("a.srt", _fake_audio), "CONTENT_REJECTED"),
-        ("весов нет", _stt_req("a.json", _fake_audio, model="нет-такой-модели"), "LOCAL_MODEL_MISSING")):
+# Обновлено 2026-10-18 (П2 плана текста места, решение 6a): исходника нет — ошибка ввода (поле input), формат из
+# столбца строки канала — BOOK_ROW_INVALID с полем и допустимым; прежний CONTENT_REJECTED говорил «модерация».
+for _case, _req, _code, _err in (
+        ("исходника нет", _stt_req("a.json", None), "VALIDATION_ERROR", {"field": "input", "rule": "required"}),
+        ("формат не объявлен", _stt_req("a.srt", _fake_audio), "BOOK_ROW_INVALID",
+         {"field": "response_format", "rule": "enum"}),
+        ("весов нет", _stt_req("a.json", _fake_audio, model="нет-такой-модели"), "LOCAL_MODEL_MISSING", None)):
     try:
         _stt.generate(_req)
         ok(False, f"транскрибация ({_case}) обязана отказать, а не молчать")
     except ProviderError as _e13:
-        ok(_e13.code == _code, f"транскрибация, {_case}: {_e13.code}")
+        ok(_e13.code == _code and (_err is None or any(_err.items() <= e.items() for e in _e13.errors)),
+           f"транскрибация, {_case}: {_e13.code} {_e13.errors}")
 
 # Проверка среды не должна опережать проверку запроса: на машине без ffmpeg все отказы
 # схлопывались в LOCAL_INFERENCE_FAILED, и клиент не узнавал ни про формат, ни про веса.
@@ -3488,7 +3661,7 @@ _was_path = os.environ.get("PATH", "")
 os.environ["PATH"] = str(_stt_dir / "пусто")
 try:
     for _case, _req, _code in (
-            ("формат", _stt_req("a.srt", _fake_audio), "CONTENT_REJECTED"),
+            ("формат", _stt_req("a.srt", _fake_audio), "BOOK_ROW_INVALID"),
             ("веса", _stt_req("a.json", _fake_audio, model="нет-такой-модели"), "LOCAL_MODEL_MISSING")):
         try:
             _stt.generate(_req)
@@ -3508,8 +3681,9 @@ ok(all(f".{_f}" in _allowed_ext for _f in _WRITERS),
 try:
     _stt.generate(_stt_req("a.srt", _fake_audio))
 except ProviderError as _e13f:
-    ok(all(_f in (_e13f.reason or "") for _f in _WRITERS),
-       f"отказ по формату называет поддержанные: {', '.join(sorted(_WRITERS))}")
+    # Обновлено 2026-10-18 (П2): поддержанные — в errors.expected отказа строки канала, а не в рецепте места.
+    ok(all(_f in str(_e13f.errors) for _f in _WRITERS),
+       f"отказ по формату называет поддержанные: {', '.join(sorted(_WRITERS))} ({_e13f.errors})")
 
 # Директива владельца 2026-08-20: транскрибация НЕ приезжает с зависимостями сервера.
 # Это инвариант, а не дисциплина: строка в base сломает тест, а не всплывёт на чужой машине.
@@ -4016,8 +4190,9 @@ def _model_fetch(work: Path, records: list[str]) -> None:
         ok(got == {"ok": True} and sent == ["POST"], f"успех с первой попытки — один запрос ({got}, {sent})")
         sent = replies((400, {}), (200, {}))
         got, code = call({"retry_count": 1})
-        ok(code == "PROVIDER_FAILED" and "ответ провайдера" in got.message and sent == ["POST"],
-           f"код вне объявленных к повтору — отказ сразу, причина — цитатой ответа ({code}, {sent})")
+        # Обновлено 2026-10-18 (П1): тело ответа — причиной в журнал (ProviderSaid), клиенту — хост и статус фактами.
+        ok(code == "PROVIDER_FAILED" and got.facts.get("status") == 400 and not got.message and sent == ["POST"],
+           f"код вне объявленных к повтору — отказ сразу, статус фактом ({code}, {code and got.facts}, {sent})")
         pauses.clear()
         sent = replies((503, {"Retry-After": "2"}), (200, {}))
         got, code = call({"retry_count": 1})
@@ -4115,7 +4290,8 @@ def _model_fetch(work: Path, records: list[str]) -> None:
        f"руками положенное по политике by_presence — пускается, ступень названа ({hand['checked']})")
     base = yaml.safe_load(cfg.read_text(encoding="utf-8"))
     for policy, code, what in (("refuse", "MODEL_UNVERIFIED", "политика refuse — отказ"),
-                               ("maybe", "SCHEMA_INVALID", "чужое значение — отказ декларации"),
+                               # Обновлено 2026-10-18 (П1): providers.yaml — дверь деклараций, не схема книги.
+                               ("maybe", "DECLARATION_INVALID", "чужое значение — отказ декларации"),
                                (None, "DECLARATION_INVALID", "ключа нет — отказ декларации, умолчания в коде нет")):
         variant = work / f"hand_{policy}" / "providers.yaml"
         variant.parent.mkdir()
@@ -4132,10 +4308,23 @@ def _model_fetch(work: Path, records: list[str]) -> None:
             return engine.refusal(e).error.message
         return ""
 
-    said = delivered(lambda: AdapterRegistry(work / "hand_maybe" / "providers.yaml", work).ready("руками.onnx"))
-    ok(all(v in said for v in AdapterRegistry.HAND_PLACED), f"клиент видит допустимые значения из таблицы ({said})")
-    said = delivered(lambda: reg.ready("short"))
-    ok("докачать model.onnx" in said and "pull short" in said, f"клиент видит план и команду для этой модели ({said})")
+    def told(call):
+        """Отказ целиком, как его видит клиент (ErrorDetail через Engine.refusal); не отказ — None."""
+        try:
+            call()
+        except ProviderError as e:
+            return engine.refusal(e).error
+        return None
+
+    # Обновлено 2026-10-18 (П1 плана текста места): допустимое — в errors.expected отказа двери, а не в тексте места;
+    # план и команда хоста — строка владельца у консоли, клиенту — модель фактом и рецепт реестра.
+    hand_said = told(lambda: AdapterRegistry(work / "hand_maybe" / "providers.yaml", work).ready("руками.onnx"))
+    ok(hand_said is not None and all(v in str(hand_said.errors) for v in AdapterRegistry.HAND_PLACED)
+       and "local.hand_placed (literal_error)" in hand_said.message,
+       f"клиент видит ключ, правило и допустимые значения ({hand_said and (hand_said.message, hand_said.errors)})")
+    short_said = told(lambda: reg.ready("short"))
+    ok(short_said is not None and short_said.facts.get("model") == "short" and "python" not in short_said.message,
+       f"клиент видит модель фактом, команды хоста в тексте нет ({short_said and (short_said.message, short_said.facts)})")
     said = delivered(lambda: reg.ready("нет-такой"))
     ok("'нет-такой'" in said and "(ожидались в нет-такой)" in said and str(models) not in said,
        f"клиент видит модель и где ждали веса — путь от корня весов, без места сервера ({said})")
@@ -4144,8 +4333,10 @@ def _model_fetch(work: Path, records: list[str]) -> None:
     said = delivered(lambda: OnnxImage(reg).session(models / "битый.onnx"))
     ok("'битый.onnx'" in said and "не поднимаются" in said and "ONNXRuntimeError" not in said and "protobuf" not in said.lower(),
        f"граф лежит, но не поднимается — MODEL_UNLOADABLE, сырой текст библиотеки клиенту не уходит ({said})")
-    said = delivered(lambda: AdapterRegistry(work / "hand_refuse" / "providers.yaml", work).ready("руками.onnx"))
-    ok("руками.onnx" in said and "by_presence" in said, f"клиент видит, как пустить руками положенное ({said})")
+    refuse_said = told(lambda: AdapterRegistry(work / "hand_refuse" / "providers.yaml", work).ready("руками.onnx"))
+    ok(refuse_said is not None and refuse_said.facts.get("model") == "руками.onnx" and "by_presence" not in refuse_said.message,
+       f"руками положенное при refuse — модель фактом; как пустить — строка владельца, не клиенту "
+       f"({refuse_said and (refuse_said.message, refuse_said.facts)})")
     from core.contracts import ContractError
     try:
         reg.ready("../../etc/passwd")
@@ -4751,6 +4942,28 @@ def _model_fetch(work: Path, records: list[str]) -> None:
     wire19t = _json.dumps(rows19t, ensure_ascii=False)
     ok(not any(t in wire19t for t in ("закрыто", "перегрузка", "сеть", "чужое", "Error", "huggingface.co")),
        f"текста исключения, имени класса и хоста в строке списка нет ({wire19t})")
+
+    print("== 19t-3. Сбой сети — в типах транспорта самого хаба (huggingface_hub 2.x ходит httpx2): тот же код ==")
+    import types as _types19
+    from huggingface_hub import utils as _hfu19
+
+    class Hx2Error(Exception):
+        pass
+
+    class Hx2Connect(Hx2Error):
+        pass
+
+    real_hx = _hfu19.httpx
+    _hfu19.httpx = _types19.SimpleNamespace(HTTPError=Hx2Error, ConnectError=Hx2Connect)
+    _hf19.HfApi = RevApi
+    raises["org/rev-net2"] = Hx2Connect("сеть")
+    try:
+        net2 = outcome(lambda: cat.revision("org/rev-net2"))
+    finally:
+        _hfu19.httpx, _hf19.HfApi = real_hx, real_api
+        del raises["org/rev-net2"]
+    ok(net2 == "MODEL_SOURCE_UNREACHABLE",
+       f"транспорт хаба — не тот httpx, что импортирован у нас: сбой его сети — MODEL_SOURCE_UNREACHABLE ({net2})")
 
     print("== 19u. Имя того же вида занято другим репозиторием — отказ до записи, первая модель не тронута ==")
     info["org/foo"] = repo(put("org/foo", "model.onnx", b"1" * 200))

@@ -715,8 +715,7 @@ class Unreached(str):
 
 def results(config_file: str | Path, **seams) -> Fetcher[ResultFetchPolicy]:
     """Загрузчик результатов поставщиков по `download.fetch` декларации задач; ссылки на файл (`url_fields`) — там же."""
-    decl = Declaration(config_file, TaskCycleError, "ожидания",
-                       "Заведи config/media_tasks.yaml — правила загрузки объявлены там.")
+    decl = Declaration(config_file, TaskCycleError, "ожидания")
     return Fetcher(decl.section(*RESULT_FETCH.section, schema=RESULT_FETCH.schema), slot=RESULT_FETCH, **seams)
 
 

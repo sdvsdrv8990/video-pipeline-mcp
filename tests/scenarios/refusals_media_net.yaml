@@ -23,8 +23,14 @@
       with: {table: сеть, resource_type: bg_removals, input: сеть/вход.png, scene_id: s1, video_slug: demo}
       expect: {ok: false, code: PROVIDER_FAILED, net_tasks: 1}
 
+# Обновлено 2026-10-18 (П1 плана текста места, решение 6a по прецеденту D25). Что: 401 провайдера (здесь — раннера)
+# теперь PROVIDER_KEY_REJECTED с фактами provider и status, прежде AUTH_FAILED. Почему: AUTH_FAILED — «ключ не совпал с
+# ключом сервера» с рецептом перевыпуска НАШЕГО ключа; две причины под одним кодом (EB-11). Ожидания по родам:
+# negative — этот сценарий (код провайдера, net_tasks 1, без повтора); positive — rcode_net_runner_answer_500 и
+# answer_not_json не тронуты (PROVIDER_FAILED); destructive — нет. Прогноз до замера: этот сценарий красный на старом
+# ожидании и зелёный на новом, остальные сценарии файла без изменений.
 - scenario: rcode_net_runner_answer_401
-  why: раннер не принял токен (401 без ErrorDetail) — отказ авторизации у провайдера своим кодом
+  why: раннер не принял токен (401 без ErrorDetail) — отказ ключа у провайдера своим кодом, а не AUTH_FAILED сервера
   род: отрицательный
   given:
     fixtures: [net_double]
@@ -42,7 +48,7 @@
       expect: {ok: true}
     - call: media_generate
       with: {table: сеть, resource_type: bg_removals, input: сеть/вход.png, scene_id: s1, video_slug: demo}
-      expect: {ok: false, code: AUTH_FAILED, net_tasks: 1}
+      expect: {ok: false, code: PROVIDER_KEY_REJECTED, net_tasks: 1}
 
 - scenario: rcode_net_runner_read_timeout
   why: раннер не ответил за срок вызова — отказ срока, а не повисший вызов

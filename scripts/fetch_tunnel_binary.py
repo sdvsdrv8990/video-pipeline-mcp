@@ -25,8 +25,7 @@ OWNER = "install"   # владелец остатка: повтор устано
 def fetch(config: Path, root: Path, system: str, machine: str, **seams) -> Path:
     """Скачать бинарь для `system`/`machine` (имена `platform`) в путь каталога от корня `root`; итог — путь
     исполняемого файла. `seams` — швы двери (транспорт, разрешение имён, сон): их подменяет тест."""
-    door = Declaration(config / TUNNEL_BINARY_FETCH.file, ContractError, "«tunnel_diagnostics»",
-                       "Заведи config/tunnel_diagnostics.yaml — по нему ставится и ищется бинарь туннеля.")
+    door = Declaration(config / TUNNEL_BINARY_FETCH.file, ContractError, "«tunnel_diagnostics»")
     plan = door.section(*TUNNEL_BINARY_FETCH.section, schema=TUNNEL_BINARY_FETCH.schema)
     target = door.need("бинари", plan.binary, "в_дереве", kind=str)
     named_system, named_arch = plan.systems.get(system), plan.arches.get(machine)

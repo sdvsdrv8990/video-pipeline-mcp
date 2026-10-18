@@ -293,25 +293,27 @@ class Files:
 
     def move(self, src: str | Path, dst: str | Path, *, secrets: bool = False, policy: WritePolicy | None = None) -> Path:
         """Перенести названное без затирания (FS-14): файл и ссылка — `os.link` (он не затирает) и снятие старого имени;
-        каталог — исключительно занять имя назначения пустым каталогом и встать на него `os.rename` (на Windows `os.rename`
-        сам не затирает). Назначение занято —
+        каталог — исключительно занять имя назначения пустым каталогом и встать на него `os.rename`. На Windows каталог и
+        ссылку переносит `os.rename`: он сам не затирает и переносит саму ссылку. Назначение занято —
         FILE_EXISTS, чужое не тронуто; корень и каталог внутрь самого себя — отказ ввода до первого действия. `policy` —
         у файла судится тип нового имени: перенос в `run.sh` не обходит список типов."""
         source, target = self.named(src, secrets=secrets), self.named(dst, secrets=secrets)
         if source == Path(self.root).resolve():
             raise ContractError("VALIDATION_ERROR", errors=[{"field": "source", "rule": "not_root"}])
-        directory = stat.S_ISDIR(self._mode_of(source, src))
+        mode = self._mode_of(source, src)
+        directory = stat.S_ISDIR(mode)
         if directory and source in target.parents:
             raise ContractError("VALIDATION_ERROR", errors=[{"field": "destination", "rule": "inside_source"}])
         if policy is not None and source.is_file():
             policy.admit(self.name(target))
         target.parent.mkdir(parents=True, exist_ok=True)
-        # На Windows rename не затирает занятое имя (FileExistsError), занимать его заранее нельзя: заглушку он не заменит.
-        held = directory and sys.platform != "win32"
+        # Windows: заглушку назначения rename не заменит, а ссылку на каталог жёсткой ссылкой не связать (она — каталог).
+        renamed = sys.platform == "win32" and (directory or stat.S_ISLNK(mode))
+        held = directory and not renamed
         try:
             if held:
                 os.mkdir(target)
-            elif directory:
+            elif renamed:
                 os.rename(source, target)
             else:
                 os.link(source, target, follow_symlinks=False)
@@ -327,7 +329,7 @@ class Files:
                 if isinstance(e, OSError):
                     raise PlaceUnwritable("перенос", **self.unread(src, e)) from e
                 raise
-        elif not directory:
+        elif not renamed:
             try:
                 os.unlink(source)
             except OSError as e:  # старое имя не снялось (на Windows его держат открытым): новое снимается — половины нет

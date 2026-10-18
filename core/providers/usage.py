@@ -23,9 +23,7 @@ class UsageLedger:
     def __init__(self, config_file: str | Path, state_manager):
         self.config_file = Path(config_file)
         self.state = state_manager
-        self._decl = Declaration(
-            config_file, ProviderError, "провайдеров",
-            "Заведи config/providers.yaml — как считать расход, объявлено там.")
+        self._decl = Declaration(config_file, ProviderError, "провайдеров")
 
     @property
     def config(self) -> dict:
@@ -49,12 +47,7 @@ class UsageLedger:
         unit = self.unit(row)
         how = str((cfg.get("units") or {}).get(unit, "")).strip()
         if how not in MEASURES:
-            raise ProviderError(
-                "USAGE_UNIT_UNKNOWN", f"Единица расхода '{unit}' не объявлена.",
-                reason=(f"Объяви её в config/providers.yaml → usage.units одним из способов "
-                        f"измерения: {', '.join(MEASURES)}. Неизвестная единица не считается нулём: "
-                        "иначе лимит не наступит никогда."),
-                suggested_tool="media_provider_status")
+            raise ProviderError("USAGE_UNIT_UNKNOWN", facts={"unit": unit})
         if how == "input_length":
             return float(len(text or ""))
         if how == "output_count":
@@ -66,21 +59,13 @@ class UsageLedger:
     def charge(self, table: str, sheet: str, row_id: str, amount: float) -> dict:
         """Прибавить расход строке провайдера. Возвращает «было → стало» для отчёта."""
         column = ((self.config.get("limits") or {}).get("usage_column")) or "current_usage"
-        if not row_id:
-            raise ProviderError(
-                "ROW_NOT_FOUND", "Строка провайдера пришла без идентификатора — расход некуда записать.",
-                reason="Строки берутся из снапшота книги канала; в декларации-дефолте их ещё нет. "
-                       "Заполни лист провайдеров в книге канала (structure_create создаёт его).",
-                suggested_tool="table_append")
+        if not row_id:                                  # строка из декларации-дефолта: в книге канала её ещё нет
+            raise ProviderError("ROW_NOT_FOUND", facts={"sheet": sheet})
         snapshot = self.state.read_snapshot(table)
         rows = ((snapshot or {}).get(sheet) or {}).get("rows") or {}
         row = rows.get(row_id)
         if row is None:
-            raise ProviderError(
-                "ROW_NOT_FOUND", f"Строка '{row_id}' листа '{sheet}' не найдена — расход некуда записать.",
-                reason="Строку могли удалить между выбором провайдера и записью расхода. "
-                       "Проверь лист провайдеров книги канала.",
-                suggested_tool="table_find_row")
+            raise ProviderError("ROW_NOT_FOUND", facts={"sheet": sheet, "row": row_id})
         before = row.get(column) or 0
         before = float(before) if isinstance(before, (int, float)) else 0.0
         after = before + float(amount)

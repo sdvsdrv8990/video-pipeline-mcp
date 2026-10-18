@@ -11,7 +11,7 @@ from typing import Callable
 
 from pydantic import ValidationError
 
-from core.declaration import Declaration
+from core.declaration import Declaration, schema_errors
 from core.engine.table_materializer import declared_rows
 from core.providers.ffmpeg import AudioTrack, Layer, RenderProfile, SceneSpec
 
@@ -25,9 +25,7 @@ class SceneBook:
         self.state = state_manager
         self.config_path = Path(config_path)
         self._resolve = resolve
-        self._decl = Declaration(
-            self.config_path / "montage.yaml", MontageError, "монтажа",
-            "Заведи config/montage.yaml — откуда читать сцену и куда писать рендер, объявлено там.")
+        self._decl = Declaration(self.config_path / "montage.yaml", MontageError, "монтажа")
 
     @property
     def config(self) -> dict:
@@ -63,37 +61,28 @@ class SceneBook:
         rows, source, owner = self._upward(table, spec["sheet"])
         if not rows:
             rows, source, owner = self._named_rows("profile"), "declaration", ""
-        if not rows:
-            raise MontageError(
-                "RENDER_PROFILE_INVALID", "Профилей рендера нет ни в книге канала, ни в декларации.",
-                reason=f"Заполни лист {spec['sheet']} книги канала: без профиля неизвестно, чем кодировать.",
-                suggested_tool="table_append")
+        if not rows:                            # профилей нет ни у канала, ни в декларации
+            raise MontageError("ROW_NOT_FOUND", facts={"sheet": spec["sheet"]})
         wanted = profile_id or self._selected(table, spec)
         by_id = {str(row.get(spec["id_column"])): row for row in rows}
+        allowed = ", ".join(sorted(by_id))
         if not wanted:
             if len(by_id) == 1:
                 wanted = next(iter(by_id))
-            else:
-                raise MontageError(
-                    "RENDER_PROFILE_INVALID", "Видео не выбрало профиль рендера.",
-                    reason=f"Профилей объявлено {len(by_id)}: {', '.join(sorted(by_id))}. Проставь "
-                           f"{spec['selector_sheet']}.{spec['selector_column']} или назови профиль в вызове.",
-                    suggested_tool="table_set")
+            else:                               # профилей несколько, а видео не выбрало
+                raise MontageError("RENDER_PROFILE_INVALID", facts={
+                    "sheet": spec["selector_sheet"], "column": spec["selector_column"], "allowed": allowed})
         if wanted not in by_id:
-            raise MontageError(
-                "RENDER_PROFILE_INVALID", f"Профиль `{wanted}` не найден.",
-                reason=f"Есть: {', '.join(sorted(by_id))}. Ссылка ведёт в лист {spec['sheet']}.",
-                suggested_tool="table_find_row")
+            raise MontageError("RENDER_PROFILE_INVALID", facts={
+                "sheet": spec["sheet"], "column": spec["id_column"], "allowed": allowed})
         row = {k: v for k, v in by_id[wanted].items() if v not in (None, "")}
         values = {k: v for k, v in row.items() if k in set(RenderProfile.model_fields)}
         values["profile_id"] = wanted           # имя столбца может отличаться от имени поля
         try:
             profile = RenderProfile(**values)
-        except ValidationError as exc:
-            raise MontageError(
-                "RENDER_PROFILE_INVALID", f"Строка профиля `{wanted}` не годится для рендера: {_rejected(exc)}",
-                reason="Значения профиля едут в команду кодирования — почини строку в книге канала.",
-                suggested_tool="table_set") from exc
+        except ValidationError as exc:          # строка не прошла модель (значение вне перечня — RENDER_PROFILE_INVALID)
+            raise MontageError("BOOK_ROW_INVALID", facts={"sheet": spec["sheet"], "row": wanted},
+                               errors=schema_errors(exc)) from None
         return profile, {"profile_id": wanted, "profile_source": source, "profile_owner": owner}
 
     def _selected(self, table: str, spec: dict) -> str:
@@ -157,26 +146,23 @@ class SceneBook:
         return {str(row.get(spec["id_column"])): row for row in self._rig_rows(table, "variants")
                 if row.get(spec["id_column"])}
 
-    def _variant(self, catalogue: dict, variant_id: str, row_id: str) -> dict:
+    def _variant(self, catalogue: dict, variant_id: str, slot_id: str, sheet: str, row_id: str) -> dict:
+        """Вариант строки сцены; ссылка мимо каталога — отказ строки с выбором из вариантов того же слота."""
         if variant_id not in catalogue:
-            raise MontageError(
-                "RENDER_INPUT_UNPREPARED", f"Вариант `{variant_id}` (строка {row_id}) не объявлен в каталоге.",
-                reason=f"Доступные берутся из листа вариантов канала: {', '.join(sorted(catalogue)) or 'пусто'}. "
-                       "Нет нужного — сгенерируй ассет и заведи строкой.",
-                suggested_tool="table_append")
+            rig = self.config["rig"]["variants"]
+            same = sorted(vid for vid, v in catalogue.items() if str(v.get(rig["slot_column"]) or "") == slot_id)
+            raise MontageError("BOOK_ROW_INVALID", facts={"sheet": sheet, "row": row_id}, errors=[
+                {"field": rig["id_column"], "rule": "enum", "expected": same}])
         return catalogue[variant_id]
 
-    def _fits(self, size: tuple, bounds: tuple, child: str, parent: str) -> None:
+    def _fits(self, size: tuple, bounds: tuple, variant: str, parent: str) -> None:
         """Рамка родителя: вариант больше неё не примеряется. Это «эмоция не уплывёт за голову»."""
         width, height = size
         limit_w, limit_h = bounds
         if (limit_w and width and width > limit_w) or (limit_h and height and height > limit_h):
-            raise MontageError(
-                "VARIANT_INCOMPATIBLE", f"Вариант слота `{child}` не влезает в рамку слота `{parent}`: "
-                f"{width}x{height} против {limit_w}x{limit_h}.",
-                reason="Рамка объявлена в листе слотов канала. Возьми вариант по размеру или "
-                       "поправь рамку, если она занижена.",
-                suggested_tool="table_find_row")
+            raise MontageError("VARIANT_INCOMPATIBLE", facts={
+                "variant": variant, "slot": parent, "rule": "bounds",
+                "expected": f"{limit_w}x{limit_h}", "got": f"{width}x{height}"})
 
     def _compatible(self, child: dict, parents: list[dict], key_column: str,
                     child_id: str, parent_slot: str) -> None:
@@ -185,12 +171,9 @@ class SceneBook:
         parent_keys = {str(row.get(key_column) or "") for row in parents}
         if not key or not parent_keys or "" in parent_keys or key in parent_keys:
             return
-        raise MontageError(
-            "VARIANT_INCOMPATIBLE", f"Вариант `{child_id}` не сочетается со слотом `{parent_slot}`: "
-            f"ключ `{key}` против `{', '.join(sorted(parent_keys))}`.",
-            reason="Совпадение ключа оси — условие сочетаемости (обычно это ракурс). Возьми вариант "
-                   "с тем же ключом или сгенерируй недостающий.",
-            suggested_tool="table_find_row")
+        raise MontageError("VARIANT_INCOMPATIBLE", facts={
+            "variant": child_id, "slot": parent_slot, "rule": key_column,
+            "expected": ", ".join(sorted(parent_keys)), "got": key})
 
     def _values(self, row: dict, fields: list[str]) -> dict:
         """Объявленные поля строки без пустых: пустая ячейка означает «не задано», а не ноль."""
@@ -222,20 +205,17 @@ class SceneBook:
             slot = slots.get(slot_id) or {}
             parent_slot = str(slot.get("parent_slot") or "")
             if variant_id := str(row.get(variant_column) or ""):
-                variant = self._variant(catalogue, variant_id, row_id)
+                variant = self._variant(catalogue, variant_id, slot_id, el_cfg["sheet"], row_id)
                 asset = asset or variant.get(rig["fields"][1]) or ""
                 if parent_slot:
                     self._fits((variant.get("width"), variant.get("height")),
                                (slots.get(parent_slot, {}).get("bounds_w"),
-                                slots.get(parent_slot, {}).get("bounds_h")), slot_id, parent_slot)
+                                slots.get(parent_slot, {}).get("bounds_h")), variant_id, parent_slot)
                     self._compatible(variant, by_slot.get(parent_slot, []), rig["key_column"],
                                      variant_id, parent_slot)
-            if not asset:
-                raise MontageError(
-                    "SCENE_EMPTY", f"У элемента {row_id} сцены {scene_id} не заполнен ассет.",
-                    reason=f"Столбец {el_cfg['sheet']}.asset_path — это то, что кладётся в кадр; "
-                           f"либо сошлись на вариант каталога, у которого файл уже есть.",
-                    suggested_tool="table_set")
+            if not asset:                       # ни ассета в строке, ни файла у варианта
+                raise MontageError("BOOK_ROW_INVALID", facts={"sheet": el_cfg["sheet"], "row": row_id},
+                                   errors=[{"field": "asset_path", "rule": "required"}])
             role = str(row.get(el_cfg["role_column"]) or "")
             # Слот объявляет, ГДЕ он крепится к родителю; строка сдвигает от этой точки.
             if slot:
@@ -248,11 +228,7 @@ class SceneBook:
                         "slot": slot_id, "parent_slot": parent_slot,
                         "fit_canvas": fills.get(role, False)}, row_id, el_cfg["sheet"]))
         if not layers:
-            raise MontageError(
-                "SCENE_EMPTY", f"В сцене {scene_id} нет ни одного элемента.",
-                reason=f"Рендерить нечего. Разложи фрагменты по листу {el_cfg['sheet']} "
-                       f"(столбец {el_cfg['scene_column']} = {scene_id}).",
-                suggested_tool="table_append")
+            raise MontageError("SCENE_EMPTY", facts={"scene_id": scene_id, "sheet": el_cfg["sheet"]})
         audio = []
         for row_id, row in self._scene_rows(table, au_cfg, scene_id):
             values = self._values(row, au_cfg["fields"])
@@ -272,13 +248,5 @@ class SceneBook:
         try:
             return model(**values)
         except ValidationError as exc:
-            raise MontageError(
-                "VALIDATION_ERROR", f"Строка {row_id} листа {sheet} не годится для рендера: {_rejected(exc)}",
-                reason="Значение едет в команду сборки — почини ячейку в книге.",
-                suggested_tool="table_set") from exc
-
-
-def _rejected(exc: ValidationError) -> str:
-    """Что не так со строкой книги — поля и правила модели, без значений ячеек: значения — данные канала."""
-    return "; ".join(f"{'.'.join(map(str, e['loc'])) or 'строка'} — {e['msg']}"
-                     for e in exc.errors(include_url=False, include_input=False))
+            raise MontageError("BOOK_ROW_INVALID", facts={"sheet": sheet, "row": row_id},
+                               errors=schema_errors(exc)) from None

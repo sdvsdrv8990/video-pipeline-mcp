@@ -288,7 +288,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         if outcome.task_id:
             if not callable(getattr(adapter, "poll", None)):
                 # Задача без прозвонки — молчание вместо причины отказа; это отказ, а не «успех».
-                raise ContractError("PROVIDER_ADAPTER_MISSING", facts={"provider": decision["provider"], "missing": "poll"})
+                raise ContractError("PROVIDER_ADAPTER_BROKEN", facts={"provider": decision["provider"]}) from TypeError(
+                    f"исполнитель {type(adapter).__name__} вернул задачу без прозвонки poll")
             # Прозвонка нужна не «дождаться», а поймать причину отказа.
             ok, polled = ctx.safe(lambda: _keyless(lambda: cycle.wait(adapter.poll, outcome.task_id), api_key))
             if not ok:
@@ -399,30 +400,20 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         elif scope == "online":
             rows = online.available(kind or "image", limit=limit)
             if provider and table:
-                # Ключ берётся из закрытого файла канала и уходит только на объявленный адрес.
-                ok, key = ctx.safe(lambda: _key_for(table, provider))
-                if not ok:
-                    # Ключ нечитаем (чужой инстанс) — это причина рядом со списком, а не отказ
-                    # всего вызова: реестр шлюза остаётся доступен и без ключа.
-                    live_error = {"code": key.error.code if key.error else "INTERNAL_ERROR",
-                                  "message": key.error.message if key.error else ""}
-                    key = ""
-                if not ok:
-                    pass
-                elif not key:
-                    live_error = {"code": "PROVIDER_KEY_MISSING", "message": (
-                        f"Ключа '{provider}' для этого канала нет — спросить его список нечем. "
-                        "Ниже то, что знает реестр шлюза на день своей сборки.")}
+                # Ключ берётся из закрытого файла канала и уходит только на объявленный адрес. Ключ нечитаем (чужой
+                # инстанс), его нет или список не дался — причина рядом со списком реестра, а не отказ всего вызова.
+                ok, got = ctx.safe(lambda: _key_for(table, provider))
+                if ok:
+                    key = got
+                    ok, got = ctx.safe(lambda: _keyless(lambda: online.merge(online.live(provider, key, kind), kind),
+                                                        key))
+                if ok:
+                    rows, source = got[:limit] if limit else got, "provider"
                 else:
-                    ok, fresh = ctx.safe(lambda: _keyless(lambda: online.merge(online.live(provider, key, kind),
-                                                                               kind), key))
-                    if ok:
-                        rows, source = fresh[:limit] if limit else fresh, "provider"
-                    else:
-                        # Частичный результат помечаем: список из реестра остаётся, но он старее.
-                        hidden = fresh.error
-                        live_error = {"code": hidden.code if hidden else "INTERNAL_ERROR",
-                                      "message": hidden.message if hidden else ""}
+                    hidden = got.error
+                    live_error = {"code": hidden.code, "message": hidden.message,
+                                  **({"facts": dict(hidden.facts)} if hidden.facts else {})} if hidden else {
+                        "code": "INTERNAL_ERROR", "message": ""}
         else:
             # Описание тянется всегда: выбирать модель по размеру и числу загрузок — вслепую.
             ok, rows = ctx.safe(lambda: catalog.available(kind or "tts", limit=limit, describe=True))

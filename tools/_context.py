@@ -37,9 +37,7 @@ ANNOTATIONS_DESTRUCTIVE = {"readOnlyHint": False, "destructiveHint": True, "idem
 def _firewall(config_path: Path) -> Declaration:
     """Дверь к `config/firewall.yaml`. Одна на всех читателей: своя загрузка у каждого дала
     пять разных политик на один отказ, и две из них молча ослабляли защиту."""
-    return Declaration(
-        config_path / "firewall.yaml", ContractError, "правил файрвола",
-        "Заведи config/firewall.yaml — закрытые каталоги и паттерны инъекций объявлены там.")
+    return Declaration(config_path / "firewall.yaml", ContractError, "правил файрвола")
 
 
 @dataclass

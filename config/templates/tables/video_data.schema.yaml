@@ -5,8 +5,10 @@ level: video
 source: video_data.schema.md
 sheets:
   - name: META   # метаданные видео
+    record: true   # одна строка — видео; формулы других листов зовут её столбцы как `META.столбец`
     columns:
       - { name: video_id, type: string, flag: id }   # генерится сервером
+      - { name: video_n, type: integer, flag: F }   # номер видео среди видео канала — контекст цепочки ID, заполняет сервер
       - { name: title, type: string, flag: W }   # макс 100
       - { name: url, type: string, flag: W }   # пусто до публикации
       - { name: channel_id, type: string, flag: fk }   # Read-Only
@@ -29,11 +31,11 @@ sheets:
       - { name: shares, type: integer, flag: W }   # импорт YouTube API
       - { name: ctr_percent, type: float, flag: W }
       - { name: avg_watch_sec, type: float, flag: W }
-      - { name: retention_percent, type: float, flag: F, formula: '=avg_watch_sec/duration_sec*100' }   # `=avg_watch_sec/duration_sec*100`
-      - { name: like_rate, type: float, flag: F, formula: '=likes/views*100' }   # `=likes/views*100`
-      - { name: comment_rate, type: float, flag: F, formula: '=comments/views*100' }   # `=comments/views*100`
-      - { name: engagement_rate, type: float, flag: F, formula: '=(likes+comments+shares)/views*100' }   # `=(likes+comments+shares)/views*100` — снимок вовлечённости
-      - { name: performance_score, type: float, flag: F, formula: '=like_rate*0.4+comment_rate*0.3+(retention/100)*0.3' }   # `=like_rate*0.4+comment_rate*0.3+(retention/100)*0.3`
+      - { name: retention_percent, type: float, flag: F, formula: '=avg_watch_sec/META.duration_sec*100' }
+      - { name: like_rate, type: float, flag: F, formula: '=likes/views*100' }
+      - { name: comment_rate, type: float, flag: F, formula: '=comments/views*100' }
+      - { name: engagement_rate, type: float, flag: F, formula: '=(likes+comments+shares)/views*100' }   # снимок вовлечённости
+      - { name: performance_score, type: float, flag: F, formula: '=like_rate*0.4+comment_rate*0.3+(retention_percent/100)*0.3' }
       - { name: prediction_accuracy, type: enum, flag: F, enum: ['ACCURATE', 'CLOSE', 'MISS', 'PENDING'] }   # ACCURATE/CLOSE/MISS/PENDING (формула по status)
       - { name: video_url, type: string, flag: F }   # ЗЕРКАЛО `META.url` — чтобы видно было, к чему метрики
       - { name: thumbnail_url, type: string, flag: F }   # ЗЕРКАЛО текущей обложки (`THUMBNAILS`, у которой пуст `applied_to`)
@@ -43,11 +45,11 @@ sheets:
       - { name: scene_id, type: string, flag: id }   # генерится сервером (S01…)
       - { name: timestamp_start, type: string, flag: F }   # MM:SS, из транскрибации после озвучки
       - { name: timestamp_end, type: string, flag: F }   # MM:SS, из транскрибации после озвучки
-      - { name: duration_sec, type: integer, flag: F, formula: '=end-start' }   # `=end-start`
+      - { name: duration_sec, type: integer, flag: F, formula: '=SECONDS(timestamp_end)-SECONDS(timestamp_start)' }
       - { name: act_number, type: integer, flag: W }   # 1–7
       - { name: text, type: string, flag: F }   # дословно
-      - { name: word_count, type: integer, flag: F, formula: '=COUNTWORDS(text)' }   # `=COUNTWORDS(text)`
-      - { name: pace_wpm, type: float, flag: F, formula: '=word_count/(duration_sec/60)' }   # `=word_count/(duration_sec/60)`
+      - { name: word_count, type: integer, flag: F, formula: '=COUNTWORDS(text)' }
+      - { name: pace_wpm, type: float, flag: F, formula: '=word_count/(duration_sec/60)' }
       - { name: energy_level, type: integer, flag: W }   # 1–5
       - { name: notes, type: string, flag: W }
 
@@ -74,7 +76,7 @@ sheets:
       - { name: scene_id(s), type: string, flag: W }   # список сцен (S01,S03…)
       - { name: usage_count_in_video, type: integer, flag: W }   # сколько раз в этом видео
       - { name: last_used_video_n, type: integer, flag: W }
-      - { name: videos_since_last_use, type: integer, flag: F, formula: '=current_video_n - last_used_video_n' }   # `=current_video_n - last_used_video_n`
+      - { name: videos_since_last_use, type: integer, flag: F, formula: '=META.video_n - last_used_video_n' }
       - { name: uniqueness_score, type: float, flag: F }   # строгая для svg, мягкая для music/sound/transition; 0 ассетов = валидно
 
   - name: UNIQUENESS   # итог уникальности видео (🆕 секция сцен убрана)
@@ -314,5 +316,5 @@ sheets:
       - { name: metric_name, type: string, flag: F }
       - { name: value_this_video, type: string, flag: F }
       - { name: value_channel_avg, type: string, flag: F }   # подтягивается из channel_data
-      - { name: delta_or_status, type: string, flag: F, formula: '=this-avg' }   # `=this-avg` или OK/SHORT/LONG/HIGH/MED/LOW
+      - { name: delta_or_status, type: string, flag: F, formula: '=value_this_video-value_channel_avg' }   # не числа — запасное значение
       - { name: ai_action_flag, type: string, flag: F }   # ⚠️ Rotation needed / Review ACT_3

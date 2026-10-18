@@ -49,9 +49,7 @@ class TemplateEngine:
         """Загрузка тела шаблона по типу (с кэшем). Верхний ключ yaml == тип."""
         if node_type in self._cache:
             return self._cache[node_type]
-        p = self.tpl_dir / f"{node_type}.tpl.yaml"
-        if not p.exists():  # типы таксономии — те же файлы шаблонов: файла нет — тип назван неизвестный
-            raise TemplateError("TEMPLATE_NOT_FOUND", facts={"template": node_type, "known": self.taxonomy.node_types})
+        p = self.taxonomy.file(node_type)       # тип вне таксономии — TEMPLATE_NOT_FOUND с известными
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
         body = data.get(node_type)
         if not isinstance(body, dict):

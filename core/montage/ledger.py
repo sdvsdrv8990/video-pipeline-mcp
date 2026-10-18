@@ -22,10 +22,7 @@ def append_rows(state, table: str, sheet: str, rows: list[dict], ids, prefix: st
     """
     snapshot = state.read_snapshot(table)
     if snapshot is None:
-        raise MontageError(
-            "TABLE_NOT_FOUND", f"Данных проекта нет: {table}",
-            reason="Писать некуда. Создай структуру проекта.",
-            suggested_tool="fs_create_project_structure")
+        raise MontageError("TABLE_NOT_FOUND", facts={"table": table})
     sheet_obj = snapshot.setdefault(sheet, {"schema": {}, "rows": {}})
     written = []
     for row in rows:
@@ -43,9 +40,7 @@ class RenderLedger:
         self.state = state_manager
         self.config_path = Path(config_path)
         self.ids = id_generator
-        self._decl = Declaration(
-            self.config_path / "montage.yaml", MontageError, "монтажа",
-            "Заведи config/montage.yaml — какие столбцы заполняет рендер, объявлено там.")
+        self._decl = Declaration(self.config_path / "montage.yaml", MontageError, "монтажа")
 
     @property
     def config(self) -> dict:
@@ -54,13 +49,8 @@ class RenderLedger:
     def record(self, table: str, values: dict) -> dict:
         """Новая строка результата. Возвращает ID строки и то, что в неё легло."""
         spec = self.config["target"]
-        columns = spec["columns"]
-        unknown = set(values) - set(columns)
-        if unknown:
-            raise MontageError(
-                "SCHEMA_INVALID", f"Рендер пытается записать необъявленное: {', '.join(sorted(unknown))}",
-                reason="Столбцы результата перечислены в config/montage.yaml → target.columns.")
-        row = {columns[key]: value for key, value in values.items()}
+        # Столбец результата, которого montage.yaml не объявляет, — отказ двери с путём ключа target.columns.<поле>.
+        row = {self._decl.need("target", "columns", key, kind=str): value for key, value in values.items()}
         self._check_enums(table, spec["sheet"], row)
         row_id = append_rows(self.state, table, spec["sheet"], [row], self.ids, spec["id_prefix"])[0]
         return {"row_id": row_id, "sheet": spec["sheet"], "row": row}
@@ -71,7 +61,5 @@ class RenderLedger:
         for column in named_sheet(self.config_path, self._decl, "target", book="book").columns:
             value = row.get(column.name)
             if column.enum and value is not None and value not in column.enum:
-                raise MontageError(
-                    "ENUM_VIOLATION", f"{sheet}.{column.name}: `{value}` не из объявленных значений.",
-                    reason=f"Допустимо: {', '.join(column.enum)}. Значение приходит из "
-                           f"config/montage.yaml → target.")
+                raise MontageError("ENUM_VIOLATION", facts={
+                    "column": column.name, "sheet": sheet, "allowed": ", ".join(column.enum)})

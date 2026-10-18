@@ -48,8 +48,7 @@ class Reactions:
         Args:
             config_path: Путь к server_reactions.yaml
         """
-        door = Declared(config_path, ContractError, "реакций сервера",
-                        "Заведи config/server_reactions.yaml — коды отказов и рецепты объявлены там.", ServerReactions)
+        door = Declared(config_path, ContractError, "реакций сервера", schema=ServerReactions)
         door.model                              # строка реестра — по схеме: битая — DECLARATION_INVALID с путём ключа
         self.reactions = door.data
 

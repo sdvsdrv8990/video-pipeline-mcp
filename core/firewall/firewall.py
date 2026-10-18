@@ -180,5 +180,5 @@ class Firewall:
 def _declaration(path: Path) -> tuple[dict, RateLimit]:
     """Декларация файрвола через дверь: разделы правил — данными файла, раздел лимита — своей схемой (нет ключа, не тот
     тип — DECLARATION_INVALID с путём ключа, без значений)."""
-    door = Declaration(path, ContractError, "«firewall»", f"Заведи config/{path.name} — по нему сервер судит входящие.")
+    door = Declaration(path, ContractError, "«firewall»")
     return door.data, door.section(*RATE_LIMIT.section, schema=RATE_LIMIT.schema)

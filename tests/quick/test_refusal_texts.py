@@ -12,17 +12,24 @@ import sys
 import tempfile
 from pathlib import Path
 
+import httpx
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from core.contracts import ContractError
 from core.declaration import Declaration
 from core.ids.taxonomy import Taxonomy
-from core.providers.catalog import ModelCatalog
+from core.providers.adapters import AdapterRegistry, MediaRequest
+from core.providers.catalog import ModelCatalog, OnlineCatalog, provider_refusal
+from core.providers.img.diffusers_local import DiffusersLocalIMG
+from core.providers.task_cycle import TaskCycle
 from core.reactions import Reactions
 from core.reactions.reactions import cli_text
+from core.runner.supervisor import RunnerSupervisor
 from core.transport.transport import answer
 from tests.harness.inprocess import create_server
+from tests.harness.live_server import declarations_copy
 
 _checks = 0
 _fails: list[str] = []
@@ -60,6 +67,8 @@ def listed(errors: list[dict], want: dict) -> bool:
 
 
 call("fs_create_file", path="есть/план.md", content="# план")
+call("excel_create_workbook", path="книга.xlsx", sheet="Лист1")
+call("excel_add_column", path="книга.xlsx", sheet="Лист1", column="A")
 # (род, инструмент, параметры, код, факты ⊂, в тексте, в рецепте, не в рецепте, errors ⊃)
 CASES = [
     ("файла нет — путь от корня и куда смотреть", "fs_read_file", {"path": "нет/файла.md"}, "FILE_NOT_FOUND",
@@ -77,8 +86,10 @@ CASES = [
      ["установка модели", "org/модель"], ["confirm=true"], ["force", "fs_delete"], []),
     ("таблицы нет — имя в тексте", "json_read_snapshot", {"table": "нет_таблицы"}, "TABLE_NOT_FOUND",
      {"table": "нет_таблицы"}, ["нет_таблицы"], [], [], []),
-    ("шаблона нет — имя клиента, без адреса конфигурации", "fs_create_project_structure", {"template": "нет_шаблона"},
-     "TEMPLATE_NOT_FOUND", {"template": "нет_шаблона"}, ["нет_шаблона"], ["Проверь имя"], ["config/", "владельцу"], []),
+    # Обновлено 2026-10-18 (дыра R3 №1, слово 6a): параметр template снят — имя от ИИ уходило в путь config; мёртв с
+    # рождения (ни один объявленный шаблон не несёт fragments). Прогноз: дверь движка называет поле, файл не читается.
+    ("шаблон — не параметр инструмента: поле названо дверью", "fs_create_project_structure", {"template": "../чужой"},
+     "VALIDATION_ERROR", {}, ["errors"], [], [], [{"field": "template", "rule": "unexpected"}]),
     ("фрагментов нет", "fs_create_project_structure", {"fragments": []}, "NO_FRAGMENTS", {}, [], [], [], []),
     ("режим вне списка — поле и допустимое", "structure_create", {"type": "niche", "name": "x", "mode": "нет_режима"},
      "VALIDATION_ERROR", {}, ["errors"], [], [], [{"field": "mode", "rule": "enum"}]),
@@ -88,6 +99,19 @@ CASES = [
      [], [{"field": "yaml_query", "rule": "yaml"}]),
     ("ни запроса, ни словаря", "search_tables", {}, "VALIDATION_ERROR", {}, [], [], [],
      [{"field": "yaml_query", "rule": "required"}]),
+    # Семейство «таблицы и книги»: отказ рождается узлом хранилища (_book, _sheet, _vacant, _column), имена — фактами.
+    ("книги нет — путь клиента", "excel_add_sheet", {"path": "нет.xlsx", "sheet": "X"}, "WORKBOOK_NOT_FOUND",
+     {"path": "нет.xlsx"}, ["нет.xlsx"], ["excel_create_workbook"], [], []),
+    ("листа нет — имя и листы, что есть", "excel_delete_sheet", {"path": "книга.xlsx", "sheet": "Нет"}, "SHEET_NOT_FOUND",
+     {"sheet": "Нет", "known": "Лист1"}, ["Нет", "Лист1"], [], [], []),
+    ("лист уже есть", "excel_add_sheet", {"path": "книга.xlsx", "sheet": "Лист1"}, "SHEET_EXISTS",
+     {"sheet": "Лист1"}, ["Лист1"], [], [], []),
+    ("столбца нет — имя и лист", "excel_delete_column", {"path": "книга.xlsx", "sheet": "Лист1", "column": "Нет"},
+     "COLUMN_NOT_FOUND", {"column": "Нет", "sheet": "Лист1"}, ["«Нет»", "«Лист1»"], [], [], []),
+    ("столбец уже есть", "excel_add_column", {"path": "книга.xlsx", "sheet": "Лист1", "column": "A"}, "COLUMN_EXISTS",
+     {"column": "A", "sheet": "Лист1"}, ["«A»", "«Лист1»"], [], [], []),
+    ("порядок листов — не все листы книги", "excel_reorder_sheets", {"path": "книга.xlsx", "order": ["Нет"]},
+     "VALIDATION_ERROR", {}, [], [], [], [{"field": "order", "rule": "all_sheets"}]),
 ]
 
 print("== 1. Причина у места — следствие на двери: код, факты, текст и рецепт своей причины ==")
@@ -128,7 +152,7 @@ check("неизвестный тип узла — TEMPLATE_NOT_FOUND: имя к�
       and isinstance(typed.facts.get("known"), list) and "niche" in typed.facts["known"]
       and "владельцу" not in typed.recovery.reason, typed and (typed.code, typed.message, typed.facts))
 try:
-    Declaration(Path(tempfile.mkdtemp()) / "engines.yaml", ContractError, "движков сервера", "").data
+    Declaration(Path(tempfile.mkdtemp()) / "engines.yaml", ContractError, "движков сервера").data
     missing = None
 except ContractError as e:
     missing = engine.refusal(e).error
@@ -179,6 +203,126 @@ for code, entry in registry.reactions.items():
 check(f"строка владельца ни в одном ответе провода — {owners} кодов с owner", owners > 0 and not leaked, leaked)
 check("консоль печатает строку владельца третьей строкой с фактами отказа, у кодов без неё — две строки",
       not unprinted, unprinted[:3])
+
+print("== 5. Провайдеры (П1 плана текста места): у причины свой код, текст — реестра, устройство — в журнал ==")
+CFG = ROOT / "config" / "providers.yaml"
+SPOILED = declarations_copy({"providers.yaml": {
+    "adapters.by_provider.Сломан": "нет_модуля:Класс", "adapters.by_provider.Наружу": "os:system",
+    "local.runner.provider": "Нет_раннера", "local.hand_placed": "maybe", "local.sources.tts.kind": "нет_вида"}}) \
+    / "providers.yaml"
+REFUSING = declarations_copy({"providers.yaml": {"local.hand_placed": "refuse"}}) / "providers.yaml"
+project = Path(tempfile.mkdtemp(prefix="refusal-project-"))
+(project / "vendor" / "models").mkdir(parents=True)
+(project / "vendor" / "models" / "руками.onnx").write_bytes(b"r")
+BIG = project / "big.png"
+BIG.write_bytes(b"\x89PNG" + b"0" * 299_996)                 # 0.3 МБ — больше предела встроенной отправки 0.1 МБ
+asked = httpx.Request("GET", "https://api.example/v1/models")
+
+
+def raised(error: Exception):
+    raise error
+
+
+def gateway_missing():
+    """Шлюз litellm не импортируется: None в sys.modules — ImportError на import."""
+    held = sys.modules.get("litellm")
+    sys.modules["litellm"] = None  # type: ignore[assignment]
+    try:
+        OnlineCatalog(CFG).available("image")
+    finally:
+        if held is None:
+            sys.modules.pop("litellm", None)
+        else:
+            sys.modules["litellm"] = held
+
+
+# (род, вызов места, код, факты ⊂, в тексте, номер события, чего нет в проводе)
+PROVIDER_CASES = [
+    ("в строке канала провайдер без исполнителя", lambda: AdapterRegistry(CFG, project).spec("Нет_провайдера"),
+     "PROVIDER_ADAPTER_MISSING", {"provider": "Нет_провайдера"}, ["Нет_провайдера"], False, ["config/", "адаптер"]),
+    ("модуль исполнителя не импортируется", lambda: AdapterRegistry(SPOILED, project).load("Сломан"),
+     "PROVIDER_ADAPTER_BROKEN", {"provider": "Сломан"}, ["Сломан"], True, ["нет_модуля", "No module"]),
+    ("путь исполнителя ищется только под корнем: «os:system» — это core.providers.os, а не os",
+     lambda: AdapterRegistry(SPOILED, project).load("Наружу"),
+     "PROVIDER_ADAPTER_BROKEN", {"provider": "Наружу"}, [], True, ["core.providers"]),
+    ("у провайдера свежий список не объявлен", lambda: OnlineCatalog(CFG).live("Bria", "ключ"),
+     "PROVIDER_LIST_UNDECLARED", {"provider": "Bria"}, ["Bria"], False, ["config/"]),
+    ("ключа нет — отказ до запроса", lambda: OnlineCatalog(CFG).live("OpenAI", ""),
+     "PROVIDER_KEY_MISSING", {"provider": "OpenAI"}, ["OpenAI"], False, []),
+    ("провайдер отклонил ключ", lambda: raised(provider_refusal(httpx.Response(401, request=asked), "OpenAI", "запрос")),
+     "PROVIDER_KEY_REJECTED", {"provider": "OpenAI", "status": 401}, ["OpenAI", "401"], False, ["set_provider_key"]),
+    ("провайдер отказал: тело ответа — в журнал",
+     lambda: raised(provider_refusal(httpx.Response(500, text="ТЕЛО-ПРОВАЙДЕРА", request=asked), "OpenAI", "запрос")),
+     "PROVIDER_FAILED", {"host": "api.example", "status": 500}, [], True, ["ТЕЛО-ПРОВАЙДЕРА"]),
+    ("шлюз онлайн-моделей не импортируется", gateway_missing,
+     "PROVIDER_ADAPTER_BROKEN", {"provider": "litellm"}, ["litellm"], True, ["pip install"]),
+    ("исполнитель http_image без блока online.http",
+     lambda: AdapterRegistry(CFG, project).load("RemoveBg", "bg_removals")._decl("Нет"),
+     "DECLARATION_INVALID", {"file": "providers.yaml"}, ["online.http.Нет (http_undeclared)"], False, ["providers.yaml: "]),
+    ("раннер не объявлен провайдером", lambda: RunnerSupervisor(AdapterRegistry(SPOILED, project), project).endpoint,
+     "DECLARATION_INVALID", {"file": "providers.yaml"},
+     ["local.runner.provider (runner_undeclared)", "online.http.Нет_раннера (runner_undeclared)"], False,
+     ["providers.yaml: "]),
+    ("политика весов, положенных руками, — чужое значение", lambda: AdapterRegistry(SPOILED, project).ready("руками.onnx"),
+     "DECLARATION_INVALID", {"file": "providers.yaml"}, ["local.hand_placed (literal_error)"], False, ["providers.yaml: "]),
+    ("вид каталога моделей — чужое значение",
+     lambda: ModelCatalog(SPOILED, project / "vendor" / "models").available("tts"),
+     "DECLARATION_INVALID", {"file": "providers.yaml"}, ["local.sources.tts.kind (literal_error)"], False,
+     ["providers.yaml: "]),
+    ("веса модели лежат не целиком", lambda: raised(ModelCatalog(CFG, project).refusal(
+        {"id": "org/m"}, {"verdict": "incomplete", "plan": [], "why": "часть короче"})),
+     "MODEL_INCOMPLETE", {"model": "org/m"}, [], False, ["python scripts", "часть короче"]),
+    ("руками положенное при политике refuse", lambda: AdapterRegistry(REFUSING, project).ready("руками.onnx"),
+     "MODEL_UNVERIFIED", {"model": "руками.onnx"}, [], False, ["python scripts", "local.hand_placed"]),
+    # П2: не влезает на устройство при объявленном отказе — до подъёма модели; опечатка режима — отказ декларации.
+    ("модель не влезает на устройство", lambda: DiffusersLocalIMG(AdapterRegistry(CFG, project))._pipeline(
+        project / "m", {}, {"device": "cuda:0", "dtype": ""}, {"mode": "error", "need_mb": 9000, "available_mb": 4000}),
+     "MODEL_DOES_NOT_FIT", {"device": "cuda:0", "need_mb": 9000, "available_mb": 4000}, ["9000", "4000"], False,
+     ["oversize", "config/"]),
+    ("режим выгрузки — чужое значение", lambda: DiffusersLocalIMG(AdapterRegistry(CFG, project))._pipeline(
+        project / "m", {}, {"device": "cuda:0", "dtype": ""}, {"mode": "offlaod", "need_mb": 9000, "available_mb": 4000}),
+     "DECLARATION_INVALID", {"file": "providers.yaml"}, ["local.gpu.oversize (literal_error)"], False, ["offlaod"]),
+    # П3: предел встроенной отправки — свой код с размером и пределом; сверка диска после загрузки — без хоста в тексте.
+    ("файл больше предела встроенной отправки провайдера", lambda: AdapterRegistry(CFG, project).load(
+        "Replicate", "upscales")._body(
+        {**AdapterRegistry(CFG, project).config["online"]["http"]["Replicate"], "send_mode": "json_base64",
+         "max_inline_mb": 0.1},
+        MediaRequest(input="x", params={}, target=project / "o.png", models_dir=project, source=BIG,
+                     provider="Replicate", workspace=project)),
+     "PROVIDER_INPUT_TOO_LARGE", {"path": "big.png", "size_mb": 0.3, "limit_mb": 0.1, "provider": "Replicate"},
+     ["big.png", "0.3", "0.1", "Replicate"], False, ["max_inline_mb", "config/"]),
+    ("результат не лёг на диск", lambda: TaskCycle(ROOT / "config" / "media_tasks.yaml").verify_download(
+        "нет.wav", project), "DOWNLOAD_INCOMPLETE", {"path": "нет.wav", "got": 0}, ["0"], False, []),
+]
+sent: list[str] = []
+seams = OnlineCatalog.transport, OnlineCatalog.resolve
+OnlineCatalog.transport = httpx.MockTransport(lambda request: sent.append(str(request.url)) or httpx.Response(401))
+OnlineCatalog.resolve = staticmethod(lambda host, port, *a, **k: [(2, 1, 6, "", ("52.7.7.7", port))])
+try:
+    for kind, place, code, facts, said, evented, absent in PROVIDER_CASES:
+        try:
+            place()
+            caught: Exception | None = None
+        except Exception as e:                         # чужое исключение — улика проверки, а не обрыв набора
+            caught = e
+        refused = engine.refusal(caught) if caught is not None else None
+        got = refused.error if refused is not None else None
+        if refused is None or got is None:                 # сырое исключение до двери — провал той же проверки кода
+            check(f"{kind}: {code}, факты {sorted(facts)} — кодом, а не сырым исключением", False, repr(caught))
+            continue
+        wire = " ".join(strings(answer(refused)))
+        check(f"{kind}: {code}, факты {sorted(facts)}",
+              got.code == code and all(got.facts.get(k) == v for k, v in facts.items()), (got.code, got.facts))
+        check(f"{kind}: текст — шаблон реестра с фактами, текста места нет; названо {said}",
+              got.message == registry.get_error(code, facts=got.facts).message and all(s in got.message for s in said),
+              got.message)
+        check(f"{kind}: шаблону и рецепту хватило фактов", wants(code) <= set(got.facts), (sorted(wants(code)), got.facts))
+        check(f"{kind}: номер события {'фактом — причина в журнале' if evented else 'не нужен'}",
+              ("event" in got.facts) == evented, got.facts)
+        check(f"{kind}: в проводе нет {absent}", not any(a in wire for a in absent), wire[:240])
+finally:
+    OnlineCatalog.transport, OnlineCatalog.resolve = seams
+check("ни один случай не ушёл в сеть: ключа нет — запрос не уходит", not sent, sent)
 
 print(f"\n{'=' * 50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

@@ -17,14 +17,17 @@ class ProviderError(ContractError):
     """Ошибка выбора провайдера в формате контракта (код из server_reactions.yaml)."""
 
 
+class ProviderSaid(Exception):
+    """Слова провайдера об отказе (тело ответа, его причина, чего не хватило в ответе) — причина (`__cause__`) для журнала
+    сервера, а не текст ответа клиенту."""
+
+
 class ProviderResolver:
     """Выбор провайдера/модели по данным канала (`config/providers.yaml` описывает, где искать)."""
 
     def __init__(self, config_file: str | Path):
         self.config_file = Path(config_file)
-        self._decl = Declaration(
-            config_file, ProviderError, "провайдеров",
-            "Заведи config/providers.yaml — откуда брать провайдера, объявлено там.")
+        self._decl = Declaration(config_file, ProviderError, "провайдеров")
 
     @property
     def config(self) -> dict:
@@ -98,11 +101,7 @@ class ProviderResolver:
 
         candidates = [r for r in rows if r.get(type_col) == resource_type]
         if not candidates:
-            raise ProviderError(
-                "PROVIDER_NOT_CONFIGURED", f"Для ресурса '{resource_type}' не объявлен ни один провайдер.",
-                reason=(f"Добавь строку в лист {self.sheet} книги канала: "
-                        "провайдер, модель, лимит. Провайдер живёт в данных, не в коде."),
-                suggested_tool="table_append")
+            raise ProviderError("PROVIDER_NOT_CONFIGURED", facts={"resource_type": resource_type, "sheet": self.sheet})
 
         by_provider = {r.get(prov_col): r for r in candidates}
         chain: list[str] = []
@@ -136,10 +135,5 @@ class ProviderResolver:
                 break
             current = by_provider[nxt]
 
-        raise ProviderError(
-            "PROVIDER_EXHAUSTED",
-            f"Все провайдеры для '{resource_type}' исчерпали лимит: {', '.join(chain)}.",
-            reason=(f"Подними {self.limit_column}, обнули {self.usage_column} или добавь провайдера "
-                    f"строкой в лист {self.sheet} — всё это данные канала, правятся "
-                    f"table_update/table_append."),
-            suggested_tool="table_update")
+        raise ProviderError("PROVIDER_EXHAUSTED", facts={
+            "resource_type": resource_type, "chain": ", ".join(chain), "sheet": self.sheet})

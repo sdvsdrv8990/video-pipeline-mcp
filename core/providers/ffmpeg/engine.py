@@ -7,7 +7,6 @@
 значением, а не командой. Срока у рендера нет: живость — ход ffmpeg (`-progress`), остановка — снятие задания.
 """
 
-import shutil
 import subprocess
 import threading
 from collections.abc import Callable
@@ -22,6 +21,7 @@ from .command import SceneCommand
 from .dictionary import FfmpegDictionary
 from .errors import FfmpegError, FfmpegSaid
 from .probe import MediaFacts, accept, facts, own
+from .probe import binary as on_path
 from .spec import SceneSpec
 
 PLACE = "render"                # класс места работы рендера: число мест — resources.yaml `work`
@@ -53,12 +53,7 @@ class FfmpegEngine:
     # ═══ Бинарь ═══
 
     def binary(self) -> str:
-        found = shutil.which(self.binary_name)
-        if not found:
-            raise FfmpegError(
-                "FFMPEG_MISSING", f"Нечем монтировать: {self.binary_name} не найден в PATH.",
-                reason="ffmpeg — системный бинарь, а не пакет pip: поставь его пакетным менеджером.")
-        return found
+        return on_path(self.binary_name)
 
     # ═══ Замысел → команда ═══
 
@@ -83,11 +78,9 @@ class FfmpegEngine:
             if span:
                 cut = (track.source_out or span) - (track.source_in or 0)
                 ends.append(track.time_start + cut / track.speed)
-        if not ends:
-            raise FfmpegError(
-                "VALIDATION_ERROR", f"Длительность сцены {spec.scene_id} неоткуда взять.",
-                reason="Неподвижные картинки её не задают: проставь `time_end` элементу или длительность сцены.",
-                suggested_tool="table_set")
+        if not ends:                            # неподвижные картинки длительности не задают
+            raise FfmpegError("VALIDATION_ERROR", facts={"scene_id": spec.scene_id}, errors=[
+                {"field": "time_end", "rule": "required_for_stills", "expected": "time_end элемента или длительность сцены"}])
         return max(ends)
 
     def build(self, spec: SceneSpec) -> tuple[list[str], float]:
@@ -95,7 +88,7 @@ class FfmpegEngine:
         self.dict.muxer(spec.profile.container)
         known = self.inspect(spec)
         span = self.duration(spec, known)
-        return SceneCommand(spec, known, self.dict, span).build(self.binary()), span
+        return SceneCommand(spec, known, self.dict, span, self.name).build(self.binary()), span
 
     # ═══ Запуск ═══
 

@@ -39,8 +39,7 @@ from core.paths import Files
 if TYPE_CHECKING:
     from core.engine.engine import Engine
 
-_DECLARED = Declared(declarations_root() / JOBS.file, ContractError, "«jobs»",
-                     f"Заведи config/{JOBS.file} — форма id и сроки заданий объявлены там.", schema=JOBS.schema)
+_DECLARED = Declared(declarations_root() / JOBS.file, ContractError, "«jobs»", schema=JOBS.schema)
 _LIVE = ("pending", "processing")
 _BEGIN = threading.Lock()                       # поиск двойника и запись нового задания — один шаг для узлов процесса
 _PULSES: dict[str, Pulse] = {}                  # исполнители этого процесса: их конец ждёт `settle`, их снимает `cancel`

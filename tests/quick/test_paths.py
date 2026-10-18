@@ -450,7 +450,7 @@ def main():
 
     decl_dir = Path(tempfile.mkdtemp(prefix="vpm_decl_"))
     (decl_dir / "d.yaml").write_text("a:\n  n: 5\n  f: 2\n  s: abc\n  b: true\n", encoding="utf-8")
-    decl = Declaration(decl_dir / "d.yaml", ContractError, "пробы", "")
+    decl = Declaration(decl_dir / "d.yaml", ContractError, "пробы")
     check("тип совпал — значение как есть; int годится там, где читают float; без типа — как раньше",
           decl.need("a", "n", kind=int) == 5 and decl.need("a", "f", kind=float) == 2 and decl.need("a", "s") == "abc")
     for key, kind, rule in (("s", int, "int_type"), ("b", int, "int_type"), ("n", str, "string_type")):
@@ -510,9 +510,13 @@ def main():
         os.open = real_open
         if not had_binary:
             del os.O_BINARY
+    written = (ws / "win" / "двоичный.key").read_bytes()
+    # На Windows закрытый файл рождается CreateFileW, а не os.open: там судят байты; флаг — подменой os.open на POSIX.
+    flagged = os.name == "nt" or (any(f & os.O_CREAT for f in opened)
+                                  and all(f & 0x8000 for f in opened if f & os.O_CREAT))
     check("где есть O_BINARY, остаток открыт в двоичном режиме — запись не переводит \\n в \\r\\n",
-          any(f & os.O_CREAT for f in opened) and all(f & 0x8000 for f in opened if f & os.O_CREAT),
-          [hex(f) for f in opened])  # открытие каталога для сброса на диск (O_RDONLY) — не запись, флага не требует
+          written == b"a\nb" and flagged,
+          (written, [hex(f) for f in opened]))  # открытие каталога для сброса на диск (O_RDONLY) — не запись, флага не требует
     shutil.rmtree(ws, ignore_errors=True)
 
     print(f"\n{'=' * 50}")

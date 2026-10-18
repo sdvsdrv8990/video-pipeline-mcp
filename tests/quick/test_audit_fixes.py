@@ -590,7 +590,7 @@ async def main():
         return out[0], out[1]
 
     for _name, _file, _call in (
-        ("Declaration", "объявление.yaml", lambda t, d: _D194(t, ContractError, "s", "h").data),
+        ("Declaration", "объявление.yaml", lambda t, d: _D194(t, ContractError, "s").data),
         ("Advice", "recommendations.yaml", lambda t, d: _A194(t).get("любой")),
         ("Reactions", "server_reactions.yaml", lambda t, d: _R192(t)),
         ("UniquenessEngine", "uniqueness.yaml", lambda t, d: _U194(t).config),

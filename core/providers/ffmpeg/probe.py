@@ -33,11 +33,10 @@ class MediaFacts:
 
 
 def binary(name: str = "ffprobe") -> str:
+    """Путь бинаря пакета ffmpeg в PATH; нет — FFMPEG_MISSING с его именем. Одно решение для ffmpeg и ffprobe."""
     found = shutil.which(name)
     if not found:
-        raise FfmpegError(
-            "FFMPEG_MISSING", f"Нечем проверить результат: {name} не найден в PATH.",
-            reason="ffprobe ставится тем же пакетом, что и ffmpeg: без него приёмка рендера невозможна.")
+        raise FfmpegError("FFMPEG_MISSING", facts={"binary": name})
     return found
 
 
@@ -51,27 +50,17 @@ def raw(path: Path, probe: str = "ffprobe", name: Callable[[Path], str] = own) -
     (путь от корня даёт вызывающий), слова ffprobe — причиной для журнала сервера."""
     named = name(path)
     if not path.exists():
-        raise FfmpegError(
-            "FILE_NOT_FOUND", f"Файл не найден: {named}", facts={"path": named},
-            reason="Путь берётся из книги; проверь, что ассет создан и лежит там, где записано.")
+        raise FfmpegError("FILE_NOT_FOUND", facts={"path": named})
     out = subprocess.run(
         [binary(probe), "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
         capture_output=True, timeout=PROBE_TIMEOUT_SEC, **child_spawn("strict"))
     if out.returncode != 0:
-        raise FfmpegError(
-            "RENDER_INPUT_UNPREPARED", f"ffprobe не разбирает файл: {named}",
-            facts={"path": named, "exit_code": out.returncode},
-            reason="Формат не опознан: слова ffprobe — в журнале сервера.") from FfmpegSaid(child_text(out.stderr, "replace"))
-    try:
-        text = child_text(out.stdout, "strict")
-    except UnicodeDecodeError as exc:       # разбираемый ответ: битые байты — громкий отказ, а не подмена знаком
-        raise FfmpegError("RENDER_UNVERIFIED", f"ffprobe ответил неразбираемым: {named}", facts={"path": named},
-                          reason=f"ответ ffprobe не в utf-8 (байт {exc.start})") from exc
-    try:
-        return json.loads(text or "{}")
-    except json.JSONDecodeError as exc:
-        raise FfmpegError("RENDER_UNVERIFIED", f"ffprobe ответил неразбираемым: {named}", facts={"path": named},
-                          reason="ответ ffprobe не JSON") from exc
+        raise FfmpegError("RENDER_INPUT_UNPREPARED", facts={"path": named, "exit_code": out.returncode}) \
+            from FfmpegSaid(child_text(out.stderr, "replace"))
+    try:                                    # битые байты (теги файла не в utf-8) — громкий отказ, а не подмена знаком
+        return json.loads(child_text(out.stdout, "strict") or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise FfmpegError("RENDER_INPUT_UNPREPARED", facts={"path": named}) from exc
 
 
 def facts(path: Path, probe: str = "ffprobe", name: Callable[[Path], str] = own) -> MediaFacts:
@@ -84,9 +73,7 @@ def facts(path: Path, probe: str = "ffprobe", name: Callable[[Path], str] = own)
     duration = float(raw_duration) if isinstance(raw_duration, (str, int, float)) and \
         raw_duration != "N/A" else None
     if video is None and audio is None:
-        raise FfmpegError(
-            "RENDER_INPUT_UNPREPARED", f"В файле нет ни картинки, ни звука: {name(path)}", facts={"path": name(path)},
-            reason="Монтировать нечего. Проверь, что ассет сгенерирован полностью.")
+        raise FfmpegError("RENDER_INPUT_UNPREPARED", facts={"path": name(path)})
     # Неподвижная картинка приходит контейнером `*_pipe` и без длительности: у одного кадра её нет.
     kind = "audio" if video is None else ("image" if duration is None else "video")
     return MediaFacts(path=path, kind=kind, duration_sec=duration,
@@ -108,23 +95,20 @@ def accept(path: Path, expect_duration: float | None, expect_size: tuple[int, in
            tolerance_sec: float = 0.5, probe: str = "ffprobe", name: Callable[[Path], str] = own) -> Accepted:
     """Приёмка результата: поток, ненулевая длительность, названный и обещанный профилем кадр."""
     got, named = facts(path, probe, name), name(path)
-    if not got.has_video:
-        raise FfmpegError("RENDER_UNVERIFIED", f"В результате нет видеопотока: {named}", facts={"path": named},
-                          reason="Команда отработала без ошибки, но собрала не видео.")
-    if not got.duration_sec:
-        raise FfmpegError("RENDER_UNVERIFIED", f"Длительность результата нулевая: {named}", facts={"path": named},
-                          reason="Пустой файл проходит как успех только до первого просмотра.")
+    frame = "x".join(map(str, expect_size)) if expect_size else "—"
+    if not got.has_video:                   # команда отработала без ошибки, но собрала не видео
+        raise FfmpegError("RENDER_UNVERIFIED", facts={"path": named, "rule": "video_stream", "expected": 1, "got": 0})
+    if not got.duration_sec:                # пустой файл проходит как успех только до первого просмотра
+        raise FfmpegError("RENDER_UNVERIFIED", facts={
+            "path": named, "rule": "duration_sec", "expected": round(expect_duration, 2) if expect_duration else ">0",
+            "got": "—" if got.duration_sec is None else got.duration_sec})
     if got.width is None or got.height is None:
-        raise FfmpegError("RENDER_UNVERIFIED", f"Кадр результата ffprobe не назвал: {named}", facts={"path": named},
-                          reason="Без размера кадра геометрию не сверить — успех был бы на слово.")
+        raise FfmpegError("RENDER_UNVERIFIED", facts={"path": named, "rule": "frame", "expected": frame, "got": "—"})
     if expect_duration and abs(got.duration_sec - expect_duration) > tolerance_sec:
-        raise FfmpegError(
-            "RENDER_UNVERIFIED", f"Длительность разошлась с замыслом: {got.duration_sec:.2f} с вместо "
-            f"{expect_duration:.2f} с.",
-            reason="Расхождение означает, что часть слоёв или звука не доехала до результата.")
+        raise FfmpegError("RENDER_UNVERIFIED", facts={  # часть слоёв или звука не доехала до результата
+            "path": named, "rule": "duration_sec", "expected": round(expect_duration, 2),
+            "got": round(got.duration_sec, 2)})
     if expect_size and (got.width, got.height) != expect_size:
-        raise FfmpegError(
-            "RENDER_UNVERIFIED", f"Кадр {got.width}x{got.height} вместо обещанного профилем "
-            f"{expect_size[0]}x{expect_size[1]}.",
-            reason="Геометрию задаёт профиль рендера; расхождение ломает склейку сцен.")
+        raise FfmpegError("RENDER_UNVERIFIED", facts={
+            "path": named, "rule": "frame", "expected": frame, "got": f"{got.width}x{got.height}"})
     return Accepted(duration_sec=got.duration_sec, width=got.width, height=got.height)

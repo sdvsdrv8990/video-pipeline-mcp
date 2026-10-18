@@ -28,9 +28,7 @@ class UniquenessEngine:
 
     def __init__(self, config_file: str | Path):
         self.config_file = Path(config_file)
-        self._decl = Declaration(
-            config_file, UniquenessError, "расчёта уникальности",
-            "Заведи config/uniqueness.yaml — параметры расчёта живут там, не в коде.")
+        self._decl = Declaration(config_file, UniquenessError, "расчёта уникальности")
 
     # ═══ Декларация ═══
 

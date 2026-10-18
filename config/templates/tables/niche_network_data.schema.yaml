@@ -26,7 +26,7 @@ sheets:
       - { name: pattern_type, type: enum, flag: W }   # visual/script/audio/retention
       - { name: found_in_channels, type: string, flag: W }   # список channel_id
       - { name: channels_count, type: integer, flag: F }
-      - { name: frequency_pct, type: float, flag: F, formula: '=channels_count/total_channels*100' }   # `=channels_count/total_channels*100`
+      - { name: frequency_pct, type: float, flag: F, formula: '=channels_count/COUNTA(COMPETITORS_INDEX.channel_id)*100' }   # доля каналов ниши
       - { name: avg_effectiveness, type: float, flag: W }
       - { name: best_example_video_id, type: string, flag: W }
       - { name: our_adoption_status, type: enum, flag: W, enum: ['NOT_ADOPTED', 'IN_DNA', 'TESTING', 'TESTED', 'REJECTED'] }   # NOT_ADOPTED/IN_DNA/TESTING/TESTED/REJECTED

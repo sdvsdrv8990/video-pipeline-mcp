@@ -13,8 +13,6 @@ import posixpath
 import re
 from pathlib import Path
 
-import yaml
-
 from core.contracts import ContractError, Fact, ToolResult, as_untrusted
 from core.engine import Engine
 from core.ids import LinkError
@@ -346,15 +344,9 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             raise ContractError("FILE_EXISTS", facts={"path": Files(ctx.workspace_path).name(path)})
         return _created_result(path, len(skeleton), assign_id, "FileCreated")
 
-    async def fs_create_project_structure(template: str = "", fragments: list[dict] | None = None) -> "ToolResult":
-        """Материализация структуры по шаблону или список фрагментов."""
+    async def fs_create_project_structure(fragments: list[dict] | None = None) -> "ToolResult":
+        """Материализация структуры по списку фрагментов. Шаблоны узлов с ID — structure_create."""
         created, skipped = [], []
-        if template:
-            template_path = ctx.config_path / "templates" / "workspace" / f"{template}.yaml"
-            if not template_path.exists():
-                raise ContractError("TEMPLATE_NOT_FOUND", facts={"template": template})
-            tpl = yaml.safe_load(template_path.read_text(encoding="utf-8")) or {}
-            fragments = tpl.get("fragments", [])
         if not fragments:
             raise ContractError("NO_FRAGMENTS")
         for frag in fragments:
@@ -385,8 +377,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             raise ContractError("VALIDATION_ERROR", errors=[
                 {"field": s.get("name") or "name", "rule": "required" if s["reason"] == "no name" else s["reason"]}
                 for s in skipped])
-        facts = [Fact(type="StructureCreated", data={"template": template, "created": len(created),
-                                                     "skipped": len(skipped)})]
+        facts = [Fact(type="StructureCreated", data={"created": len(created), "skipped": len(skipped)})]
         # Частичный отказ — отдельное СОБЫТИЕ, а не поле в данных: полем его не заметят.
         if skipped:
             facts.append(Fact(type="FragmentsSkipped", data={"skipped": skipped}))
@@ -438,7 +429,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
          }, "required": ["queries"]},
          fs_search_multi, ANNOTATIONS_READONLY),
         ("fs_create_python_script", "Файлы: новый Python-скрипт", "Создание Python-скрипта с каркасом." + OWNER, {"type": "object", "properties": {"path": {"type": "string", "description": "Путь к .py файлу"}, "description": {"type": "string", "description": "Описание модуля"}, "assign_id": {"type": "boolean", "default": False, "description": "Выдать файлу собственный ID (префикс по классу файла) и зарегистрировать его"}}, "required": ["path"]}, fs_create_python_script, ANNOTATIONS_MODIFY),
-        ("fs_create_project_structure", "Файлы: структура проекта", "Материализация структуры каталогов/файлов по шаблону или списку фрагментов (сырые папки/файлы без ID; для узлов проекта с ID и цепочкой владельцев — structure_create)", {"type": "object", "properties": {"template": {"type": "string", "description": "Имя шаблона из config/templates/workspace/"}, "fragments": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "type": {"type": "string", "enum": ["directory", "file"]}, "content": {"type": "string"}}}, "description": "Список фрагментов для создания"}}}, fs_create_project_structure, ANNOTATIONS_MODIFY),
+        ("fs_create_project_structure", "Файлы: структура проекта", "Материализация структуры каталогов/файлов по списку фрагментов (сырые папки/файлы без ID; для узлов проекта с ID и цепочкой владельцев — structure_create)", {"type": "object", "properties": {"fragments": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "type": {"type": "string", "enum": ["directory", "file"]}, "content": {"type": "string"}}}, "description": "Список фрагментов для создания"}}}, fs_create_project_structure, ANNOTATIONS_MODIFY),
     ]
     for name, title, desc, schema, handler, annot in fs_tools:
         engine.register(name=name, title=title, description=desc, input_schema=schema, handler=handler, group="filesystem", annotations=annot)  # type: ignore[arg-type]

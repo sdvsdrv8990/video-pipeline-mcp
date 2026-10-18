@@ -11,12 +11,15 @@ import warnings
 from collections.abc import Collection, Mapping
 from functools import cache
 from types import MappingProxyType
-from typing import Annotated, Generic, Literal, NamedTuple, TypeVar, get_args, get_origin
+from typing import TYPE_CHECKING, Annotated, Generic, Literal, NamedTuple, TypeVar, get_args, get_origin
 from urllib.parse import urlsplit
 
 from pydantic import (AfterValidator, BaseModel, ConfigDict, Field, Strict, StrictBool, StrictFloat, StrictInt,
                       RootModel, StrictStr, ValidationError, model_validator)
 from pydantic_core import InitErrorDetails, PydanticCustomError
+
+if TYPE_CHECKING:
+    from core.formulas import Language, Sheet, Slip
 
 STRICT = ConfigDict(strict=True, frozen=True, extra="forbid")
 ReadOnly = AfterValidator(MappingProxyType)
@@ -334,7 +337,8 @@ SheetTitle = Annotated[StrictStr, Field(min_length=1), AfterValidator(_xlsx_titl
 
 
 class BookSheet(BaseModel):
-    """Лист книги: столбцы по порядку и стартовые строки (значения по именам столбцов, список — в ячейку через запятую)."""
+    """Лист книги: столбцы по порядку и стартовые строки (значения по именам столбцов, список — в ячейку через запятую);
+    `record` — лист-запись (одна строка данных): формула другого листа зовёт его столбец без агрегата."""
 
     model_config = STRICT
 
@@ -342,6 +346,7 @@ class BookSheet(BaseModel):
     columns: Annotated[tuple[BookColumn, ...], Listed] = Field(min_length=1)
     rows: Annotated[tuple[Annotated[Mapping[StrictStr, Cell | Annotated[tuple[Cell, ...], Listed]], ReadOnly], ...],
                     Listed] = ()
+    record: StrictBool = False
 
 
 class BookSchema(BaseModel):
@@ -356,6 +361,29 @@ class BookSchema(BaseModel):
     sheets: Annotated[tuple[BookSheet, ...], Listed] = Field(min_length=1)
     degrade: Annotated[Mapping[ColumnType, Cell], ReadOnly] = Field(default_factory=lambda: MappingProxyType({}))
 
+    @model_validator(mode="after")
+    def _formulas_named(self) -> "BookSchema":
+        gaps = [_gap(slip.rule, slip.expected, ("sheets", str(i), "columns", str(j), "formula"))
+                for i, j, slip in book_formula_slips(self)]
+        if gaps:
+            raise ValidationError.from_exception_data(type(self).__name__, gaps)
+        return self
+
+
+def book_formula_slips(book: BookSchema, language: "Language | None" = None) -> list[tuple[int, int, "Slip"]]:
+    """Изъяны формул вычисляемых столбцов книги — (лист, столбец, изъян). Без языка — имена и синтаксис (судит схема
+    книги); с языком (`core.formulas.Language`) — ещё функции и агрегаты (судит дверь книги связью с formulas.yaml)."""
+    from core.formulas import slips      # по требованию: узел формул тянет openpyxl, схемы импортируют и без книг
+    sheets = book_sheets(book)
+    return [(i, j, slip) for i, sheet in enumerate(book.sheets) for j, col in enumerate(sheet.columns)
+            if col.flag == "F" and col.formula for slip in slips(col.formula, sheet.name, sheets, language)]
+
+
+def book_sheets(book: BookSchema) -> "dict[str, Sheet]":
+    """Листы книги для языка формул: имя → столбцы по порядку и запись ли лист."""
+    from core.formulas import Sheet
+    return {sheet.name: Sheet(tuple(c.name for c in sheet.columns), sheet.record) for sheet in book.sheets}
+
 
 class BookDefaults(BaseModel):
     """`config/templates/tables/_defaults.yaml`: общее правило деградации формул по типу столбца — под всеми книгами."""
@@ -363,6 +391,25 @@ class BookDefaults(BaseModel):
     model_config = STRICT
 
     degrade: Annotated[Mapping[ColumnType, Cell], ReadOnly]
+
+
+class FormulaLanguageDecl(BaseModel):
+    """`config/formulas.yaml`: язык формул книг — функции Excel, которые формула вправе звать, агрегаты (внутри них
+    `Лист.столбец` листа-списка — весь столбец) и свои макросы (имя → выражение Excel над {1}, {2}, …)."""
+
+    model_config = STRICT
+
+    functions: Annotated[tuple[StrictStr, ...], Listed] = Field(min_length=1)
+    aggregates: Annotated[tuple[StrictStr, ...], Listed]
+    macros: Annotated[Mapping[StrictStr, StrictStr], ReadOnly]
+
+    @model_validator(mode="after")
+    def _aggregates_callable(self) -> "FormulaLanguageDecl":
+        gaps = [_gap("aggregate_undeclared", "агрегат — функция из functions", ("aggregates", str(i)))
+                for i, name in enumerate(self.aggregates) if name not in self.functions]
+        if gaps:
+            raise ValidationError.from_exception_data(type(self).__name__, gaps)
+        return self
 
 
 class AdviceItem(BaseModel):
@@ -466,14 +513,15 @@ class RateLimit(BaseModel):
 
 class TunnelSupervision(BaseModel):
     """`config/tunnel_diagnostics.yaml → надзор`: перезапуск cloudflared супервизором (пауза вдвое от `retry_base_seconds`
-    до потолка `retry_max_seconds`, прогон дольше `retry_reset_seconds` сбрасывает разгон) и первый подъём туннеля (предел
-    одной попытки и число попыток). Политика сервера, а не машины: закоммичена, умолчаний в коде нет."""
+    до потолка `retry_max_seconds` с добавкой доли `jitter`, прогон дольше `retry_reset_seconds` сбрасывает разгон) и первый
+    подъём туннеля (предел одной попытки и число попыток). Политика сервера, а не машины: закоммичена, умолчаний в коде нет."""
 
     model_config = STRICT
 
     retry_base_seconds: float = Field(gt=0)
     retry_max_seconds: float = Field(gt=0)
     retry_reset_seconds: float = Field(gt=0)
+    jitter: float = Field(ge=0, le=1)
     ready_timeout_seconds: float = Field(gt=0)
     first_attempts: StrictInt = Field(ge=1)
 
@@ -620,9 +668,10 @@ TUNNEL_BINARY_FETCH = Slot("tunnel_diagnostics.yaml", ("загрузка_кли�
 TUNNEL_SUPERVISION = Slot("tunnel_diagnostics.yaml", ("надзор",), TunnelSupervision)
 TRANSPORT = Slot("transport.yaml", (), TransportDeclaration)
 RECALC_ENGINE = Slot("engines.yaml", ("recalc",), EnginePlaces)
+FORMULAS = Slot("formulas.yaml", (), FormulaLanguageDecl)
 SLOTS = (RESOURCES, PACKAGES, MODEL_INSTALL, MODEL_FETCH, RESULT_FETCH, ONLINE_ANSWER, ONLINE_CALL, RESULT_ANSWER,
          RUNNER_HEALTH, RUNNER_DOCKER_POLL, TUNNEL_PROBE, JOBS, RATE_LIMIT, TUNNEL_BINARY_FETCH, TUNNEL_SUPERVISION,
-         TRANSPORT, RECALC_ENGINE)
+         TRANSPORT, RECALC_ENGINE, FORMULAS)
 
 
 def registry_codes(model: BaseModel) -> frozenset[str]:

@@ -34,8 +34,7 @@ from core.reactions import cli_text                        # noqa: E402
 ЗАГОЛОВКИ = {"User-Agent": "pip/26.2"}
 # Коды выхода сверх 0 — свои: 1 CPython отдаёт на необработанное исключение, 2 — argparse на ошибку вызова.
 НЕ_ХВАТАЕТ, НЕ_СУДИМО = 3, 4
-ИНДЕКС = Declared(declarations_root() / PACKAGES.file, PackageError, "индекса пакетов",
-                  f"Заведи config/{PACKAGES.file} — как спрашивать индекс пакетов, объявлено там.", schema=PACKAGES.schema)
+ИНДЕКС = Declared(declarations_root() / PACKAGES.file, PackageError, "индекса пакетов", schema=PACKAGES.schema)
 РЕЕСТР = declarations_root() / "server_reactions.yaml"
 швы: dict = {}      # транспорт, разрешение имён и сон загрузчика (MF-16): подставляет тест
 

@@ -116,7 +116,7 @@ class Heard(logging.Handler):
 
 
 def door(path: Path) -> Declared[Resources]:
-    return Declared(path, ContractError, "ресурсов", "Заведи config/resources.yaml.", schema=Resources)
+    return Declared(path, ContractError, "ресурсов", schema=Resources)
 
 
 def write(path: Path, data: dict, stamp: int) -> None:
@@ -238,8 +238,8 @@ def main():
     for n, (label, body, path, kind) in enumerate(NEED_CASES):
         probe = work / f"need{n}.yaml"
         probe.write_text(body, encoding="utf-8")
-        said, heard, cause = refusal_of(engine, lambda: Declaration(probe, ContractError, "пробы", "").need(*path, kind=kind))
-        word, _, _ = refusal_of(engine, lambda: Declared(probe, ContractError, "пробы", "", schema=schema_of(path, kind)).model)
+        said, heard, cause = refusal_of(engine, lambda: Declaration(probe, ContractError, "пробы").need(*path, kind=kind))
+        word, _, _ = refusal_of(engine, lambda: Declared(probe, ContractError, "пробы", schema=schema_of(path, kind)).model)
         pairs = [(x["field"], x["rule"]) for x in said.errors] if said else []
         truth = [(x["field"], x["rule"]) for x in word.errors] if word else []
         check(f"need: {label} — {CODE}, то же поле и правило, что у схемы двери, и они в доставленном тексте",
@@ -251,7 +251,7 @@ def main():
               and cause is None, f"причина:{cause!r}")
     broken = work / "broken.yaml"
     broken.write_text(f"a: [1\nb: {MARK}\n", encoding="utf-8")
-    said, heard, cause = refusal_of(engine, lambda: Declaration(broken, ContractError, "пробы", "").data)
+    said, heard, cause = refusal_of(engine, lambda: Declaration(broken, ContractError, "пробы").data)
     where = said.errors[0]["field"].split(":") if said and said.errors else []
     check(f"битый YAML — {CODE}, правило yaml_syntax, место «строка:столбец»",
           said is not None and said.code == CODE and [x["rule"] for x in said.errors] == ["yaml_syntax"]
@@ -275,8 +275,8 @@ def main():
     prior = os.environ.get("MCP_CONFIG")
     os.environ["MCP_CONFIG"] = str(decl_root)
     try:
-        inner, _, _ = refusal_of(engine, lambda: Declaration(nested, ContractError, "пробы", "").data)
-        outer, _, _ = refusal_of(engine, lambda: Declaration(outside, ContractError, "пробы", "").data)
+        inner, _, _ = refusal_of(engine, lambda: Declaration(nested, ContractError, "пробы").data)
+        outer, _, _ = refusal_of(engine, lambda: Declaration(outside, ContractError, "пробы").data)
     finally:
         if prior is None:
             del os.environ["MCP_CONFIG"]
@@ -351,7 +351,7 @@ def main():
     cfg = Path(tempfile.mkdtemp(prefix="decl-reg-"))
     write(cfg / REACTIONS, registry, 4_000_000_000)
     shutil.copy(ROOT / "config" / PACKAGES.file, cfg / PACKAGES.file)
-    held = Declared(cfg / PACKAGES.file, ContractError, PACKAGES.file, "", schema=PACKAGES.schema)
+    held = Declared(cfg / PACKAGES.file, ContractError, PACKAGES.file, schema=PACKAGES.schema)
     first, _, _ = refusal_of(engine, lambda: held.model)
     code = yaml.safe_load((cfg / PACKAGES.file).read_text(encoding="utf-8"))["index"]["fetch"]["codes"]["failed"]
     write(cfg / REACTIONS, {k: v for k, v in registry.items() if k != code}, 4_000_000_000)
@@ -368,8 +368,8 @@ def main():
     prior = os.environ.get("MCP_CONFIG")
     os.environ["MCP_CONFIG"] = str(link_root)
     try:
-        jobs = Declaration(link_root / "jobs.yaml", ContractError, "заданий", "")
-        providers = Declaration(link_root / "providers.yaml", ContractError, "провайдеров", "")
+        jobs = Declaration(link_root / "jobs.yaml", ContractError, "заданий")
+        providers = Declaration(link_root / "providers.yaml", ContractError, "провайдеров")
         fetch = [("local", "install", "fetch", key) for key in ("timeout_sec", "speed_window_sec")]
 
         def refuse_link():
@@ -468,8 +468,8 @@ def schema_of(path: tuple, kind: type) -> type[BaseModel]:
 def read_slot(slot, path: Path, how: str):
     """Слот тем путём двери, который судится: раздел (`section`) или файл целиком (`Declared.model`)."""
     if how == "модель":
-        return Declared(path, ContractError, slot.file, "", schema=slot.schema).model
-    return Declaration(path, ContractError, slot.file, "").section(*slot.section, schema=slot.schema)
+        return Declared(path, ContractError, slot.file, schema=slot.schema).model
+    return Declaration(path, ContractError, slot.file).section(*slot.section, schema=slot.schema)
 
 
 if __name__ == "__main__":

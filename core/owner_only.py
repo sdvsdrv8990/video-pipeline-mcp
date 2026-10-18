@@ -50,6 +50,15 @@ def make_dir(path: Path) -> None:
         restrict(path, OWNER_DIR)
 
 
+def superuser() -> bool:
+    """Процесс с правами суперпользователя: root (euid 0) на POSIX, маркер с повышением на Windows. Такой процесс обходит
+    «только владелец», а созданные им файлы ложатся под суперпользователя — обычный запуск их потом не прочтёт."""
+    if sys.platform == "win32":
+        return _elevated()
+    else:
+        return os.geteuid() == 0
+
+
 if sys.platform == "win32":
     import ctypes
     import msvcrt
@@ -61,6 +70,7 @@ if sys.platform == "win32":
     # Константы Win32 SDK: winnt.h, fileapi.h, sddl.h, accctrl.h.
     _TOKEN_QUERY = 0x0008
     _TOKEN_USER = 1                                   # TOKEN_INFORMATION_CLASS.TokenUser
+    _TOKEN_ELEVATION = 20                             # TOKEN_INFORMATION_CLASS.TokenElevation
     _SDDL_REVISION_1 = 1
     _SE_FILE_OBJECT = 1
     _DACL_SECURITY_INFORMATION = 0x00000004
@@ -99,24 +109,34 @@ if sys.platform == "win32":
         if not ok:
             raise ctypes.WinError(ctypes.get_last_error())
 
-    def _user_sid() -> str:
-        """SID владельца процесса строкой — из маркера доступа процесса (TokenUser)."""
+    def _elevated() -> bool:
+        """Маркер с повышением (TOKEN_ELEVATION.TokenIsElevated): администратор с полными правами, при выключенном UAC —
+        любой администратор."""
+        return bool(ctypes.cast(_token_information(_TOKEN_ELEVATION), ctypes.POINTER(wintypes.DWORD))[0])
+
+    def _token_information(kind: int) -> "ctypes.Array[ctypes.c_char]":
+        """Сведения маркера доступа процесса одного класса (TOKEN_INFORMATION_CLASS) — буфер нужного размера."""
         token = wintypes.HANDLE()
         _check(_advapi32.OpenProcessToken(_kernel32.GetCurrentProcess(), _TOKEN_QUERY, ctypes.byref(token)))
         try:
             size = wintypes.DWORD()
-            _advapi32.GetTokenInformation(token, _TOKEN_USER, None, 0, ctypes.byref(size))   # первый вызов — размер
+            _advapi32.GetTokenInformation(token, kind, None, 0, ctypes.byref(size))   # первый вызов — размер
             buffer = ctypes.create_string_buffer(size.value)
-            _check(_advapi32.GetTokenInformation(token, _TOKEN_USER, buffer, size, ctypes.byref(size)))
-            sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]   # TOKEN_USER.User.Sid — первое поле
-            text = ctypes.c_void_p()
-            _check(_advapi32.ConvertSidToStringSidW(sid, ctypes.byref(text)))
-            try:
-                return ctypes.wstring_at(text.value or 0)
-            finally:
-                _kernel32.LocalFree(text)
+            _check(_advapi32.GetTokenInformation(token, kind, buffer, size, ctypes.byref(size)))
+            return buffer
         finally:
             _kernel32.CloseHandle(token)
+
+    def _user_sid() -> str:
+        """SID владельца процесса строкой — из маркера доступа процесса (TokenUser)."""
+        buffer = _token_information(_TOKEN_USER)
+        sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]   # TOKEN_USER.User.Sid — первое поле
+        text = ctypes.c_void_p()
+        _check(_advapi32.ConvertSidToStringSidW(sid, ctypes.byref(text)))
+        try:
+            return ctypes.wstring_at(text.value or 0)
+        finally:
+            _kernel32.LocalFree(text)
 
     def _descriptor(directory: bool) -> ctypes.c_void_p:
         """Дескриптор «только владелец»: защищённый DACL (P) — владелец процесса и SYSTEM с полным доступом; у каталога

@@ -1,0 +1,19 @@
+# Язык формул книг — что вправе писать формула декларации книги (config/templates/tables/*.schema.yaml).
+#
+# Декларация пишет формулу именами столбцов: имя — ячейка той же строки; `Лист.столбец` — значение листа-записи
+# (`record: true`, одна строка) либо весь столбец листа-списка внутри агрегата. Узел `core/formulas.py` судит формулу
+# при чтении декларации и собирает адреса A1 для книги. Схема файла — core/declaration_schemas.py FormulaLanguage.
+#
+# functions — функции Excel, которые формула вправе звать: функция вне списка — отказ двери с путём столбца. Своя
+#   функция книги объявляется не здесь, а в macros.
+# aggregates — функции, внутри которых `Лист.столбец` листа-списка значит его столбец целиком (без заголовка).
+# macros — свои функции декларации: имя → выражение Excel над аргументами {1}, {2}, …; разворачиваются до сборки.
+
+functions: [IF, IFERROR, AND, OR, NOT, MIN, MAX, SUM, AVERAGE, COUNT, COUNTA, COUNTIF, ROUND, ABS, LEN, TRIM, SUBSTITUTE,
+            LEFT, RIGHT, MID, VALUE, TIMEVALUE, ISNUMBER, ISBLANK]
+aggregates: [SUM, AVERAGE, COUNT, COUNTA, COUNTIF, MIN, MAX]
+macros:
+  # Слов в тексте: TRIM схлопывает пробелы, слова — пробелы между ними плюс одно; пустой текст — 0.
+  COUNTWORDS: 'IF(LEN(TRIM({1}))=0,0,LEN(TRIM({1}))-LEN(SUBSTITUTE(TRIM({1})," ",""))+1)'
+  # Секунды отметки «MM:SS» (транскрибация): TIMEVALUE читает «ЧЧ:ММ:СС», доля суток — в секунды.
+  SECONDS: 'ROUND(TIMEVALUE("00:"&{1})*86400,0)'

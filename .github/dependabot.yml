@@ -1,11 +1,16 @@
 # Версии действий CI, npm студии и pip сервера — под одним сторожем: прежде версии действий не сторожил никто,
 # и setup-node@v4 на снятом Node 20 жил рядом с @v7 (CI dce0461, предупреждение П1). Группа — одна PR на экосистему.
+# Возраст версии — явным правилом, а не умолчанием платформы: 3 дня, как у Dependabot без ключа (github/docs
+# dependabot-options-reference.md blob cc88e99d :191-196, :223) и как окно снятия публикации npm — 72 часа
+# (npm/documentation policies/unpublish.mdx blob f233080c :12-14). Обновлений безопасности cooldown не задерживает.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 3
     groups:
       actions:
         patterns: ["*"]
@@ -13,6 +18,8 @@ updates:
     directory: /studio
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 3
     groups:
       studio:
         patterns: ["*"]
@@ -20,6 +27,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 3
     groups:
       python:
         patterns: ["*"]

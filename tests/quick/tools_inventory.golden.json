@@ -599,7 +599,7 @@
    "idempotentHint": false,
    "readOnlyHint": false
   },
-  "description": "Материализация структуры каталогов/файлов по шаблону или списку фрагментов (сырые папки/файлы без ID; для узлов проекта с ID и цепочкой владельцев — structure_create)",
+  "description": "Материализация структуры каталогов/файлов по списку фрагментов (сырые папки/файлы без ID; для узлов проекта с ID и цепочкой владельцев — structure_create)",
   "group": "filesystem",
   "input_schema": {
    "properties": {
@@ -624,10 +624,6 @@
       "type": "object"
      },
      "type": "array"
-    },
-    "template": {
-     "description": "Имя шаблона из config/templates/workspace/",
-     "type": "string"
     }
    },
    "type": "object"

@@ -36,6 +36,7 @@ from core.reactions import Reactions
 from core.auth import (ENV_FILE, check_auth, digest_fingerprint, ensure_digest, rotate_token,
                        token_file_mode, token_fingerprint)
 from core.ids import IDGenerator
+from core.owner_only import superuser
 from core.state import StateManager
 # A2: движки, маппинг исключений ядра и аннотации MCP живут в контексте групп.
 from tools._context import build_context
@@ -108,6 +109,8 @@ ENV_PATH = BASE_PATH / ENV_FILE
 MCP_AUTH_DIGEST = ""
 # Явная и громкая калитка для локальной разработки и тестов (по умолчанию закрыта).
 ALLOW_NO_AUTH = os.environ.get("MCP_ALLOW_NO_AUTH", "") == "1"
+# Суперпользователь превращает любую дыру инструмента в захват машины; калитка — только для одноразовой машины.
+ALLOW_ROOT = os.environ.get("MCP_ALLOW_ROOT", "") == "1"
 
 
 # ═══ ХЕЛПЕРЫ ═══
@@ -115,15 +118,13 @@ ALLOW_NO_AUTH = os.environ.get("MCP_ALLOW_NO_AUTH", "") == "1"
 def _load_yaml(path: Path) -> dict:
     """Объявление сервера. Нет файла — отказ: пустой dict молча заменял бы декларацию дефолтами,
     и сервер поднимался бы не тем, чем объявлен."""
-    return Declaration(path, ContractError, f"«{path.stem}»",
-                       f"Заведи config/{path.name} — сервер поднимается по нему.").data
+    return Declaration(path, ContractError, f"«{path.stem}»").data
 
 
 def _load_resources(path: Path) -> Resources:
     """Классы ресурсов и класс каждого инструмента — по схеме у двери. Битая декларация — отказ при старте, а не
     работа без пределов: тяжёлое без мест и снятия с цикла морозит сервер целиком."""
-    return Declared(path, ContractError, "«resources»",
-                    f"Заведи config/{path.name} — по нему тяжёлые вызовы снимаются с цикла.", schema=RESOURCES.schema).model
+    return Declared(path, ContractError, "«resources»", schema=RESOURCES.schema).model
 
 
 def create_server() -> tuple[Engine, Transport, Firewall]:
@@ -608,6 +609,14 @@ def main():
     parser.add_argument("--rotate-key", action="store_true", help="Перевыпустить ключ доступа и выйти (S1)")
     parser.add_argument("--re-adopt", action="store_true", help="Присвоить рабочую область этому серверу после переноса (S9)")
     args = parser.parse_args()
+
+    # До любой записи: ключ, присвоение области и сервер под суперпользователем оставят файлы, закрытые от обычного запуска.
+    if superuser() and not ALLOW_ROOT:
+        print("ОТКАЗ СТАРТА: сервер запущен с правами суперпользователя (root; на Windows — администратор с повышением).",
+              file=sys.stderr)
+        print("Запусти его от обычного пользователя; одноразовая машина (контейнер разработки, ВМ CI) — MCP_ALLOW_ROOT=1.",
+              file=sys.stderr)
+        raise SystemExit(2)
 
     if args.re_adopt:
         # Явное подтверждение владельца, что перенос/восстановление — его действие.

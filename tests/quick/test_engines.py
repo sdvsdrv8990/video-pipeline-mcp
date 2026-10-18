@@ -76,7 +76,7 @@ finally:
     os.environ["PATH"] = held_path
 
 print("== декларация движка читается дверью: имена и места для каждой ОС ==")
-declared = Declaration(declarations_root() / RECALC_ENGINE.file, ContractError, "движков сервера", "") \
+declared = Declaration(declarations_root() / RECALC_ENGINE.file, ContractError, "движков сервера") \
     .section(*RECALC_ENGINE.section, schema=RECALC_ENGINE.schema)
 check("recalc: soffice среди имён, у Windows и macOS места объявлены",
       "soffice" in declared.names and declared.win32 and declared.darwin, declared)

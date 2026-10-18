@@ -178,14 +178,14 @@ RATE_LIMITED:
 
 SHEET_NOT_FOUND:
   class: ai_recoverable
-  message_template: "Лист не найден в таблице."
+  message_template: "Листа «{sheet}» нет; есть: {known}."
   recovery:
     suggested_tool: "json_read_snapshot"
     reason: "Проверь имя листа (регистр важен) или создай через excel_add_sheet."
 
 COLUMN_NOT_FOUND:
   class: ai_recoverable
-  message_template: "Столбец не найден в листе."
+  message_template: "Столбца «{column}» нет в листе «{sheet}»."
   recovery:
     reason: "Сверь имя столбца со схемой (json_read_snapshot) или добавь через excel_add_column."
 
@@ -198,19 +198,19 @@ ROW_NOT_FOUND:
 
 COMPUTED_READONLY:
   class: ai_recoverable
-  message_template: "Столбец вычисляемый (формула) — запись данных запрещена."
+  message_template: "Столбец «{column}» вычисляемый (формула) — запись данных запрещена."
   recovery:
     reason: "Формулы не перезаписываются. Меняй исходные столбцы, из которых считается формула."
 
 ENUM_VIOLATION:
   class: ai_recoverable
-  message_template: "Значение вне допустимого enum столбца."
+  message_template: "Значение столбца «{column}» вне допустимых: {allowed}."
   recovery:
     reason: "Используй одно из значений enum из схемы столбца."
 
 INVALID_ACTION:
   class: ai_recoverable
-  message_template: "Недопустимое действие для очереди."
+  message_template: "Действие «{action}» не ставится в очередь: разрешены {allowed}."
   recovery:
     reason: "В очередь идут только set/append/delete; чтения (get_column/get_row) выполняются сразу."
 
@@ -218,14 +218,14 @@ INVALID_ACTION:
 
 WORKBOOK_NOT_FOUND:
   class: ai_recoverable
-  message_template: "Книга .xlsx не найдена."
+  message_template: "Книги «{path}» нет."
   recovery:
     suggested_tool: "excel_create_workbook"
     reason: "Создай книгу через excel_create_workbook или проверь путь."
 
 SHEET_EXISTS:
   class: ai_recoverable
-  message_template: "Лист с таким именем уже существует."
+  message_template: "Лист «{sheet}» уже есть."
   recovery:
     reason: "Выбери свободное имя или переименуй существующий через excel_rename_sheet."
 
@@ -243,19 +243,19 @@ LAST_SHEET:
 
 COLUMN_EXISTS:
   class: ai_recoverable
-  message_template: "Столбец с таким заголовком уже существует."
+  message_template: "Столбец «{column}» в листе «{sheet}» уже есть."
   recovery:
     reason: "Используй другое имя или удали существующий через excel_delete_column."
 
 FORMULA_PROTECTED:
   class: ai_recoverable
-  message_template: "В ячейке уже есть формула — тихая перезапись запрещена."
+  message_template: "В ячейке {cell} уже есть формула — тихая перезапись запрещена."
   recovery:
     reason: "Перезапись критической формулы недопустима молча. Передай overwrite=true осознанно."
 
 COLUMN_HAS_DEPENDENTS:
   class: ai_recoverable
-  message_template: "На столбец ссылаются формулы — удаление/перенос сломает их молча."
+  message_template: "На столбец «{column}» ссылаются формулы ({count}): {cells} — удаление или перенос сломает их молча."
   recovery:
     suggested_tool: excel_validate_formulas
     reason: "Перечисленные формулы съедут в #REF!. Сначала перепиши их (excel_insert_formula) или убери; если ссылки уже не нужны — передай force=true осознанно."
@@ -296,7 +296,7 @@ PROVIDER_TIMEOUT:
 
 DOWNLOAD_INCOMPLETE:
   class: server_recoverable
-  message_template: "Ответ «{host}» принят не полностью: {got} байт из {expected}."
+  message_template: "Ответ принят не полностью: {got} байт из {expected}."
   recovery:
     reason: "Ответ 200 не означает загрузку — тело оборвалось или короче обещанного. Загрузка файла по ссылке (веса, результат): оборванная часть лежит остатком, повтор той же загрузки докачает её с места обрыва; проверь ссылку и место на диске. Ответ на вызов провайдера (создание задачи, файл телом ответа): остатка нет, а запрос мог выполниться и списаться — сначала проверь задачу у провайдера, потом повторяй."
 
@@ -346,6 +346,22 @@ PROVIDER_KEY_MISSING:
     suggested_tool: media_provider_status
     reason: "Ключ вносит владелец; что стоит — media_provider_status (отпечаток и дата, не значение). Пока ключа нет — поставь в строке канала провайдера без ключа (table_update)."
 
+PROVIDER_KEY_REJECTED:
+  class: human_required
+  message_template: "Провайдер «{provider}» отклонил ключ доступа: ответ {status}."
+  recovery:
+    suggested_tool: table_update
+    reason: "Ключ заменяет владелец; пока — поставь в строке канала другого провайдера."
+    owner: "Замени ключ: python scripts/set_provider_key.py --channel <канал> --provider {provider}."
+
+PROVIDER_INPUT_TOO_LARGE:
+  class: ai_recoverable
+  message_template: "Файл {path}: {size_mb} МБ больше предела провайдера «{provider}» для встроенной отправки ({limit_mb} МБ)."
+  recovery:
+    suggested_tool: table_update
+    reason: "Уменьши кадр или поставь в строке канала провайдера, который принимает файл отдельно."
+    owner: "Предел — config/providers.yaml → online.http.<провайдер>.max_inline_mb."
+
 SECRET_UNREADABLE:
   class: human_required
   message_template: "Файл ключей канала не расшифровывается."
@@ -368,11 +384,27 @@ DOWNLOAD_FORBIDDEN:
     owner: "Хосты: ключ — config/providers.yaml → online.http; результаты — config/media_tasks.yaml → download.fetch; веса — config/providers.yaml → local.install.fetch; колёса — config/packages.yaml → index.fetch."
 
 PROVIDER_ADAPTER_MISSING:
+  class: ai_recoverable
+  message_template: "У провайдера «{provider}» нет исполнителя на сервере."
+  recovery:
+    suggested_tool: table_update
+    reason: "Исполнитель есть у: {known} — поставь одного из них в строке канала."
+    owner: "Новый исполнитель объявляется в config/providers.yaml → adapters.by_provider."
+
+PROVIDER_ADAPTER_BROKEN:
   class: human_required
-  message_template: "Для провайдера «{provider}» нет годного адаптера."
+  message_template: "Исполнитель провайдера «{provider}» на сервере не поднимается."
   recovery:
     suggested_tool: media_provider_status
-    reason: "Поставь в строке канала провайдера, которого сервер умеет исполнять (что есть — media_provider_status), или сообщи владельцу."
+    reason: "Поставь в строке канала другого провайдера (что есть — media_provider_status); повторяется — сообщи владельцу номер события."
+    owner: "Причина — в журнале сервера под номером события (импорт исполнителя или его зависимости, умение исполнителя); зависимости сервера — pip install -e . в его окружении."
+
+PROVIDER_LIST_UNDECLARED:
+  class: ai_recoverable
+  message_template: "У провайдера «{provider}» свежий список моделей не объявлен: ниже — реестр шлюза."
+  recovery:
+    reason: "Свежий список есть у: {known}."
+    owner: "Адрес свежего списка провайдера — config/providers.yaml → online.live."
 
 RUNNER_NOT_RUNNING:
   class: ai_recoverable
@@ -505,6 +537,14 @@ MODEL_TOO_LARGE:
     suggested_tool: media_models
     reason: "Возьми модель полегче: media_models (scope='local', fits=true)."
     owner: "Предел — local.install.max_total_mb в config/providers.yaml."
+
+MODEL_DOES_NOT_FIT:
+  class: ai_recoverable
+  message_template: "Модель не влезает на {device}: нужно ~{need_mb} МБ, доступно {available_mb} МБ."
+  recovery:
+    suggested_tool: media_models
+    reason: "Возьми модель полегче — вердикт по каждой: media_models (scope='installed', fits=true) — или поставь device=cpu в строке провайдера."
+    owner: "Выгрузка объявляется в config/providers.yaml → local.gpu.oversize: model_offload — медленнее в разы, sequential_offload — в десятки."
 
 MODEL_NOT_IN_CATALOG:
   class: ai_recoverable
@@ -672,10 +712,10 @@ CHAIN_UNRESOLVED:
 
 TEMPLATE_INVALID:
   class: human_required
-  message_template: "Шаблон объявлен неверно: {reason}"
+  message_template: "Шаблон {template} объявлен неверно: {field}."
   recovery:
     reason: "Сообщи владельцу: шаблон сервера объявлен неверно — данные клиента тут ни при чём."
-    owner: "Правится в config/templates/workspace/*.tpl.yaml (блок id: с prefix и ancestors)."
+    owner: "Шаблоны сервера — в config/templates/: таксономия — workspace/*.tpl.yaml (блок id: с prefix и ancestors), скелет скрипта сцены — scripts/."
 
 FOREIGN_WRITE:
   class: integrity
@@ -743,14 +783,14 @@ CONFIRM_REQUIRED:
 
 FFMPEG_MISSING:
   class: human_required
-  message_template: "Нечем монтировать: ffmpeg не найден в PATH."
+  message_template: "{binary} не найден в PATH."
   recovery:
-    reason: "Сообщи владельцу: без ffmpeg ни один инструмент монтажа не работает."
+    reason: "Сообщи владельцу: без него этот инструмент не работает."
     owner: "ffmpeg — системный бинарь, а не пакет pip: поставь его пакетным менеджером (dnf/apt/brew)."
 
 FILTER_UNKNOWN:
   class: ai_recoverable
-  message_template: "Имя перехода или фильтра не объявлено: {name}"
+  message_template: "Перехода или фильтра «{name}» нет в словаре монтажа; есть: {known}."
   recovery:
     suggested_tool: "fs_read_file"
     suggested_params: { path: "config/ffmpeg_filters.yaml" }
@@ -758,22 +798,22 @@ FILTER_UNKNOWN:
 
 RENDER_PROFILE_INVALID:
   class: ai_recoverable
-  message_template: "Профиль рендера просит невозможное: {reason}"
+  message_template: "Профиль рендера: значение «{column}» вне допустимых: {allowed}."
   recovery:
     suggested_tool: "table_get_row"
     suggested_params: { sheet: "RENDER_CONFIG" }
-    reason: "Кодек, разрешение или частота кадров в строке профиля не исполнимы этим ffmpeg. Почини строку профиля в книге канала."
+    reason: "Возьми одно из допустимых: кодек и контейнер — ячейки строки профиля в книге канала, профиль видео — столбец выбора у видео или аргумент вызова."
 
 RENDER_INPUT_UNPREPARED:
   class: ai_recoverable
   message_template: "Ассет не подготовлен к наложению: {path}"
   recovery:
     suggested_tool: "media_generate"
-    reason: "Снятие фона нейросетью делает провайдер ДО монтажа: ffmpeg режет фон только по цвету. Подготовь ассет и подставь готовый файл."
+    reason: "ffmpeg берёт ассет как есть: файл обязан разбираться ffprobe (видео, картинка или звук), а фон нейросетью снимает провайдер ДО монтажа — ffmpeg режет фон только по цвету. Подготовь ассет и подставь готовый файл."
 
 VARIANT_INCOMPATIBLE:
   class: ai_recoverable
-  message_template: "Вариант не годится в этот слот: {reason}"
+  message_template: "Вариант «{variant}» не годится в слот «{slot}»: {rule} слота — {expected}, у варианта — {got}."
   recovery:
     suggested_tool: "table_find_row"
     suggested_params: { sheet: "ASSET_VARIANTS" }
@@ -795,7 +835,7 @@ RENDER_FAILED:
 
 RENDER_UNVERIFIED:
   class: integrity
-  message_template: "Файл собран, но приёмка его не подтверждает: {reason}"
+  message_template: "Приёмка не подтверждает {path}: {rule} — ждали {expected}, получили {got}."
   recovery:
     reason: "ffprobe не нашёл в результате того, что обещал профиль (поток, длительность, размер кадра). Файл есть, но считать его готовым нельзя — это немая потеря, поэтому отказ."
 

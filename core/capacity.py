@@ -12,8 +12,7 @@ from core.contracts import ContractError
 from core.declaration import Declared, declarations_root
 from core.declaration_schemas import RESOURCES, Resources
 
-_DECLARED = Declared(declarations_root() / RESOURCES.file, ContractError, "«resources»",
-                     f"Заведи config/{RESOURCES.file} — места классов работы объявлены там.", schema=RESOURCES.schema)
+_DECLARED = Declared(declarations_root() / RESOURCES.file, ContractError, "«resources»", schema=RESOURCES.schema)
 
 
 class Capacity:

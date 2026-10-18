@@ -24,11 +24,10 @@ M = TypeVar("M", bound=BaseModel)
 class Declaration:
     """YAML-декларация: перечитывается при смене содержимого, отсутствие и битость — коды реестра."""
 
-    def __init__(self, config_file: str | Path, error_cls, subject: str, hint: str):
+    def __init__(self, config_file: str | Path, error_cls, subject: str):
         self.config_file = Path(config_file)
         self._error = error_cls
         self._subject = subject
-        self._hint = hint
         self._data: dict | None = None
         self._raw: bytes | None = None
 
@@ -49,13 +48,13 @@ class Declaration:
     def _invalid(self, errors: list[dict]) -> Exception:
         """Единственный отказ на битую декларацию — битый YAML, нет ключа, не тот тип, схема, связь с другой декларацией:
         путь ключа и правило, без пришедших значений. Ошибка связи несёт файл своей стороны (`file`): отказ называет все
-        файлы, а деталь — файл и путь ключа; ошибка одного файла — прежняя форма."""
+        файлы, а деталь — файл и путь ключа, когда файлов больше одного; ошибки одного файла — путь ключа без файла."""
         files = list(dict.fromkeys(x.get("file") or self._named() for x in errors))
         return self._error(
             "DECLARATION_INVALID", errors=errors,
             facts={"file": ", ".join(files),
-                   "details": "; ".join((f"{x['file']}: " if "file" in x else "") + f"{x['field'] or '—'} ({x['rule']})"
-                                        for x in errors)})
+                   "details": "; ".join((f"{x['file']}: " if "file" in x and len(files) > 1 else "")
+                                        + f"{x['field'] or '—'} ({x['rule']})" for x in errors)})
 
     def optional(self) -> dict:
         """Декларация, отсутствие которой — решение вызывающего, а не отказ.
@@ -88,7 +87,7 @@ class Declaration:
             try:
                 _adapter(kind).validate_python(node)
             except ValidationError as e:
-                raise self._invalid(_schema_errors(e, path)) from None
+                raise self._invalid(schema_errors(e, path)) from None
         return node
 
     def section(self, *path: str, schema: type[M]) -> M:
@@ -98,7 +97,7 @@ class Declaration:
         try:
             model = schema.model_validate(node)
         except ValidationError as e:
-            raise self._invalid(_schema_errors(e, path)) from None
+            raise self._invalid(schema_errors(e, path)) from None
         return self._registered(model, path)
 
     def _registered(self, model: M, path: tuple[str, ...] = ()) -> M:
@@ -112,7 +111,7 @@ class Declaration:
         known = {code for code, entry in _reactions(registry, self._error).data.items() if isinstance(entry, dict)}
         gaps = unregistered_codes(model, known)
         if gaps:
-            raise self._invalid(_schema_errors(ValidationError.from_exception_data(type(model).__name__, gaps), path))
+            raise self._invalid(schema_errors(ValidationError.from_exception_data(type(model).__name__, gaps), path))
         return model
 
     def link_refused(self, rule: str, expected: str, own: Sequence[tuple[str, ...]], other: "Declaration",
@@ -135,8 +134,8 @@ class Declared(Declaration, Generic[M]):
     Правка, не прошедшая проверку, — отказ на каждое чтение, пока её не починят, без тихого отката к прежнему.
     """
 
-    def __init__(self, config_file: str | Path, error_cls, subject: str, hint: str, schema: type[M]):
-        super().__init__(config_file, error_cls, subject, hint)
+    def __init__(self, config_file: str | Path, error_cls, subject: str, *, schema: type[M]):
+        super().__init__(config_file, error_cls, subject)
         self._schema = schema
         self._model: M | None = None
         self._model_raw: bytes | None = None
@@ -149,13 +148,14 @@ class Declared(Declaration, Generic[M]):
                 model = self._schema.model_validate(data)
             except ValidationError as e:
                 # Без цепочки причины: текст ValidationError несёт пришедшие значения, а журнал отказа пишет причину.
-                raise self._invalid(_schema_errors(e)) from None
+                raise self._invalid(schema_errors(e)) from None
             self._model, self._model_raw = model, self._raw
         return self._registered(self._model)       # реестр правят отдельно от декларации: сверка — на каждом чтении
 
 
-def _schema_errors(error: ValidationError, prefix: tuple[str, ...] = ()) -> list[dict]:
-    """Ошибки проверки — путь ключа, правило и что ждали; пришедшее значение в ответ не идёт: в декларациях бывают адреса."""
+def schema_errors(error: ValidationError, prefix: tuple[str, ...] = ()) -> list[dict]:
+    """Ошибки проверки модели — путь ключа, правило и что ждали; пришедшее значение в ответ не идёт: в декларациях бывают
+    адреса, в строках книги — данные канала."""
     return [{"field": ".".join(str(part) for part in (*prefix, *x["loc"])), "rule": x["type"], "expected": x["msg"]}
             for x in error.errors()]
 
@@ -178,14 +178,14 @@ def _yaml_error(error: yaml.YAMLError) -> dict:
 
 def _missing(path: tuple[str, ...]) -> list[dict]:
     """Нет ключа — то же правило и текст, что у схемы двери: ошибку собирает pydantic, а не строка в коде."""
-    return _schema_errors(ValidationError.from_exception_data("need", [{"type": "missing", "loc": path, "input": None}]))
+    return schema_errors(ValidationError.from_exception_data("need", [{"type": "missing", "loc": path, "input": None}]))
 
 
 @cache
 def _reactions(path: Path, error_cls) -> Declaration:
     """Дверь реестра реакций — одна на путь и класс отказа: разбор реестра дорог для каждого чтения раздела, а
     перечитывает файл при смене содержимого она сама."""
-    return Declaration(path, error_cls, "реакций сервера", f"Заведи {REACTIONS} в каталоге деклараций — коды отказа объявлены там.")
+    return Declaration(path, error_cls, "реакций сервера")
 
 
 @cache

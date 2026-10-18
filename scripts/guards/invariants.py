@@ -347,8 +347,8 @@ def _declared_codes(root: Path, readers: list[Path]) -> set[str]:
         if not path.exists():
             continue
         try:
-            found |= registry_codes(Declaration(path, ContractError, slot.file, "").section(*slot.section,
-                                                                                          schema=slot.schema))
+            found |= registry_codes(Declaration(path, ContractError, slot.file).section(*slot.section,
+                                                                                      schema=slot.schema))
         except ContractError as сбой:
             raise НетУлики(f"{slot.file} не проходит свою схему ({сбой.code}) — коды из неё не прочитать") from None
     return found

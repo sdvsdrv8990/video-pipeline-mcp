@@ -12,6 +12,7 @@ import concurrent.futures
 
 from core.paths import Files  # containment внутри workspace/
 from core.contracts import ContractError
+from core.tables.tables_core import sheet_of
 
 
 @dataclass
@@ -170,12 +171,8 @@ class QueryPlanner:
         """Выполнение одного чтения."""
         task.status = "running"
         try:
-            # Читаем данные из таблицы
-            sheet_data = self.table_engine.load_snapshot(task.table)
-            if task.sheet not in sheet_data:
-                raise SearchError("SHEET_NOT_FOUND", f"Лист '{task.sheet}' не найден в таблице '{task.table}'")
-
-            sheet_obj = sheet_data[task.sheet]
+            # Лист — узлом снимка таблиц (sheet_of): нет листа — его отказ с фактами
+            sheet_obj = sheet_of(self.table_engine.load_snapshot(task.table), task.sheet)
             rows = sheet_obj.get("rows", {})
 
             result = []

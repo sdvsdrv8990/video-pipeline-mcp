@@ -98,6 +98,10 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         ok, res = ctx.safe(lambda: ctx.table_engine.execute_queue(table))
         if not ok:
             return res
+        reactions = ctx.engine.reactions
+        if reactions is not None:                   # пропуск — той же формой, что отказ: код, текст реестра, факты
+            res["skipped"] = [{**s, "message": reactions.get_error(s["code"], facts=s["facts"]).message}
+                              for s in res["skipped"]]
         return ToolResult(status="success", data=res,
                           facts=[Fact(type="QueueExecuted", data={"table": table, "applied": res["applied"], "skipped": len(res["skipped"])})])
 

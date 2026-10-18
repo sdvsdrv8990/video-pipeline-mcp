@@ -54,8 +54,7 @@ class Logs:
     def from_config(cls, config_dir: str | Path, override: str | None) -> Logs:
         """Журналы по `<config_dir>/observability.yaml`, прочитанному дверью деклараций: так их находит любой, кто не
         сервер (обвязка тестов, воспроизводитель следа). Нет файла — журналов нет, битый файл — отказ кодом."""
-        declared = Declaration(Path(config_dir) / "observability.yaml", ContractError, "журналов сервера",
-                               "Заведи config/observability.yaml — корень и пределы журналов объявлены там.")
+        declared = Declaration(Path(config_dir) / "observability.yaml", ContractError, "журналов сервера")
         return cls.from_declaration(declared.optional(), override)
 
     def hear(self) -> None:

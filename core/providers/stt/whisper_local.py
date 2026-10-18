@@ -59,9 +59,7 @@ class WhisperLocalSTT:
                 import torch
                 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
             except ImportError as e:
-                raise ProviderError(
-                    "LOCAL_INFERENCE_FAILED", f"Среда локального распознавания не установлена: {e}",
-                    reason="Поставь зависимости группы local (transformers, torch).") from e
+                raise ProviderError("LOCAL_INFERENCE_FAILED") from e
             device = where["device"]
             dtype = getattr(torch, str(where.get("dtype") or "float32"), torch.float32)
             # `local_files_only` — сеть при вызове инструмента запрещена: веса приходят только
@@ -92,19 +90,16 @@ class WhisperLocalSTT:
         """Формат результата по расширению. Неизвестный — отказ, а не молчаливый дефолт."""
         ext = target.suffix.lstrip(".").lower()
         if ext not in WRITERS:
-            raise ProviderError(
-                "CONTENT_REJECTED", f"Формат транскрипта '{ext}' не поддерживается.",
-                reason=f"Поставь в столбец response_format один из: {', '.join(sorted(WRITERS))}.")
+            raise ProviderError("BOOK_ROW_INVALID", errors=[
+                {"field": "response_format", "rule": "enum", "expected": sorted(WRITERS)}])
         return WRITERS[ext]
 
     def generate(self, request: MediaRequest) -> MediaOutcome:
         """Транскрибировать аудио в файл. Синхронно: результат сразу на диске."""
         source = request.source
         if source is None or not source.is_file():
-            raise ProviderError(
-                "CONTENT_REJECTED", "Нечего транскрибировать: исходный аудиофайл не найден.",
-                reason="Передай путь к существующему файлу записи — повтор того же входа даст "
-                       "тот же отказ.")
+            raise ProviderError("VALIDATION_ERROR", errors=[
+                {"field": "input", "rule": "required" if source is None else "not_file"}])
         writer = self._writer(request.target)
         where = self._where(request.params)
         # Опись хранит путь к ФАЙЛУ весов, а `from_pretrained` нужен каталог с конфигом и
@@ -118,10 +113,7 @@ class WhisperLocalSTT:
         # нет» верны независимо от ffmpeg, и на машине без него все отказы схлопнулись бы в один
         # (поймано красным CI — локально ffmpeg есть, у раннера нет).
         if not shutil.which("ffmpeg"):
-            raise ProviderError(
-                "LOCAL_INFERENCE_FAILED", "Нечем декодировать звук: ffmpeg не найден в PATH.",
-                reason="ffmpeg — системный бинарь, а не пакет pip: поставь его пакетным "
-                       "менеджером (apt/dnf/brew). Без него распознавание не поднимется вовсе.")
+            raise ProviderError("FFMPEG_MISSING", facts={"binary": "ffmpeg"})
         request.target.parent.mkdir(parents=True, exist_ok=True)
         try:
             out = pipe(str(source), generate_kwargs=self._generate_kwargs(request.params),
@@ -130,9 +122,6 @@ class WhisperLocalSTT:
         except ProviderError:
             raise
         except Exception as e:  # среда/веса/ресурсы
-            raise ProviderError(
-                "LOCAL_INFERENCE_FAILED", f"Локальное распознавание не выполнено: {e}",
-                reason="Проверь, что файл — распознаваемая запись, и ресурсы машины; при "
-                       "повторе того же входа результат будет тем же.") from e
+            raise ProviderError("LOCAL_INFERENCE_FAILED") from e
         return MediaOutcome(files=[request.target],
                             meta={"engine": "whisper", "sync": True, "compute": where})

@@ -261,6 +261,96 @@ for _case, _text in _TUNNEL_CASES.items():
            and "(код 2)" in _start,
            f"битое объявление туннеля — отказ старта с файлом и местом, а не сервер с 403 на туннель ({_start[-160:]})")
 
+print("== 10. Порт занят — отказ старта называет порт и держателя, без трассы ==")
+# Причина рождается в ОС: порт уже слушает чужой сокет (здесь — сам набор); следствие судится на двери старта — код 1,
+# строка с портом и действием, а держатель — pid этого процесса там, где ОС его называет (`ss`, server._port_holder).
+import shutil as _sh10
+import socket as _sock10
+
+from tests.harness.jsonrpc import JsonRpc as _Rpc10
+
+_busy10 = _sock10.socket()
+_busy10.bind(("127.0.0.1", 0))
+_busy10.listen()
+_srv10 = live_server()
+_srv10.port = _busy10.getsockname()[1]
+_srv10.rpc = _Rpc10(_srv10.url, _srv10.token)
+try:
+    _srv10.start()
+    _said10 = "сервер поднялся на занятом порту"
+except LiveServerError as _e10:
+    _said10 = str(_e10)
+finally:
+    _srv10.stop()
+    _busy10.close()
+_holder10 = f"(pid {os.getpid()})" in _said10
+ok("(код 1)" in _said10 and f"Порт {_srv10.port} занят" in _said10 and "./run.sh --stop" in _said10
+   and "Traceback" not in _said10 and (_holder10 if _sh10.which("ss") else True),
+   f"порт занят — отказ старта кодом 1 с портом и действием, без трассы; держатель "
+   f"{'назван pid набора' if _holder10 else 'не назван — в ОС нет ss' if not _sh10.which('ss') else 'НЕ НАЗВАН'} "
+   f"({_said10[-220:]})")
+
+print("== 11. Старт с правами суперпользователя — отказ до любой записи; калитка MCP_ALLOW_ROOT ==")
+# Причина рождается в ОС: euid 0 в пространстве имён пользователя (`unshare -r`) или под `sudo -n`, на Windows — маркер с
+# повышением у самого набора (раннер CI); следствие судится на двери старта — код 2, правило и действие, без трассы.
+import shutil as _sh11
+import subprocess as _sp11
+
+from core.owner_only import superuser as _superuser11
+from tests.harness.live_server import LiveServer as _Live11
+from tests.harness.live_server import LiveServerError as _Err11
+
+
+class _AsRoot11(_Live11):
+    """Тот же живой сервер под префиксом, с которым процесс — суперпользователь."""
+
+    def __init__(self, prefix: list[str], **kw):
+        super().__init__(**kw)
+        self.prefix = prefix
+
+    def _command(self) -> list[str]:
+        return [*self.prefix, *super()._command()]
+
+
+def _root_prefix11() -> tuple[list[str] | None, str]:
+    """Префикс, под которым процесс — суперпользователь, и как он получен; None — ОС его не даёт."""
+    if _superuser11():
+        return [], "набор уже суперпользователь"
+    for prefix in (["unshare", "-r"], ["sudo", "-n", "-E"]):
+        if _sh11.which(prefix[0]) and _sp11.run([*prefix, sys.executable, "-c", "import os, sys; sys.exit(os.geteuid())"],
+                                                capture_output=True, check=False).returncode == 0:
+            return prefix, " ".join(prefix)
+    return None, "ни unshare -r, ни sudo -n не дали euid 0"
+
+
+_prefix11, _how11 = _root_prefix11()
+# Байткод не пишется: под sudo он лёг бы в дерево файлами root.
+_root_env11 = {"MCP_ALLOW_ROOT": "", "PYTHONDONTWRITEBYTECODE": "1"}
+if _prefix11 is None:
+    print(f"  · не мерено: {_how11}")
+else:
+    _srv11 = _AsRoot11(_prefix11, env=_root_env11)
+    try:
+        _srv11.start()
+        _said11 = "сервер поднялся от суперпользователя"
+    except _Err11 as _e11:
+        _said11 = str(_e11)
+    finally:
+        _srv11.stop()
+    ok("(код 2)" in _said11 and "правами суперпользователя" in _said11 and "MCP_ALLOW_ROOT=1" in _said11
+       and "Traceback" not in _said11,
+       f"суперпользователь ({_how11}) — отказ старта кодом 2 с правилом и действием, без трассы ({_said11[-200:]})")
+    if _prefix11[:1] == ["sudo"]:
+        print("  · калитка под sudo не мерена: сервер root набор сигналом не остановит — её мерят unshare и Windows")
+    else:
+        try:
+            with _AsRoot11(_prefix11, env={**_root_env11, "MCP_ALLOW_ROOT": "1"}) as _srv11b:
+                _open11 = len(_srv11b.rpc.tools_list()) >= 60
+            _start11 = ""
+        except _Err11 as _e11b:
+            _open11, _start11 = False, str(_e11b)[-200:]
+        ok(_open11, f"калитка MCP_ALLOW_ROOT=1 ({_how11}) — сервер поднят и отвечает списком инструментов {_start11}")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

@@ -89,8 +89,7 @@ class SceneScript:
         text = self.skeleton()
         for key, value in values.items():
             text = text.replace("{{" + key + "}}", value)
-        if left := LEFTOVER.findall(text):
-            raise MontageError(
-                "TEMPLATE_INVALID", f"Скелет просит значений, которых сервер не даёт: {', '.join(sorted(set(left)))}",
-                reason="Плейсхолдер скелета остался незакрытым — файл вышел бы полуготовым.")
+        if left := LEFTOVER.findall(text):      # незакрытый плейсхолдер — файл вышел бы полуготовым
+            raise MontageError("TEMPLATE_INVALID", facts={
+                "template": str(self.config["template"]), "field": ", ".join(sorted(set(left)))})
         return text

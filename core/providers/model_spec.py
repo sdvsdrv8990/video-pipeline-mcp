@@ -161,8 +161,7 @@ class ModelSpec:
         path = Path(self.registry.config_file).with_name("model_specs.yaml")
         if not path.is_file():
             return {}
-        book = Declaration(path, ProviderError, "спецификаций моделей",
-                           "Заведи config/model_specs.yaml или удали ссылку на него.").data
+        book = Declaration(path, ProviderError, "спецификаций моделей").data
         entry = ((book.get("models") or {}).get(str(model))
                  or (book.get("providers") or {}).get(provider))
         if not entry:

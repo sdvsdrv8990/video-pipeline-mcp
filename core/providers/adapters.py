@@ -61,9 +61,7 @@ class AdapterRegistry:
     def __init__(self, config_file: str | Path, project_root: str | Path):
         self.config_file = Path(config_file)
         self.project_root = Path(project_root)
-        self._decl = Declaration(
-            config_file, ProviderError, "провайдеров",
-            "Заведи config/providers.yaml — соответствие провайдер→адаптер объявлено там.")
+        self._decl = Declaration(config_file, ProviderError, "провайдеров")
 
     @property
     def config(self) -> dict:
@@ -163,32 +161,19 @@ class AdapterRegistry:
         # ровно тех, у кого адаптера нет, — то есть вёл бы ИИ на тот же отказ по кругу.
         runnable = sorted(n for n, v in table.items()
                           if (v if isinstance(v, str) else (v or {}).get("adapter")))
-        raise ProviderError(
-            "PROVIDER_ADAPTER_MISSING", f"Для провайдера '{provider}' не объявлен адаптер.",
-            reason=(f"Сервер знает, чем исполнять: {', '.join(runnable) or '(ничего)'}. "
-                    "Либо поставь в строке канала одного из них (table_update), либо объяви "
-                    "новый адаптер в config/providers.yaml → adapters.by_provider."),
-            suggested_tool="media_provider_status")
+        raise ProviderError("PROVIDER_ADAPTER_MISSING", facts={"provider": provider, "known": ", ".join(runnable)})
 
     def load(self, provider: str, resource_type: str = ""):
-        """Поднять адаптер провайдера. Импорт разрешён только из объявленного корня."""
+        """Поднять адаптер провайдера. Импорт — только под объявленным корнем: путь адаптера приставляется к корню."""
         spec = self.spec(provider, resource_type)
         root = str((self.config.get("adapters") or {}).get("root") or "").strip()
         module_path, _, class_name = spec.partition(":")
         full = f"{root}.{module_path}" if root else module_path
-        if root and not full.startswith(f"{root}."):
-            raise ProviderError(
-                "PROVIDER_ADAPTER_MISSING", f"Адаптер '{spec}' вне разрешённого корня '{root}'.",
-                reason="Адаптеры живут внутри объявленного корня; путь наружу не импортируется.")
         try:
             module = importlib.import_module(full)
             adapter_cls = getattr(module, class_name)
         except (ImportError, AttributeError) as e:
-            raise ProviderError(
-                "PROVIDER_ADAPTER_MISSING", f"Адаптер '{spec}' не поднимается: {e}",
-                reason=("Модуль объявлен, но его нет или в нём нет такого класса. Проверь "
-                        "config/providers.yaml → adapters.by_provider и установку зависимостей."),
-            ) from e
+            raise ProviderError("PROVIDER_ADAPTER_BROKEN", facts={"provider": provider}) from e
         return adapter_cls(self)
 
     @overload
@@ -200,6 +185,11 @@ class AdapterRegistry:
     def need(self, *path: str, kind: type | None = None) -> object:
         """Объявленное значение по пути декларации; ключа нет или тип не тот (`kind`) — отказ кодом реестра."""
         return self._decl.need(*path) if kind is None else self._decl.need(*path, kind=kind)
+
+    def refused(self, rule: str, expected: str, *paths: tuple[str, ...]) -> Exception:
+        """Значение декларации нарушает правило, которого схема не видит (допустимое у кода, связь двух ключей), — тот же
+        отказ двери: путь ключа и правило, без значения."""
+        return self._decl.link_refused(rule, expected, list(paths), self._decl, [])
 
     # Политика `local.hand_placed` → пускать ли веса, положенные руками, по наличию файла.
     HAND_PLACED: ClassVar[dict[str, bool]] = {"by_presence": True, "refuse": False}
@@ -224,14 +214,9 @@ class AdapterRegistry:
                 "model": str(name), "path": Files(self.models_dir).name(path)})
         policy = self.need("local", "hand_placed", kind=str)
         if policy not in self.HAND_PLACED:
-            raise ProviderError(
-                "SCHEMA_INVALID", f"local.hand_placed = '{policy}' — такой политики нет; допустимо: "
-                f"{', '.join(self.HAND_PLACED)} (config/providers.yaml → local.hand_placed).")
+            raise self.refused("literal_error", f"одно из: {', '.join(self.HAND_PLACED)}", ("local", "hand_placed"))
         if not self.HAND_PLACED[policy]:
-            raise ProviderError(
-                "MODEL_UNVERIFIED", f"Модель '{name}' положена руками: состава нет, судить её целость нечем "
-                f"(local.hand_placed = {policy}); поставь её через python scripts/models.py install — опись получит "
-                "состав, — либо объяви local.hand_placed: by_presence в config/providers.yaml.")
+            raise ProviderError("MODEL_UNVERIFIED", facts={"model": str(name)})
         return {"verdict": "ready", "checked": "по наличию (состав не объявлен)", "plan": [], "path": path,
                 "why": "веса положены руками: лежат по пути, целость не судима — пускает local.hand_placed"}
 

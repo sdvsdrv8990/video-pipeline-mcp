@@ -22,9 +22,7 @@ class Advice:
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
-        self._decl = Declared(
-            path, AdviceError, "советов",
-            "Заведи config/recommendations.yaml — что советовать клиенту, объявлено там.", schema=Recommendations)
+        self._decl = Declared(path, AdviceError, "советов", schema=Recommendations)
 
     def get(self, key: str, **context) -> list[dict]:
         """Советы по ключу с подстановкой контекста в `params`.

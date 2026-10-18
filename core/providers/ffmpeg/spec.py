@@ -22,8 +22,8 @@ BITRATE = re.compile(r"^\d{1,7}[kKmM]?$")
 AlphaMode = Literal["AS_IS", "REMOVE_BG", "CHROMAKEY", "NONE"]
 
 
-def points(text: str, arity: int, what: str) -> list[tuple[float, ...]]:
-    """Точки вида `t:a[,b]`, разделённые `;`. Пусто = точек нет, это не отказ."""
+def points(text: str, arity: int, field: str) -> list[tuple[float, ...]]:
+    """Точки вида `t:a[,b]`, разделённые `;`. Пусто = точек нет, это не отказ. `field` — где точки лежат, для отказа."""
     out: list[tuple[float, ...]] = []
     for chunk in re.split(r"[;\n]", text or ""):
         chunk = chunk.strip()
@@ -33,14 +33,11 @@ def points(text: str, arity: int, what: str) -> list[tuple[float, ...]]:
         values = [head] + tail.split(",")
         try:
             nums = tuple(float(v) for v in values)
-        except ValueError as exc:
-            raise FfmpegError(
-                "VALIDATION_ERROR", f"Точка `{chunk}` в {what} не разбирается: ожидались числа.",
-                reason="Форма точки — `t:значение` (и `t:x,y` для движения), точки через `;`.") from exc
-        if len(nums) != arity + 1 or not tail:
-            raise FfmpegError(
-                "VALIDATION_ERROR", f"Точка `{chunk}` в {what}: ожидалось {arity} значения после времени.",
-                reason="Форма точки — `t:значение` (и `t:x,y` для движения), точки через `;`.")
+        except ValueError:
+            nums = ()
+        if len(nums) != arity + 1 or not tail:  # не числа или не столько значений после времени
+            raise FfmpegError("VALIDATION_ERROR", errors=[
+                {"field": field, "rule": "point_form", "value": chunk, "expected": f"t:{','.join('v' * arity)}"}])
         out.append(nums)
     return sorted(out, key=lambda p: p[0])
 
@@ -118,7 +115,7 @@ class Layer(BaseModel):
 
     @property
     def motion(self) -> list[tuple[float, ...]]:
-        return points(self.motion_path, 2, f"движении элемента {self.element_id}")
+        return points(self.motion_path, 2, f"{self.element_id}.motion_path")
 
 
 class AudioTrack(BaseModel):
@@ -138,7 +135,7 @@ class AudioTrack(BaseModel):
 
     @property
     def curve(self) -> list[tuple[float, ...]]:
-        return points(self.volume_curve, 1, f"кривой громкости {self.audio_id}")
+        return points(self.volume_curve, 1, f"{self.audio_id}.volume_curve")
 
 
 class SceneSpec(BaseModel):

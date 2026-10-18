@@ -52,11 +52,7 @@ class TableEngine:
         """
         snapshot = self.state.read_snapshot(table)
         if snapshot is None:
-            raise TableError(
-                "TABLE_NOT_FOUND", f"Таблица не найдена: {table}",
-                reason="Создай структуру через fs_create_project_structure.",
-                suggested_tool="fs_create_project_structure",
-            )
+            raise TableError("TABLE_NOT_FOUND", facts={"table": table})
         return snapshot
 
     def load_snapshot(self, table: str) -> dict:
@@ -64,14 +60,8 @@ class TableEngine:
         return self._load(table)
 
     def _sheet(self, snapshot: dict, sheet: str) -> dict:
-        """Достаёт лист. SHEET_NOT_FOUND если листа нет в снапшоте."""
-        if sheet not in snapshot:
-            available = ", ".join(sorted(k for k in snapshot.keys())) or "(пусто)"
-            raise TableError(
-                "SHEET_NOT_FOUND", f"Лист '{sheet}' не найден. Есть: {available}",
-                reason="Проверь имя листа (регистр важен) или создай его через excel_add_sheet.",
-                suggested_tool="json_read_snapshot",
-            )
+        """Достаёт лист (`sheet_of`)."""
+        return sheet_of(snapshot, sheet)
         return snapshot[sheet]
 
     @staticmethod
@@ -82,17 +72,25 @@ class TableEngine:
     def _schema(sheet_obj: dict) -> dict:
         return sheet_obj.get("schema", {})
 
+    @staticmethod
+    def _column(schema: dict, sheet: str, *columns: str) -> None:
+        """Столбцы есть в схеме листа — иначе COLUMN_NOT_FOUND с именами и листом; лист без схемы не судится."""
+        unknown = [c for c in columns if schema and c not in schema]
+        if unknown:
+            raise TableError("COLUMN_NOT_FOUND", facts={"column": ", ".join(unknown), "sheet": sheet})
+
+    @staticmethod
+    def _row(rows: dict, sheet: str, row_id: str) -> None:
+        """Строка есть в листе — иначе ROW_NOT_FOUND с ID и листом."""
+        if row_id not in rows:
+            raise TableError("ROW_NOT_FOUND", facts={"row": row_id, "sheet": sheet})
+
     # ═══ ЧТЕНИЕ (проекции) ═══
 
     def get_column(self, table: str, sheet: str, column: str) -> dict:
         """Проекция столбца: {row_id: value}. Точечно, экономно по токенам."""
         sheet_obj = self._sheet(self._load(table), sheet)
-        schema = self._schema(sheet_obj)
-        if schema and column not in schema:
-            raise TableError(
-                "COLUMN_NOT_FOUND", f"Столбец '{column}' не найден в листе '{sheet}'.",
-                reason="Сверь имя столбца со схемой (json_read_snapshot) или добавь через excel_add_column.",
-            )
+        self._column(self._schema(sheet_obj), sheet, column)
         # «Тихий столбец»: если ячейки нет в строке — её нет в проекции (не None).
         return {rid: row[column] for rid, row in self._rows(sheet_obj).items() if column in row}
 
@@ -100,11 +98,7 @@ class TableEngine:
         """Одна строка целиком: {column: value}."""
         sheet_obj = self._sheet(self._load(table), sheet)
         rows = self._rows(sheet_obj)
-        if row_id not in rows:
-            raise TableError(
-                "ROW_NOT_FOUND", f"Строка '{row_id}' не найдена в листе '{sheet}'.",
-                reason="Проверь ID строки (get_column отдаст список ID) или создай через table_append.",
-            )
+        self._row(rows, sheet, row_id)
         return dict(rows[row_id])
 
     def find_row(self, table: str, sheet: str, where: dict, limit: int = 20) -> dict:
@@ -114,16 +108,9 @@ class TableEngine:
         путём был скан всего листа. Условия соединяются И; сравнение строгое по значению.
         """
         if not where:
-            raise TableError(
-                "INVALID_ACTION", "В find_row не передано ни одного условия.",
-                reason="Передай where={столбец: значение}; полный список ID даёт table_get_column.")
+            raise TableError("VALIDATION_ERROR", errors=[{"field": "where", "rule": "required"}])
         sheet_obj = self._sheet(self._load(table), sheet)
-        schema = self._schema(sheet_obj)
-        unknown = [c for c in where if schema and c not in schema]
-        if unknown:
-            raise TableError(
-                "COLUMN_NOT_FOUND", f"Столбцы {unknown} не найдены в листе '{sheet}'.",
-                reason="Сверь имена со схемой (json_read_snapshot) или excel_get_column_names.")
+        self._column(self._schema(sheet_obj), sheet, *where)
         found = [rid for rid, row in self._rows(sheet_obj).items()
                  if all(c in row and row[c] == v for c, v in where.items())]
         return {"sheet": sheet, "where": dict(where), "row_ids": found[:limit],
@@ -138,26 +125,17 @@ class TableEngine:
         schema = self._schema(sheet_obj)
         if not schema:
             return  # неструктурированный лист — пропускаем (ЗАКОН СИНХРОНИЗАЦИИ на стороне схемы)
-        if column not in schema:
-            raise TableError(
-                "COLUMN_NOT_FOUND", f"Столбец '{column}' не найден в листе '{sheet}'.",
-                reason="Сверь имя столбца со схемой или добавь через excel_add_column.",
-            )
+        self._column(schema, sheet, column)
         col = schema[column] or {}
         # Защита формул: computed:true ЛИБО writable:false → отказ.
         if col.get("computed") or col.get("writable") is False:
-            raise TableError(
-                "COMPUTED_READONLY", f"Столбец '{column}' вычисляемый (формула) — запись запрещена.",
-                reason="Формулы не перезаписываются данными. Меняй исходные столбцы, из которых считается формула.",
-            )
+            raise TableError("COMPUTED_READONLY", facts={"column": column, "sheet": sheet})
         # Enum-валидация на стороне сервера (не только дропдаун Excel).
         if col.get("type") == "enum":
             allowed = col.get("enum", [])
             if allowed and value not in allowed:
-                raise TableError(
-                    "ENUM_VIOLATION", f"Значение '{value}' вне enum столбца '{column}'. Допустимо: {allowed}.",
-                    reason="Используй одно из значений enum из схемы столбца.",
-                )
+                raise TableError("ENUM_VIOLATION", facts={
+                    "column": column, "sheet": sheet, "allowed": ", ".join(map(str, allowed))})
 
     # ═══ АНАЛИЗ ДАННЫХ ═══
 
@@ -248,12 +226,7 @@ class TableEngine:
         """
         snapshot = self._load(table)
         sheet_obj = self._sheet(snapshot, sheet)
-        rows = self._rows(sheet_obj)
-        if row_id not in rows:
-            raise TableError(
-                "ROW_NOT_FOUND", f"Строка '{row_id}' не найдена в листе '{sheet}'.",
-                reason="Проверь ID строки или создай через table_append.",
-            )
+        self._row(self._rows(sheet_obj), sheet, row_id)
         self._validate_write(sheet_obj, sheet, column, value)
         op = {"action": "set", "sheet": sheet, "row_id": row_id, "column": column, "value": value}
         self.state.push_to_queue(table, op)
@@ -267,15 +240,10 @@ class TableEngine:
         целиком или не применяется вовсе — частичного состояния не бывает.
         """
         if not data:
-            raise TableError(
-                "INVALID_ACTION", "В update не передано ни одного поля.",
-                reason="Передай data={столбец: значение, ...}; для одного поля есть table_set.")
+            raise TableError("VALIDATION_ERROR", errors=[{"field": "data", "rule": "required"}])
         snapshot = self._load(table)
         sheet_obj = self._sheet(snapshot, sheet)
-        if row_id not in self._rows(sheet_obj):
-            raise TableError(
-                "ROW_NOT_FOUND", f"Строка '{row_id}' не найдена в листе '{sheet}'.",
-                reason="Найди ID по значению (table_find_row) или создай через table_append.")
+        self._row(self._rows(sheet_obj), sheet, row_id)
         for column, value in data.items():
             self._validate_write(sheet_obj, sheet, column, value)
         op = {"action": "update", "sheet": sheet, "row_id": row_id, "data": dict(data)}
@@ -300,11 +268,7 @@ class TableEngine:
         """Удалить строку (кладёт операцию в очередь)."""
         snapshot = self._load(table)
         sheet_obj = self._sheet(snapshot, sheet)
-        if row_id not in self._rows(sheet_obj):
-            raise TableError(
-                "ROW_NOT_FOUND", f"Строка '{row_id}' не найдена в листе '{sheet}'.",
-                reason="Проверь ID строки (get_column отдаст список ID).",
-            )
+        self._row(self._rows(sheet_obj), sheet, row_id)
         op = {"action": "delete", "sheet": sheet, "row_id": row_id}
         self.state.push_to_queue(table, op)
         return op
@@ -319,19 +283,13 @@ class TableEngine:
         очередь не кладутся.
         """
         if not isinstance(action, dict) or "action" not in action:
-            raise TableError(
-                "INVALID_ACTION", "action должен быть объектом с полем 'action'.",
-                reason="Передай {action:'set|append|delete', sheet, ...}.",
-            )
+            raise TableError("VALIDATION_ERROR", errors=[{"field": "action", "rule": "object_with_action"}])
         kind = action.get("action")
         if kind not in QUEUEABLE_ACTIONS:
-            raise TableError(
-                "INVALID_ACTION", f"Действие '{kind}' нельзя поставить в очередь. Разрешены: {sorted(QUEUEABLE_ACTIONS)}.",
-                reason="Чтения (get_column/get_row) выполняются сразу, в очередь идут только set/append/delete.",
-            )
+            raise TableError("INVALID_ACTION", facts={"action": str(kind), "allowed": ", ".join(sorted(QUEUEABLE_ACTIONS))})
         sheet = action.get("sheet")
         if not sheet:
-            raise TableError("INVALID_ACTION", "В action отсутствует 'sheet'.", reason="Укажи лист.")
+            raise TableError("VALIDATION_ERROR", errors=[{"field": "action.sheet", "rule": "required"}])
         # Дублируем валидацию типизированных методов (единый вход в очередь).
         if kind == "set":
             return self.set(table, sheet, action["row_id"], action["column"], action.get("value"))
@@ -378,14 +336,12 @@ class TableEngine:
             try:
                 if kind == "set":
                     col, rid = op["column"], op["row_id"]
-                    if rid not in rows:
-                        raise TableError("ROW_NOT_FOUND", f"Строка '{rid}' исчезла до применения.")
+                    self._row(rows, sheet, rid)             # строка могла исчезнуть до применения
                     self._validate_write(sheet_obj, sheet, col, op.get("value"))
                     rows[rid][col] = op.get("value")
                 elif kind == "update":
                     rid, data = op["row_id"], op.get("data", {})
-                    if rid not in rows:
-                        raise TableError("ROW_NOT_FOUND", f"Строка '{rid}' исчезла до применения.")
+                    self._row(rows, sheet, rid)
                     # Сперва проверяем ВСЕ поля, и только потом пишем хоть одно: иначе отказ
                     # на третьем поле оставил бы строку наполовину изменённой.
                     for col, value in data.items():
@@ -396,10 +352,11 @@ class TableEngine:
                 elif kind == "delete":
                     rows.pop(op.get("row_id"), None)
                 else:
-                    raise TableError("INVALID_ACTION", f"Неизвестное действие в очереди: {kind}")
+                    raise TableError("INVALID_ACTION", facts={"action": str(kind),
+                                                              "allowed": ", ".join(sorted(QUEUEABLE_ACTIONS))})
                 applied += 1
             except TableError as e:
-                skipped.append({"op": op, "code": e.code, "reason": e.message})
+                skipped.append({"op": op, "code": e.code, "facts": dict(e.facts)})
 
         self.state.write_snapshot(table, snapshot)
         return {"applied": applied, "skipped": skipped, "xlsx_synced": False,
@@ -409,3 +366,11 @@ class TableEngine:
         """Очистить очередь без применения (отладка/сброс)."""
         count = self.state.clear_queue(table)
         return {"cleared": count}
+
+
+def sheet_of(snapshot: dict, sheet: str) -> dict:
+    """Лист снимка таблицы; нет — SHEET_NOT_FOUND с именем и листами, что есть. Узел для движка и для читателей снимка
+    из других модулей (поиск)."""
+    if sheet not in snapshot:
+        raise TableError("SHEET_NOT_FOUND", facts={"sheet": sheet, "known": ", ".join(sorted(snapshot)) or "—"})
+    return snapshot[sheet]

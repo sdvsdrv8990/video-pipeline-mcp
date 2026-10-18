@@ -138,7 +138,13 @@ def test_supervisor_backoff_and_status():
 
     d1, d3, dbig = t._backoff_delay(1), t._backoff_delay(3), t._backoff_delay(20)
     check("backoff grows with attempts", d3 > d1, f"d1={d1:.2f} d3={d3:.2f}")
-    check("backoff capped at retry_max(+jitter)", dbig <= t.retry_max + t.retry_base + 1e-3, f"dbig={dbig:.2f} cap={t.retry_max}")
+    # Обновлено 2026-10-18 (D28, WC-03): добавка — объявленная доля паузы (надзор.jitter) от шва rng, а не абсолютная
+    # U(0, retry_base) от модуля random: потолок с добавкой — retry_max·(1+jitter).
+    check("backoff capped at retry_max·(1+jitter)", t.retry_max <= dbig <= t.retry_max * (1 + t.jitter) + 1e-9,
+          f"dbig={dbig:.2f} cap={t.retry_max} jitter={t.jitter}")
+    t.rng = type("Half", (), {"random": staticmethod(lambda: 0.5)})()
+    check("пауза воспроизводима на шве rng: base·(1+jitter·0.5)",
+          abs(t._backoff_delay(1) - t.retry_base * (1 + t.jitter * 0.5)) < 1e-9, t._backoff_delay(1))
 
     t._apply_line("INF Registered tunnel connection connIndex=0\n")
     t._apply_line("INF Registered tunnel connection connIndex=1\n")

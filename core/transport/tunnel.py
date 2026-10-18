@@ -8,12 +8,14 @@
 
 import logging
 import os
+import random
 import re
 import shutil
 import socket
 import subprocess
 import threading
 import time
+from itertools import islice
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal, assert_never
 from urllib.parse import urlsplit
@@ -26,6 +28,7 @@ from core.declaration import Declaration
 from core.declaration_schemas import TUNNEL_PROBE, TUNNEL_SUPERVISION
 from core.engine.engine import incident
 from core.environment import child_spawn
+from core.jobs import backoff
 from core.providers.download import answers
 from core.transport.diagnostics import каталог_проверок, путь_бинаря
 
@@ -116,12 +119,16 @@ class CloudflaredTunnel:
         self.retry_base = надзор.retry_base_seconds         # старт паузы перезапуска
         self.retry_max = надзор.retry_max_seconds           # потолок паузы
         self.retry_reset = надзор.retry_reset_seconds       # «стабильный» прогон
+        self.jitter = надзор.jitter                         # доля добавки к паузе
         self.ready_timeout = надзор.ready_timeout_seconds   # предел одной попытки первого подъёма
         self.first_attempts = надзор.first_attempts         # попыток первого подъёма
+        # Шов генератора добавки: худшее время перезапуска воспроизводимо; часы — шов класса `clock` (монотонные).
+        self.rng = random.Random()
 
         self._proc: subprocess.Popen | None = None
         self._public_url: str | None = None
         self._stopping = False
+        self._stopped = threading.Event()   # остановка как событие: пауза перезапуска прерывается им, а не опросом
         self._supervisor: threading.Thread | None = None
 
         # Статус здоровья (обновляется супервизором, читается через status()).
@@ -143,9 +150,7 @@ class CloudflaredTunnel:
         отказ двери с путём ключа и без значения: токен живёт в среде сервера."""
         if not config_path:
             return {}
-        дверь = Declaration(
-            config_path, ContractError, "туннеля",
-            "Заведи config/tunnel.yaml — режим, порт и hostname объявлены там.")
+        дверь = Declaration(config_path, ContractError, "туннеля")
         if "tunnel_token" in дверь.data:
             дверь.need("tunnel_token", kind=_БЕЗ_СЕКРЕТА)
         for ключ in sorted(set(дверь.data) & set(TUNNEL_SUPERVISION.schema.model_fields)):
@@ -380,7 +385,7 @@ class CloudflaredTunnel:
 
     def _spawn(self) -> "subprocess.Popen":
         """Запуск процесса cloudflared (с фиксацией времени старта)."""
-        self._proc_started = time.time()
+        self._proc_started = self.clock()
         return subprocess.Popen(
             self._build_command(),
             stdout=subprocess.PIPE,
@@ -400,19 +405,13 @@ class CloudflaredTunnel:
         return 1 if uptime >= self.retry_reset else prev + 1
 
     def _backoff_delay(self, attempts: int) -> float:
-        """Экспоненциальная пауза с потолком и джиттером."""
-        import random
-        delay = min(self.retry_base * (2 ** max(0, attempts - 1)), self.retry_max)
-        return delay + random.uniform(0, self.retry_base)
+        """Пауза `attempts`-го перезапуска — узлом паузы сервера (`core.jobs.backoff`): вдвое до потолка, добавка доли
+        `jitter` от шва `rng` (WC-03)."""
+        return next(islice(backoff(self.retry_base, self.retry_max, self.jitter, self.rng), max(0, attempts - 1), None))
 
     def _sleep_interruptible(self, delay: float):
-        """Пауза, прерываемая stop() (не держим shutdown на всю паузу)."""
-        end = time.time() + delay
-        while not self._stopping:
-            remaining = end - time.time()
-            if remaining <= 0:
-                break
-            time.sleep(min(0.5, remaining))
+        """Пауза, прерываемая stop() событием (WC-10): не держим shutdown на всю паузу и не опрашиваем флаг."""
+        self._stopped.wait(delay)
 
     # ── Супервизор ──────────────────────────────────────────────────────────
 
@@ -461,7 +460,7 @@ class CloudflaredTunnel:
                     # stdout закрылся → процесс cloudflared завершился (HP = down).
                     if self._stopping:
                         break
-                    uptime = (time.time() - self._proc_started) if self._proc_started else 0.0
+                    uptime = (self.clock() - self._proc_started) if self._proc_started else 0.0
                     with self._status_lock:
                         self._connected = False
                         self._connections = 0
@@ -562,7 +561,7 @@ class CloudflaredTunnel:
                 "public_url": self._public_url,
                 "last_error": self._last_error,
                 "supervision": dict(self._supervision),
-                "uptime_sec": round((time.time() - self._proc_started), 1) if self._proc_started else 0.0,
+                "uptime_sec": round((self.clock() - self._proc_started), 1) if self._proc_started else 0.0,
             }
 
     @property
@@ -570,8 +569,9 @@ class CloudflaredTunnel:
         return self._public_url
 
     def stop(self):
-        """Останавливает туннель и keepalive: флаг остановки снимает подъём и надзор в любой их фазе."""
+        """Останавливает туннель и keepalive: флаг остановки снимает подъём и надзор в любой их фазе, событие — паузу."""
         self._stopping = True
+        self._stopped.set()
         self._end_attempt()
 
     def _end_attempt(self) -> None:

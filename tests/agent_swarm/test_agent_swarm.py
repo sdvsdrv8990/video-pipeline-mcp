@@ -475,11 +475,14 @@ def check_registry_matches_code(declared: dict[str, str]) -> list[str]:
 
 def run_pattern(fn, ctx: Ctx, status: str) -> None:
     pid = fn.__name__
+    console_from, journal_from = _marks(ctx.srv)
     try:
         defended, detail = fn(ctx)
-    except Exception as exc:  # падение = вердикт
+    except Exception as exc:  # падение = вердикт; ✗ — строка провала для test_suites, улики — причина в выводе
         _results.append(("СЛОМАН", pid, f"{type(exc).__name__}: {exc}"))
-        print(f"  💥 {pid}: исполнитель упал — {type(exc).__name__}: {exc}")
+        print(f"  ✗ 💥 {pid}: исполнитель упал — {type(exc).__name__}: {exc}")
+        for line in evidence(ctx.srv, console_from, journal_from):
+            print(f"      {line}")
         return
     if defended is None:
         # Проба не достала до поверхности. Это не «защищено» и не «дыра» — это НЕ ПРОВЕРЕНО,
@@ -501,6 +504,26 @@ def run_pattern(fn, ctx: Ctx, status: str) -> None:
     else:
         _results.append(("ИЗВЕСТНАЯ ДЫРА", pid, detail))
         print(f"  ⚠ {pid}: дыра известна (xfail-spec). {detail}")
+
+
+def _marks(srv) -> tuple[int, int]:
+    """Отметки до паттерна: сколько строк уже в консоли сервера и сколько байт в его журнале фактов."""
+    log = srv.journals.session
+    return (len(srv.console.lines) if srv.console else 0,
+            log.path.stat().st_size if log is not None and log.path.is_file() else 0)
+
+
+def evidence(srv, console_from: int, journal_from: int) -> list[str]:
+    """Улики упавшего паттерна: что сервер сказал в консоль и дописал в журнал фактов после отметок, — без них
+    красный не отличает «сервер висел» от «ответил дольше срока клиента»."""
+    said = srv.console.lines[console_from:] if srv.console else []
+    log, wrote = srv.journals.session, ""
+    if log is not None and log.path.is_file():
+        with log.path.open("rb") as journal:
+            journal.seek(journal_from)
+            wrote = journal.read().decode("utf-8", "replace")
+    return ([f"консоль сервера │ {line}" for line in said[-20:]] or ["консоль сервера │ (за время паттерна — ничего)"]) + \
+        ([f"журнал фактов │ {line}" for line in wrote.splitlines()[-30:]] or ["журнал фактов │ (за время паттерна — ничего)"])
 
 
 def main() -> int:
@@ -539,9 +562,9 @@ def main() -> int:
     if red or problems:
         print("\nКРАСНОЕ:")
         for v, p, d in red:
-            print(f"  [{v}] {p}: {d}")
+            print(f"  ✗ [{v}] {p}: {d}")
         for p in problems:
-            print(f"  [РЕЕСТР] {p}")
+            print(f"  ✗ [РЕЕСТР] {p}")
         return 1
     print("\nРой не пробил периметр; известные дыры совпадают с объявленными.")
     return 0

@@ -24,7 +24,10 @@ async def main():
     tmp = Path(tempfile.mkdtemp())
     ws = tmp / "workspace"; ws.mkdir()
     sm = StateManager(ws)
-    eng = Engine(state_manager=sm)
+    # Обновлено 2026-10-18 (план текста места): движок с реестром, как у сервера, — без него отказ собирала запасная
+    # ветка из текста места, и набор мерил ответ, которого клиент не видит.
+    from core.reactions import Reactions
+    eng = Engine(state_manager=sm, reactions=Reactions(ROOT / "config" / "server_reactions.yaml"))
     register_basic_tools(eng, IDGenerator(), sm)
 
     # tools/list: все новые инструменты + title
@@ -115,7 +118,9 @@ async def main():
     check("find_row: неизвестный столбец → COLUMN_NOT_FOUND",
           r.status=="error" and r.error.code=="COLUMN_NOT_FOUND")
     r = await call("table_find_row", table=T, sheet="META", where={})
-    check("find_row без условий → INVALID_ACTION", r.status=="error" and r.error.code=="INVALID_ACTION")
+    # Обновлено 2026-10-18: нет условий — ошибка ввода (поле where), INVALID_ACTION — только действие не для очереди.
+    check("find_row без условий → VALIDATION_ERROR where/required", r.status=="error" and r.error.code=="VALIDATION_ERROR"
+          and r.error.errors == [{"field": "where", "rule": "required"}])
 
     # ── table_update — несколько полей ОДНОЙ операцией, без частичного применения ──
     r = await call("table_update", table=T, sheet="META", row_id="VID_1",
@@ -138,7 +143,9 @@ async def main():
     check("update несуществующей строки → ROW_NOT_FOUND",
           r.status=="error" and r.error.code=="ROW_NOT_FOUND")
     r = await call("table_update", table=T, sheet="META", row_id="VID_1", data={})
-    check("update без полей → INVALID_ACTION", r.status=="error" and r.error.code=="INVALID_ACTION")
+    # Обновлено 2026-10-18: нет полей — ошибка ввода (поле data).
+    check("update без полей → VALIDATION_ERROR data/required", r.status=="error" and r.error.code=="VALIDATION_ERROR"
+          and r.error.errors == [{"field": "data", "rule": "required"}])
     r = await call("json_push_to_queue", table=T,
                    action={"action":"update","sheet":"META","row_id":"VID_1","data":{"title":"через очередь"}})
     check("update принимается универсальной очередью", r.status=="success")
@@ -157,6 +164,11 @@ async def main():
     check("update: операция отвергнута целиком на применении",
           r.data["applied"]==0 and len(r.data["skipped"])==1
           and r.data["skipped"][0]["code"]=="ENUM_VIOLATION")
+    # Обновлено 2026-10-18 (план текста места): пропуск — формой отказа: код, текст реестра с фактами, факты (не текст места).
+    _skip = r.data["skipped"][0]
+    check("пропуск очереди: факты столбца и допустимых, текст реестра их называет",
+          _skip.get("facts", {}).get("column") == "status" and _skip["facts"].get("allowed") == "published"
+          and "«status»" in _skip.get("message", "") and "published" in _skip.get("message", "") and "reason" not in _skip)
     r = await call("table_get_row", table=T, sheet="META", row_id="VID_1")
     check("update: ни одно поле не применилось частично",
           r.data["row"]["title"]=="через очередь" and r.data["row"]["status"]=="published")

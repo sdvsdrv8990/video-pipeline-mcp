@@ -32,9 +32,7 @@ def install(path: str | Path = _CONFIG) -> tuple[bool, str]:
     """Пара «стоит ли MCP, какой конец туннеля». Нет файла — рабочая машина."""
     if not Path(path).exists():
         return _DEFAULT
-    data = Declaration(
-        path, DeployError, "установки",
-        "Запусти ./install.sh — он объявит, что стоит на этой машине.").data
+    data = Declaration(path, DeployError, "установки").data
 
     if "role" in data and "mcp" not in data:
         роль = data["role"]

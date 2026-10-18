@@ -5,6 +5,7 @@ level: competitor_channel
 source: competitor_channel_data.schema.md
 sheets:
   - name: CHANNEL_META
+    record: true   # одна строка — канал; формулы других листов зовут её столбцы как `CHANNEL_META.столбец`
     columns:
       - { name: channel_id, type: string, flag: id }
       - { name: channel_name, type: string, flag: W }
@@ -46,7 +47,7 @@ sheets:
       - { name: pattern_id, type: string, flag: id }
       - { name: description, type: string, flag: W }
       - { name: frequency_count, type: integer, flag: W }
-      - { name: frequency_pct, type: float, flag: F, formula: '=frequency_count/videos_analyzed*100' }   # `=frequency_count/videos_analyzed*100`
+      - { name: frequency_pct, type: float, flag: F, formula: '=frequency_count/CHANNEL_META.videos_analyzed*100' }
       - { name: best_example_video_id, type: string, flag: W }
       - { name: avg_effectiveness, type: float, flag: W }
       - { name: our_adoption_status, type: enum, flag: W, enum: ['NOT_ADOPTED', 'IN_DNA', 'TESTING', 'TESTED', 'REJECTED'] }   # NOT_ADOPTED/IN_DNA/TESTING/TESTED/REJECTED

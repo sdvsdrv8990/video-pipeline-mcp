@@ -146,7 +146,7 @@ sheets:
       - { name: color_primary, type: string, flag: W }
       - { name: times_used, type: integer, flag: F }
       - { name: last_used_video_n, type: integer, flag: W }
-      - { name: freshness_score, type: enum, flag: F, formula: '=IF(times_used>=7,"RETIRE",IF(>=5,"ROTATE",IF(>=3,"HEALTHY","FRESH")))' }   # `=IF(times_used>=7,"RETIRE",IF(>=5,"ROTATE",IF(>=3,"HEALTHY","FRESH")))`
+      - { name: freshness_score, type: enum, flag: F, formula: '=IF(times_used>=7,"RETIRE",IF(times_used>=5,"ROTATE",IF(times_used>=3,"HEALTHY","FRESH")))' }
       - { name: best_competitor_example, type: string, flag: W }
       - { name: alternative_count, type: integer, flag: W }
       - { name: status, type: enum, flag: W, enum: ['ACTIVE', 'RETIRED'] }   # ACTIVE/RETIRED

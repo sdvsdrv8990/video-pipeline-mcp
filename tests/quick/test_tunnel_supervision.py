@@ -10,6 +10,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -183,6 +184,33 @@ class Proc:
         return 0
 
 
+class Waits:
+    """Подставное событие остановки: ожидание паузы двигает подставные часы и запоминается; `set` — остановка."""
+
+    def __init__(self, clock: Clock):
+        self.clock, self.calls, self.flag = clock, [], False
+
+    def wait(self, timeout=None) -> bool:
+        self.calls.append(timeout)
+        if not self.flag and timeout:
+            self.clock.sleep(timeout)
+        return self.flag
+
+    def set(self) -> None:
+        self.flag = True
+
+    def is_set(self) -> bool:
+        return self.flag
+
+
+class Half:
+    """Генератор добавки: random() — ровно середина, пауза воспроизводима."""
+
+    @staticmethod
+    def random() -> float:
+        return 0.5
+
+
 class InPlace:
     """Поток надзора исполняется в потоке набора: его конец — событие самого сценария, ждать нечего."""
 
@@ -223,6 +251,9 @@ def lifted(outcomes: list, *, stop_before: bool = False, stop_in_spawn: bool = F
     tunnel._spawn = spawn                               # type: ignore[method-assign]
     tunnel._await_ready = ready                         # type: ignore[method-assign]
     tunnel._apply_line = lines.append                   # type: ignore[method-assign]
+    tunnel._stopped = Waits(clock)                      # type: ignore[assignment]
+    tunnel.rng = Half()                                 # type: ignore[assignment]
+    tunnel.clock = clock.time                           # type: ignore[misc]
     held = tunnel_module.time, tunnel_module.threading
     tunnel_module.time = clock                          # type: ignore[assignment]
     tunnel_module.threading = SimpleNamespace(Thread=InPlace, Timer=threading.Timer, Lock=threading.Lock)  # type: ignore[assignment]
@@ -239,13 +270,14 @@ def lifted(outcomes: list, *, stop_before: bool = False, stop_in_spawn: bool = F
 
 
 URL = "https://проба.trycloudflare.com"
-base = declared["retry_base_seconds"]
+base, jitter = declared["retry_base_seconds"], declared["jitter"]
 
 print("== 5. Первый подъём с повтором (D40): пауза выдержана, после удачного повтора надзор жив ==")
 run = lifted([TunnelError("край не ответил вовремя"), URL])
 check("первая попытка упала, вторая подняла туннель — start вернул URL, а не отмену", run["got"] == URL, run["got"])
-check(f"пауза перед повтором выдержана: от retry_base ({base} с) до удвоенной (добавка)",
-      run["pause"] is not None and base <= run["pause"] <= 2 * base, run["pause"])
+# Обновлено 2026-10-18 (D28): добавка — объявленная доля (надзор.jitter) от шва rng; на rng = 0.5 пауза точная.
+check(f"пауза перед повтором выдержана: base·(1+jitter·0.5) = {base * (1 + jitter * 0.5)} с",
+      run["pause"] is not None and abs(run["pause"] - base * (1 + jitter * 0.5)) < 1e-9, run["pause"])
 check("процесс упавшей попытки погашен до повтора", len(run["procs"]) >= 2 and run["procs"][0].ended,
       [p.ended for p in run["procs"]])
 check("надзор после удачного повтора жив: все строки процесса дошли до разбора",
@@ -261,6 +293,36 @@ check("остановка во время порождения: start — Tunnel
 check("процесс, порождённый под остановкой, погашен; повторов нет; надзор не начат",
       len(run["procs"]) == 1 and run["procs"][0].ended and run["lines"] == [] and run["tunnel"]._proc is None,
       ([p.ended for p in run["procs"]], run["lines"]))
+
+print("== 7. Пауза перезапуска (D28): событие остановки, а не опрос; часы — шов, монотонные ==")
+tunnel = built(declarations_copy())
+assert isinstance(tunnel, CloudflaredTunnel)
+clock = Clock()
+waits = Waits(clock)
+tunnel._stopped = waits                                 # type: ignore[assignment]
+held = tunnel_module.time
+tunnel_module.time = clock                              # type: ignore[assignment]
+try:
+    tunnel._sleep_interruptible(5)
+finally:
+    tunnel_module.time = held
+check("пауза — одно ожидание события остановки на весь срок, без опроса флага по кусочкам",
+      waits.calls == [5] and clock.slept == 5, (waits.calls, clock.slept))
+tunnel = built(declarations_copy())
+assert isinstance(tunnel, CloudflaredTunnel)
+tunnel.stop()
+began = time.monotonic()
+tunnel._sleep_interruptible(3600)
+check("остановка до паузы — пауза кончается сразу событием, а не через час", time.monotonic() - began < 1,
+      time.monotonic() - began)
+tunnel = built(declarations_copy())
+assert isinstance(tunnel, CloudflaredTunnel)
+clock = Clock()
+tunnel.clock = clock.time                               # type: ignore[misc]
+tunnel._proc_started = clock.time()
+clock.sleep(90)
+check("время работы процесса — по шву часов, а не по стенным: перевод часов его не ломает",
+      tunnel.status()["uptime_sec"] == 90.0, tunnel.status()["uptime_sec"])
 
 print(f"\n{'=' * 50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

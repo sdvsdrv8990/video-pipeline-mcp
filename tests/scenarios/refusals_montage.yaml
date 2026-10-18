@@ -74,6 +74,10 @@
     - call: montage_render_scene
       with: {table: ch1/ось, scene_id: S05}
       expect: {ok: false, code: VARIANT_INCOMPATIBLE}
+    # Обновлено 2026-10-18 (тексты места, семейство монтажа, слово 6a): висячая ссылка на вариант — отказ строки книги
+    # BOOK_ROW_INVALID (errors: variant_id, enum, выбор — варианты того же слота), прежде RENDER_INPUT_UNPREPARED с рецептом
+    # снятия фона — причина не та. Роды: отрицательный — тот же вызов отбит до рендера; положительный (годно) и остальные
+    # отказы — без изменений. Прогноз: шаг краснеет на старом коде, на новом зелёный; прочие шаги сценария те же.
     - call: montage_render_scene
       with: {table: ch1/висит, scene_id: S05}
-      expect: {ok: false, code: RENDER_INPUT_UNPREPARED}
+      expect: {ok: false, code: BOOK_ROW_INVALID}

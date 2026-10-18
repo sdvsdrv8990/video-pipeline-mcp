@@ -54,26 +54,29 @@ class ExcelEngine:
         return Files(self.workspace).place(path)
 
     def _load(self, path: str, must_exist: bool = True):
-        """Открыть книгу. WORKBOOK_NOT_FOUND если нет (и must_exist)."""
+        """Открыть книгу; нет её — WORKBOOK_NOT_FOUND (`_book`), а без `must_exist` — None."""
         import openpyxl
+        if not must_exist and not self._resolve(path).exists():
+            return None
+        return openpyxl.load_workbook(self._book(path))
+
+    def _book(self, path: str) -> Path:
+        """Путь книги, которая есть; нет — WORKBOOK_NOT_FOUND с путём клиента."""
         p = self._resolve(path)
         if not p.exists():
-            if must_exist:
-                raise ExcelError(
-                    "WORKBOOK_NOT_FOUND", f"Книга не найдена: {path}",
-                    reason="Создай книгу через excel_create_workbook или проверь путь.",
-                    suggested_tool="excel_create_workbook",
-                )
-            return None
-        return openpyxl.load_workbook(p)
+            raise ExcelError("WORKBOOK_NOT_FOUND", facts={"path": path})
+        return p
 
     def _sheet(self, wb, sheet: str):
         if sheet not in wb.sheetnames:
-            raise ExcelError(
-                "SHEET_NOT_FOUND", f"Лист '{sheet}' не найден. Есть: {', '.join(wb.sheetnames)}",
-                reason="Проверь имя листа или создай через excel_add_sheet.",
-            )
+            raise ExcelError("SHEET_NOT_FOUND", facts={"sheet": sheet, "known": ", ".join(wb.sheetnames)})
         return wb[sheet]
+
+    @staticmethod
+    def _vacant(wb, name: str) -> None:
+        """Имя листа свободно — иначе SHEET_EXISTS с именем."""
+        if name in wb.sheetnames:
+            raise ExcelError("SHEET_EXISTS", facts={"sheet": name})
 
     @staticmethod
     def _headers(ws) -> dict[str, int]:
@@ -83,6 +86,13 @@ class ExcelEngine:
             if cell.value is not None:
                 headers[str(cell.value)] = idx
         return headers
+
+    @staticmethod
+    def _column(headers: dict[str, int], sheet: str, *columns: str) -> None:
+        """Столбцы есть в заголовках листа — иначе COLUMN_NOT_FOUND с именами и листом."""
+        unknown = [c for c in columns if c not in headers]
+        if unknown:
+            raise ExcelError("COLUMN_NOT_FOUND", facts={"column": ", ".join(unknown), "sheet": sheet})
 
     def _save(self, wb, path: str):
         wb.save(self._resolve(path))
@@ -94,8 +104,7 @@ class ExcelEngine:
         import openpyxl
         p = self._resolve(path)
         if p.exists():
-            raise ExcelError("FILE_EXISTS", f"Файл или каталог уже существует: {path}",
-                             reason="Удали существующий файл или используй другое имя.")
+            raise ExcelError("FILE_EXISTS", facts={"path": path})
         wb = openpyxl.Workbook()
         self._title(wb.active, sheet)
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -104,9 +113,7 @@ class ExcelEngine:
 
     def add_sheet(self, path: str, sheet: str) -> dict:
         wb = self._load(path)
-        if sheet in wb.sheetnames:
-            raise ExcelError("SHEET_EXISTS", f"Лист уже существует: {sheet}",
-                             reason="Используй другое имя или excel_rename_sheet.")
+        self._vacant(wb, sheet)
         self._title(wb.create_sheet(), sheet)
         self._save(wb, path)
         return {"path": path, "sheet": sheet, "sheets": wb.sheetnames}
@@ -114,9 +121,7 @@ class ExcelEngine:
     def rename_sheet(self, path: str, sheet: str, new_name: str) -> dict:
         wb = self._load(path)
         ws = self._sheet(wb, sheet)
-        if new_name in wb.sheetnames:
-            raise ExcelError("SHEET_EXISTS", f"Лист уже существует: {new_name}",
-                             reason="Выбери свободное имя.")
+        self._vacant(wb, new_name)
         self._title(ws, new_name)
         self._save(wb, path)
         return {"path": path, "renamed": {sheet: new_name}, "sheets": wb.sheetnames}
@@ -125,8 +130,7 @@ class ExcelEngine:
         wb = self._load(path)
         self._sheet(wb, sheet)
         if len(wb.sheetnames) == 1:
-            raise ExcelError("LAST_SHEET", "Нельзя удалить последний лист книги.",
-                             reason="В книге всегда должен быть хотя бы один лист.")
+            raise ExcelError("LAST_SHEET", facts={"sheet": sheet})
         del wb[sheet]
         self._save(wb, path)
         return {"path": path, "deleted": sheet, "sheets": wb.sheetnames}
@@ -134,8 +138,7 @@ class ExcelEngine:
     def reorder_sheets(self, path: str, order: list[str]) -> dict:
         wb = self._load(path)
         if set(order) != set(wb.sheetnames):
-            raise ExcelError("VALIDATION_ERROR", "order должен содержать РОВНО все листы книги.",
-                             reason=f"Ожидались листы: {wb.sheetnames}.")
+            raise ExcelError("VALIDATION_ERROR", errors=[{"field": "order", "rule": "all_sheets", "expected": wb.sheetnames}])
         wb._sheets.sort(key=lambda ws: order.index(ws.title))
         self._save(wb, path)
         return {"path": path, "sheets": wb.sheetnames}
@@ -144,9 +147,7 @@ class ExcelEngine:
         """Копирование листа с данными и форматированием."""
         wb = self._load(path)
         self._sheet(wb, sheet)
-        if new_name in wb.sheetnames:
-            raise ExcelError("SHEET_EXISTS", f"Лист уже существует: {new_name}",
-                             reason="Выбери свободное имя.")
+        self._vacant(wb, new_name)
         self._title(wb.copy_worksheet(wb[sheet]), new_name)
         self._save(wb, path)
         return {"path": path, "copied": sheet, "to": new_name, "sheets": wb.sheetnames}
@@ -157,7 +158,7 @@ class ExcelEngine:
         try:
             ws.title = name
         except ValueError as e:
-            raise ExcelError("SHEET_NAME_INVALID", "Имя листа не принято книгой: пустое или с запрещённым символом.") from e
+            raise ExcelError("SHEET_NAME_INVALID") from e
         return ws
 
     # ═══ АНАЛИЗ СТРУКТУРЫ ═══
@@ -231,8 +232,7 @@ class ExcelEngine:
         ws = self._sheet(wb, sheet)
         headers = self._headers(ws)
         if column in headers:
-            raise ExcelError("COLUMN_EXISTS", f"Столбец уже существует: {column}",
-                             reason="Используй другое имя или excel_delete_column.")
+            raise ExcelError("COLUMN_EXISTS", facts={"column": column, "sheet": sheet})
         new_idx = (max(headers.values()) + 1) if headers else 1
         ws.cell(row=1, column=new_idx, value=column)
         if formula:
@@ -250,11 +250,7 @@ class ExcelEngine:
         wb = self._load(path)
         ws = self._sheet(wb, sheet)
         headers = self._headers(ws)
-        unknown = [k for k in values if k not in headers]
-        if unknown:
-            raise ExcelError("COLUMN_NOT_FOUND",
-                             f"Лист '{sheet}': нет столбцов {unknown}.",
-                             reason="Сверь имена с заголовками (excel_get_column_names).")
+        self._column(headers, sheet, *values)
         # Пишем после последней непустой строки: у листа с формулой-образцом занята строка 2.
         last = max((c.row for row in ws.iter_rows() for c in row if c.value is not None), default=1)
         for name, value in values.items():
@@ -271,9 +267,7 @@ class ExcelEngine:
         wb = self._load(path)
         ws = self._sheet(wb, sheet)
         headers = self._headers(ws)
-        if column not in headers:
-            raise ExcelError("COLUMN_NOT_FOUND", f"Столбец '{column}' не найден в листе '{sheet}'.",
-                             reason="Сверь имя заголовка (excel_get_column_names).")
+        self._column(headers, sheet, column)
         deps = self._dependents(wb, sheet, headers[column])
         return {"path": path, "sheet": sheet, "column": column,
                 "dependents": deps, "count": len(deps)}
@@ -305,27 +299,21 @@ class ExcelEngine:
                             break                          # одна ячейка — одна запись
         return found
 
-    def _guard_column(self, wb, sheet: str, column: str, col_idx: int,
-                      action: str, force: bool) -> list[dict]:
+    def _guard_column(self, wb, sheet: str, column: str, col_idx: int, force: bool) -> list[dict]:
         """Пред-проверка деструктива над столбцом: молчаливый коррапт формул запрещён."""
         deps = self._dependents(wb, sheet, col_idx)
         if deps and not force:
-            where = ", ".join(f"{d['sheet']}!{d['cell']}" for d in deps[:5])
-            raise ExcelError(
-                "COLUMN_HAS_DEPENDENTS",
-                f"На столбец '{column}' ссылаются формулы ({len(deps)}): {where}"
-                + (" …" if len(deps) > 5 else ""),
-                reason=f"{action} сломает эти формулы (#REF!). Перепиши их или передай force=true осознанно.")
+            raise ExcelError("COLUMN_HAS_DEPENDENTS", facts={
+                "column": column, "count": len(deps),
+                "cells": ", ".join(f"{d['sheet']}!{d['cell']}" for d in deps[:5]) + (" …" if len(deps) > 5 else "")})
         return deps
 
     def delete_column(self, path: str, sheet: str, column: str, force: bool = False) -> dict:
         wb = self._load(path)
         ws = self._sheet(wb, sheet)
         headers = self._headers(ws)
-        if column not in headers:
-            raise ExcelError("COLUMN_NOT_FOUND", f"Столбец '{column}' не найден в листе '{sheet}'.",
-                             reason="Сверь имя заголовка (excel_read_range) или уже удалён.")
-        broken = self._guard_column(wb, sheet, column, headers[column], "Удаление", force)
+        self._column(headers, sheet, column)
+        broken = self._guard_column(wb, sheet, column, headers[column], force)
         ws.delete_cols(headers[column], 1)
         self._save(wb, path)
         return {"path": path, "sheet": sheet, "deleted": column,
@@ -336,19 +324,16 @@ class ExcelEngine:
         wb = self._load(path)
         ws = self._sheet(wb, sheet)
         headers = self._headers(ws)
-        if column not in headers:
-            raise ExcelError("COLUMN_NOT_FOUND", f"Столбец '{column}' не найден в листе '{sheet}'.",
-                             reason="Сверь имя заголовка.")
+        self._column(headers, sheet, column)
         from_index = headers[column]
         ncols = max(headers.values())
         if not (1 <= to_index <= ncols):
-            raise ExcelError("VALIDATION_ERROR", f"to_index вне диапазона 1..{ncols}.",
-                             reason="Укажи позицию внутри существующих столбцов.")
+            raise ExcelError("VALIDATION_ERROR", errors=[{"field": "to_index", "rule": "range", "expected": f"1..{ncols}"}])
         if to_index == from_index:
             return {"path": path, "sheet": sheet, "column": column, "index": to_index,
                     "broken_formulas": []}
         # Перенос меняет БУКВУ столбца: формулы продолжат указывать на старую позицию.
-        broken = self._guard_column(wb, sheet, column, from_index, "Перенос", force)
+        broken = self._guard_column(wb, sheet, column, from_index, force)
         # снять значения столбца, удалить, вставить на новое место
         col_values = [ws.cell(row=r, column=from_index).value for r in range(1, ws.max_row + 1)]
         ws.delete_cols(from_index, 1)
@@ -368,10 +353,7 @@ class ExcelEngine:
         target = ws[cell]
         existing = target.value
         if isinstance(existing, str) and existing.startswith("=") and not overwrite:
-            raise ExcelError(
-                "FORMULA_PROTECTED", f"В ячейке {cell} уже есть формула: {existing}",
-                reason="Перезапись критической формулы запрещена молча. Передай overwrite=true осознанно.",
-            )
+            raise ExcelError("FORMULA_PROTECTED", facts={"cell": cell, "sheet": sheet})
         target.value = formula if formula.startswith("=") else f"={formula}"
         self._save(wb, path)
         return {"path": path, "sheet": sheet, "cell": cell, "formula": target.value}
@@ -406,9 +388,7 @@ class ExcelEngine:
         wb = self._load(path)
         ws = self._sheet(wb, sheet)
         headers = self._headers(ws)
-        if column not in headers:
-            raise ExcelError("COLUMN_NOT_FOUND", f"Столбец '{column}' не найден в листе '{sheet}'.",
-                             reason="Сначала добавь столбец через excel_add_column.")
+        self._column(headers, sheet, column)
         letter = get_column_letter(headers[column])
         formula = '"' + ",".join(allowed) + '"'
         dv = DataValidation(type="list", formula1=formula, allow_blank=True, showDropDown=False)
@@ -437,8 +417,7 @@ class ExcelEngine:
         import shutil
         import subprocess
         import tempfile
-        engines = Declaration(declarations_root() / RECALC_ENGINE.file, ExcelError, "движков сервера",
-                              "Заведи config/engines.yaml — где искать движки, объявлено там.")
+        engines = Declaration(declarations_root() / RECALC_ENGINE.file, ExcelError, "движков сервера")
         soffice = locate(engines.section(*RECALC_ENGINE.section, schema=RECALC_ENGINE.schema))
         if not soffice:
             raise ExcelError("RECALC_UNAVAILABLE")
@@ -470,11 +449,7 @@ class ExcelEngine:
         """
         import shutil
         import openpyxl
-        src = self._resolve(path)
-        if not src.exists():
-            raise ExcelError("WORKBOOK_NOT_FOUND", f"Книга не найдена: {path}",
-                             reason="Создай книгу через excel_create_workbook или проверь путь.",
-                             suggested_tool="excel_create_workbook")
+        src = self._book(path)
         recalced = self._recalc_via_lo(src)
         try:
             wb = openpyxl.load_workbook(recalced, data_only=True)

@@ -113,7 +113,9 @@ with live_server() as srv:
         _child.stdin.write((_KEY + "\n").encode())
         _child.stdin.close()
         _tty, _outb = b"", b""
-        with selectors.DefaultSelector() as _sel:   # первое из событий: байт на терминале или конец вывода ребёнка
+        # Первое из событий: байт на терминале или конец вывода ребёнка. select, а не kqueue по умолчанию: на macOS чтение
+        # pty через KqueueSelector висит (CPython bpo-32517, test_read_pty_output) — CI f382d26/098ddb9 ждал 900 с.
+        with selectors.SelectSelector() as _sel:
             _sel.register(_master, selectors.EVENT_READ, "tty")
             _sel.register(_child.stdout, selectors.EVENT_READ, "out")
             while not _tty:

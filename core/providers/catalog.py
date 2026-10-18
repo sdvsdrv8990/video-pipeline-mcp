@@ -9,6 +9,7 @@
 from typing import ClassVar
 import json
 import logging
+import os
 import re
 import socket
 from pathlib import Path
@@ -23,7 +24,7 @@ from core.declaration_schemas import (MODEL_FETCH, MODEL_INSTALL, ONLINE_ANSWER,
                                       ProviderUrl)
 from core.paths import Files
 from .download import Fetcher, answers, file_digest
-from .resolver import ProviderError
+from .resolver import ProviderError, ProviderSaid
 
 log = logging.getLogger(__name__)
 
@@ -42,9 +43,7 @@ class ModelCatalog:
     def __init__(self, config_file: str | Path, models_dir: str | Path):
         self.config_file = Path(config_file)
         self.models_dir = Path(models_dir)
-        self._decl = Declaration(
-            config_file, ProviderError, "провайдеров",
-            "Заведи config/providers.yaml — где искать модели, объявлено там.")
+        self._decl = Declaration(config_file, ProviderError, "провайдеров")
         self._revisions: dict[str, str] = {}   # repo → ревизия (спрашиваем один раз)
 
     @property
@@ -77,9 +76,7 @@ class ModelCatalog:
     def inventory(self) -> list[dict]:
         """Опись поставленного. Её отсутствие — «ничего не поставлено», а вот битость — отказ:
         пустой список вместо повреждённой описи выглядел бы как чистая машина."""
-        data = Declaration(
-            self.inventory_file, ProviderError, "описи установленного",
-            "Опись пишет установка моделей; руками её не правят.").optional()
+        data = Declaration(self.inventory_file, ProviderError, "описи установленного").optional()
         return list(data.get("models") or [])
 
     def entries(self) -> list[dict]:
@@ -160,15 +157,9 @@ class ModelCatalog:
         return file_digest(path, algo, mark)
 
     def refusal(self, entry: dict, disk: dict) -> ProviderError:
-        """Отказ кодом причины по вердикту диска: части не хватает, часть расходится, судить нечем.
-
-        План и команда — в `message`: для кода из реестра клиенту доходит он, а рецепт берётся из реестра.
-        """
-        jobs = "; ".join(f"{p['job']} {p['path']}" for p in disk["plan"]) or "снять состав с источника"
-        return ProviderError(
-            self.REFUSALS[disk["verdict"]],
-            f"Модель '{entry.get('id')}' не готова: {disk['why']}. План: {jobs}; выполнить: "
-            f"python scripts/models.py pull {entry.get('id')}.")
+        """Отказ кодом причины по вердикту диска: части не хватает, часть расходится, судить нечем; текст и рецепт —
+        реестра, модель — фактом."""
+        return ProviderError(self.REFUSALS[disk["verdict"]], facts={"model": str(entry.get("id") or "")})
 
     def installed_as(self, model_id: str, kind: str) -> dict | None:
         """Модель уже стоит той же ревизией и цела по длине — исход «уже стоит» без загрузки, потока и чтения весов (MF-17).
@@ -238,10 +229,8 @@ class ModelCatalog:
             return self._from_piper(src, filters, limit)
         if how == "hf_hub":
             return self._from_hf(src, filters, limit, kind, describe)
-        raise ProviderError(
-            "SCHEMA_INVALID", f"Неизвестный вид каталога: '{how}'.",
-            reason="Поддерживаются piper_index и hf_hub — как читать каталог, это код, "
-                   "а какой каталог смотреть, объявляется в config/providers.yaml.")
+        raise self._decl.link_refused("literal_error", "одно из: piper_index, hf_hub",
+                                      [("local", "sources", kind, "kind")], self._decl, [])
 
     def _from_piper(self, src: dict, filters: dict, limit: int) -> list[dict]:
         """Индекс голосов piper: одна запись = голос со своими файлами и размерами."""
@@ -454,9 +443,9 @@ class ModelCatalog:
     def _hub_refusal(self, repo: str, e: Exception) -> ProviderError | None:
         """Сбой хаба по репозиторию — отказ кодом причины: закрыто автором, репозитория нет, источник ответил ошибкой или
         не ответил; иное исключение — не сбой хаба (None)."""
-        import httpx
         from huggingface_hub import constants
         from huggingface_hub.errors import GatedRepoError, HfHubHTTPError, RepositoryNotFoundError
+        from huggingface_hub.utils import httpx    # транспорт самого хаба: в 1.x — httpx, в 2.x — httpx2
 
         host = urlparse(constants.ENDPOINT).hostname
         if isinstance(e, GatedRepoError):             # подкласс RepositoryNotFoundError: порядок от частного к общему
@@ -856,15 +845,16 @@ class OnlineCatalog:
 
     MODES: ClassVar[dict[str, str]] = {
         "image": "image_generation", "tts": "audio_speech", "stt": "audio_transcription"}
+    # Карта цен шлюза — та, что пришла с установленной litellm: без этого имени её импорт тянет GitHub main мимо двери
+    # загрузчика, и реестр решает сеть (v1.105.1: litellm/__init__.py:563 → litellm_core_utils/get_model_cost_map.py:643).
+    LOCAL_PRICES: ClassVar[str] = "LITELLM_LOCAL_MODEL_COST_MAP"
     # Сеть ответов провайдера (MF-16): None — настоящий транспорт; подмена — на классе, ею же ходит спека модели.
     transport: ClassVar = None
     resolve: ClassVar = staticmethod(socket.getaddrinfo)
 
     def __init__(self, config_file: str | Path | None = None):
         self.config_file = Path(config_file) if config_file else None
-        self._decl = Declaration(
-            config_file or Path("providers.yaml"), ProviderError, "провайдеров",
-            "Заведи config/providers.yaml — где спрашивать список моделей, объявлено там.")
+        self._decl = Declaration(config_file or Path("providers.yaml"), ProviderError, "провайдеров")
 
     @property
     def config(self) -> dict:
@@ -882,12 +872,11 @@ class OnlineCatalog:
         """Спросить провайдера, что ему доступно СЕГОДНЯ. Ключ уходит только на объявленный адрес."""
         decl = (self.config.get("live") or {}).get(provider)
         if not decl:
-            known = ", ".join(sorted(self.config.get("live") or {})) or "(никто)"
-            raise ProviderError(
-                "PROVIDER_ADAPTER_MISSING", f"Для '{provider}' не объявлено, где спрашивать список.",
-                reason=f"Объявлены: {known}. Добавь адрес в config/providers.yaml → online.live, "
-                       "если нужен ещё один провайдер.")
-        url = self._decl.need("online", "live", provider, "url", kind=ProviderUrl)
+            raise ProviderError("PROVIDER_LIST_UNDECLARED", facts={
+                "provider": provider, "known": ", ".join(sorted(self.config.get("live") or {}))})
+        if not api_key:
+            raise ProviderError("PROVIDER_KEY_MISSING", facts={"provider": provider})
+        url =self._decl.need("online", "live", provider, "url", kind=ProviderUrl)
         if not url.lower().startswith("https://"):
             # Ключ в открытом канале виден любому посреднику — это отказ, а не предупреждение.
             raise ProviderError("DOWNLOAD_FORBIDDEN", facts={"host": urlparse(url).hostname or url, "allowed": "https"})
@@ -936,11 +925,10 @@ class OnlineCatalog:
 
     def available(self, kind: str = "", provider: str = "", limit: int = 30) -> list[dict]:
         try:
+            os.environ[self.LOCAL_PRICES] = "True"      # до первого импорта: litellm читает имя только при импорте
             import litellm
         except ImportError as e:                            # pragma: no cover — есть в зависимостях
-            raise ProviderError(
-                "PROVIDER_ADAPTER_MISSING", f"Шлюз онлайн-моделей недоступен: {e}",
-                reason="Поставь зависимости сервера (pip install -e .).") from e
+            raise ProviderError("PROVIDER_ADAPTER_BROKEN", facts={"provider": "litellm"}) from e
         want = self.MODES.get(kind, kind)
         rows = []
         for name, entry in (litellm.model_cost or {}).items():
@@ -969,16 +957,14 @@ class OnlineCatalog:
 
 
 def provider_refusal(response, provider: str, subject: str) -> ProviderError:
-    """Отказ провайдера (ответ ≥400, тело прочитано дверью в пределе) его причиной — одна фраза на все обращения к
-    провайдерам; `subject` — что у него просили («запрос списка», «вызов»): ключ отклонён (401, 403) — AUTH_FAILED с
-    рецептом замены ключа, иначе — PROVIDER_FAILED с кодом и цитатой ответа."""
+    """Отказ провайдера (ответ ≥400, тело прочитано дверью в пределе) его причиной — одна форма на все обращения к
+    провайдерам: ключ отклонён (401, 403) — PROVIDER_KEY_REJECTED, иначе — PROVIDER_FAILED с хостом и статусом; тело
+    ответа — причиной в журнал сервера, клиенту не идёт. `subject` — что у провайдера просили («запрос списка»)."""
     status = response.status_code
     if status in (401, 403):
-        return ProviderError(
-            "AUTH_FAILED", f"Провайдер отклонил ключ в ответ на {subject} ({status}).",
-            reason="Ключ недействителен или у него нет прав. Заменить может только владелец: "
-                   f"python scripts/set_provider_key.py --channel <канал> --provider {provider}")
-    return ProviderError(
-        "PROVIDER_FAILED", f"Провайдер ответил {status} на {subject}: {response.text[:300]}",
-        reason="Это ответ самого сервиса — в нём причина отказа (модерация, исчерпанный платный лимит, неподходящий "
-               "файл); повтор не лечит её, пока причина не снята.")
+        return ProviderError("PROVIDER_KEY_REJECTED", facts={"provider": provider, "status": status})
+    # Дверь соединяется по судимому IP, имя хоста несёт в SNI: клиенту — имя, как у отказов самой двери.
+    host = response.request.extensions.get("sni_hostname") or response.request.url.host
+    refused = ProviderError("PROVIDER_FAILED", facts={"host": str(host), "status": status})
+    refused.__cause__ = ProviderSaid(f"{status} на {subject}: {response.text[:300]}")
+    return refused

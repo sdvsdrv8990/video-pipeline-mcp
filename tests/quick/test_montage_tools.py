@@ -240,7 +240,10 @@ else:
     book(ELEMENTS, AUDIO)
 
     SM = StateManager(WS)
-    ENG = Engine(state_manager=SM)
+    # Обновлено 2026-10-18 (тексты места): движок с реестром, как у сервера, — без него отказ собирала запасная ветка
+    # из текста места, и проверки текста мерили ответ, которого клиент не видит (вскрылось на контейнере: текст пуст).
+    from core.reactions import Reactions
+    ENG = Engine(state_manager=SM, reactions=Reactions(CONFIG / "server_reactions.yaml"))
     register_basic_tools(ENG, IDGenerator(), SM)
 
     def call(tool, **params):
@@ -351,8 +354,15 @@ else:
     refuses(lambda: call("montage_generate_scene", table="ch1/v1", scene_id="S08",
                          template_id="нет_такой"),
             "TEMPLATE_NOT_FOUND", "незнакомая заготовка отбивается и называет доступные")
-    refuses(lambda: rendered(table="ch1/v1", scene_id="S07"),
-            "SCENE_EMPTY", "разложенная заготовка без ассетов не рендерится молча: сказано, чего нет")
+    # Обновлено (тексты места, семейство монтажа): пустой asset_path у элемента — отказ СТРОКИ (BOOK_ROW_INVALID, поле
+    # asset_path), прежде SCENE_EMPTY «в сцене нет ни одного элемента» — элементы есть, ложь кода. Прогноз: та же сцена
+    # отбита тем же вызовом, код и поле — новые.
+    _no_asset = rendered(table="ch1/v1", scene_id="S07")
+    _errs = _no_asset.error.errors if _no_asset.error else []
+    ok(_no_asset.status == "error" and _no_asset.error.code == "BOOK_ROW_INVALID"
+       and any(x.get("field") == "asset_path" and x.get("rule") == "required" for x in _errs),
+       f"разложенная заготовка без ассетов не рендерится молча: названы строка и поле "
+       f"({_no_asset.error.code if _no_asset.error else 'успех'}, {_errs})")
 
     print("\n  ── чистый скрипт сцены по требованию ──")
     _scr = data_of(call("montage_scene_script", table="ch1/v1", scene_id="S01"), "скелет выдан")
@@ -419,11 +429,15 @@ else:
             "PATH_ESCAPE", "путь ассета из книги проходит containment рабочей области")
 
     book({**ELEMENTS, "E4": {**ELEMENTS["E1"], "element_id": "E4", "speed": "быстро"}}, AUDIO)
-    refuses(lambda: rendered(table="ch1/v1", scene_id="S01"),
-            "VALIDATION_ERROR", "нечисло в числовой ячейке отбивается с именем строки и листа")
-    _said = rendered(table="ch1/v1", scene_id="S01").error.message
-    ok("speed" in _said and "быстро" not in _said and "input_value" not in _said and "pydantic" not in _said,
-       f"отказ ячейки называет поле и правило, а не значение и не текст pydantic ({_said[:80]!r})")
+    # Обновлено (тексты места): ячейка книги — BOOK_ROW_INVALID с полем в errors, прежде VALIDATION_ERROR «вызов не
+    # принят» с полем в тексте места. Прогноз: поле speed — в errors, значения и текста pydantic нет нигде в ответе.
+    _cell = rendered(table="ch1/v1", scene_id="S01").error
+    _said = repr(_cell)
+    ok(_cell is not None and _cell.code == "BOOK_ROW_INVALID" and _cell.facts.get("row")
+       and any(x.get("field") == "speed" for x in _cell.errors)
+       and "быстро" not in _said and "input_value" not in _said and "pydantic" not in _said,
+       f"нечисло в числовой ячейке: названы строка, лист и поле, а не значение и не текст pydantic "
+       f"({_cell.code if _cell else 'успех'}, {_cell.errors if _cell else ''})")
 
     _channel = WS / "ch1" / "read.json"
     _kept = _channel.read_text(encoding="utf-8")
@@ -432,19 +446,28 @@ else:
     _channel.write_text(json.dumps(_bent, ensure_ascii=False), encoding="utf-8")
     _r = rendered(table="ch1/v1", scene_id="S01")
     _channel.write_text(_kept, encoding="utf-8")
-    _said = _r.error.message if _r.error else ""
-    ok(_r.status == "error" and _r.error.code == "RENDER_PROFILE_INVALID" and "fps" in _said
+    # Обновлено (тексты места): строка профиля, не прошедшая модель, — BOOK_ROW_INVALID (RENDER_PROFILE_INVALID остался
+    # значению вне перечня). Прогноз: поле fps — в errors, значения -7 в ответе нет; строка названа значением столбца id
+    # листа профилей (profile_id): профиль бывает и из декларации, где ID строки снимка нет.
+    _said = repr(_r.error)
+    ok(_r.status == "error" and _r.error.code == "BOOK_ROW_INVALID" and _r.error.facts.get("row") == "test_16x9"
+       and any(x.get("field") == "fps" for x in _r.error.errors)
        and "-7" not in _said and "input_value" not in _said and "pydantic" not in _said,
-       f"негодный профиль называет поле и правило, а не значение и не текст pydantic ({_said[:80]!r})")
+       f"негодный профиль называет строку и поле, а не значение и не текст pydantic "
+       f"({_r.error.code if _r.error else 'успех'}, {_r.error.errors if _r.error else ''})")
     book(ELEMENTS, AUDIO)                       # сцена годна: отказать вправе только контейнер профиля
     _boxed = json.loads(_kept)
     _boxed["RENDER_CONFIG"]["rows"]["P1"]["container"] = "avi"
     _channel.write_text(json.dumps(_boxed, ensure_ascii=False), encoding="utf-8")
     _box = call("montage_render_scene", table="ch1/v1", scene_id="S01")
     _channel.write_text(_kept, encoding="utf-8")
-    ok(_box.status == "error" and _box.error.code == "RENDER_PROFILE_INVALID" and "avi" in _box.error.message,
+    # Обновлено (тексты места): отказ называет столбец и допустимые (факты column, allowed), а не пришедшее «avi».
+    ok(_box.status == "error" and _box.error.code == "RENDER_PROFILE_INVALID"
+       and _box.error.facts.get("column") == "container" and "mp4" in _box.error.facts.get("allowed", "")
+       and "container" in _box.error.message,
        f"контейнер без muxer в словаре — отказ профиля этим же вызовом, до задания, а не упавшее задание "
-       f"({_box.error.code if _box.error else (_box.data or {}).get('status')})")
+       f"({_box.error.code if _box.error else (_box.data or {}).get('status')}, "
+       f"{_box.error.message if _box.error else ''})")
 
     # EB-03: причина рождается в ffprobe, следствие видно на двери — в ответе вызова и в журнале сервера.
     _heard: list[logging.LogRecord] = []
@@ -538,9 +561,15 @@ else:
     book({**TRACK, "T3": {**TRACK["T3"], "variant_id": "emo_side"}}, AUDIO)
     refuses(lambda: rendered(table="ch1/v1", scene_id="S05"),
             "VARIANT_INCOMPATIBLE", "ключ оси не совпал с родителем — сочетание отбито до рендера")
+    # Обновлено (тексты места): висячая ссылка на вариант — отказ строки (BOOK_ROW_INVALID, правило enum), прежде
+    # RENDER_INPUT_UNPREPARED с рецептом снятия фона. Прогноз: выбор — варианты того же слота face, без вариантов body.
     book({**TRACK, "T3": {**TRACK["T3"], "variant_id": "нет_такого"}}, AUDIO)
-    refuses(lambda: rendered(table="ch1/v1", scene_id="S05"),
-            "RENDER_INPUT_UNPREPARED", "висячая ссылка на вариант каталога отбивается, а не игнорируется")
+    _dangling = rendered(table="ch1/v1", scene_id="S05").error
+    _choice = next((x.get("expected") for x in (_dangling.errors if _dangling else []) if x.get("rule") == "enum"), [])
+    ok(_dangling is not None and _dangling.code == "BOOK_ROW_INVALID" and _dangling.facts.get("row") == "T3"
+       and "emo_smile" in _choice and "pose_idle" not in _choice,
+       f"висячая ссылка на вариант каталога отбивается с выбором из вариантов своего слота "
+       f"({_dangling.code if _dangling else 'успех'}, {_choice})")
     book({**TRACK, "T2": {**TRACK["T2"], "x": 15}}, AUDIO)
     refuses(lambda: rendered(table="ch1/v1", scene_id="S05"),
             "VALIDATION_ERROR", "кадры дорожки в разных точках отбиваются: слот двигается целиком")
@@ -619,8 +648,14 @@ else:
     _ledger = RenderLedger(SM, CONFIG, IDGenerator())
     refuses(lambda: _ledger.record("ch1/v1", {"stage": "неведомая"}),
             "ENUM_VIOLATION", "стадия вне объявленных значений в книгу не попадает")
-    refuses(lambda: _ledger.record("ch1/v1", {"выдумка": 1}),
-            "SCHEMA_INVALID", "необъявленный столбец результата в книгу не попадает")
+    # Обновлено (тексты места): поле результата, которого montage.yaml не объявляет, — отказ двери декларации
+    # (DECLARATION_INVALID с путём target.columns.<поле>), прежде SCHEMA_INVALID «декларация таблицы» — таблица ни при чём.
+    try:
+        _ledger.record("ch1/v1", {"выдумка": 1})
+        ok(False, "необъявленный столбец результата в книгу не попадает — записалось")
+    except MontageError as e:
+        ok(e.code == "DECLARATION_INVALID" and [x.get("field") for x in e.errors] == ["target.columns.выдумка"],
+           f"необъявленный столбец результата в книгу не попадает: отказ двери с путём ключа ({e.code}, {e.errors})")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

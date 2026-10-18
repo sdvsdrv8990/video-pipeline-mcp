@@ -49,7 +49,7 @@ def attempt(call):
         return None, ContractError("НЕ_ОТКАЗ", facts={"exception": f"{type(e).__name__}: {e}"})
 
 
-PROVIDERS = Declaration(ROOT / "config" / "providers.yaml", ContractError, "провайдеров", "")
+PROVIDERS = Declaration(ROOT / "config" / "providers.yaml", ContractError, "провайдеров")
 REPLICATE = "https://api.replicate.com/v1/predictions"
 RUNNER = "http://127.0.0.1:8770/run"
 NAMES = {"api.replicate.com": "151.101.1.1", "api.openai.com": "162.159.140.245"}

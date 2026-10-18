@@ -418,7 +418,7 @@ try:
     decl = work / "fetch.yaml"
     decl.write_text(yaml.safe_dump({"fetch": {k: v for k, v in WEIGHTS.items() if k not in ("codes", "redirects")}}),
                     encoding="utf-8")
-    e = attempt(lambda: Declaration(decl, ContractError, "загрузки", "").section("fetch", schema=FetchPolicy))[1]
+    e = attempt(lambda: Declaration(decl, ContractError, "загрузки").section("fetch", schema=FetchPolicy))[1]
     check("в разделе нет ключей — отказ двери DECLARATION_INVALID, ключи названы путём от корня файла",
           e is not None and e.code == "DECLARATION_INVALID" and "fetch.codes" in e.facts.get("details", "")
           and "fetch.redirects" in e.facts.get("details", ""), e and (e.code, e.facts))
@@ -708,7 +708,7 @@ try:
         decl = work / "answer.yaml"
         decl.write_text(yaml.safe_dump({"answer": {**ANSWER, **over}}), encoding="utf-8")
         w, pauses = World(), []
-        got, e = attempt(lambda: answers(Declaration(decl, ContractError, "ответа", ""), SLOT, declared,
+        got, e = attempt(lambda: answers(Declaration(decl, ContractError, "ответа"), SLOT, declared,
                                          transport=httpx.MockTransport(api.handle), resolve=w.resolve,
                                          sleep=pauses.append, proxies=dict).answer(
             url, {"Authorization": "Bearer t"}, refused=refused))
@@ -819,7 +819,7 @@ try:
         """Отказ двери деклараций на разделе `body` (схемой AnswerPolicy или типом `kind`) — детали или «принято»."""
         decl = work / "answer.yaml"
         decl.write_text(yaml.safe_dump(body, allow_unicode=True), encoding="utf-8")
-        door = Declaration(decl, ContractError, "ответа", "")
+        door = Declaration(decl, ContractError, "ответа")
         e = attempt(lambda: door.need(*path, kind=kind) if kind else door.section(*path, schema=AnswerPolicy))[1]
         return e.facts.get("details", "") if e is not None and e.code == "DECLARATION_INVALID" else "принято"
 
@@ -846,14 +846,14 @@ try:
         check(f"адрес провайдера: {case} — {verdict}",
               decl_refusal({"x": {"url": url}}, "x", "url", kind=ProviderUrl) == verdict, url)
     (work / "answer.yaml").write_text(yaml.safe_dump({"answer": ANSWER}), encoding="utf-8")
-    hosts = answers(Declaration(work / "answer.yaml", ContractError, "", ""), SLOT, DECLARED).policy.hosts
+    hosts = answers(Declaration(work / "answer.yaml", ContractError, ""), SLOT, DECLARED).policy.hosts
     check("читатель ставит хост из объявленного адреса до подстановки — ровно один",
           hosts == ("api.provider.example",), hosts)
 
     # Обновлено в B3: разделов обращения к объявленному адресу стало четыре (ответы и прозвонки раннера и туннеля);
     # в B4 — пять (вызов провайдера online.call) и правило схемы deadline_sec ≥ 2 × timeout_sec у всех.
     live = {slot.section: slot for slot in SLOTS if issubclass(slot.schema, AddressedPolicy)}
-    taken = {path: attempt(lambda: Declaration(ROOT / "config" / slot.file, ContractError, slot.file, "").section(
+    taken = {path: attempt(lambda: Declaration(ROOT / "config" / slot.file, ContractError, slot.file).section(
         *slot.section, schema=slot.schema))[1] for path, slot in live.items()}
     check("живые декларации: каждый раздел обращения к объявленному адресу проходит свою схему — ответы (online.answer, "
           "download.answer), вызов провайдера (online.call), прозвонка раннера (local.runner.health), прозвонка туннеля",
@@ -898,7 +898,7 @@ try:
         события поверх."""
         decl = work / "answer.yaml"
         decl.write_text(yaml.safe_dump({"answer": {**LIVE, "jitter": 0, **over}}, allow_unicode=True), encoding="utf-8")
-        door = answers(Declaration(decl, ContractError, "ответа", ""), SLOT, DECLARED, transport=httpx.MockTransport(handle),
+        door = answers(Declaration(decl, ContractError, "ответа"), SLOT, DECLARED, transport=httpx.MockTransport(handle),
                        resolve=World().resolve, sleep=clock.sleep, clock=clock.time, proxies=dict)
         return attempt(lambda: door.answer(API, {"Authorization": "Bearer t"}, within=within))
 
@@ -996,7 +996,7 @@ try:
         decl = work / "probe.yaml"
         decl.write_text(yaml.safe_dump({"probe": {**PROBE, **over}}), encoding="utf-8")
         pauses: list[float] = []
-        got, e = attempt(lambda: answers(Declaration(decl, ContractError, "прозвонки", ""), PROBE_SLOT, declared,
+        got, e = attempt(lambda: answers(Declaration(decl, ContractError, "прозвонки"), PROBE_SLOT, declared,
                                          transport=httpx.MockTransport(api.handle), resolve=World().resolve,
                                          sleep=pauses.append, proxies=dict).status(API))
         return got, e, pauses
@@ -1029,7 +1029,7 @@ try:
         decl = work / "probe.yaml"
         decl.write_text(yaml.safe_dump({"probe": {**PROBE, "schemes": ["http"], "block_private": False}}),
                         encoding="utf-8")
-        e = attempt(lambda: answers(Declaration(decl, ContractError, "прозвонки", ""), PROBE_SLOT, declared))[1]
+        e = attempt(lambda: answers(Declaration(decl, ContractError, "прозвонки"), PROBE_SLOT, declared))[1]
         check(f"судья петли: {case} при block_private: false — {'принят' if admitted else 'отказ до запроса'}",
               e is None if admitted else (e is not None and e.code == "DOWNLOAD_FORBIDDEN"), e and (e.code, e.facts))
 
@@ -1063,7 +1063,7 @@ try:
         decl.write_text(yaml.safe_dump({"call": {**CALL, **over}}), encoding="utf-8")
         pauses: list[float] = []
         timed = {"clock": clock.time, "sleep": clock.sleep} if clock else {"sleep": pauses.append}
-        got, e = attempt(lambda: answers(Declaration(decl, ContractError, "вызова", ""), CALL_SLOT, declared,
+        got, e = attempt(lambda: answers(Declaration(decl, ContractError, "вызова"), CALL_SLOT, declared,
                                          transport=httpx.MockTransport(handle), resolve=resolve or World().resolve,
                                          proxies=dict,
                                          **timed).call(API, {"Authorization": auth}, method=method,

@@ -27,7 +27,7 @@ from core.paths import Files
 from ..adapters import MediaOutcome, MediaRequest
 from ..catalog import provider_refusal
 from ..download import addressed, answers, results
-from ..resolver import ProviderError
+from ..resolver import ProviderError, ProviderSaid
 
 
 class HttpImageAPI:
@@ -58,12 +58,9 @@ class HttpImageAPI:
         table = ((self.registry.config.get("online") or {}).get("http")) or {}
         decl = table.get(provider)
         if not decl:
-            raise ProviderError(
-                "PROVIDER_ADAPTER_MISSING", f"Для '{provider}' не объявлено, как его вызывать.",
-                reason=f"Объявлены: {', '.join(sorted(table)) or '(никто)'}. Добавь блок в "
-                       "config/providers.yaml → online.http (адрес, ключ, поле файла, вид ответа) "
-                       "или поставь в строке канала другого провайдера.",
-                suggested_tool="media_provider_status")
+            raise self._providers.link_refused(
+                "http_undeclared", "у провайдера, которого исполняет http_image, — блок online.http (адрес, ключ, "
+                "поле файла, вид ответа)", [("online", "http", provider)], self._providers, [])
         self._decl_cache[provider] = decl
         return decl
 
@@ -171,13 +168,9 @@ class HttpImageAPI:
         # Байты кладутся в тело запроса — без файла его не собрать. Обмен ПУТЯМИ (раннер) исключение:
         # там исходника может не быть вовсе (озвучка создаёт из текста), и решает это вид ресурса.
         if request.source is None and str(decl.get("send_mode") or "") != "paths":
-            raise ProviderError(
-                "CONTENT_REJECTED", "Отправлять провайдеру нечего: не передан исходный файл.",
-                reason="Для этого вида ресурса input — путь к файлу внутри рабочей области.")
+            raise ProviderError("VALIDATION_ERROR", errors=[{"field": "input", "rule": "required"}])
         if not request.api_key:
-            raise ProviderError(
-                "PROVIDER_KEY_MISSING", f"У провайдера '{request.provider}' нет ключа доступа.",
-                reason="Ключ вносит владелец: python scripts/set_provider_key.py.")
+            raise ProviderError("PROVIDER_KEY_MISSING", facts={"provider": request.provider})
         self._api_key = request.api_key
         kind = str(decl.get("response") or "binary")
         answer = self._call(decl, request, self._receiver(request) if kind == "binary" else None)
@@ -198,11 +191,8 @@ class HttpImageAPI:
             self._result_url = str(self.dig(answer, str(decl.get("result_url_field") or "")) or "")
             task_id = str(self.dig(answer, str(decl.get("task_field") or "id")) or "")
             if not (task_id and self._status_url):
-                raise ProviderError(
-                    "PROVIDER_FAILED", "Провайдер не вернул задачу, которую можно прозвонить.",
-                    reason="Ожидались поля из config/providers.yaml → online.http."
-                           f"{request.provider}: task_field и status_url_field. Пришло: "
-                           f"{', '.join(sorted(answer)[:8]) or '(пусто)'}.")
+                raise ProviderError("PROVIDER_FAILED", facts={"provider": request.provider}) from ProviderSaid(
+                    f"задача без объявленных task_field/status_url_field; пришло: {', '.join(sorted(answer)[:8]) or '—'}")
             return MediaOutcome(task_id=task_id, meta={**meta, "sync": False})
         return MediaOutcome(files=[self.fetch(answer, request.target)], meta={**meta, "sync": True})
 
@@ -222,9 +212,7 @@ class HttpImageAPI:
         """Тело запроса: файл + поля строки. Форма отправки — свойство провайдера, не наше."""
         source = request.source
         if source is None:
-            raise ProviderError(
-                "VALIDATION_ERROR", "Этот вид ресурса перерабатывает готовый файл, а его нет.",
-                reason="В input нужен путь к существующему файлу внутри рабочей области.")
+            raise ProviderError("VALIDATION_ERROR", errors=[{"field": "input", "rule": "required"}])
         fields = self._fields(decl, request)
         field = str(decl.get("file_field") or "file")
         mode = str(decl.get("send_mode") or "multipart")
@@ -238,12 +226,9 @@ class HttpImageAPI:
         limit_mb = float(decl.get("max_inline_mb") or 0)
         size_mb = source.stat().st_size / 1e6
         if limit_mb and size_mb > limit_mb:
-            raise ProviderError(
-                "CONTENT_REJECTED",
-                f"Файл {round(size_mb)} МБ больше предела встроенной отправки ({round(limit_mb)} МБ).",
-                reason="Этот провайдер принимает картинку внутри запроса, и большой файл он "
-                       "отклонит сам. Уменьши кадр или подними max_inline_mb в "
-                       "config/providers.yaml → online.http.")
+            raise ProviderError("PROVIDER_INPUT_TOO_LARGE", facts={
+                "path": Files(request.workspace).name(source) if request.workspace else source.name,
+                "size_mb": round(size_mb, 3), "limit_mb": limit_mb, "provider": request.provider})
         data = base64.b64encode(source.read_bytes()).decode()
         suffix = source.suffix.lstrip(".") or "png"
         self._put(fields, field, f"data:image/{suffix};base64,{data}")
@@ -259,10 +244,8 @@ class HttpImageAPI:
         """
         root = request.workspace
         if root is None:
-            raise ProviderError(
-                "INTERNAL_ERROR", "Раннеру не с чем сопоставить пути: не передана рабочая область.",
-                reason="MediaRequest.workspace заполняет вызывающий инструмент — это проводка, "
-                       "а не данные канала.")
+            raise ProviderError("INTERNAL_ERROR") from TypeError(
+                "MediaRequest.workspace не передан: раннеру не с чем сопоставить пути")
         named = Files(root)                     # дверь корня: путь через ссылку ФС (/var → /private/var) — тот же файл
         return {"kind": request.resource_type, "input": request.input,
                 "source": named.name(request.source) if request.source else "",
@@ -283,16 +266,12 @@ class HttpImageAPI:
         same = [f for f in reported
                 if not root or (root / f).resolve() == request.target.resolve()]
         if not request.target.is_file():
-            raise ProviderError(
-                "PROVIDER_FAILED", f"Раннер ответил успехом, но файла нет: {request.target.name}",
-                reason="Он пишет результат сам, в место, назначенное сервером. Пустое место при "
-                       "успешном ответе значит, что раннер и сервер видят РАЗНУЮ рабочую область: "
-                       "проверь монтирование workspace (media_runner(action='status')).")
+            # Успех без файла на месте сервера — раннер и сервер видят разную рабочую область (монтирование).
+            raise ProviderError("PROVIDER_FAILED", facts={"provider": request.provider}) from ProviderSaid(
+                f"ответ успехом, а файла нет на месте сервера: {request.target.name}")
         if reported and not same:
-            raise ProviderError(
-                "PROVIDER_FAILED", f"Раннер записал файл не туда: {', '.join(reported)}",
-                reason="Раскладкой владеет сервер, а не раннер. Путь из ответа не совпал с "
-                       "назначенным — результат не принимается.")
+            raise ProviderError("PROVIDER_FAILED", facts={"provider": request.provider}) from ProviderSaid(
+                f"файл записан не на назначенное место: {', '.join(reported)}")
         return request.target
 
     def _refusal(self, response) -> ProviderError:
@@ -325,8 +304,7 @@ class HttpImageAPI:
         facts = body.get("facts") if isinstance(body.get("facts"), dict) else {}
         errors = body.get("errors") if isinstance(body.get("errors"), list) else []
         return ProviderError(
-            code, str(body.get("message") or "")[:300],
-            facts={str(k)[:60]: str(v)[:300] for k, v in list(facts.items())[:20]},
+            code, facts={str(k)[:60]: str(v)[:300] for k, v in list(facts.items())[:20]},
             errors=[e for e in errors if isinstance(e, dict)][:20])
 
     def _receiver(self, request: MediaRequest):
@@ -374,11 +352,8 @@ class HttpImageAPI:
                 url = value.strip()
                 break
         if not url:
-            raise ProviderError(
-                "PROVIDER_FAILED", "В ответе провайдера нет ссылки на результат.",
-                reason=f"Искали по объявленному пути ({decl.get('result_path') or '—'}) и в полях "
-                       "config/media_tasks.yaml → download.fetch.url_fields. Поправь путь в "
-                       "config/providers.yaml → online.http.")
+            raise ProviderError("PROVIDER_FAILED", facts={"provider": next(iter(self._decl_cache), "")}) from ProviderSaid(
+                f"нет ссылки на результат: путь {decl.get('result_path') or '—'}, поля {', '.join(fetcher.policy.url_fields)}")
         target = Path(target)
         fetcher.fetch(url, Files(target.parent), target.name, "result")
         return target
@@ -396,10 +371,8 @@ class HttpImageAPI:
 
     @functools.cached_property
     def _tasks(self) -> Declaration:
-        return Declaration(Path(self.registry.config_file).with_name("media_tasks.yaml"), ProviderError, "ожидания",
-                           "Заведи config/media_tasks.yaml — правила ожидания и загрузки объявлены там.")
+        return Declaration(Path(self.registry.config_file).with_name("media_tasks.yaml"), ProviderError, "ожидания")
 
     @functools.cached_property
     def _providers(self) -> Declaration:
-        return Declaration(self.registry.config_file, ProviderError, "провайдеров",
-                           "Заведи config/providers.yaml — как вызывать провайдера, объявлено там.")
+        return Declaration(self.registry.config_file, ProviderError, "провайдеров")

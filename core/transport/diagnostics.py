@@ -289,8 +289,7 @@ def путь_бинаря(объявление: dict, имя: str, корень:
 def каталог_проверок(каталог: str | Path | None = None) -> Declaration:
     """Каталог проверок туннеля — одна дверь у диагностики и у прозвонки (`CloudflaredTunnel.probe`): без `каталог` —
     `tunnel_diagnostics.yaml` в каталоге деклараций (`declarations_root`: `MCP_CONFIG` или `config/` рядом с кодом)."""
-    return Declaration(каталог or declarations_root() / TUNNEL_PROBE.file, ContractError, "проверок туннеля",
-                       "Заведи config/tunnel_diagnostics.yaml — проверки и прозвонка туннеля объявлены там.")
+    return Declaration(каталог or declarations_root() / TUNNEL_PROBE.file, ContractError, "проверок туннеля")
 
 
 def полная(tunnel: Any = None, конец: str = "client") -> Отчёт:

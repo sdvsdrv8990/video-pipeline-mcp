@@ -27,9 +27,7 @@ class PiperLocalTTS:
             try:
                 from piper import PiperVoice
             except ImportError as e:
-                raise ProviderError(
-                    "LOCAL_INFERENCE_FAILED", f"Среда локальной озвучки не установлена: {e}",
-                    reason="Поставь зависимости группы local (piper-tts) в окружение сервера.") from e
+                raise ProviderError("LOCAL_INFERENCE_FAILED") from e
             return PiperVoice.load(model_path)
 
         size = model_path.stat().st_size if model_path.is_file() else None
@@ -38,9 +36,7 @@ class PiperLocalTTS:
     def generate(self, request: MediaRequest) -> MediaOutcome:
         """Озвучить текст в файл. Синхронно: ждать нечего, результат сразу на диске."""
         if not (request.input or "").strip():
-            raise ProviderError(
-                "CONTENT_REJECTED", "Пустой текст озвучивать нечем.",
-                reason="Передай текст фрагмента — повтор пустого запроса даст тот же отказ.")
+            raise ProviderError("VALIDATION_ERROR", errors=[{"field": "input", "rule": "required"}])
         voice = self._voice(self.registry.ready(request.params.get("model"))["path"])
         syn = self._synthesis_config(request.params)
         request.target.parent.mkdir(parents=True, exist_ok=True)
@@ -48,10 +44,7 @@ class PiperLocalTTS:
             with wave.open(str(request.target), "wb") as wav:
                 voice.synthesize_wav(request.input, wav, syn_config=syn)
         except Exception as e:  # среда/веса/ресурсы
-            raise ProviderError(
-                "LOCAL_INFERENCE_FAILED", f"Локальная озвучка не выполнена: {e}",
-                reason="Проверь веса модели и ресурсы машины; при повторе того же входа "
-                       "результат будет тем же.") from e
+            raise ProviderError("LOCAL_INFERENCE_FAILED") from e
         return MediaOutcome(files=[request.target], meta={"engine": "piper", "sync": True})
 
     @staticmethod

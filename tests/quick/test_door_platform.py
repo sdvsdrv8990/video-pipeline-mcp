@@ -19,6 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from core import paths
 from core.contracts import ContractError
 from core.engine import Engine
 from core.paths import Files
@@ -41,30 +42,43 @@ def check(label, cond, detail=""):
 @contextmanager
 def windows():
     """Платформа, перенос и удаление — как на Windows: занятое имя назначения rename не заменяет, rmtree не устойчив к
-    подмене ссылкой (`shutil.rst`: avoids_symlink_attacks истинно только при функциях по дескрипторам каталогов)."""
-    real_rename, real_platform, real_safe = os.rename, sys.platform, shutil.rmtree.avoids_symlink_attacks
+    подмене ссылкой (`shutil.rst`: avoids_symlink_attacks истинно только при функциях по дескрипторам каталогов),
+    жёсткой ссылки на ссылку-каталог нет: os.symlink на Windows делает ссылку типа цели, ссылка на каталог — каталог
+    (`os.rst`, symlink), а его жёсткой ссылкой не связать — на раннере CI 098ddb9 перенос ссылки на файл прошёл, на
+    каталог — нет."""
+    real_rename, real_link, real_platform, real_safe = os.rename, os.link, sys.platform, shutil.rmtree.avoids_symlink_attacks
 
     def rename(src, dst, **kw):
         if os.path.lexists(dst):
             raise FileExistsError(183, "Cannot create a file when that file already exists", str(src), None, str(dst))
         real_rename(src, dst, **kw)
 
-    os.rename, sys.platform, shutil.rmtree.avoids_symlink_attacks = rename, "win32", False
+    def link(src, dst, **kw):
+        if os.path.islink(src) and os.path.isdir(src):
+            raise PermissionError(errno.EACCES, "Access is denied", str(src), None, str(dst))
+        real_link(src, dst, **kw)
+
+    os.rename, os.link, sys.platform, shutil.rmtree.avoids_symlink_attacks = rename, link, "win32", False
     try:
         yield
     finally:
-        os.rename, sys.platform, shutil.rmtree.avoids_symlink_attacks = real_rename, real_platform, real_safe
+        os.rename, os.link, sys.platform, shutil.rmtree.avoids_symlink_attacks = real_rename, real_link, real_platform, \
+            real_safe
 
 
 @contextmanager
 def unix(safe: bool):
-    """Платформа не Windows; `safe` — устойчив ли rmtree к подмене ссылкой (функции по дескрипторам каталогов)."""
-    real_platform, real_safe = sys.platform, shutil.rmtree.avoids_symlink_attacks
+    """Платформа не Windows; `safe` — устойчив ли rmtree к подмене ссылкой (функции по дескрипторам каталогов). На
+    раннере Windows сброс каталога на диск подставлен тоже: каталог там дескриптором не открыть (EACCES, CI 098ddb9), а
+    мерится решение двери об удалении, не сброс."""
+    real_platform, real_safe, real_sync = sys.platform, shutil.rmtree.avoids_symlink_attacks, paths._sync_dir
     sys.platform, shutil.rmtree.avoids_symlink_attacks = "linux", safe
+    if real_platform == "win32":
+        paths._sync_dir = lambda folder: None
     try:
         yield
     finally:
-        sys.platform, shutil.rmtree.avoids_symlink_attacks = real_platform, real_safe
+        sys.platform, shutil.rmtree.avoids_symlink_attacks, paths._sync_dir = real_platform, real_safe, real_sync
 
 
 @contextmanager
@@ -132,6 +146,23 @@ check("Unix: каталог переехал", moved(files, "videos/clip_v2", "v
 check("Unix: пустой каталог на месте назначения — FILE_EXISTS, а не тихая замена",
       moved(files, "videos/clip_v3", "videos/empty") == ("FILE_EXISTS", {"path": "videos/empty"})
       and (ws / "videos/clip_v3/a.txt").is_file())
+
+print("== 3b. Перенос ссылки на Windows (CI 098ddb9): переезжает сама ссылка, цель на месте, занятое не затирается ==")
+os.symlink(ws / "videos" / "clip_v3", ws / "videos" / "ldir", target_is_directory=True)
+(ws / "videos" / "f.txt").write_text("файл", encoding="utf-8")
+os.symlink(ws / "videos" / "f.txt", ws / "videos" / "lfile")
+for kind, name in (("каталог", "ldir"), ("файл", "lfile")):
+    with windows():
+        got = moved(files, f"videos/{name}", f"videos/{name}_moved")
+    check(f"Windows: ссылка на {kind} переехала ссылкой, цель на месте, старого имени нет",
+          got == f"videos/{name}_moved" and (ws / f"videos/{name}_moved").is_symlink()
+          and not os.path.lexists(ws / f"videos/{name}") and (ws / "videos/clip_v3/a.txt").is_file()
+          and (ws / "videos/f.txt").read_text(encoding="utf-8") == "файл", got)
+with windows():
+    got = moved(files, "videos/ldir_moved", "videos/busy")
+check("Windows: ссылка на занятое имя — FILE_EXISTS, ни ссылка, ни занятое не тронуты",
+      got == ("FILE_EXISTS", {"path": "videos/busy"}) and (ws / "videos/ldir_moved").is_symlink()
+      and (ws / "videos/busy/b.txt").read_text(encoding="utf-8") == "чужое", got)
 
 print("== 4. Удаление каталога на Windows: непустой снимается целиком, ссылка внутри — как ссылка ==")
 

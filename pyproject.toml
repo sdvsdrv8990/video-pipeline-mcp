@@ -186,6 +186,12 @@ borrowed_by_scripts = ["pyyaml"]
 # ловится здесь, а не своим пределом внутри события.
 suite_timeout_sec = 900
 
+# Возраст версии в замке (`uv pip compile` из шапки requirements-lock.txt) — механизмом uv: версии моложе срока не
+# берутся (uv 0.12.19 docs/concepts/resolution.md «Dependency cooldowns» :891-917). 3 дня — как у Dependabot
+# (.github/dependabot.yml). pip CI этот раздел не читает: он ставит по замку.
+[tool.uv.pip]
+exclude-newer = "3 days"
+
 [tool.setuptools]
 py-modules = ["server"]
 

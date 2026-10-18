@@ -269,14 +269,15 @@ import yaml as _y2
 
 _sch30 = Path(tempfile.mkdtemp(prefix="deg_"))
 _shutil2.copy(SCHEMAS / "_defaults.yaml", _sch30 / "_defaults.yaml")
+# Формулы декларации — именами столбцов (язык config/formulas.yaml); формула ложится в строку данных: views пуст.
 (_sch30 / "probe.schema.yaml").write_text(_y2.safe_dump({
     "book": "probe", "level": "video", "source": "test",
-    "sheets": [{"name": "CALC", "columns": [
+    "sheets": [{"name": "CALC", "rows": [{"likes": 5}], "columns": [
         {"name": "views", "type": "integer", "flag": "W"},
         {"name": "likes", "type": "integer", "flag": "W"},
-        {"name": "like_rate", "type": "float", "flag": "F", "formula": "=B2/A2*100"},
-        {"name": "verdict", "type": "string", "flag": "F", "formula": "=B2/A2"},
-        {"name": "note", "type": "string", "flag": "F", "formula": "=B2/A2", "on_empty": "НЕТ ДАННЫХ"},
+        {"name": "like_rate", "type": "float", "flag": "F", "formula": "=likes/views*100"},
+        {"name": "verdict", "type": "string", "flag": "F", "formula": "=likes/views"},
+        {"name": "note", "type": "string", "flag": "F", "formula": "=likes/views", "on_empty": "НЕТ ДАННЫХ"},
     ]}]}, allow_unicode=True), encoding="utf-8")
 _ws30 = tempfile.mkdtemp(prefix="deg_ws_")
 _e30 = ExcelEngine(_ws30)
@@ -316,11 +317,11 @@ _sch7d = Path(tempfile.mkdtemp(prefix="deg7d_"))
 _shutil2.copy(SCHEMAS / "_defaults.yaml", _sch7d / "_defaults.yaml")
 (_sch7d / "p.schema.yaml").write_text(_y2.safe_dump({
     "book": "p", "level": "video", "source": "test", "degrade": {"string": "КНИГА"},
-    "sheets": [{"name": "CALC", "columns": [
+    "sheets": [{"name": "CALC", "rows": [{"a": 1}], "columns": [
         {"name": "a", "type": "integer", "flag": "W"},
-        {"name": "rate", "type": "float", "flag": "F", "formula": "=1/A2"},
-        {"name": "label", "type": "string", "flag": "F", "formula": "=1/A2"},
-        {"name": "note", "type": "string", "flag": "F", "formula": "=1/A2", "on_empty": "СВОЁ"},
+        {"name": "rate", "type": "float", "flag": "F", "formula": "=1/a"},
+        {"name": "label", "type": "string", "flag": "F", "formula": "=1/a"},
+        {"name": "note", "type": "string", "flag": "F", "formula": "=1/a", "on_empty": "СВОЁ"},
     ]}]}, allow_unicode=True), encoding="utf-8")
 _ws7d = tempfile.mkdtemp(prefix="deg7d_ws_")
 TableMaterializer(ExcelEngine(_ws7d), _sch7d).materialize("p", "p.xlsx")
@@ -519,8 +520,13 @@ def _books(state: str) -> Path:
             if state == "битые":
                 data["sheets"][0]["columns"][0]["type"] = "strnig"
             else:   # короткие имена: событие мерит ссылку на лист, а не длину имени (её судит библиотека записи)
-                for index, sheet in enumerate(data["sheets"]):
-                    sheet["name"] = f"Л{index}"
+                renamed = {sheet["name"]: f"Л{index}" for index, sheet in enumerate(data["sheets"])}
+                for sheet in data["sheets"]:
+                    sheet["name"] = renamed[sheet["name"]]
+                    for column in sheet["columns"]:   # формула зовёт лист по имени: книга остаётся связной
+                        if column.get("formula"):
+                            column["formula"] = re.sub(r"(?<![\w.])(\w+)\.", lambda m: (renamed.get(m[1], m[1]) + "."),
+                                                       column["formula"])
             schema_file.write_text(_yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
     return cfg
 
@@ -599,7 +605,7 @@ from core.contracts import ContractError as _CE10
 from core.declaration import Declaration as _Decl10
 from core.engine.table_materializer import declared_rows as _rows10, named_sheet as _sheet10
 
-_montage_door = _Decl10(CFG / "montage.yaml", _CE10, "монтажа", "—")
+_montage_door = _Decl10(CFG / "montage.yaml", _CE10, "монтажа")
 _copy10 = _rows10(CFG, _montage_door, "scene", "roles")
 try:
     _copy10[0]["_row_id"] = "R1"
@@ -634,7 +640,7 @@ def _references(cfg: Path) -> list[tuple[str, tuple[str, ...], str]]:
 def _named(cfg: Path, file: str, path: tuple[str, ...], key: str) -> tuple[str, str]:
     """(код, детали) суда ссылки; успех — ("", имя листа); чужое исключение — его имя."""
     try:
-        return "", _sheet10(cfg, _Decl10(cfg / file, _CE10, file, "—"), *path, book=key).name
+        return "", _sheet10(cfg, _Decl10(cfg / file, _CE10, file), *path, book=key).name
     except _CE10 as e:
         return e.code, f"{e.facts.get('file')}: {e.facts.get('details')}"
     except Exception as e:  # мутант суда: падение вместо отказа видно проверке

@@ -12,8 +12,9 @@ from typing import Any, Literal
 from core.excel import ExcelEngine, ExcelError
 from core.contracts import ContractError
 from core.declaration import Declaration, Declared
-from core.declaration_schemas import BookColumn, BookDefaults, BookSchema, BookSheet
+from core.declaration_schemas import BookColumn, BookDefaults, BookSchema, BookSheet, book_formula_slips, book_sheets
 from core.engine.template_resolver import server_tables
+from core.formulas import DATA_ROW, compiled, declared_language
 
 
 class TableMaterializerError(ContractError):
@@ -34,7 +35,7 @@ class TableMaterializer:
         """Запасные значения по типу столбца: книга перекрывает общий `_defaults.yaml`."""
         if self._defaults is None:
             door = Declared(self.schemas_dir / "_defaults.yaml", TableMaterializerError, "общих правил книг",
-                            "Поправь _defaults.yaml в config/templates/tables/.", schema=BookDefaults)
+                            schema=BookDefaults)
             # Нет файла — правил нет (решение читателя); битый — отказ двери, как у книги.
             self._defaults = door.model.degrade if door.config_file.exists() else {}
         return {**self._defaults, **schema.degrade}
@@ -73,7 +74,9 @@ class TableMaterializer:
         """
         schema = self.load_schema(book)
         rules = self._degrade_rules(schema)
-        guarded = 0
+        _, language = declared_language(TableMaterializerError)
+        sheets = book_sheets(schema)
+        guarded = sum(1 for sheet in schema.sheets for col in sheet.columns if col.flag == "F" and col.formula)
         try:
             self.excel.create_workbook(path, sheet=schema.sheets[0].name)
             for sheet in schema.sheets[1:]:
@@ -82,21 +85,19 @@ class TableMaterializer:
             created: list[dict] = []
             for sheet in schema.sheets:
                 for col in sheet.columns:
-                    # F = вычисляемая: формула из спеки, иначе только заголовок-плейсхолдер.
-                    formula = col.formula if col.flag == "F" else ""
-                    if formula:
-                        formula = self._guarded(formula, col, rules)
-                        guarded += 1
-                    self.excel.add_column(path, sheet.name, col.name, formula=formula or None)
+                    self.excel.add_column(path, sheet.name, col.name)
                     if col.type == "enum" and col.enum:
                         self.excel.set_validation(path, sheet.name, col.name, allowed=list(col.enum))
-                # Строки-дефолты: лист может нести не только форму, но и стартовые значения
-                # (конфиг канала, переведённый в листы). Список в ячейке — через запятую.
+                # Строки-дефолты: лист может нести не только форму, но и стартовые значения (конфиг канала,
+                # переведённый в листы); список в ячейке — через запятую; вычисляемый столбец — формула своей строки.
                 list_cols = {c.name for c in sheet.columns if c.type == "list"}
-                for row in sheet.rows:
-                    self.excel.append_row(path, sheet.name, {
-                        k: (",".join(str(x) for x in v) if k in list_cols and isinstance(v, tuple) else v)
-                        for k, v in row.items()})
+                for at, row in enumerate(sheet.rows, start=DATA_ROW):
+                    values = {k: (",".join(str(x) for x in v) if k in list_cols and isinstance(v, tuple) else v)
+                              for k, v in row.items()}
+                    values |= {col.name: self._guarded(compiled(col.formula, sheet.name, sheets, at, language), col,
+                                                       rules)
+                               for col in sheet.columns if col.flag == "F" and col.formula}
+                    self.excel.append_row(path, sheet.name, values)
                 created.append({"sheet": sheet.name, "columns": [c.name for c in sheet.columns],
                                 "rows": len(sheet.rows)})
         except ExcelError as e:
@@ -158,8 +159,19 @@ def server_book(config_path: str | Path, book: str) -> BookSchema:
 
 def book_schema(tables_dir: str | Path, book: str) -> BookSchema:
     """Декларация книги `<tables_dir>/<книга>.schema.yaml` — одна дверь на всех её читателей: схема `BookSchema` судит
-    файл целиком; нет файла — `TEMPLATE_NOT_FOUND` с подсказкой, битый — отказ двери с путём ключа."""
-    path = Path(tables_dir) / f"{book}.schema.yaml"
-    return Declared(path, TableMaterializerError, f"книги {book}",
-                    f"Заведи {path.name} в config/templates/tables/ (формат — схема BookSchema, "
-                    "core/declaration_schemas.py).", schema=BookSchema).model
+    файл целиком (имена формул — её же суд); функции и агрегаты формул — связь с языком `config/formulas.yaml`, отказ
+    называет оба файла; нет файла — `TEMPLATE_NOT_FOUND` с подсказкой, битый — отказ двери с путём ключа."""
+    door = Declared(Path(tables_dir) / f"{book}.schema.yaml", TableMaterializerError, f"книги {book}", schema=BookSchema)
+    schema = door.model
+    language_door, language = declared_language(TableMaterializerError)
+    if gaps := book_formula_slips(schema, language):
+        rule = gaps[0][2].rule
+        same = [(i, j, slip) for i, j, slip in gaps if slip.rule == rule]
+        raise door.link_refused(rule, "; ".join(sorted({slip.expected for _, _, slip in same})),
+                                [("sheets", str(i), "columns", str(j), "formula") for i, j, _ in same],
+                                language_door, [(_LANGUAGE_KEY.get(rule, "macros"),)])
+    return schema
+
+
+# Ключ языка формул, на который ссылается изъян формулы книги (прочие изъяны рождает развёрнутый макрос).
+_LANGUAGE_KEY = {"formula_function": "functions", "formula_row": "aggregates"}

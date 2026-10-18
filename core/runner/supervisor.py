@@ -45,6 +45,7 @@ log = logging.getLogger(__name__)
 
 TOKEN_ENV = "MCP_RUNNER_TOKEN"
 READY_ENV = "MCP_RUNNER_READY_FD"               # адрес канала готовности в среде раннера: дескриптор (POSIX) или хэндл
+NOBODY = "65534:65534"                          # nobody образа раннера (/etc/passwd python:3.14-slim и video-pipeline-runner)
 _CHILDREN: dict[int, subprocess.Popen] = {}     # раннеры, поднятые этим процессом: событие их конца и код — у владельца
 _EXITS: dict[tuple[int, float], str] = {}       # смерть запуска (pid, started) — номер её события в журнале сервера, один раз
 
@@ -83,17 +84,15 @@ class RunnerSupervisor:
         name = str(self.rules.get("provider") or "")
         decl = (((self.registry.config.get("online") or {}).get("http")) or {}).get(name)
         if not decl:
-            raise ProviderError(
-                "PROVIDER_ADAPTER_MISSING", "Раннер не объявлен провайдером — поднимать нечего.",
-                reason="Объяви его в config/providers.yaml: имя в local.runner.provider и блок с "
-                       "адресом в online.http под тем же именем.")
+            raise self._decl.link_refused(
+                "runner_undeclared", "провайдер раннера объявлен блоком online.http под тем же именем",
+                [("local", "runner", "provider")], self._decl, [("online", "http", name)] if name else [])
         return decl
 
     @functools.cached_property
     def _decl(self) -> Declaration:
         """Дверь `providers.yaml` для политики прозвонки (`local.runner.health`) — схемой, с путём ключа в отказе."""
-        return Declaration(self.registry.config_file, ProviderError, "провайдеров",
-                           "Заведи config/providers.yaml — раннер и его прозвонка объявлены там.")
+        return Declaration(self.registry.config_file, ProviderError, "провайдеров")
 
     @property
     def base_url(self) -> str:
@@ -231,9 +230,8 @@ class RunnerSupervisor:
                     "--config", str(self.registry.config_file),
                     "--workspace", str(workspace)]
         if mode != "docker":
-            raise ProviderError(
-                "VALIDATION_ERROR", f"Неизвестный режим запуска раннера: '{mode}'.",
-                reason="Объявлены process (тем же интерпретатором) и docker (в контейнере).")
+            raise ProviderError("VALIDATION_ERROR", errors=[
+                {"field": "mode", "rule": "enum", "expected": ["process", "docker"]}])
         docker = self.rules.get("docker") or {}
         parsed = urlparse(str(self.endpoint.get("url") or ""))
         command = ["docker", "run", "--rm", "--name", str(docker.get("container") or "runner"),
@@ -242,7 +240,11 @@ class RunnerSupervisor:
                    "-p", f"{parsed.hostname}:{parsed.port}:{parsed.port}",
                    # Имя переменной без значения: docker возьмёт его из нашего окружения. Написать
                    # `-e ИМЯ=токен` значило бы показать токен в выводе `ps` любому процессу.
-                   "-e", TOKEN_ENV]
+                   "-e", TOKEN_ENV,
+                   # OWASP Docker Security Cheat Sheet #3, #4, #8: без возможностей ядра, без повышения прав, образ только
+                   # на чтение — писать можно в тома и во временную память, туда же HOME для кешей библиотек.
+                   "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--tmpfs=/tmp",
+                   "-e", "HOME=/tmp", *self._container_user()]
         for device in docker.get("devices") or []:
             command += ["--device", str(device)]
         for gid in self._device_gids(docker.get("devices") or []):
@@ -251,6 +253,27 @@ class RunnerSupervisor:
             source = workspace if str(host_path) == "workspace" else self.root / str(host_path)
             command += ["-v", f"{Path(source).resolve()}:{inner}"]
         return command + [str(docker.get("image") or "video-pipeline-runner")]
+
+    def _container_user(self) -> list[str]:
+        """Кем раннер пишет в тома хоста. Демон с root — пользователем сервера (uid:gid): файлы области получают владельца
+        хоста, а не root. Демон без root (rootless) — без `--user`: uid 0 его пространства имён и есть пользователь хоста,
+        а uid n — subuid + (n − 1) (docker docs rootless/uid-gid-mapping.md:14-16). Сервер root или ОС без uid — nobody.
+        userns-remap флагом не решается: uid 0 там — первый subuid, это настройка демона (там же, :11-13)."""
+        if self._rootless():
+            return []
+        uid = os.getuid() if hasattr(os, "getuid") else 0
+        return ["--user", f"{uid}:{os.getgid()}" if uid else NOBODY]
+
+    @staticmethod
+    def _rootless() -> bool:
+        """Демон docker без root: признак `rootless` в Security Options `docker info` (docker docs rootless/_index.md:142-146).
+        Демон не ответил — команда строится как для демона с root, а отказ назовёт сам `docker run`."""
+        try:
+            said = subprocess.run(["docker", "info", "--format", "{{json .SecurityOptions}}"], capture_output=True,
+                                  check=False, **child_spawn("replace"))
+        except OSError:
+            return False
+        return "name=rootless" in said.stdout
 
     @staticmethod
     def _device_gids(devices) -> list[str]:

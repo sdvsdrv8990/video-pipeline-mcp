@@ -314,8 +314,7 @@ for _что, _правка, _ждём in (
     _живая = yaml.safe_load((ROOT / "config" / "packages.yaml").read_text(encoding="utf-8"))
     _правка(_живая["index"]["fetch"])
     (_папка / "packages.yaml").write_text(yaml.safe_dump(_живая, allow_unicode=True), encoding="utf-8")
-    install_cost.ИНДЕКС = Declared(_папка / "packages.yaml", PackageError, "индекса пакетов", "—",
-                                   schema=PackagesDecl)
+    install_cost.ИНДЕКС = Declared(_папка / "packages.yaml", PackageError, "индекса пакетов", schema=PackagesDecl)
     try:
         install_cost.цена(".")
         _отказ = None

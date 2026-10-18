@@ -18,9 +18,7 @@ class OnnxBGRemoval(OnnxImage):
 
     def generate(self, request: MediaRequest) -> MediaOutcome:
         if request.source is None:
-            raise ProviderError(
-                "CONTENT_REJECTED", "Удалять фон не у чего: не передан исходный файл.",
-                reason="Для этого вида ресурса input — путь к картинке внутри рабочей области.")
+            raise ProviderError("VALIDATION_ERROR", errors=[{"field": "input", "rule": "required"}])
         params = request.params
         model_path = self.registry.ready(params.get("model"))["path"]
         session = self.session(model_path)

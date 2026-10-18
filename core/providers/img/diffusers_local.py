@@ -10,7 +10,9 @@
 дали.
 """
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import ClassVar
 
 from ..adapters import MediaOutcome, MediaRequest
 from ..resolver import ProviderError
@@ -18,6 +20,14 @@ from ..resolver import ProviderError
 
 class DiffusersLocalIMG:
     """Синхронный адаптер: промпт → png на диске."""
+
+    # Как положить пайплайн на устройство по режиму размещения: перенос и выгрузка исключают друг друга (у выгруженного
+    # `.to()` ругается сама библиотека); у методов выгрузки первый позиционный — `gpu_id`, устройство — только ИМЕНЕМ.
+    MOVERS: ClassVar[dict[str, Callable]] = {
+        "device": lambda pipe, dev: pipe.to(dev),
+        "model_offload": lambda pipe, dev: pipe.enable_model_cpu_offload(device=dev),
+        "sequential_offload": lambda pipe, dev: pipe.enable_sequential_cpu_offload(device=dev),
+    }
 
     def __init__(self, registry):
         self.registry = registry
@@ -52,8 +62,17 @@ class DiffusersLocalIMG:
 
         Кэш обязан жить в ПУЛЕ, а не в адаптере: адаптер создаётся заново на КАЖДЫЙ вызов,
         и кэш внутри него не переживает вызов — переиспользование было бы видимостью
-        (замер: 1.4 с против 0.2 с на кадре sd-turbo).
+        (замер: 1.4 с против 0.2 с на кадре sd-turbo). Не влезает при объявленном отказе (`oversize: error`) — отказ
+        до подъёма: что не влезет, известно из оценки размещения.
         """
+        moved = where["device"] != "cpu" and "device_map" not in load
+        if moved and place["mode"] not in self.MOVERS:
+            from ..hardware import OVERSIZE_MODES
+            if place["mode"] not in OVERSIZE_MODES:
+                raise self.registry.refused("literal_error", f"одно из: {', '.join(OVERSIZE_MODES)}",
+                                            ("local", "gpu", "oversize"))
+            raise ProviderError("MODEL_DOES_NOT_FIT", facts={
+                "device": where["device"], "need_mb": place["need_mb"], "available_mb": place["available_mb"]})
         key = f"diffusers|{model_path}#{sorted(load.items())}#{where['device']}#{where['dtype']}#{place['mode']}"
 
         def build():
@@ -61,9 +80,7 @@ class DiffusersLocalIMG:
                 import torch
                 from diffusers import AutoPipelineForText2Image
             except ImportError as e:
-                raise ProviderError(
-                    "LOCAL_INFERENCE_FAILED", f"Среда локальной генерации не установлена: {e}",
-                    reason="Поставь зависимости группы local (diffusers, transformers) в окружение сервера.") from e
+                raise ProviderError("LOCAL_INFERENCE_FAILED") from e
             dtype = getattr(torch, where["dtype"], None) if where["dtype"] else None
             try:
                 # local_files_only: молча тянуть модель из интернета посреди вызова нельзя.
@@ -72,35 +89,13 @@ class DiffusersLocalIMG:
                     **({"torch_dtype": dtype} if dtype else {}))
             except Exception as e:  # битые/неполные веса; причина — по цепочке `from e` в журнал, не клиенту
                 raise ProviderError("MODEL_UNLOADABLE", facts={"model": Path(model_path).name}) from e
-            if where["device"] != "cpu" and "device_map" not in load:
-                # Перенос и выгрузка исключают друг друга: у выгруженного пайплайна `.to()`
-                # ругается сама библиотека. Поэтому здесь ровно одна ветка из трёх.
-                # У методов выгрузки первый позиционный аргумент — `gpu_id`, а не устройство,
-                # поэтому оно передаётся ИМЕНЕМ: позиционно получается 'cuda:cuda'.
-                mover = {
-                    "device": lambda dev: pipe.to(dev),
-                    "model_offload": lambda dev: pipe.enable_model_cpu_offload(device=dev),
-                    "sequential_offload": lambda dev: pipe.enable_sequential_cpu_offload(device=dev),
-                }.get(place["mode"])
-                if mover is None:
-                    raise ProviderError(
-                        "LOCAL_INFERENCE_FAILED",
-                        f"Модель не влезает на '{where['device']}': {place['why']}.",
-                        reason="Объяви в config/providers.yaml → local.gpu.oversize режим выгрузки "
-                               "(model_offload — медленнее в разы, sequential_offload — в десятки, "
-                               "но влезает почти всё) или возьми модель полегче: media_models "
-                               "показывает вердикт по каждой.")
+            if moved:
                 try:
-                    mover(where["device"])
+                    self.MOVERS[place["mode"]](pipe, where["device"])
                 except Exception as e:  # нет устройства/памяти
                     # Молча посчитать на процессоре нельзя: разница во времени — десятки раз, и
                     # тот, кто ждал карту, обязан узнать, что её не дали, вместе с причиной.
-                    raise ProviderError(
-                        "LOCAL_INFERENCE_FAILED",
-                        f"Модель не размещается на '{where['device']}' ({place['mode']}): {e}",
-                        reason=f"Проба железа выбрала это устройство ({where['why']}). Посмотри "
-                               "media_models → hardware; чтобы считать на процессоре намеренно, "
-                               "поставь device=cpu в строке провайдера.") from e
+                    raise ProviderError("LOCAL_INFERENCE_FAILED", facts={"device": where["device"]}) from e
             return pipe
 
         # Сколько модель займёт — считает оценщик по описи; на карте пул уточнит это замером.
@@ -114,9 +109,7 @@ class DiffusersLocalIMG:
     def generate(self, request: MediaRequest) -> MediaOutcome:
         """Нарисовать промпт в файл. Синхронно: результат сразу на диске."""
         if not (request.input or "").strip():
-            raise ProviderError(
-                "CONTENT_REJECTED", "Пустой промпт рисовать нечем.",
-                reason="Передай описание кадра — повтор пустого запроса даст тот же отказ.")
+            raise ProviderError("VALIDATION_ERROR", errors=[{"field": "input", "rule": "required"}])
         params = request.params
         from ..hardware import placement
         entry = self.registry.model_entry(params.get("model"))
@@ -129,10 +122,7 @@ class DiffusersLocalIMG:
         try:
             images = pipe(prompt=request.input, **self._call_kwargs(params)).images
         except Exception as e:  # среда/память/веса
-            raise ProviderError(
-                "LOCAL_INFERENCE_FAILED", f"Локальная генерация не выполнена: {e}",
-                reason="Проверь ресурсы машины (память) и веса модели; при повторе того же "
-                       "входа результат будет тем же.") from e
+            raise ProviderError("LOCAL_INFERENCE_FAILED") from e
         files: list[Path] = []
         for i, image in enumerate(images):
             # Второй и следующий варианты — соседними именами, чтобы не затирать первый.
