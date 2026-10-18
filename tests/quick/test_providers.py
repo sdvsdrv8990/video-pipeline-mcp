@@ -159,7 +159,7 @@ try:
     ProviderResolver(Path(tempfile.mkdtemp()) / "нет.yaml").config
     ok(False, "отсутствие декларации должно падать")
 except ProviderError as e:
-    ok(e.code == "TEMPLATE_NOT_FOUND", f"нет декларации → TEMPLATE_NOT_FOUND ({e.code})")
+    ok(e.code == "DECLARATION_MISSING", f"нет декларации → DECLARATION_MISSING ({e.code})")  # 2026-10-18: EB-11
 
 print("== 8. Декларация реально грузится (правка меняет поведение) ==")
 _cfg2 = Path(tempfile.mkdtemp()) / "providers.yaml"
@@ -1029,9 +1029,13 @@ try:
                     input="текст", scene_id="s1", video_slug="demo")
     ok(_nokey.status == "error" and _nokey.error.code == "PROVIDER_KEY_MISSING",
        f"нет ключа → PROVIDER_KEY_MISSING, а не «внутренняя ошибка» ({_nokey.error.code if _nokey.error else 'success'})")
-    ok("вручную" in _nokey.error.recovery.reason and "set_provider_key" in _nokey.error.recovery.reason
-       and "table_update" in _nokey.error.recovery.reason,
-       "сервер говорит: прав нет, вставляет владелец вручную — и называет обходной путь без ключа")
+    # Обновлено 2026-10-18 (форма слова владельца 17.10 для SECRET_ACCESS_DENIED, CM-14; D26 texts.device_in_recipe): команда
+    # хоста ИИ-клиенту не нужна — ключ вносит владелец, что стоит — инструментом сервера; обходной путь без ключа остаётся.
+    ok("владелец" in _nokey.error.recovery.reason and "media_provider_status" in _nokey.error.recovery.reason
+       and "table_update" in _nokey.error.recovery.reason and "set_provider_key" not in _nokey.error.recovery.reason
+       and _nokey.error.facts.get("provider") and _nokey.error.facts["provider"] in _nokey.error.message,
+       f"ключ вносит владелец, что стоит — media_provider_status, обход — table_update; провайдер назван фактом и в тексте "
+       f"({_nokey.error.message} | {_nokey.error.recovery.reason} | {_nokey.error.facts})")
 
     _status_k = _kcall("media_provider_status", table="k", resource_type="tts_characters")
     _kstate = _status_k.data["resolved"][0]["key"]
@@ -1112,20 +1116,26 @@ ok(_keep == ["model.safetensors", "voice.onnx", "config.json"],
 ok({r["file"] for r in _refused} == {"weights.bin", "old.ckpt"}
    and all("pickle" in r["reason"] for r in _refused),
    "pickle-веса отбиты с названной причиной: их загрузка выполняет код из файла")
+from core.reactions.reactions import cli_text as _cli_text  # консоль владельца — тот же реестр, строка owner
 try:
     _mcat.check_size(999999, "огромная")
     ok(False, "превышение предела размера должно падать")
 except ProviderError as e:
     _shown = _eng.refusal(e).error
-    ok(e.code == "MODEL_TOO_LARGE" and e.facts["model"] == "огромная" and "max_total_mb" in _shown.recovery.reason,
-       f"размер сверх объявленного предела — свой код, факты, и клиент видит, где предел правится ({_shown.message})")
+    _console = _cli_text(e, ROOT / "config" / "server_reactions.yaml")
+    # Обновлено 2026-10-18 (D26, два читателя реестра): где предел правится — владельцу у консоли, клиенту — что делать.
+    ok(e.code == "MODEL_TOO_LARGE" and e.facts["model"] == "огромная" and "fits=true" in _shown.recovery.reason
+       and "max_total_mb" not in _shown.recovery.reason and "max_total_mb" in _console,
+       f"размер сверх объявленного предела — свой код, факты; клиенту — модель полегче, владельцу — где предел ({_console})")
 try:
     _mcat.check_repo("https://civitai.example/api/download/123")
     ok(False, "чужой источник должен отбиваться")
 except ProviderError as e:
     _shown = _eng.refusal(e).error
-    ok(e.code == "MODEL_SOURCE_FORBIDDEN" and "civitai" in _shown.message and "allow_sources" in _shown.recovery.reason,
-       f"чужой САЙТ как источник весов не берётся: свой код, источник назван ({_shown.message})")
+    _console = _cli_text(e, ROOT / "config" / "server_reactions.yaml")
+    ok(e.code == "MODEL_SOURCE_FORBIDDEN" and "civitai" in _shown.message and "allow_sources" not in _shown.recovery.reason
+       and "allow_sources" in _console,
+       f"чужой САЙТ как источник весов не берётся: свой код, источник назван; список — владельцу у консоли ({_console})")
 
 # Опись поставленного лежит рядом с весами, а конфиг машина не переписывает.
 _cfg_before = CFG.read_text(encoding="utf-8")
@@ -2611,12 +2621,38 @@ if _spec_tool.status == "success" and _spec_tool.data.get("source") == "model_fi
                "warning_threshold": -1, "model": "sdxl-turbo", "img_size": 4096}}}}), encoding="utf-8")
     _deny14 = _call("media_generate", table="spec14", resource_type="image_generations",
                     input="кадр", scene_id="s1")
-    ok(_deny14.status == "error" and _deny14.error.code == "VALIDATION_ERROR",
+    # Обновлено 2026-10-18 (EB-11, прецедент D25; пункт 10 прохода текстов): просит строка книги канала — BOOK_ROW_INVALID
+    # с листом и строкой, а что не подошло — в errors (значение и допустимое), не в тексте места.
+    ok(_deny14.status == "error" and _deny14.error.code == "BOOK_ROW_INVALID",
        f"строка канала просит невозможное — отказ ДО вызова ({_deny14.error.code if _deny14.error else 'успех!'})")
-    ok("4096" in (_deny14.error.message if _deny14.error else ""),
+    ok(any(str(e.get("value")) == "4096" for e in (_deny14.error.errors if _deny14.error else [])),
        "в отказе названо, ЧТО именно не подошло")
 else:
     print("  ⚠ веса sdxl-turbo не поставлены — спека сквозь инструмент и отказ ДО вызова не проверены")
+
+# Без весов: спека подставная — отказ строки канала ДО вызова меряется на двери всегда (ветка выше — только с весами).
+_real_of14, _real_check14 = ModelSpec.of, ModelSpec.check
+ModelSpec.of = lambda self, provider, model, api_key="", refresh=False: {  # type: ignore[method-assign]
+    "source": "model_files", "parameters": {"img_size": {"max": 1024}}}
+ModelSpec.check = lambda self, spec, params: [  # type: ignore[method-assign]
+    {"param": "img_size", "value": 4096, "problem": "max", "allowed": "≤ 1024"}]
+try:
+    (_ws / "spec14b").mkdir()
+    (_ws / "spec14b" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+        "S1": {"resource_type": "image_generations", "provider": "Local_diffusers",
+               "fallback_provider": "", "daily_limit": -1, "current_usage": 0,
+               "warning_threshold": -1, "model": "sdxl-turbo", "img_size": 4096}}}}), encoding="utf-8")
+    _deny14b = _call("media_generate", table="spec14b", resource_type="image_generations", input="кадр", scene_id="s1")
+finally:
+    ModelSpec.of, ModelSpec.check = _real_of14, _real_check14  # type: ignore[method-assign]
+_e14b = _deny14b.error
+ok(_deny14b.status == "error" and _e14b is not None and _e14b.code == "BOOK_ROW_INVALID"
+   and _e14b.facts.get("sheet") == "RESOURCE_LIMITS" and _e14b.facts.get("row") == "S1"
+   and _e14b.facts.get("spec_source") == "model_files"
+   and {"field": "img_size", "rule": "max", "value": 4096, "expected": "≤ 1024"} in _e14b.errors
+   and "S1" in _e14b.message and _e14b.recovery and _e14b.recovery.suggested_tool == "table_update",
+   f"без весов: строка канала просит невозможное — BOOK_ROW_INVALID с листом, строкой и полем, рецепт table_update "
+   f"({_e14b and (_e14b.code, _e14b.facts, _e14b.errors, _e14b.message)})")
 
 print("== 15. Поднятая модель переживает вызов: пул с бюджетом (S24) ==")
 import time as _time
@@ -2757,6 +2793,8 @@ if _bg_model:
        "файл лежит по этому пути сразу — без промежуточного места и последующего переноса")
 
 print("== 17. Раннер: инференс в отдельном процессе (S24) ==")
+import random as _random17
+import signal as _signal17
 import socket as _sock17
 import subprocess as _sp17
 import httpx as _hx17
@@ -2892,8 +2930,31 @@ try:
     ok(_c17("media_runner", action="status").data["phase"] == "stopped",
        "прозвонка не поднятого раннера отвечает «не поднят», а не молчит")
 
-    _start17 = _c17("media_runner", action="start")
+    # D02-e: готовность процесса — знак раннера в канал сервера, а не опрос: за подъём /health спрошен один раз — финальным
+    # статусом (тем же стендом до правки — 3, 3, 4 пробы). Считаются пробы потока подъёма, не проверка «уже поднят».
+    _probe17e, _launch17e, _in17e, _asked17e = _Sup17._probe, _Sup17.launch, _thr.local(), []
+
+    def _counted17e(self, *args, **kwargs):
+        if getattr(_in17e, "on", False):
+            _asked17e.append(1)
+        return _probe17e(self, *args, **kwargs)
+
+    def _window17e(self, *args, **kwargs):
+        _in17e.on = True
+        try:
+            return _launch17e(self, *args, **kwargs)
+        finally:
+            _in17e.on = False
+
+    _Sup17._probe, _Sup17.launch = _counted17e, _window17e
+    try:
+        _start17 = _c17("media_runner", action="start")
+    finally:
+        _Sup17._probe, _Sup17.launch = _probe17e, _launch17e
     _up17 = _start17.status == "success" and _start17.data.get("phase") == "running"
+    ok(_up17 and len(_asked17e) == 1,
+       f"подъём процесса ждёт знак готовности событием: /health за подъём спрошен {len(_asked17e)} раз — финальным "
+       f"статусом, а не опросом ({_start17.data.get('phase') if _start17.status == 'success' else _start17.error.code})")
     ok(_up17 and _start17.data.get("pid") and _start17.data.get("task_id"),
        f"инструмент поднял раннер заданием и дождался готовности в пределах срока вызова клиента — готов в одном вызове, "
        f"с id задания подъёма ({_start17.data.get('phase') if _start17.status == 'success' else _start17.error.code})")
@@ -2986,10 +3047,27 @@ try:
         _psutil18.Process(_pid17).kill()        # падение снаружи; ветку ОС держит psutil: SIGKILL на POSIX, TerminateProcess на Windows
         _code17 = _Sup17.ended(_pid17)          # конец — событием владельца процесса (Popen супервизора), без своего предела
         ok(_code17 not in (None, 0), f"конец убитого раннера пришёл событием владельца с кодом выхода ({_code17})")
-        _dead17 = _c17("media_runner", action="status")
+        _heard17: list = []
+        _ear17 = _logging.Handler(_logging.DEBUG)
+        _ear17.emit = _heard17.append           # type: ignore[method-assign]
+        _logging.getLogger("core.runner.supervisor").addHandler(_ear17)
+        try:
+            _dead17 = _c17("media_runner", action="status")
+        finally:
+            _logging.getLogger("core.runner.supervisor").removeHandler(_ear17)
         ok(_dead17.data["phase"] == "exited",
            f"убитый раннер виден как exited, а не как молчание ({_dead17.data['phase']})")
-        ok(_dead17.data["log_tail"], "вместе с фазой приходит хвост журнала — причина переживает процесс")
+        # Обновлено с объявлением (TS-11, D02-f, слово владельца 14.10 — CM-14/TX-02): прежде хвост журнала раннера уходил
+        # клиенту полем log_tail; теперь причина переживает процесс в журнале сервера под номером события.
+        _event17 = _dead17.data.get("event")
+        ok("log_tail" not in _dead17.data and bool(_event17)
+           and any(getattr(r, "event", None) == _event17 and r.exc_info for r in _heard17),
+           f"хвоста журнала раннера в ответе нет: слова раннера — в журнале сервера под номером события ({_event17})")
+        _log17 = str(_dead17.data.get("log") or "")
+        ok(_dead17.data.get("exit_code") == _code17 and bool(_log17) and not Path(_log17).is_absolute()
+           and _log17 not in _dead17.data["note"],
+           f"статус называет, как раннер кончился, фактом — код {_dead17.data.get('exit_code')} "
+           f"{_dead17.data.get('signal', '')}; журнал — фактом от корня, не в тексте ({_log17})")
         _after17 = _c17("media_generate", table="pic", resource_type="bg_removals",
                         input="pic/frame.png", scene_id="r3")
         ok(_after17.status == "error" and _after17.error.code == "RUNNER_NOT_RUNNING",
@@ -3052,6 +3130,57 @@ try:
             _aio.run(_eng17s.call("media_runner", {"action": "stop"}))
             _srv.CONFIG_PATH = _cfg17
 
+    # D02-e (TS-13): раннер вышел, не став готовым. Причина — в процессе (строка в канале — не знак, его слова — в журнал
+    # раннера, код выхода), следствие — на двери подъёма: RUNNER_EXITED с кодом, сигналом и номером события; слова раннера —
+    # в журнале сервера под этим номером, в тексте клиенту их нет.
+    # Срок вызова клиента — свой и короткий: подъём, который не проснулся от выхода раннера, виден за него, а не за 240 с.
+    _tmp17x = Path(tempfile.mkdtemp(prefix="runner_x_"))
+    _srv.CONFIG_PATH = declarations_copy({"providers.yaml": _runner_decl17,
+                                          "transport.yaml": {"clients.claude_code.call_sec": 20}}, root=_tmp17x)
+    _eng17x = _Eng(reactions=_REACTIONS, state_manager=_sm)
+    _register(_eng17x, _IDG(), _sm)
+    _cmd17x = _Sup17._command
+    _deaths17x = [("код 3", "sys.exit(3)", {"exit_code": 3})]
+    if hasattr(_signal17, "SIGKILL"):
+        _deaths17x.append(("SIGKILL", "os.kill(os.getpid(), signal.SIGKILL)",
+                           {"exit_code": -int(_signal17.SIGKILL), "signal": "SIGKILL"}))
+    else:
+        print("  ⚠ смерть от сигнала не судится: на этой ОС сигналов POSIX нет")
+    for _case17x, _end17x, _want17x in _deaths17x:
+        def _dies17x(self, mode, workspace, _end=_end17x):
+            return [sys.executable, "-c",
+                    "import os, signal, sys; sys.path.insert(0, sys.argv[1]); "
+                    "from core.runner.supervisor import READY_ENV, ready_writer; "
+                    "ready_writer(os.environ[READY_ENV], 'ready')(); "
+                    f"print('раннер: нет среды инференса', flush=True); {_end}", str(ROOT)]
+
+        _heard17x: list = []
+        _ear17x = _logging.Handler(_logging.DEBUG)
+        _ear17x.emit = _heard17x.append         # type: ignore[method-assign]
+        _engine_log17x = _logging.getLogger("core.engine.engine")
+        _level17x = _engine_log17x.level        # причина объявленного отказа — строкой INFO (incident с кодом)
+        _engine_log17x.addHandler(_ear17x)
+        _engine_log17x.setLevel(_logging.DEBUG)
+        _Sup17._command = _dies17x
+        try:
+            _died17x = _aio.run(_eng17x.call("media_runner", {"action": "start"}))
+        finally:
+            _Sup17._command = _cmd17x
+            _engine_log17x.removeHandler(_ear17x)
+            _engine_log17x.setLevel(_level17x)
+        _err17x = _died17x.error
+        _facts17x = dict(_err17x.facts) if _err17x else {}
+        _event17x = _facts17x.pop("event", None)
+        _text17x = f"{_err17x.message} {_err17x.recovery.reason}" if _err17x else ""
+        ok(_died17x.status == "error" and _err17x.code == "RUNNER_EXITED" and _facts17x == _want17x and bool(_event17x)
+           and any(getattr(r, "event", None) == _event17x and "нет среды инференса" in r.getMessage() for r in _heard17x)
+           and "нет среды" not in _text17x and "pip install" not in _text17x and str(_tmp17x) not in _text17x
+           and not (_tmp17x / "state.json").exists(),
+           f"раннер вышел до готовности ({_case17x}; строка в канале — не знак): RUNNER_EXITED с фактами {_facts17x}, "
+           f"слова раннера — в журнале сервера под событием {_event17x}, в тексте клиенту их нет: «{_text17x}» "
+           f"({_died17x.status}, {((_died17x.data or {}).get('task') or {}).get('status', '')})")
+    _srv.CONFIG_PATH = _cfg17
+
     # Законный случай владельца: процесс, которого супервизор не поднимал, судится по pid (psutil) — своего события нет.
     # ended спрашивается после его смерти: событие не ждёт ответа, от которого зависит его же выход.
     _other17 = _sp17.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=_sp17.PIPE)
@@ -3060,6 +3189,28 @@ try:
     _other_ended17 = _Sup17.ended(_other17.pid)
     ok(_other_alive17 and _other_ended17 is None and not _Sup17._alive(_other17.pid),
        f"чужой процесс: жив — по pid, конца владельца нет (ended {_other_ended17}), умер — не жив")
+
+    # Политика раннера — только из декларации (D02-b, D02-g): пропавший ключ — отказ двери, а не тихое умолчание кода.
+    _holes17: dict[str, str] = {}
+    for _key17 in ("state_file", "log_file", "stop_grace_sec"):
+        _cfg_h17 = declarations_copy({"providers.yaml": {**_runner_decl17, f"local.runner.{_key17}": None}},
+                                     root=Path(tempfile.mkdtemp(prefix="runner_h_")))
+        _sup_h17 = _Sup17(AdapterRegistry(_cfg_h17 / "providers.yaml", _cfg_h17.parent), _cfg_h17.parent)
+        _dummy17 = _sp17.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=_sp17.PIPE)
+        try:
+            if _key17 == "stop_grace_sec":
+                (_cfg_h17.parent / "state.json").write_text(_json.dumps({"pid": _dummy17.pid}), encoding="utf-8")
+                _sup_h17.stop()
+            else:
+                getattr(_sup_h17, _key17)
+            _holes17[_key17] = "тихое умолчание"
+        except ProviderError as _e17:
+            _holes17[_key17] = _e17.code
+        finally:
+            _dummy17.kill()
+            _dummy17.communicate()
+    ok("тихое умолчание" not in _holes17.values() and len(_holes17) == 3,
+       f"ключ политики раннера пропал из декларации — отказ двери, а не литерал кода ({_holes17})")
 
     # И обратно: строка канала переключает расчёт в сервер тем же table_update, без рестарта.
     if _bg_model:
@@ -3081,8 +3232,8 @@ _wire17r: list = []
 _said17r: list[str] = []
 _clock17r = {"now": 0.0}
 _health17r = yaml.safe_load(CFG.read_text(encoding="utf-8"))["local"]["runner"]
-_ready17r = 60.0      # прежний срок подъёма ready_timeout_sec (providers.yaml в 442bd13, снят в 2a): подъём его переживает
 _phase17r = min(_health17r["health"]["timeout_sec"], _health17r["health"]["deadline_sec"] / 2)
+_waiting17r = _thr16.Event()     # подъём молчащего процесса дошёл до ожидания знака готовности
 
 
 class _Journal17r(_log17r.Handler):
@@ -3091,20 +3242,80 @@ class _Journal17r(_log17r.Handler):
 
 
 class _Sleeper17r(_Sup17):
-    """Супервизор, чей «раннер» — процесс, который живёт и молчит: /health не отвечает никогда."""
+    """Супервизор, чей «раннер» — процесс, который живёт и молчит: знака готовности не даёт, /health не отвечает."""
 
     def _command(self, mode, workspace):
         return [sys.executable, "-c", "import time; time.sleep(30)"]
 
+    def _signalled(self, *args, **kwargs):
+        _waiting17r.set()
+        return super()._signalled(*args, **kwargs)
 
-def _runner17r(url: str, cls=_Sup17):
-    """Супервизор над копией деклараций с адресом раннера `url`; состояние и журнал — в своём корне."""
+
+class _Docker17r(_Sup17):
+    """Контейнер — подставной процесс, который живёт: docker на машине не трогается, снимает процесс сам двойник."""
+
+    def _command(self, mode, workspace):
+        return [sys.executable, "-c", "import time; time.sleep(30)"]
+
+    def stop(self):
+        pid = int(self._read().get("pid") or 0)
+        try:
+            _psutil18.Process(pid).kill()
+        except _psutil18.Error:
+            pass
+        _Sup17.ended(pid)
+        self.state_file.unlink(missing_ok=True)
+        return {"phase": "stopped", "pid": pid}
+
+
+class _Paced17r:
+    """Подъём без узла заданий: ход — мимо; пауза опроса не спит, а записывается — сколько ждал бы узел."""
+
+    def __init__(self):
+        self.pauses: list[float] = []
+        self.cancelled = self
+
+    def __call__(self, progress=None, working=True):
+        pass
+
+    def wait(self, pause):
+        self.pauses.append(pause)
+        return False
+
+    def is_set(self):
+        return False
+
+    def refusal(self):
+        return RuntimeError("снято")
+
+
+class _Msvcrt17r:
+    """msvcrt Windows на этой ОС: хэндл — дескриптор со сдвигом, открытие хэндла — обратный сдвиг, флаги записаны."""
+
+    def __init__(self):
+        self.opened: list[tuple[int, int]] = []
+
+    def get_osfhandle(self, fd):
+        return fd + 10_000
+
+    def open_osfhandle(self, handle, flags):
+        self.opened.append((handle, flags))
+        return handle - 10_000
+
+
+class _StartupInfo17r:
+    def __init__(self, lpAttributeList=None):
+        self.lpAttributeList = lpAttributeList
+
+
+def _runner17r(url: str, cls=_Sup17, over: dict | None = None):
+    """Супервизор над копией деклараций с адресом раннера `url` и ключами `over`; состояние и журнал — в своём корне."""
     root = Path(tempfile.mkdtemp(prefix="runner_door_"))
     cfg = declarations_copy({"providers.yaml": {"online.http.Local_runner.url": url,
                                                 "local.runner.state_file": "state.json",
                                                 "local.runner.log_file": "runner.log",
-                                                "local.runner.poll_sec": 0.01,   # темп проб стенда: ход — число проб
-                                                "local.models_dir": str(_reg.models_dir)}}, root=root)
+                                                "local.models_dir": str(_reg.models_dir), **(over or {})}}, root=root)
     return cls(AdapterRegistry(cfg / "providers.yaml", root), root)
 
 
@@ -3120,7 +3331,7 @@ def _wire17r_reply(reply):
     return _hx17.MockTransport(handle)
 
 
-_seams17r = tuple(_Sup17.__dict__[s] for s in ("transport", "resolve", "clock", "sleep"))
+_seams17r = tuple(_Sup17.__dict__[s] for s in ("transport", "resolve", "clock", "sleep", "rng"))
 _journal17r = _Journal17r()
 _logger17r = _log17r.getLogger("core.runner.supervisor")
 _level17r = _logger17r.level
@@ -3151,33 +3362,95 @@ try:
         _h17r = _runner17r("http://127.0.0.1:8770/run")._probe()
         ok(_h17r == {} and any(_code17r in s for s in _said17r),
            f"{_case17r}: молчание — {{}}, а причина — в журнале кодом {_code17r} ({_said17r})")
+    # Обновлено в D02-e (66, 2026-10-18): прежде живость подъёма — пробы /health темпом poll_sec (2a снял срок по часам,
+    # пробы остались). Теперь процесс даёт знак готовности сам: ожидание — событие, без проб и без часов. Процесс жив и
+    # молчит — подъём идёт, задание processing; снятие будит ожидание сразу, процесс остановлен.
     _clock17r["now"], _probes17r = 0.0, {"n": 0}
-    _beyond17r = _thr16.Event()
 
-    def _hung_beyond17r(request):
+    def _silent17r(request):
         _probes17r["n"] += 1
-        _clock17r["now"] += request.extensions["timeout"]["connect"]     # молчит: фаза двери съедена целиком
-        if _clock17r["now"] > _ready17r:
-            _beyond17r.set()
         raise _hx17.ConnectTimeout("порт молчит")
 
-    _Sup17.transport = _hx17.MockTransport(_hung_beyond17r)
+    _Sup17.transport = _hx17.MockTransport(_silent17r)
     _sleeper17r = _runner17r("http://127.0.0.1:8770/run", cls=_Sleeper17r)
     _node17r = _Tasks16(_eng16, root=_врем("runner17r_"))
     _job17r = _node17r.begin("media_runner", {"action": "start"}, "",
                              lambda pulse: _sleeper17r.launch(_ws, pulse))["task_id"]
-    _beyond17r.wait(10)
+    _waiting17r.wait(10)
     _pid17r = _json.loads(_sleeper17r.state_file.read_text(encoding="utf-8"))["pid"]
     _going17r = (_node17r.status([_job17r])[0].get("task") or {}).get("status")
     _cut17r = (_node17r.cancel([_job17r])[0].get("task") or {}).get("status")
     _node17r.settle(_job17r, 10)
-    ok(_beyond17r.is_set() and _going17r == "processing" and _cut17r == "cancelled" and not _Sup17._alive(_pid17r),
-       f"Обновлено в 2a (66, 2026-10-13): прежде подъём кончался PROVIDER_TIMEOUT за ready_timeout_sec — срок по часам "
-       f"снят (живость — ход работы, слово владельца). Процесс жив, /health молчит: подъём идёт дольше прежнего срока "
-       f"({_clock17r['now']:.0f} с > {_ready17r:g} с, {_probes17r['n']} прозвонок) и остаётся {_going17r}; снятие — "
-       f"{_cut17r} сразу, процесс остановлен (pid {_pid17r})")
+    ok(_waiting17r.is_set() and _going17r == "processing" and _cut17r == "cancelled" and not _Sup17._alive(_pid17r)
+       and _probes17r["n"] == 0 and _clock17r["now"] == 0.0,
+       f"процесс жив и молчит — подъём ждёт знак событием ({_probes17r['n']} прозвонок, часы {_clock17r['now']:g} с) и "
+       f"остаётся {_going17r}; снятие — {_cut17r} сразу, процесс остановлен (pid {_pid17r})")
+
+    # D02-e: контейнер знака не даёт (дескриптор не пересекает его границу) — его /health опрашивается по политике
+    # local.runner.docker_poll: пауза вдвое до потолка, добавка доли jitter от шва rng. Оракул — формула политики на своём
+    # генераторе того же зерна, а не узел jobs.backoff.
+    _answers17r = {"n": 0}
+
+    def _rises17r(request):
+        _answers17r["n"] += 1
+        if _answers17r["n"] <= 4:
+            raise _hx17.ConnectError("контейнер встаёт")
+        return _hx17.Response(200, json={"ok": True})
+
+    _Sup17.transport, _Sup17.rng = _hx17.MockTransport(_rises17r), _random17.Random(17)
+    _poll17r = {"pause_sec": 0.01, "pause_max_sec": 0.04, "jitter": 0.5}
+    _docker17r = _runner17r("http://127.0.0.1:8770/run", cls=_Docker17r,
+                            over={f"local.runner.docker_poll.{k}": v for k, v in _poll17r.items()})
+    _paced17r = _Paced17r()
+    try:
+        _dstate17r = _docker17r.launch(_ws, _paced17r, mode="docker")
+    finally:
+        _docker17r.stop()
+    _seed17r = _random17.Random(17)
+    _oracle17r = [min(_poll17r["pause_sec"] * 2 ** k, _poll17r["pause_max_sec"]) * (1 + _poll17r["jitter"] * _seed17r.random())
+                  for k in range(4)]
+    ok(_dstate17r.get("phase") == "running" and len(_paced17r.pauses) == 4
+       and all(abs(a - b) <= 1e-12 for a, b in zip(_paced17r.pauses, _oracle17r)),
+       f"контейнер: живой опрос по docker_poll — паузы {[round(p, 4) for p in _paced17r.pauses]} = формула политики "
+       f"{[round(p, 4) for p in _oracle17r]} (вдвое до потолка {_poll17r['pause_max_sec']}, добавка ≤ "
+       f"{_poll17r['jitter']}); готов — {_dstate17r.get('phase')}")
+
+    # D02-e: ветка Windows канала готовности — проба формы на этой ОС, настоящая Windows — прогон CI. Хэндл конца записи
+    # наследуется только списком handle_list (а не все хэндлы сервера), раннер открывает его дескриптором — знак доходит до
+    # конца чтения. msvcrt, STARTUPINFO и set_handle_inheritable подставные, канал настоящий.
+    import core.runner.supervisor as _supmod17
+    _real17w = {n: _supmod17.__dict__.get(n) for n in ("sys", "os", "subprocess", "msvcrt")}
+    _inherit17w: list = []
+    _msvcrt17w = _Msvcrt17r()
+    _supmod17.sys = _types.SimpleNamespace(platform="win32")
+    _supmod17.os = _types.SimpleNamespace(pipe=os.pipe, fdopen=os.fdopen, O_WRONLY=os.O_WRONLY,
+                                          set_handle_inheritable=lambda handle, on: _inherit17w.append((handle, on)))
+    _supmod17.subprocess = _types.SimpleNamespace(STARTUPINFO=_StartupInfo17r)
+    _supmod17.msvcrt = _msvcrt17w
+    try:
+        _chan17w = _Sup17._channel()
+        try:
+            _supmod17.ready_writer(_chan17w.address, _supmod17.ready_sign("TOKEN-17"))()
+        except (OSError, ValueError) as _e17w:  # раннер не открыл хэндл: знака нет, конец записи закрывает проба
+            print(f"    раннер не открыл канал: {type(_e17w).__name__}: {_e17w}")
+            os.close(_chan17w.write)
+    finally:
+        for _name17w, _was17w in _real17w.items():
+            if _was17w is None:
+                delattr(_supmod17, _name17w)
+            else:
+                setattr(_supmod17, _name17w, _was17w)
+    with os.fdopen(_chan17w.read, encoding="ascii") as _end17w:
+        _heard17w = _end17w.read()
+    _handle17w = _chan17w.write + 10_000
+    ok(_chan17w.address == str(_handle17w) and "pass_fds" not in _chan17w.spawn
+       and getattr(_chan17w.spawn.get("startupinfo"), "lpAttributeList", None) == {"handle_list": [_handle17w]}
+       and _inherit17w == [(_handle17w, True)] and _msvcrt17w.opened == [(_handle17w, os.O_WRONLY)]
+       and _heard17w == _supmod17.ready_sign("TOKEN-17") + "\n",
+       f"ветка Windows (проба формы; настоящая Windows — CI): хэндл канала наследуется только списком handle_list, раннер "
+       f"открывает его дескриптором — знак дошёл ({_chan17w.address}, {sorted(_chan17w.spawn)}, {_msvcrt17w.opened})")
 finally:
-    _Sup17.transport, _Sup17.resolve, _Sup17.clock, _Sup17.sleep = _seams17r
+    _Sup17.transport, _Sup17.resolve, _Sup17.clock, _Sup17.sleep, _Sup17.rng = _seams17r
     _logger17r.removeHandler(_journal17r)
     _logger17r.setLevel(_level17r)
 
@@ -4408,19 +4681,28 @@ def _model_fetch(work: Path, records: list[str]) -> None:
             asked_rev.append(repo_id)
             raise raises[repo_id]
 
+    def told(call) -> str:
+        """Текст отказа клиенту; чужое исключение — его имя: проверки ниже краснеют своими, §19 не обрывается."""
+        try:
+            return delivered(call)
+        except Exception as e:
+            return type(e).__name__
+
     real_api, real_endpoint = _hf19.HfApi, _hf19.constants.ENDPOINT
     _hf19.HfApi = RevApi
     try:
         got = {repo: outcome(lambda: cat.revision(repo)) for repo in raises}
-        said = {repo: delivered(lambda: cat.revision(repo)) for repo in ("org/rev-none", "org/rev-busy", "org/rev-net")}
+        said = {repo: told(lambda: cat.revision(repo)) for repo in ("org/rev-none", "org/rev-busy", "org/rev-net")}
         try:                                    # весь отказ, как его видит клиент: и message, и facts
             cat.revision("org/rev-net")
             net_wire = ""
         except ProviderError as e:
             net_wire = _json.dumps(engine.refusal(e).error.model_dump(), ensure_ascii=False)
+        except Exception as e:
+            net_wire = type(e).__name__
         pinned = cat.revision("org/bg")
         _hf19.constants.ENDPOINT = "https://hf-mirror.example"          # как HF_ENDPOINT зеркала
-        mirrored = delivered(lambda: cat.revision("org/rev-net"))
+        mirrored = told(lambda: cat.revision("org/rev-net"))
     finally:
         _hf19.HfApi, _hf19.constants.ENDPOINT = real_api, real_endpoint
     ok("hf-mirror.example" in mirrored and "huggingface.co" not in mirrored,

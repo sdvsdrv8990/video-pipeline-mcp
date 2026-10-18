@@ -6,7 +6,7 @@
 Обёртка тонкая: вся работа с чтением и очередью записи — в движке таблиц.
 """
 
-from core.contracts import Fact, ToolResult
+from core.contracts import ContractError, Fact, ToolResult
 from core.engine import Engine
 from core.tables import QUEUEABLE_ACTIONS
 from tools._schemas import SHEET, TABLE
@@ -20,7 +20,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """Чтение снапшота таблицы."""
         snapshot = ctx.state_manager.read_snapshot(table)
         if snapshot is None:
-            return ctx.err("TABLE_NOT_FOUND", f"Table not found: {table}")
+            raise ContractError("TABLE_NOT_FOUND", facts={"table": table})
         return ToolResult(status="success", data=snapshot, facts=[Fact(type="SnapshotRead", data={"table": table})])
 
     async def json_read_queue(table: str) -> "ToolResult":

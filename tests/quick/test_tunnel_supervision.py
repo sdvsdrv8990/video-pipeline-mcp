@@ -9,6 +9,7 @@
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,8 +18,9 @@ sys.path.insert(0, str(ROOT))
 
 import yaml
 
+import core.transport.tunnel as tunnel_module
 from core.contracts import ContractError
-from core.transport.tunnel import CloudflaredTunnel
+from core.transport.tunnel import CloudflaredTunnel, TunnelCancelled, TunnelError
 from tests.harness.live_server import declarations_copy
 
 _checks = 0
@@ -145,6 +147,120 @@ for case, kwargs, reason in (("перезапуск не удался", {"spawn"
           any(event in r.getMessage() and r.exc_info for r in records), [r.getMessage() for r in records])
     check(f"{case}: путь хоста и текст исключения — не в состоянии туннеля, только в журнале",
           HOST not in str(status) and "No such file" not in str(status), status)
+
+
+class Clock:
+    """Подставные часы модуля туннеля: сон двигает время и копится — выдержанная пауза меряется без настоящего ожидания."""
+
+    def __init__(self):
+        self.now, self.slept = 1000.0, 0.0
+
+    def time(self) -> float:
+        return self.now
+
+    monotonic = time
+
+    def sleep(self, seconds: float) -> None:
+        self.slept += seconds
+        self.now += seconds
+
+
+class Proc:
+    """Подставной cloudflared: строки stdout и конец; terminate — погашен."""
+
+    def __init__(self, lines=()):
+        self.stdout, self.ended = iter(lines), False
+
+    def poll(self):
+        return 0 if self.ended else None
+
+    def terminate(self) -> None:
+        self.ended = True
+
+    kill = terminate
+
+    def wait(self, timeout=None) -> int:
+        return 0
+
+
+class InPlace:
+    """Поток надзора исполняется в потоке набора: его конец — событие самого сценария, ждать нечего."""
+
+    def __init__(self, target, daemon=None):
+        self.target = target
+
+    def start(self) -> None:
+        self.target()
+
+    def join(self, timeout=None) -> None:
+        return None
+
+
+def lifted(outcomes: list, *, stop_before: bool = False, stop_in_spawn: bool = False) -> dict:
+    """`start()` на подставных процессах: исходы готовности попыток по порядку (TunnelError или URL). Третье порождение —
+    перезапуск надзора после удачного подъёма — снимает туннель: так кончается надзор."""
+    tunnel = built(declarations_copy())
+    assert isinstance(tunnel, CloudflaredTunnel)
+    clock, procs, lines, plan = Clock(), [], [], list(outcomes)
+    seen: dict = {}
+
+    def spawn():
+        if len(procs) == 1:
+            seen["pause"] = clock.slept                 # выдержано до порождения повтора
+        proc = Proc(["INF a", "INF b", "INF c"] if len(procs) < 2 else [])
+        procs.append(proc)
+        if stop_in_spawn or len(procs) > 2:
+            tunnel.stop()                               # остановка пришла, пока процесс порождался
+        return proc
+
+    def ready(stream, poll_fn, deadline=None):
+        outcome = plan.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    tunnel._binary_available = lambda: True             # type: ignore[method-assign]
+    tunnel._spawn = spawn                               # type: ignore[method-assign]
+    tunnel._await_ready = ready                         # type: ignore[method-assign]
+    tunnel._apply_line = lines.append                   # type: ignore[method-assign]
+    held = tunnel_module.time, tunnel_module.threading
+    tunnel_module.time = clock                          # type: ignore[assignment]
+    tunnel_module.threading = SimpleNamespace(Thread=InPlace, Timer=threading.Timer, Lock=threading.Lock)  # type: ignore[assignment]
+    try:
+        if stop_before:
+            tunnel.stop()
+        try:
+            got: object = tunnel.start()
+        except TunnelError as e:
+            got = e
+    finally:
+        tunnel_module.time, tunnel_module.threading = held
+    return {"got": got, "procs": procs, "lines": lines, "pause": seen.get("pause"), "tunnel": tunnel}
+
+
+URL = "https://проба.trycloudflare.com"
+base = declared["retry_base_seconds"]
+
+print("== 5. Первый подъём с повтором (D40): пауза выдержана, после удачного повтора надзор жив ==")
+run = lifted([TunnelError("край не ответил вовремя"), URL])
+check("первая попытка упала, вторая подняла туннель — start вернул URL, а не отмену", run["got"] == URL, run["got"])
+check(f"пауза перед повтором выдержана: от retry_base ({base} с) до удвоенной (добавка)",
+      run["pause"] is not None and base <= run["pause"] <= 2 * base, run["pause"])
+check("процесс упавшей попытки погашен до повтора", len(run["procs"]) >= 2 and run["procs"][0].ended,
+      [p.ended for p in run["procs"]])
+check("надзор после удачного повтора жив: все строки процесса дошли до разбора",
+      run["lines"] == ["INF a", "INF b", "INF c"], run["lines"])
+
+print("== 6. Остановка во время подъёма (D41): флаг до попытки и после порождения — отмена, процесс не остаётся ==")
+run = lifted([URL], stop_before=True)
+check("остановка до подъёма: start — TunnelCancelled, процесс не порождён",
+      isinstance(run["got"], TunnelCancelled) and run["procs"] == [], (run["got"], len(run["procs"])))
+run = lifted([URL], stop_in_spawn=True)
+check("остановка во время порождения: start — TunnelCancelled, а не URL", isinstance(run["got"], TunnelCancelled),
+      run["got"])
+check("процесс, порождённый под остановкой, погашен; повторов нет; надзор не начат",
+      len(run["procs"]) == 1 and run["procs"][0].ended and run["lines"] == [] and run["tunnel"]._proc is None,
+      ([p.ended for p in run["procs"]], run["lines"]))
 
 print(f"\n{'=' * 50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

@@ -81,9 +81,7 @@ class Taxonomy:
     def _get(self, node_type: str) -> dict:
         t = self._load().get(node_type)
         if t is None:
-            raise TaxonomyError(
-                "TEMPLATE_NOT_FOUND", f"Тип узла не объявлен: {node_type}",
-                f"Известные типы: {', '.join(self.node_types)}.")
+            raise TaxonomyError("TEMPLATE_NOT_FOUND", facts={"template": node_type, "known": self.node_types})
         return t
 
     def prefix(self, node_type: str) -> str:

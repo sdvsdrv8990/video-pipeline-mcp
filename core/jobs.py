@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import random
 import secrets
 import threading
 import time
@@ -32,6 +33,7 @@ from core.contracts.error_detail import redact
 from core.contracts.task_status import TaskEntry
 from core.declaration import Declared, declarations_root, instance_home
 from core.declaration_schemas import JOBS
+from core.engine.engine import incident
 from core.paths import Files
 
 if TYPE_CHECKING:
@@ -42,6 +44,7 @@ _DECLARED = Declared(declarations_root() / JOBS.file, ContractError, "«jobs»",
 _LIVE = ("pending", "processing")
 _BEGIN = threading.Lock()                       # поиск двойника и запись нового задания — один шаг для узлов процесса
 _PULSES: dict[str, Pulse] = {}                  # исполнители этого процесса: их конец ждёт `settle`, их снимает `cancel`
+_CRASHED: dict[str, str] = {}                   # номер события упавшего исполнителя этого процесса — ждёт суда записи (`_live`)
 _RUNNER = secrets.token_hex(8)                  # метка этого процесса в записи: смену чужого исполнителя здесь не услышать
 _HEARD: set[Callable[[], None]] = set()         # слушатели смены статуса в этом процессе: их будит `_changed`
 _HEARD_LOCK = threading.Lock()
@@ -199,6 +202,15 @@ def paced(probe: Callable[[], T | None], pulse: Pulse, pauses: Iterator[float]) 
     return outcome
 
 
+def backoff(start: float, ceiling: float, jitter: float, rng: random.Random) -> Iterator[float]:
+    """Паузы живого опроса — только там, где события нет: вдвое от `start` до `ceiling`, к каждой добавка доли `jitter`
+    от шва `rng` (опросы разных вызовов не приходят разом, худшее время воспроизводимо подставным генератором)."""
+    pause = start
+    while True:
+        yield pause * (1 + jitter * rng.random())
+        pause = min(pause * 2, ceiling)
+
+
 class Tasks:
     """Узел заданий над движком: задание — запись в хранилище и поток-исполнитель; статус — чтение записей."""
 
@@ -316,6 +328,8 @@ class Tasks:
                 finally:
                     slots.give(klass)
                 pulse.put("итог работы", finished=True, **done)
+        except Exception as e:                  # сбой исполнителя вне работы (запись итога, замок): журнал с трассой под номером
+            _CRASHED[task_id] = incident(log, f"исполнитель задания «{task_id}» ({tool})", e)
         finally:
             ended = _PULSES.pop(task_id, None)
             if ended is not None:
@@ -406,7 +420,9 @@ class Tasks:
                 current = self._load(path)      # исполнитель или прежний судья мог дописать запись до замка
                 if current.task.status not in _LIVE:
                     return current
-                error = self._error(current.tool, "TASK_INTERRUPTED", task_id=current.task.task_id, tool=current.tool)
+                event = _CRASHED.pop(current.task.task_id or "", None)   # исполнитель этого процесса упал — номер события
+                error = self._error(current.tool, "TASK_INTERRUPTED", task_id=current.task.task_id, tool=current.tool,
+                                    **({"event": event} if event else {}))
                 return self._save(current, status="failed", error=error, finished=True)
             finally:
                 lock.release()

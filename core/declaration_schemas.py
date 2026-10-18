@@ -5,6 +5,7 @@
 Проверки между ключами одного файла живут здесь же и называют путь ключа; дверь — `core.declaration.Declared`.
 """
 
+import string
 import threading
 import warnings
 from collections.abc import Collection, Mapping
@@ -381,6 +382,47 @@ class Recommendations(RootModel[Annotated[Mapping[StrictStr, Annotated[tuple[Adv
     model_config = ConfigDict(strict=True, frozen=True)
 
 
+class ReactionRecovery(BaseModel):
+    """Рецепт строки реестра реакций: `reason` читает ИИ-клиент, `owner` — владелец у консоли (команда хоста, адрес
+    объявления); инструмент, его параметры и действие владельца есть не у всякого кода."""
+
+    model_config = STRICT
+
+    reason: StrictStr
+    suggested_tool: StrictStr | None = None
+    suggested_params: Annotated[Mapping[StrictStr, object], ReadOnly] | None = None
+    owner: StrictStr | None = None
+
+
+class ReactionEntry(BaseModel):
+    """Строка `config/server_reactions.yaml`. Плейсхолдер `owner` — факт, который код несёт: названный в тексте, рецепте
+    или параметрах строки; иначе консоль печатала бы «—» на месте пропуска."""
+
+    model_config = STRICT
+
+    kind: Literal["ai_recoverable", "server_recoverable", "human_required", "integrity", "unknown"] = Field(alias="class")
+    message_template: StrictStr
+    recovery: ReactionRecovery
+
+    @model_validator(mode="after")
+    def _owner_facts(self) -> "ReactionEntry":
+        params = [v for v in (self.recovery.suggested_params or {}).values() if isinstance(v, str)]
+        known = {f for text in (self.message_template, self.recovery.reason, *params)
+                 for _, f, _, _ in string.Formatter().parse(text) if f}
+        loose = {f for _, f, _, _ in string.Formatter().parse(self.recovery.owner or "") if f} - known
+        if loose:
+            raise ValidationError.from_exception_data(type(self).__name__, [_gap(
+                "owner_fact_unknown", f"плейсхолдер owner — факт кода из текста или рецепта строки, а не {sorted(loose)}",
+                ("recovery", "owner"))])
+        return self
+
+
+class ServerReactions(RootModel[Annotated[Mapping[StrictStr, ReactionEntry], ReadOnly]]):
+    """`config/server_reactions.yaml`: код отказа → класс, текст, рецепт клиенту и действие владельца."""
+
+    model_config = ConfigDict(strict=True, frozen=True)
+
+
 class JobId(BaseModel):
     """Форма id задания: алфавит и длина. Выдаёт и судит id одна точка — узел заданий (`core/jobs.py`)."""
 
@@ -440,6 +482,25 @@ class TunnelSupervision(BaseModel):
         if self.retry_base_seconds > self.retry_max_seconds:
             raise ValidationError.from_exception_data(type(self).__name__, [_gap(
                 "backoff_over_ceiling", "пауза перезапуска не выше retry_max_seconds", ("retry_base_seconds",))])
+        return self
+
+
+class RunnerDockerPoll(BaseModel):
+    """`config/providers.yaml → local.runner.docker_poll`: живой опрос готовности раннера в контейнере — знака готовности
+    через трубку там нет (дескриптор не пересекает границу контейнера). Пауза вдвое от `pause_sec` до `pause_max_sec`,
+    к ней добавка доли `jitter` от шва генератора."""
+
+    model_config = STRICT
+
+    pause_sec: float = Field(gt=0)
+    pause_max_sec: float = Field(gt=0)
+    jitter: float = Field(ge=0, le=1)
+
+    @model_validator(mode="after")
+    def _coherent(self) -> "RunnerDockerPoll":
+        if self.pause_sec > self.pause_max_sec:
+            raise ValidationError.from_exception_data(type(self).__name__, [_gap(
+                "pause_over_ceiling", "пауза опроса не выше pause_max_sec", ("pause_sec",))])
         return self
 
 
@@ -551,6 +612,7 @@ ONLINE_ANSWER = Slot("providers.yaml", ("online", "answer"), AnswerPolicy)
 ONLINE_CALL = Slot("providers.yaml", ("online", "call"), CallPolicy)
 RESULT_ANSWER = Slot("media_tasks.yaml", ("download", "answer"), AnswerPolicy)
 RUNNER_HEALTH = Slot("providers.yaml", ("local", "runner", "health"), AnswerPolicy)
+RUNNER_DOCKER_POLL = Slot("providers.yaml", ("local", "runner", "docker_poll"), RunnerDockerPoll)
 TUNNEL_PROBE = Slot("tunnel_diagnostics.yaml", ("прозвонка",), ProbePolicy)
 JOBS = Slot("jobs.yaml", (), Jobs)
 RATE_LIMIT = Slot("firewall.yaml", ("rate_limit",), RateLimit)
@@ -559,7 +621,8 @@ TUNNEL_SUPERVISION = Slot("tunnel_diagnostics.yaml", ("надзор",), TunnelSu
 TRANSPORT = Slot("transport.yaml", (), TransportDeclaration)
 RECALC_ENGINE = Slot("engines.yaml", ("recalc",), EnginePlaces)
 SLOTS = (RESOURCES, PACKAGES, MODEL_INSTALL, MODEL_FETCH, RESULT_FETCH, ONLINE_ANSWER, ONLINE_CALL, RESULT_ANSWER,
-         RUNNER_HEALTH, TUNNEL_PROBE, JOBS, RATE_LIMIT, TUNNEL_BINARY_FETCH, TUNNEL_SUPERVISION, TRANSPORT, RECALC_ENGINE)
+         RUNNER_HEALTH, RUNNER_DOCKER_POLL, TUNNEL_PROBE, JOBS, RATE_LIMIT, TUNNEL_BINARY_FETCH, TUNNEL_SUPERVISION,
+         TRANSPORT, RECALC_ENGINE)
 
 
 def registry_codes(model: BaseModel) -> frozenset[str]:

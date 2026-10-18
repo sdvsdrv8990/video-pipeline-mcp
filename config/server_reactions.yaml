@@ -5,7 +5,9 @@
 #   <CODE>:
 #     class: ai_recoverable | server_recoverable | human_required | integrity | unknown
 #     message_template: "текст по умолчанию"
-#     recovery: { suggested_tool, suggested_params, reason }
+#     recovery: { suggested_tool, suggested_params, reason, owner }
+# reason — читает ИИ-клиент: его действия и «сообщи владельцу», без адресов объявлений и команд хоста (их он не откроет);
+# owner — читает владелец у консоли (cli_text): команда хоста, адрес объявления. Клиенту сервера owner не уходит.
 
 # ═══ Ошибки движка/транспорта ═══
 
@@ -17,9 +19,9 @@ TOOL_NOT_FOUND:
 
 VALIDATION_ERROR:
   class: ai_recoverable
-  message_template: "Параметры не соответствуют input_schema инструмента."
+  message_template: "Вызов не принят: что и где не так — в errors."
   recovery:
-    reason: "Сверь параметры со схемой инструмента и повтори вызов."
+    reason: "Поправь названное в errors и повтори вызов."
 
 BOOK_ROW_INVALID:
   class: ai_recoverable
@@ -44,14 +46,14 @@ PATH_ESCAPE:
 
 FILE_NOT_FOUND:
   class: ai_recoverable
-  message_template: "Файл не найден."
+  message_template: "Файла или каталога «{path}» нет."
   recovery:
-    suggested_tool: "fs_create_file"
-    reason: "Создай файл перед чтением."
+    suggested_tool: "fs_get_directory_tree"
+    reason: "Проверь путь: что лежит в каталоге — fs_get_directory_tree."
 
 TABLE_NOT_FOUND:
   class: ai_recoverable
-  message_template: "Таблица не найдена."
+  message_template: "Таблицы «{table}» нет."
   recovery:
     suggested_tool: "fs_create_project_structure"
     reason: "Создай структуру проекта."
@@ -62,11 +64,17 @@ FILE_EXISTS:
   recovery:
     reason: "Выбери другое имя: занятое не перезаписывается."
 
+PLACE_UNWRITABLE:
+  class: server_recoverable
+  message_template: "Не удалось: {operation} «{path}» — диск отказал ({reason})."
+  recovery:
+    reason: "Повтори позже: путь мог держать другой процесс. Повторяется — сообщи владельцу причину из facts.reason."
+
 TEMPLATE_NOT_FOUND:
   class: ai_recoverable
-  message_template: "Шаблон не найден: {template}"
+  message_template: "Шаблона «{template}» нет."
   recovery:
-    reason: "Проверь имя шаблона в config/templates/workspace/."
+    reason: "Проверь имя: какие есть — в facts.known или в описании инструмента."
 
 NO_FRAGMENTS:
   class: ai_recoverable
@@ -96,7 +104,8 @@ LOCAL_INFERENCE_FAILED:
   class: server_recoverable
   message_template: "Сбой локального инференса."
   recovery:
-    reason: "Деградация модели (large→medium→base) или проверка ресурсов; при исчерпании — человек. Среда расчёта ставится под КАРТУ машины: python3 scripts/configure.py → «Среда расчёта»; голое `pip install -e \".[local]\"` даёт библиотеки моделей БЕЗ torch."
+    reason: "Возьми модель полегче или повтори позже; повторяется — сообщи владельцу номер события."
+    owner: "Среда расчёта ставится под карту машины: python3 scripts/configure.py → «Среда расчёта»; голое pip install -e \".[local]\" даёт библиотеки моделей без torch."
 
 # ═══ Аутентификация ═══
 
@@ -149,13 +158,15 @@ FIREWALL_UNAVAILABLE:
   class: server_recoverable
   message_template: "Проверка запроса файрволом не удалась — запрос отклонён, а не пропущен; причина в консоли сервера."
   recovery:
-    reason: "Повтори позже; повторяется — владелец смотрит консоль сервера и firewall.yaml."
+    reason: "Повтори позже; повторяется — сообщи владельцу."
+    owner: "Причина — в консоли сервера; политика — firewall.yaml."
 
 REQUEST_BLOCKED:
   class: human_required
   message_template: "Запрос отклонён файрволом: сработало правило {rule}."
   recovery:
-    reason: "Повтор не поможет: ложное срабатывание правила {rule} снимает владелец (firewall.yaml, разблокировка адреса)."
+    reason: "Повтор не поможет; если срабатывание ложное — сообщи владельцу правило {rule}."
+    owner: "Ложное срабатывание правила {rule} снимается в firewall.yaml и разблокировкой адреса."
 
 RATE_LIMITED:
   class: ai_recoverable
@@ -273,13 +284,15 @@ WORKER_UNAVAILABLE:
   class: server_recoverable
   message_template: "Система не дала поток под работу «{work}»: работа не запускалась."
   recovery:
-    reason: "Работа не запускалась — исхода нет, повтор безопасен. Класс места и число потоков пула (у вызова) — в фактах отказа. Если повторяется — предел задач процесса (cgroup pids.max, ulimit -u) ниже мест, объявленных в config/resources.yaml: подними предел машины или убавь места классов."
+    reason: "Работа не запускалась — повтор безопасен; повторяется — сообщи владельцу."
+    owner: "Предел задач процесса (cgroup pids.max, ulimit -u) ниже мест, объявленных в config/resources.yaml: подними предел машины или убавь места классов; класс места и число потоков пула — в фактах отказа."
 
 PROVIDER_TIMEOUT:
   class: server_recoverable
   message_template: "Провайдер не ответил за отведённое время."
   recovery:
-    reason: "Какой предел истёк — в тексте и фактах отказа. Ожидание задачи — poll.timeout_sec/max_attempts в config/media_tasks.yaml; вызов провайдера — timeout_sec (фаза) и deadline_sec (весь вызов) в config/providers.yaml → online.call или в блоке call провайдера, либо столбец timeout строки канала. Подними предел, если работа штатно дольше. Вызов, оборванный по сроку после отправки, мог выполниться: проверь задачу на стороне провайдера. Повтор без изменения предела даст тот же результат."
+    reason: "Какой предел истёк — в фактах отказа. Вызов, оборванный по сроку после отправки, мог выполниться: проверь задачу у провайдера. Повтор без изменения предела даст то же; работа штатно дольше — подними столбец timeout строки канала (table_update) или сообщи владельцу."
+    owner: "Ожидание задачи — poll.timeout_sec/max_attempts в config/media_tasks.yaml; вызов провайдера — timeout_sec (фаза) и deadline_sec (весь вызов) в config/providers.yaml → online.call или в блоке call провайдера."
 
 DOWNLOAD_INCOMPLETE:
   class: server_recoverable
@@ -297,7 +310,8 @@ REQUEST_HEADER_INVALID:
   class: human_required
   message_template: "Заголовок «{header}» для «{host}» не отправлен: в значении есть символы, которых HTTP не несёт (не ASCII, перевод строки, NUL). Значение не показано — это может быть секрет."
   recovery:
-    reason: "Запрос не ушёл, задачи у провайдера нет. Если «{header}» несёт ключ провайдера — владелец вносит ключ заново (scripts/set_provider_key.py); если токен раннера — перезапуск раннера (media_runner) выдаёт новый; иначе значение задано объявлением — поправь заголовок в config/providers.yaml."
+    reason: "Запрос не ушёл, задачи у провайдера нет. Если «{header}» — токен раннера, перезапусти раннер (media_runner): он выдаст новый; иначе сообщи владельцу."
+    owner: "Ключ провайдера вносится заново: python scripts/set_provider_key.py; заголовок из объявления — config/providers.yaml."
 
 DOWNLOAD_RANGE_INVALID:
   class: server_recoverable
@@ -309,13 +323,15 @@ DOWNLOAD_TOO_LARGE:
   class: integrity
   message_template: "Ответ больше объявленного предела {limit_mb} МБ — чтение оборвано, недописанное убрано."
   recovery:
-    reason: "Предел считается по ходу потока, а не после записи. Если такой размер штатный — подними предел {key}."
+    reason: "Предел считается по ходу потока, а не после записи. Если такой размер штатный — сообщи владельцу предел {key}."
+    owner: "Подними предел {key}, если такой размер штатный."
 
 DOWNLOAD_TOO_SLOW:
   class: server_recoverable
   message_template: "Источник «{host}» отдаёт медленнее объявленного: {got} байт за {window_sec} с при пределе {floor} байт/с."
   recovery:
-    reason: "Медленная передача — не работа: поток держался бы вечно. Попытка потрачена: веса модели докачиваются повтором с принятого, файл результата поставщика остатка не оставляет — повторный вызов качает его с начала. Если такая скорость штатна — порог в speed_floor_bytes_per_sec политики загрузки (config/providers.yaml local.install.fetch, config/media_tasks.yaml download.fetch)."
+    reason: "Попытка потрачена: веса модели докачаются повтором с принятого, файл результата поставщика качается с начала. Повтори позже; такая скорость штатна — сообщи владельцу."
+    owner: "Порог — speed_floor_bytes_per_sec политики загрузки: config/providers.yaml → local.install.fetch, config/media_tasks.yaml → download.fetch."
 
 SECRET_ACCESS_DENIED:
   class: integrity
@@ -325,35 +341,38 @@ SECRET_ACCESS_DENIED:
 
 PROVIDER_KEY_MISSING:
   class: human_required
-  message_template: "У провайдера нет ключа доступа для этого канала."
+  message_template: "У провайдера «{provider}» нет ключа доступа для этого канала."
   recovery:
     suggested_tool: media_provider_status
-    reason: "Ключ вносит только владелец и только вручную — у сервера и модели нет прав его читать или записывать через инструменты: python scripts/set_provider_key.py --channel <канал> --provider <имя> (ввод скрыт, значение шифруется до записи). Пока ключа нет, поставь в строке канала провайдера, который работает без ключа (например, локального), — это обычный table_update."
+    reason: "Ключ вносит владелец; что стоит — media_provider_status (отпечаток и дата, не значение). Пока ключа нет — поставь в строке канала провайдера без ключа (table_update)."
 
 SECRET_UNREADABLE:
   class: human_required
   message_template: "Файл ключей канала не расшифровывается."
   recovery:
-    reason: "Файл зашифрован ключом другого инстанса — восстановлен из чужого бэкапа или утерян instance_secret.key. Прочитать нечем: внеси ключи заново через scripts/set_provider_key.py."
+    reason: "Ключи канала не прочесть: сообщи владельцу — он внесёт их заново."
+    owner: "Файл зашифрован ключом другого инстанса (чужой бэкап или утерян instance_secret.key): внеси ключи заново — python scripts/set_provider_key.py."
 
 SECRET_ENCRYPTION_UNAVAILABLE:
   class: human_required
   message_template: "Шифрование недоступно: нет библиотеки cryptography."
   recovery:
-    reason: "Поставь зависимости сервера (pip install -e .). Хранить ключи провайдеров в открытом виде сервер не станет — это было бы защитой на словах."
+    reason: "Сообщи владельцу: без шифрования ключи провайдеров сервер не хранит."
+    owner: "Поставь зависимости сервера: pip install -e ."
 
 DOWNLOAD_FORBIDDEN:
   class: integrity
   message_template: "Адрес «{host}» не пропущен: туда не уходят ни ключ, ни запрос (разрешён: {allowed})."
   recovery:
-    reason: "Ключ уходит только по https на объявленный хост провайдера (config/providers.yaml → online.http), даже если адрес статуса или результата назвал сам провайдер. По ссылкам во внутреннюю сеть и на необъявленные схемы и хосты сервер тоже не ходит: результаты — config/media_tasks.yaml → download.fetch, веса — config/providers.yaml → local.install.fetch, длина колёс — config/packages.yaml → index.fetch. Проверь, что вернул провайдер, и столбец model строки канала — он подставляется в адрес вызова."
+    reason: "Ключ и запрос уходят только на объявленные хосты, даже если адрес назвал сам провайдер. Проверь, что вернул провайдер, и столбец model строки канала — он подставляется в адрес вызова."
+    owner: "Хосты: ключ — config/providers.yaml → online.http; результаты — config/media_tasks.yaml → download.fetch; веса — config/providers.yaml → local.install.fetch; колёса — config/packages.yaml → index.fetch."
 
 PROVIDER_ADAPTER_MISSING:
   class: human_required
-  message_template: "Для провайдера из строки канала не объявлен адаптер."
+  message_template: "Для провайдера «{provider}» нет годного адаптера."
   recovery:
     suggested_tool: media_provider_status
-    reason: "Имя провайдера — данные канала, а код по этому имени — серверный конфиг. Либо поставь в строке провайдера, которого сервер умеет исполнять, либо объяви адаптер в config/providers.yaml → adapters.by_provider."
+    reason: "Поставь в строке канала провайдера, которого сервер умеет исполнять (что есть — media_provider_status), или сообщи владельцу."
 
 RUNNER_NOT_RUNNING:
   class: ai_recoverable
@@ -361,13 +380,20 @@ RUNNER_NOT_RUNNING:
   recovery:
     suggested_tool: media_runner
     suggested_params: {action: start}
-    reason: "Раннер поднимается явной командой и сам не стартует (демона на сервере нет). Подними его — media_runner(action='start') — либо переключи строку канала на провайдера, который считает в самом сервере (table_update). Молчаливого отката в процесс нет намеренно: он скрыл бы, что изоляции больше нет."
+    reason: "Подними раннер: media_runner(action='start'); или переключи строку канала на провайдера, который считает в самом сервере (table_update)."
+
+RUNNER_EXITED:
+  class: human_required
+  message_template: "Раннер вышел при подъёме: код {exit_code}."
+  recovery:
+    reason: "Причина — в журнале сервера под номером события: сообщи его владельцу. Пока раннер не поднимается, строку канала можно переключить на провайдера, который считает в самом сервере (table_update)."
 
 RUNNER_PORT_TAKEN:
   class: human_required
   message_template: "Порт раннера «{url}» занят посторонним процессом: на /health отвечают, а наш раннер не запущен."
   recovery:
-    reason: "Второй раннер на тот же порт не встанет. Останови процесс, который слушает «{url}», или смени адрес раннера в config/providers.yaml → online.http (адрес Local_runner)."
+    reason: "Второй раннер на тот же порт не встанет: сообщи владельцу."
+    owner: "Останови процесс, который слушает «{url}», или смени адрес раннера в config/providers.yaml → online.http (адрес Local_runner)."
 
 RUNNER_TOKEN_REJECTED:
   class: server_recoverable
@@ -441,7 +467,8 @@ LOCAL_MODEL_MISSING:
   message_template: "Веса локальной модели '{model}' не найдены (ожидались в {path})."
   recovery:
     suggested_tool: media_models
-    reason: "Веса не лежат в git. Посмотри, что можно поставить — media_models (scope='local'), поставь — media_model_install; из терминала то же делает python scripts/models.py install <id> --kind <вид>, а поставленное по описи на другой машине вернёт python scripts/models.py pull. Либо переключи строку канала на другого провайдера (table_update)."
+    reason: "Веса не поставлены: что можно поставить — media_models (scope='local'), поставить — media_model_install; или переключи строку канала на другого провайдера (table_update)."
+    owner: "Из терминала: python scripts/models.py install <id> --kind <вид>; поставленное по описи на другой машине вернёт python scripts/models.py pull."
 
 MODEL_SOURCE_FAILED:
   class: server_recoverable
@@ -454,7 +481,8 @@ MODEL_REVISION_UNKNOWN:
   class: server_recoverable
   message_template: "Состояние репозитория '{model}' у «{host}» не узнать: ответ {status}."
   recovery:
-    reason: "Без ревизии веса не тянутся: файлы одной модели могли бы приехать из разных состояний репозитория. Ничего не скачано, запрос сервер не повторял — повтори установку позже или проверь сеть сервера. Владелец может закрепить ревизию в config/providers.yaml → local.install.revisions: тогда источник о ней не спрашивается."
+    reason: "Ничего не скачано: без ревизии веса не тянутся. Повтори установку позже."
+    owner: "Закрепи ревизию в config/providers.yaml → local.install.revisions — тогда источник о ней не спрашивается; повторяется — проверь сеть сервера."
 
 MODEL_SOURCE_UNREACHABLE:
   class: server_recoverable
@@ -467,21 +495,24 @@ MODEL_SOURCE_FORBIDDEN:
   message_template: "Источник весов «{source}» не объявлен разрешённым (разрешены: {allowed})."
   recovery:
     suggested_tool: media_models
-    reason: "Веса — исполняемое содержимое, и брать их откуда попало сервер не станет. Выбери модель из разрешённого источника (media_models, scope='local'); список правит владелец в config/providers.yaml → local.install.allow_sources."
+    reason: "Веса — исполняемое содержимое: ставятся только из разрешённых источников. Выбери модель оттуда — media_models (scope='local')."
+    owner: "Разрешённые источники — config/providers.yaml → local.install.allow_sources."
 
 MODEL_TOO_LARGE:
   class: ai_recoverable
   message_template: "Модель '{model}' весит {mb} МБ при объявленном пределе {limit_mb} МБ."
   recovery:
     suggested_tool: media_models
-    reason: "Возьми модель полегче (media_models, scope='local', fits=true); если такой размер осмыслен на этой машине, владелец поднимет local.install.max_total_mb в config/providers.yaml."
+    reason: "Возьми модель полегче: media_models (scope='local', fits=true)."
+    owner: "Предел — local.install.max_total_mb в config/providers.yaml."
 
 MODEL_NOT_IN_CATALOG:
   class: ai_recoverable
   message_template: "Модели '{model}' нет в каталоге {source}."
   recovery:
     suggested_tool: media_models
-    reason: "Имя не из каталога источника. Посмотри доступные: media_models(scope='local') или python scripts/models.py local --kind <вид>."
+    reason: "Имя не из каталога источника. Посмотри доступные: media_models (scope='local')."
+    owner: "Из терминала: python scripts/models.py local --kind <вид>."
 
 MODEL_NAME_TAKEN:
   class: human_required
@@ -509,40 +540,57 @@ MODEL_UNLOADABLE:
   message_template: "Веса модели '{model}' лежат, но не поднимаются в процесс."
   recovery:
     suggested_tool: media_model_install
-    reason: "Библиотека расчёта не читает файлы: веса битые, неполные или чужого формата. Перекачай модель тем же именем (media_model_install или python scripts/models.py pull <id>); причина — в журнале сервера."
+    reason: "Веса битые, неполные или чужого формата: перекачай модель тем же именем (media_model_install); причина — в журнале сервера под номером события."
+    owner: "Из терминала: python scripts/models.py pull <id>."
 
 MODEL_INCOMPLETE:
   class: human_required
   message_template: "Веса локальной модели лежат не целиком."
   recovery:
     suggested_tool: media_models
-    reason: "Части из состава модели нет на диске или она короче объявленной — загрузка оборвалась. python scripts/models.py pull <id> идёт по плану разницы и тянет только недостающее; либо переключи строку канала на другого провайдера (table_update)."
+    reason: "Загрузка оборвалась: повтори установку (media_model_install) — докачается недостающее; или переключи строку канала на другого провайдера (table_update)."
+    owner: "Из терминала: python scripts/models.py pull <id> — по плану разницы, только недостающее."
 
 MODEL_CORRUPT:
   class: integrity
   message_template: "Веса локальной модели расходятся с объявленным составом."
   recovery:
     suggested_tool: media_models
-    reason: "Длина или отпечаток части не совпали с составом, снятым с источника: файл испорчен или подменён, и поднимать его нельзя. python scripts/models.py pull <id> заменит расходящиеся части."
+    reason: "Файл испорчен или подменён — поднимать его нельзя: перекачай модель (media_model_install, force=true)."
+    owner: "Из терминала: python scripts/models.py pull <id> заменит расходящиеся части."
 
 MODEL_UNVERIFIED:
   class: human_required
   message_template: "Целость весов локальной модели судить нечем."
   recovery:
     suggested_tool: media_models
-    reason: "Запись описи сделана до состава модели (или веса положены руками, а local.hand_placed в config/providers.yaml их не пускает). python scripts/models.py pull <id> снимет состав с источника и сверит диск."
+    reason: "Состав модели не снят — сверить диск не с чем: сообщи владельцу."
+    owner: "python scripts/models.py pull <id> снимет состав с источника и сверит диск; веса, положенные руками, пускает local.hand_placed в config/providers.yaml."
 
 USAGE_UNIT_UNKNOWN:
   class: human_required
   message_template: "Единица расхода из строки провайдера не объявлена."
   recovery:
-    reason: "Объяви единицу в config/providers.yaml → usage.units. Неизвестная единица не считается нулём намеренно: тихий ноль означал бы, что лимит не наступит никогда."
+    reason: "Сообщи владельцу: неизвестная единица расхода нулём не считается — иначе лимит не наступил бы никогда."
+    owner: "Объяви единицу в config/providers.yaml → usage.units."
 
 RECALC_UNAVAILABLE:
   class: human_required
-  message_template: "Движок пересчёта формул (LibreOffice) недоступен."
+  message_template: "Движок пересчёта формул (LibreOffice) на сервере не найден."
   recovery:
-    reason: "Сообщи владельцу: проверка формул идёт реальным пересчётом LibreOffice (soffice в PATH сервера), без него её нет."
+    reason: "Сообщи владельцу: проверка формул идёт только реальным пересчётом, без LibreOffice её нет."
+
+RECALC_TIMEOUT:
+  class: ai_recoverable
+  message_template: "Пересчёт формул не уложился в {timeout_sec} с."
+  recovery:
+    reason: "Повтор той же книги упрётся в тот же срок: раздели книгу на части и проверь их по отдельности."
+
+RECALC_FAILED:
+  class: ai_recoverable
+  message_template: "Движок пересчёта не вернул вычисленную книгу (код выхода {exit_code})."
+  recovery:
+    reason: "Повтор без правки книги даст то же: проверь, что книга открывается; открывается — передай владельцу номер события."
 
 # ═══ Структура: реестр связей / ORPHAN ═══
 
@@ -558,8 +606,7 @@ RECONCILE_ROLLED_BACK:
   message_template: "Reconcile откачен целиком: ни одна сущность не сдвинута."
   recovery:
     suggested_tool: "structure_status"
-    reason: "Помеха на одном из переносов (путь занят, каталога нет) откатывает весь пакет —
-      половина reconcile хуже отсутствия. Устрани помеху из сообщения и повтори."
+    reason: "Помеха — в facts.path (путь занят или каталога нет): убери её и повтори."
 
 # ═══ Поиск (core/search) ═══
 
@@ -571,7 +618,7 @@ QUERY_NOT_FOUND:
 
 PATH_NOT_FOUND:
   class: ai_recoverable
-  message_template: "Путь не найден."
+  message_template: "Каталога «{path}» нет."
   recovery:
     reason: "Проверь путь внутри workspace (регистр важен)."
 
@@ -581,13 +628,22 @@ SCHEMA_INVALID:
   class: human_required
   message_template: "Декларация таблицы некорректна: {details}"
   recovery:
-    reason: "Схема книги (config/templates/tables/*.schema.yaml) не соответствует формату spec/TABLE_SCHEMA_FORMAT.md — правит человек, автоматически не чинится."
+    reason: "Сообщи владельцу: схема книги нарушает формат и автоматически не чинится."
+    owner: "Схема книги — config/templates/tables/*.schema.yaml, формат — spec/TABLE_SCHEMA_FORMAT.md."
+
+DECLARATION_MISSING:
+  class: human_required
+  message_template: "Нет объявления {subject}: «{file}»."
+  recovery:
+    reason: "Сообщи владельцу: без этого объявления операция не идёт."
+    owner: "Заведи «{file}» в каталоге деклараций (MCP_CONFIG, иначе config/ сервера)."
 
 DECLARATION_INVALID:
   class: human_required
   message_template: "Декларация {file} не прошла проверку схемы: {details}."
   recovery:
-    reason: "Поправь {file} в каталоге деклараций (MCP_CONFIG, иначе config/ сервера): каждое названное поле — по схеме декларации (ключ, тип, обязательность, связь с другими ключами). Значения в ответ не идут — смотри их в самом файле."
+    reason: "Сообщи владельцу: объявление сервера нарушает свою схему — что и где, в errors."
+    owner: "Поправь {file} в каталоге деклараций (MCP_CONFIG, иначе config/ сервера): каждое названное поле — по схеме декларации (ключ, тип, обязательность, связь с другими ключами); значения в ответ не идут — смотри их в самом файле."
 
 # ═══ Проверка целостности ═══
 
@@ -618,7 +674,8 @@ TEMPLATE_INVALID:
   class: human_required
   message_template: "Шаблон объявлен неверно: {reason}"
   recovery:
-    reason: "Правится в config/templates/workspace/*.tpl.yaml (блок id: с prefix и ancestors) — это объявление, а не данные клиента."
+    reason: "Сообщи владельцу: шаблон сервера объявлен неверно — данные клиента тут ни при чём."
+    owner: "Правится в config/templates/workspace/*.tpl.yaml (блок id: с prefix и ancestors)."
 
 FOREIGN_WRITE:
   class: integrity
@@ -639,25 +696,29 @@ FILE_TYPE_FORBIDDEN:
   class: human_required
   message_template: "Запись файлов этого типа запрещена: {path}"
   recovery:
-    reason: "Сервер материализует только объявленные типы (данные, книги, документы, ассеты, .py). Исполняемое и веб-содержимое (.sh/.html/.exe/.bat) не создаётся намеренно. Список — config/firewall.yaml → write_allowlist; менять его должен человек, а не диалог."
+    reason: "Исполняемое и веб-содержимое (.sh/.html/.exe/.bat) сервер не создаёт: выбери объявленный тип — данные, книги, документы, ассеты, .py."
+    owner: "Список типов — config/firewall.yaml → write_allowlist."
 
 FILE_TOO_LARGE:
   class: ai_recoverable
   message_template: "Файл {path} больше объявленного предела: {size} байт при пределе {limit}."
   recovery:
-    reason: "Предел проверяется до действия, файл на диске не тронут. Запись — раздели содержимое на несколько файлов; чтение целиком (память) — файл не читается частями, его разбирает человек; fs_read_file отдаёт голову такого файла с пометкой truncated. Пределы — config/firewall.yaml → file_limits."
+    reason: "Файл на диске не тронут. Запись — раздели содержимое на несколько файлов; чтение целиком (память) — такой файл разбирает человек; fs_read_file отдаёт его голову с пометкой truncated."
+    owner: "Пределы — config/firewall.yaml → file_limits."
 
 RESULT_TOO_LARGE:
   class: ai_recoverable
   message_template: "Ответ {tool} — {chars} знаков ({bytes} байт UTF-8) — {load}% бюджета ответа клиентов этой установки: целиком клиент его не примет."
   recovery:
-    reason: "Работа сделана, не доставлен только ответ. Сузь запрос: каталог глубже, меньше строк, поиск точнее; файл читается страницами — fs_read_file с offset из next_offset прошлого ответа. Пределы клиентов — config/transport.yaml → clients; какие клиенты у установки — install.yaml."
+    reason: "Работа сделана, не доставлен только ответ. Сузь запрос: каталог глубже, меньше строк, поиск точнее; файл — страницами: fs_read_file с offset из next_offset прошлого ответа."
+    owner: "Пределы клиентов — config/transport.yaml → clients; какие клиенты у установки — install.yaml."
 
 LINE_TOO_LONG:
   class: ai_recoverable
   message_template: "Строка {line} файла {path} длиннее {limit} символов — столько сервер держит в памяти разом."
   recovery:
-    reason: "Файл читается строка за строкой, а строка такой длины заняла бы память общего процесса сервера. Сплошной текст без переводов строки (минифицированный JSON и подобное) читается страницами — fs_read_file с offset; формат со структурой — по разделу. Предел — память процесса на одно место поиска (config/resources.yaml → work.search)."
+    reason: "Сплошной текст без переводов строки (минифицированный JSON и подобное) читается страницами — fs_read_file с offset; формат со структурой — по разделу."
+    owner: "Предел — память процесса на одно место поиска: config/resources.yaml → work.search."
 
 FILE_NOT_TEXT:
   class: ai_recoverable
@@ -674,11 +735,9 @@ NO_DISK_SPACE:
 
 CONFIRM_REQUIRED:
   class: ai_recoverable
-  message_template: "Операция необратима и требует подтверждения: {path}"
+  message_template: "Действие не отменить — {operation} «{target}»: нужно подтверждение."
   recovery:
-    suggested_tool: "fs_delete"
-    suggested_params: { force: true }
-    reason: "Повтори вызов с force=true, если удаление действительно нужно. Подтверждение обязательно всегда: так инъекция в данных не превращается в тихую потерю файлов."
+    reason: "Повтори тот же вызов с {param}=true, если это действительно нужно."
 
 # ═══ Монтаж: сборка, запуск и приёмка рендера ═══
 
@@ -686,7 +745,8 @@ FFMPEG_MISSING:
   class: human_required
   message_template: "Нечем монтировать: ffmpeg не найден в PATH."
   recovery:
-    reason: "ffmpeg — системный бинарь, а не пакет pip: поставь его пакетным менеджером (dnf/apt/brew) и повтори. Ни один инструмент монтажа без него не работает."
+    reason: "Сообщи владельцу: без ffmpeg ни один инструмент монтажа не работает."
+    owner: "ffmpeg — системный бинарь, а не пакет pip: поставь его пакетным менеджером (dnf/apt/brew)."
 
 FILTER_UNKNOWN:
   class: ai_recoverable
@@ -745,7 +805,8 @@ PACKAGE_GROUP_UNKNOWN:
   class: human_required
   message_template: "Группы пакетов не объявлены в проекте: {groups}."
   recovery:
-    reason: "Объявленные группы: {known}. Группа среды расчёта для карты задаётся в config/providers.yaml → local.gpu.drivers[<драйвер>].extras и обязана быть в pyproject.toml → project.optional-dependencies."
+    reason: "Объявленные группы: {known}. Нужна другая — сообщи владельцу."
+    owner: "Группа среды расчёта для карты — config/providers.yaml → local.gpu.drivers[<драйвер>].extras; обязана быть в pyproject.toml → project.optional-dependencies."
 
 PACKAGE_INSTALL_FAILED:
   class: human_required
@@ -763,7 +824,8 @@ PACKAGE_INDEX_FAILED:
   class: server_recoverable
   message_template: "Индекс пакетов «{host}» не назвал длину колеса: {status}."
   recovery:
-    reason: "Колесо вошло в цену установки без размера — итог больше посчитанного. Адрес колеса дал отчёт pip (PyPI или index драйвера в config/providers.yaml → local.gpu.drivers); как спрашивается индекс — config/packages.yaml → index.fetch. Перегрузку и недоступность (retry_on) отказом не считают: длина там просто не узнана."
+    reason: "Колесо вошло в цену установки без размера — итог больше посчитанного."
+    owner: "Адрес колеса дал отчёт pip (PyPI или index драйвера в config/providers.yaml → local.gpu.drivers); как спрашивается индекс — config/packages.yaml → index.fetch."
 
 # ═══ Туннель: бинарь клиентского конца (установщик, scripts/fetch_tunnel_binary.py) ═══
 
@@ -771,13 +833,15 @@ TUNNEL_BINARY_UNAVAILABLE:
   class: human_required
   message_template: "Для системы {system} и архитектуры {arch} готового бинаря туннеля нет."
   recovery:
-    reason: "Поставь бинарь туннеля вручную по пути каталога (config/tunnel_diagnostics.yaml → бинари) или выбери роль без туннеля — клиент консоль на этой машине."
+    reason: "Готового бинаря нет: выбери роль без туннеля (клиент консоль на этой машине) или сообщи владельцу."
+    owner: "Поставь бинарь туннеля вручную по пути каталога: config/tunnel_diagnostics.yaml → бинари."
 
 TUNNEL_BINARY_SOURCE_FAILED:
   class: server_recoverable
   message_template: "Источник бинаря туннеля «{host}» отказал: {status}."
   recovery:
-    reason: "Повтори установку позже: оборванная загрузка докачается с места обрыва. Повторяется — проверь связь машины с источником или поставь бинарь вручную по пути каталога (config/tunnel_diagnostics.yaml → бинари)."
+    reason: "Повтори установку позже: оборванная загрузка докачается с места обрыва."
+    owner: "Повторяется — проверь связь машины с источником или поставь бинарь вручную по пути каталога (config/tunnel_diagnostics.yaml → бинари)."
 
 TUNNEL_BINARY_CORRUPT:
   class: integrity

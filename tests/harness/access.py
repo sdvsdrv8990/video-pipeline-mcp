@@ -10,18 +10,22 @@ import os
 import re
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 
 def mode(p: Path) -> int:
     """Права пути: на POSIX — биты режима; на Windows доступ «только владелец» — 0o600 у файла, 0o700 у каталога."""
-    if os.name == "nt" and _owner_only_dacl(p):
-        return 0o700 if p.is_dir() else 0o600
+    if os.name == "nt":
+        sddl = _powershell(f"(Get-Acl -LiteralPath '{p}').Sddl")
+        if _owner_only_dacl(sddl):
+            return 0o700 if p.is_dir() else 0o600
+        # Улика вердикта — в вывод набора: иначе отчёт показывает только биты режима (на Windows всегда 0o666).
+        print(f"  · DACL {p}: {sddl} · пользователь {_user_sid()}", file=sys.stderr)
     return stat.S_IMODE(p.stat().st_mode)
 
 
-def _owner_only_dacl(p: Path) -> bool:
-    sddl = _powershell(f"(Get-Acl -LiteralPath '{p}').Sddl")
+def _owner_only_dacl(sddl: str) -> bool:
     found = re.search(r"D:([A-Z]*)((?:\([^)]*\))+)", sddl)
     if not found or "P" not in found.group(1):
         return False
@@ -34,5 +38,6 @@ def _user_sid() -> str:
 
 
 def _powershell(command: str) -> str:
-    return subprocess.run(["powershell", "-NoProfile", "-Command", command], capture_output=True, text=True,
-                          check=True).stdout.strip()
+    """Ответ PowerShell; пустой (ошибки Get-Acl не завершают процесс) — с его stderr, чтобы отказ был виден."""
+    done = subprocess.run(["powershell", "-NoProfile", "-Command", command], capture_output=True, text=True, check=True)
+    return done.stdout.strip() or f"(пусто; stderr: {done.stderr.strip()[:300]})"

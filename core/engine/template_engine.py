@@ -50,16 +50,13 @@ class TemplateEngine:
         if node_type in self._cache:
             return self._cache[node_type]
         p = self.tpl_dir / f"{node_type}.tpl.yaml"
-        if not p.exists():
-            raise TemplateError(
-                "TEMPLATE_NOT_FOUND", f"Шаблон не найден: {node_type}",
-                "Проверь имя типа в config/templates/workspace/*.tpl.yaml.")
+        if not p.exists():  # типы таксономии — те же файлы шаблонов: файла нет — тип назван неизвестный
+            raise TemplateError("TEMPLATE_NOT_FOUND", facts={"template": node_type, "known": self.taxonomy.node_types})
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
         body = data.get(node_type)
         if not isinstance(body, dict):
-            raise TemplateError(
-                "TEMPLATE_NOT_FOUND", f"В шаблоне {p.name} нет корневого ключа '{node_type}'.",
-                "Верхний ключ шаблона должен совпадать с именем типа.")
+            raise TemplateError("DECLARATION_INVALID",
+                                facts={"file": p.name, "details": f"нет корневого ключа «{node_type}»"})
         self._cache[node_type] = body
         return body
 

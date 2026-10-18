@@ -312,6 +312,8 @@ class CloudflaredTunnel:
 
         последняя: TunnelError | None = None
         for попытка in range(1, max(1, self.first_attempts) + 1):
+            if self._stopping:
+                raise self._cancelled()
             try:
                 url = self._one_attempt()
                 break
@@ -320,7 +322,9 @@ class CloudflaredTunnel:
                 self.stop()
                 raise
             except TunnelError as beda:
-                self.stop()
+                self._end_attempt()
+                if self._stopping:              # попытку оборвала остановка, а не край: повтора нет
+                    raise self._cancelled() from beda
                 последняя = beda
                 if попытка >= max(1, self.first_attempts) or self._fatal(beda):
                     raise
@@ -354,6 +358,9 @@ class CloudflaredTunnel:
         Без него молчащий cloudflared держал бы подъём столько, сколько живёт терминал.
         """
         self._proc = self._spawn()
+        if self._stopping:                      # stop() пришёл между проверкой флага и порождением: процесс видит он или мы
+            self._end_attempt()
+            raise self._cancelled()
         assert self._proc.stdout is not None
         self._killed_by_watchdog = False
         сторож = threading.Timer(self.ready_timeout + 2.0, self._kill_silent)
@@ -563,15 +570,24 @@ class CloudflaredTunnel:
         return self._public_url
 
     def stop(self):
-        """Останавливает туннель и keepalive."""
+        """Останавливает туннель и keepalive: флаг остановки снимает подъём и надзор в любой их фазе."""
         self._stopping = True
-        if self._proc and self._proc.poll() is None:
-            self._proc.terminate()
+        self._end_attempt()
+
+    def _end_attempt(self) -> None:
+        """Гасит процесс текущей попытки, не трогая флаг остановки: повтор подъёма — не остановка туннеля."""
+        proc = self._proc
+        if proc and proc.poll() is None:
+            proc.terminate()
             try:
-                self._proc.wait(timeout=5)
+                proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                self._proc.kill()
+                proc.kill()
         self._proc = None
+
+    @staticmethod
+    def _cancelled() -> "TunnelCancelled":
+        return TunnelCancelled("подъём снят остановкой сервера")
 
     def _by_token(self) -> bool:
         """Режим токена — одно решение для argv и среды ребёнка."""

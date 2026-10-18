@@ -50,10 +50,14 @@ _КОДЫ = {
     # Объявлены в server_reactions.yaml и реально бросаются, но выпали отсюда —
     # ErrorDetail предупреждал «код не в реестре» на штатных отказах поиска и пересчёта
     "PATH_NOT_FOUND", "QUERY_NOT_FOUND", "RECALC_UNAVAILABLE",
+    # Пересчёт формул: код на причину — движка нет, срок, движок не вернул книгу
+    "RECALC_TIMEOUT", "RECALC_FAILED",
+    # Дверь слоя: диск отказал замене, переносу или удалению (FS-13)
+    "PLACE_UNWRITABLE",
     # Reconcile: пакет откачен целиком — половина сведения хуже отсутствия
     "RECONCILE_ROLLED_BACK",
     # Раннер: строка канала просит считать вне сервера, а он не поднят
-    "RUNNER_NOT_RUNNING", "RUNNER_PORT_TAKEN", "RUNNER_TOKEN_REJECTED",
+    "RUNNER_NOT_RUNNING", "RUNNER_PORT_TAKEN", "RUNNER_TOKEN_REJECTED", "RUNNER_EXITED",
     # Ключи провайдеров: значение не выдаётся никогда, только отпечаток
     "SECRET_ACCESS_DENIED", "PROVIDER_KEY_MISSING", "SECRET_UNREADABLE",
     "SECRET_ENCRYPTION_UNAVAILABLE",
@@ -72,8 +76,8 @@ _КОДЫ = {
     "DUPLICATE_ID",
     # Таблицы: материализация книг по декларации
     "SCHEMA_INVALID",
-    # Декларация config/*.yaml не прошла схему двери (поле и правило — в errors)
-    "DECLARATION_INVALID",
+    # Декларация config/*.yaml не прошла схему двери (поле и правило — в errors); её нет на сервере
+    "DECLARATION_INVALID", "DECLARATION_MISSING",
     # Иерархия ID: цепочка по каталогу назначения
     "DUPLICATE_PATH", "CHAIN_UNRESOLVED", "TEMPLATE_INVALID",
     # Целостность артефактов: подпись инстанса и отпечаток машины

@@ -13,7 +13,7 @@ import json
 import sys
 import tempfile
 from contextlib import contextmanager
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -56,15 +56,27 @@ class _Windows(PureWindowsPath):
         return self
 
 
+class _Posix(PurePosixPath):
+    """Путь POSIX без диска: `\\` — часть имени на любой ОС раннера; раскрывать нечего."""
+
+    def resolve(self, strict=False):
+        return self
+
+
 @contextmanager
-def windows():
-    """Модуль узла видит пути, как на Windows."""
+def flavour(kind: type):
+    """Модуль узла видит пути флейвора `kind` (Windows или POSIX) — на любой ОС раннера."""
     held = paths_module.Path
-    paths_module.Path = _Windows
+    paths_module.Path = kind
     try:
         yield
     finally:
         paths_module.Path = held
+
+
+def windows():
+    """Модуль узла видит пути, как на Windows."""
+    return flavour(_Windows)
 
 
 @contextmanager
@@ -106,13 +118,15 @@ with windows():
         check(f"Windows, {kind}: {path!r} → {want!r}", got == want, repr(got))
 
 print("== 2. Законная пара на POSIX: \\ — часть имени, разделителем не становится ==")
-_posix = Path(tempfile.mkdtemp(prefix="vpm-client-paths-"))
-for kind, path, want in (
-        ("обратная косая в имени файла", "dir/a\\b.txt", "dir/a\\b.txt"),
-        ("под корнем — от корня", _posix / "ch" / "keys.enc", "ch/keys.enc"),
-        ("выход за корень", "../../etc/passwd", "../../etc/passwd")):
-    got = Files(_posix).name(path)
-    check(f"POSIX, {kind}: {str(path)!r} → {want!r}", got == want, repr(got))
+# Обновлено 2026-10-18 (CI f382d26 Windows): пара шла настоящим Path — на Windows «\\» там разделитель, случай невыполним;
+# теперь — флейвор POSIX, как раздел 1 — флейвор Windows: меряет на любой ОС раннера.
+with flavour(_Posix):
+    for kind, path, want in (
+            ("обратная косая в имени файла", "dir/a\\b.txt", "dir/a\\b.txt"),
+            ("под корнем — от корня", "/ws/ch/keys.enc", "ch/keys.enc"),
+            ("выход за корень", "../../etc/passwd", "../../etc/passwd")):
+        got = Files(_Posix("/ws")).name(path)
+        check(f"POSIX, {kind}: {path!r} → {want!r}", got == want, repr(got))
 
 print("== 3. Причина в узле, следствие на двери: факт и текст отказа, которые видит клиент ==")
 with windows():

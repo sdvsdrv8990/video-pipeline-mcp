@@ -35,9 +35,7 @@ class Declaration:
     @property
     def data(self) -> dict:
         if not self.config_file.exists():
-            raise self._error(
-                "TEMPLATE_NOT_FOUND", f"Нет декларации {self._subject}: {self.config_file.name}",
-                reason=self._hint)
+            raise self._error("DECLARATION_MISSING", facts={"subject": self._subject, "file": self.config_file.name})
         raw = contents(self.config_file) or b""
         if self._data is None or raw != self._raw:
             try:

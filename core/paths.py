@@ -61,6 +61,14 @@ class SecretAccessError(PathRefused):
     CODE = "SECRET_ACCESS_DENIED"
 
 
+class PlaceUnwritable(ContractError):
+    """Диск отказал действию двери (FS-13): код реестра с операцией, путём от корня и причиной ОС — сырой `OSError` слой
+    не выпускает. Путь и причина — `Files.unread`, тот же перевод, что у непрочитанного."""
+
+    def __init__(self, operation: str, path: str, reason: str):
+        super().__init__("PLACE_UNWRITABLE", facts={"operation": operation, "path": path, "reason": reason})
+
+
 def configure_secret_dirs(names) -> set[str]:
     """Объявить закрытые каталоги (вызывается один раз при сборке контекста из firewall.yaml).
 
@@ -164,7 +172,11 @@ class Files:
         if policy is not None:
             policy.admit(self.name(target), data, at=target)
         part = self._fresh(target, data, self._mode(target) if mode is None else mode, secrets)
-        os.replace(part, target)
+        try:
+            os.replace(part, target)
+        except OSError as e:  # на Windows файл, открытый без FILE_SHARE_DELETE, не заменить: под именем — прежний
+            part.unlink(missing_ok=True)
+            raise PlaceUnwritable("замена", **self.unread(path, e)) from e
         _sync_dir(target.parent)
         return target
 
@@ -256,17 +268,28 @@ class Files:
         target = self.named(path, secrets=secrets)
         if target == Path(self.root).resolve():
             raise ContractError("VALIDATION_ERROR", errors=[{"field": "path", "rule": "not_root"}])
-        mode = os.lstat(target).st_mode
-        if stat.S_ISDIR(mode):
-            if not shutil.rmtree.avoids_symlink_attacks and sys.platform != "win32":
-                raise OSError(errno.ENOTSUP, "rmtree на этой платформе идёт по ссылкам внутри дерева")
-            shutil.rmtree(target)
-            kind = "dir"
-        else:
-            target.unlink()
-            kind = "link" if stat.S_ISLNK(mode) else "file"
+        mode = self._mode_of(target, path)
+        try:
+            if stat.S_ISDIR(mode):
+                if not shutil.rmtree.avoids_symlink_attacks and sys.platform != "win32":
+                    raise OSError(errno.ENOTSUP, "rmtree на этой платформе идёт по ссылкам внутри дерева")
+                shutil.rmtree(target)
+                kind = "dir"
+            else:
+                target.unlink()
+                kind = "link" if stat.S_ISLNK(mode) else "file"
+        except OSError as e:  # прерванный rmtree оставляет часть дерева: отказ называет путь, снятое не восстановить
+            raise PlaceUnwritable("удаление", **self.unread(path, e)) from e
         _sync_dir(target.parent)
         return kind
+
+    def _mode_of(self, real: Path, path: str | Path) -> int:
+        """Режим названного без перехода по ссылке; названного нет — FILE_NOT_FOUND с путём от корня: «есть ли источник»
+        судит дверь, а не вызывающий заранее (проверка до действия — гонка)."""
+        try:
+            return os.lstat(real).st_mode
+        except FileNotFoundError:
+            raise ContractError("FILE_NOT_FOUND", facts={"path": self.name(path)}) from None
 
     def move(self, src: str | Path, dst: str | Path, *, secrets: bool = False, policy: WritePolicy | None = None) -> Path:
         """Перенести названное без затирания (FS-14): файл и ссылка — `os.link` (он не затирает) и снятие старого имени;
@@ -277,7 +300,7 @@ class Files:
         source, target = self.named(src, secrets=secrets), self.named(dst, secrets=secrets)
         if source == Path(self.root).resolve():
             raise ContractError("VALIDATION_ERROR", errors=[{"field": "source", "rule": "not_root"}])
-        directory = stat.S_ISDIR(os.lstat(source).st_mode)
+        directory = stat.S_ISDIR(self._mode_of(source, src))
         if directory and source in target.parents:
             raise ContractError("VALIDATION_ERROR", errors=[{"field": "destination", "rule": "inside_source"}])
         if policy is not None and source.is_file():
@@ -294,14 +317,22 @@ class Files:
                 os.link(source, target, follow_symlinks=False)
         except FileExistsError:
             raise ContractError("FILE_EXISTS", facts={"path": self.name(dst)}) from None
+        except OSError as e:
+            raise PlaceUnwritable("перенос", **self.unread(src, e)) from e
         if held:
             try:
                 os.rename(source, target)
-            except BaseException:
+            except BaseException as e:
                 os.rmdir(target)
+                if isinstance(e, OSError):
+                    raise PlaceUnwritable("перенос", **self.unread(src, e)) from e
                 raise
         elif not directory:
-            os.unlink(source)
+            try:
+                os.unlink(source)
+            except OSError as e:  # старое имя не снялось (на Windows его держат открытым): новое снимается — половины нет
+                os.unlink(target)
+                raise PlaceUnwritable("перенос", **self.unread(src, e)) from e
         _sync_dir(target.parent)
         _sync_dir(source.parent)
         return target

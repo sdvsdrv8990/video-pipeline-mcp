@@ -86,11 +86,11 @@ def рамка(окно, строки: list[tuple[str, int]], подвал: str)
     окно.refresh()
 
 
-def меню(окно, вопрос: str, пункты, назад: str) -> int | None:
-    """Индекс выбранного пункта; None — Esc (назад/выход)."""
+def меню(окно, вопрос: str, пункты, назад: str, заметка: str = "") -> int | None:
+    """Индекс выбранного пункта; None — Esc (назад/выход). Заметка — строка под вопросом."""
     курсор = 0
     while True:
-        строки: list[tuple[str, int]] = [(вопрос, curses.A_BOLD), ("", 0)]
+        строки: list[tuple[str, int]] = [(вопрос, curses.A_BOLD), *([(заметка, curses.A_DIM)] if заметка else []), ("", 0)]
         for i, (_, метка, пояснения, _полезное) in enumerate(пункты):
             выбран = i == курсор
             строки.append((("> " if выбран else "  ") + метка,
@@ -110,11 +110,15 @@ def меню(окно, вопрос: str, пункты, назад: str) -> int 
             return None
 
 
-def _подтверждение(окно, титул: str, ставится: list[str], назначение: str) -> bool:
-    строки: list[tuple[str, int]] = [(титул, curses.A_BOLD), ("", 0),
-                                     ("Будет установлено:", 0), ("", 0)]
+def _подтверждение(окно, титул: str, ставится: list[str], назначение: str, сейчас: str = "",
+                   снимается: tuple[str, ...] = ()) -> bool:
+    строки: list[tuple[str, int]] = [(титул, curses.A_BOLD), ("", 0)]
+    if сейчас:
+        строки += [(сейчас, 0), ("", 0)]
+    строки += [("Будет установлено:", 0), ("", 0)]
     строки += [("  ✓ " + что, 0) for что in ставится]
     строки += [("", 0), ("  " + назначение, curses.A_DIM), ("", 0)]
+    строки += [("  " + с, curses.A_BOLD) for с in снимается] + ([("", 0)] if снимается else [])
     рамка(окно, строки, "Enter Продолжить     Esc Назад")
     while True:
         клавиша = окно.getch()
@@ -124,11 +128,12 @@ def _подтверждение(окно, титул: str, ставится: lis
             return False
 
 
-def _экран(окно) -> tuple[bool, str]:
+def _экран(окно, было: tuple[bool, str] | None = None) -> tuple[bool, str]:
     curses.curs_set(0)
     окно.keypad(True)
+    сейчас = f"Сейчас объявлено: {описание(*было)}" if было else ""
     while True:
-        i = меню(окно, "Чем будете подключаться к MCP-серверу?", РОЛИ, "Выход")
+        i = меню(окно, "Чем будете подключаться к MCP-серверу?", РОЛИ, "Выход", сейчас)
         if i is None:
             raise Отменено
         _имя, метка, _пояснения, полезное = РОЛИ[i]
@@ -140,11 +145,10 @@ def _экран(окно) -> tuple[bool, str]:
             полезное = КОНЦЫ[j][3]
 
         mcp, конец = полезное
-        ставится = (["MCP Server"] if mcp else []) + ([ИМЕНА_КОНЦОВ[конец]] if конец != "none" else [])
         назначение = ({"client": "Назначение: рабочая машина",
                        "none": "Назначение: консоль на этой машине — сервер по петле, без туннеля"}.get(
                           конец, "Назначение: серверная машина")) if mcp else "MCP Server не устанавливается."
-        if _подтверждение(окно, метка, ставится, назначение):
+        if _подтверждение(окно, метка, состав(mcp, конец), назначение, сейчас, снят(было, mcp)):
             return mcp, конец
 
 
@@ -156,6 +160,36 @@ def записать(mcp: bool, конец: str, path: Path = CONFIG) -> None:
         f"mcp: {'true' if mcp else 'false'}\n"
         f"tunnel: {конец}\n",
         encoding="utf-8")
+
+
+def объявлено(path: Path = CONFIG) -> tuple[bool, str] | None:
+    """Что объявлено сейчас — для «было → станет». Читается строками, как и пишется; нет файла или ключей — None."""
+    try:
+        строки = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return None
+    поля = {к.strip(): з.strip() for к, з in (с.split(":", 1) for с in строки if ":" in с and not с.lstrip().startswith("#"))}
+    mcp, конец = поля.get("mcp"), поля.get("tunnel")
+    if mcp not in ("true", "false") or конец not in ИМЕНА_КОНЦОВ:
+        return None
+    return mcp == "true", конец
+
+
+def состав(mcp: bool, конец: str) -> list[str]:
+    """Компоненты машины словами экрана."""
+    return (["MCP Server"] if mcp else []) + ([ИМЕНА_КОНЦОВ[конец]] if конец != "none" else [])
+
+
+def описание(mcp: bool, конец: str) -> str:
+    return " + ".join(состав(mcp, конец)) + ("" if mcp else " (без MCP Server)")
+
+
+def снят(было: tuple[bool, str] | None, mcp: bool) -> tuple[str, ...]:
+    """Предупреждение, когда выбор снимает объявленный сервер: повторный запуск ради туннеля не должен убрать его молча."""
+    if not (было and было[0] and not mcp):
+        return ()
+    return ("⚠ MCP Server, объявленный сейчас, снимается:",
+            "  ./run.sh не поднимет сервер на этой машине. Сервер и туннель здесь — роль Local.")
 
 
 def из_среды() -> tuple[bool, str] | None:
@@ -180,6 +214,7 @@ def из_среды() -> tuple[bool, str] | None:
 
 def main() -> int:
     locale.setlocale(locale.LC_ALL, "")
+    было = объявлено()
     выбор = из_среды()
     if выбор is None:
         if not sys.stdin.isatty():
@@ -187,14 +222,17 @@ def main() -> int:
                   f"VPM_INSTALL_CHOICE={'|'.join(ВЫБОРЫ)}", file=sys.stderr)
             return 1
         try:
-            выбор = curses.wrapper(_экран)  # wrapper возвращает терминал в норму и на исключении
+            выбор = curses.wrapper(_экран, было)  # wrapper возвращает терминал в норму и на исключении
         except (Отменено, KeyboardInterrupt):
             print("Установка отменена — ничего не объявлено.")
             return 1
     mcp, конец = выбор
     записать(mcp, конец)
     print(f"Объявлено: MCP {'ставится' if mcp else 'не ставится'}, "
-          f"конец туннеля — {конец} → {CONFIG.relative_to(ROOT)}")
+          f"конец туннеля — {конец} → {CONFIG.relative_to(ROOT)}"
+          + (f" (было: {описание(*было)})" if было and было != выбор else ""))
+    for строка in снят(было, mcp):
+        print(строка)
     return 0
 
 

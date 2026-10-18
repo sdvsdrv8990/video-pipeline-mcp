@@ -25,9 +25,7 @@ class SceneTemplate:
     def config(self) -> dict:
         spec = self.book.config.get("templates") or {}
         if not spec:
-            raise MontageError(
-                "TEMPLATE_NOT_FOUND", "Шаблоны сцен не объявлены.",
-                reason="Заведи раздел `templates` в config/montage.yaml — где лежат заготовки, сказано там.")
+            raise MontageError("DECLARATION_MISSING", facts={"subject": "шаблонов сцен", "file": "montage.yaml → templates"})
         return spec
 
     def _rows(self, table: str, part: str, template_id: str) -> list[dict]:
@@ -55,11 +53,7 @@ class SceneTemplate:
         elements = self._rows(table, "elements", template_id)
         audio = self._rows(table, "audio", template_id)
         if not elements and not audio:
-            raise MontageError(
-                "TEMPLATE_NOT_FOUND", f"Шаблон `{template_id}` не найден.",
-                reason=f"Есть: {', '.join(self.names(table)) or 'ни одного'}. Заготовки живут "
-                       f"строками книги канала и правятся как любые другие.",
-                suggested_tool="table_find_row")
+            raise MontageError("TEMPLATE_NOT_FOUND", facts={"template": template_id, "known": self.names(table)})
         written = {}
         for part, prefix, cfg in (("elements", ELEMENT_PREFIX, scene_cfg["elements"]),
                                   ("audio", AUDIO_PREFIX, scene_cfg["audio"])):

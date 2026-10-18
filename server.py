@@ -444,7 +444,8 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
         from core.transport.tunnel import CloudflaredTunnel, TunnelCancelled
         tunnel = CloudflaredTunnel(port=port, config_path=CONFIG_PATH / "tunnel.yaml")
         try:
-            public_url = tunnel.start()
+            # В потоке: подъём длится попытками по сроку, а цикл событий должен услышать Ctrl+C сразу (отмена задачи).
+            public_url = await asyncio.to_thread(tunnel.start)
             # Статус спрашивается ДВАЖДЫ и у разных свидетелей: лог туннеля говорит, что ребро
             # поднялось, а проба — доходит ли запрос снаружи до нашего процесса. Одного лога мало:
             # край поставщика отдаёт 530 при живом с виду туннеле.
@@ -481,11 +482,12 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
                 print("   • quick (без аккаунта): работает сразу, URL эфемерный (*.trycloudflare.com)")
                 print("   • named + token: нужен токен из дашборда (env MCP_TUNNEL_TOKEN)")
                 print("   • named + credentials: нужен домен + credentials файл")
-        except TunnelCancelled as e:
-            # Отмена оператора, а не поломка: Ctrl+C ушёл всей группе процессов и до нас дошёл
-            # позже, чем до процесса туннеля. Продолжать запуск и объявлять «ГОТОВ» после этого значит
-            # переработать стоп в поломку чужого механизма.
-            print(f"\n⏹  Остановка: туннель получил тот же сигнал, что и сервер ({e}).")
+        except (TunnelCancelled, asyncio.CancelledError) as e:
+            # Отмена оператора, а не поломка: Ctrl+C ушёл всей группе процессов — первым его слышит процесс туннеля
+            # (отказ подъёма) или сервер (отмена задачи). Флаг остановки снимает подъём в потоке на любой фазе, иначе
+            # он повторял бы попытки и порождал cloudflared уже после Ctrl+C.
+            tunnel.stop()
+            print(f"\n⏹  Остановка во время подъёма туннеля{f' ({e})' if str(e) else ''}.")
             engine.stopping = True              # отменённые остановкой вызовы след пишет остановкой, а не обрывом клиента
             try:
                 await runner.cleanup()

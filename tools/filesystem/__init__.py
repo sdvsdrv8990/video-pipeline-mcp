@@ -43,7 +43,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         каталог → link (внутрь не идём); что прочитать не удалось — полем `unreadable`, а не молчаливой дырой в дереве."""
         walk = Files(ctx.workspace_path).walk(path)
         if not walk.start.exists():
-            return ctx.err("PATH_NOT_FOUND", f"Path not found: {path}")
+            raise ContractError("PATH_NOT_FOUND", facts={"path": Files(ctx.workspace_path).name(path)})
         tree: dict = {}
         nodes = {walk.path: tree}
         for entry in walk:
@@ -63,7 +63,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         в бюджет ответа клиента; остаток головы — `next_offset`. Каталог, не-UTF-8 и offset за концом — отказ кодом."""
         target = ctx.resolve(path)
         if not target.exists():
-            return ctx.err("FILE_NOT_FOUND", f"File not found: {path}")
+            raise ContractError("FILE_NOT_FOUND", facts={"path": Files(ctx.workspace_path).name(path)})
         limit = ctx.read_limit
         read = Files(ctx.workspace_path).read(target, limit)
         if not 0 <= offset <= len(read.text):
@@ -112,10 +112,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         plan = ctx.chain_resolver.resolve(str(Path(path).parent))
         blocking = [u["path"] for u in plan["unresolved"] if u["exists"]]
         if blocking:
-            raise LinkError("CHAIN_UNRESOLVED",
-                            f"Каталоги-предки существуют, но не зарегистрированы: {', '.join(blocking)}",
-                            "Усынови их через structure_create(adopt=true) или создай файл без ID "
-                            "(assign_id=false) — сервер не выдумывает предков.", "structure_resolve")
+            raise LinkError("CHAIN_UNRESOLVED", facts={"paths": ", ".join(blocking), "path": str(Path(path).parent)})
         return plan
 
     def _id_refused(path: str, assign_id: bool):
@@ -148,10 +145,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         owner = _owner_of(path)
         entity = {"path": path, **owner}
         if assign_id:
-            try:
-                entity.update(_assign_id(path))
-            except LinkError as e:
-                return ctx.err(e.code, e.message, e.reason, e.suggested_tool)
+            entity.update(_assign_id(path))  # отказ реестра (LinkError) переводит дверь движка — с фактами и номером события
             entity["qualified_id"] = f"{entity['chain']}/{entity['id']}" if entity["chain"] else entity["id"]
         data = {"created": path, "size": size, **entity}
         return ToolResult(status="success", data=data,
@@ -191,7 +185,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         files = Files(ctx.workspace_path)
         src, dst = files.named(source), files.named(destination)  # дверь судит оба пути до всего остального
         if not os.path.lexists(src):  # Path.exists(follow_symlinks=) — только с 3.12, requires-python >=3.11
-            return ctx.err("FILE_NOT_FOUND", f"Source not found: {source}")
+            raise ContractError("FILE_NOT_FOUND", facts={"path": files.name(source)})
         # Адрес цели считается ДО переноса — ИИ видит, куда сущность попадёт.
         ok, plan = ctx.safe(lambda: ctx.chain_resolver.resolve(str(Path(destination).parent)))
         if not ok:
@@ -213,7 +207,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         files = Files(ctx.workspace_path)
         src, dst = files.named(path), files.named(str(Path(path).parent / new_name))  # дверь судит оба пути первой
         if not os.path.lexists(src):  # Path.exists(follow_symlinks=) — только с 3.12, requires-python >=3.11
-            return ctx.err("FILE_NOT_FOUND", f"Not found: {path}")
+            raise ContractError("FILE_NOT_FOUND", facts={"path": files.name(path)})
         # Та же лазейка через переименование (notes.md → notes.sh) закрыта политикой двери переноса.
         ok, moved_to = ctx.safe(lambda: files.move(src, dst, policy=ctx.write_policy))
         if not ok:
@@ -231,15 +225,15 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         files = Files(ctx.workspace_path)
         target = files.named(path)
         if not os.path.lexists(target):
-            return ctx.err("FILE_NOT_FOUND", f"Not found: {path}")
+            raise ContractError("FILE_NOT_FOUND", facts={"path": files.name(path)})
         # Удаление необратимо → подтверждение обязательно ВСЕГДА, а не только для непустых
         # каталогов. Инъекция в файле не должна оборачиваться тихой потерей данных.
         if not force:
             tree = target.is_dir() and not target.is_symlink()
             kind = "ссылка" if target.is_symlink() else "каталог" if tree else "файл"
             n = len(list(target.iterdir())) if tree else 1
-            return ctx.err("CONFIRM_REQUIRED",
-                           f"Удаление требует подтверждения: {kind} {path} ({n} объект(ов))")
+            raise ContractError("CONFIRM_REQUIRED", facts={
+                "operation": "удаление", "target": files.name(path), "param": "force", "kind": kind, "count": n})
         files.remove(path)
         # Реестр не должен переживать диск: снятые записи возвращаются клиенту явно.
         dropped = ctx.link_registry.forget_subtree(path)
@@ -331,11 +325,11 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """Создание Python-скрипта с каркасом."""
         target = ctx.resolve(path)
         if not path.endswith(".py"):
-            return ctx.err("INVALID_EXTENSION", f"Not a Python file: {path}")
+            raise ContractError("INVALID_EXTENSION", facts={"path": Files(ctx.workspace_path).name(path)})
         desc = description or target.stem
         tpl = ctx.config_path / "templates" / "scripts" / "module.py.tpl"
         if not tpl.exists():
-            return ctx.err("TEMPLATE_NOT_FOUND", f"Каркас скрипта не найден: {tpl.name}")
+            raise ContractError("DECLARATION_MISSING", facts={"subject": "каркаса скрипта", "file": tpl.name})
         # Описание приходит от ИИ и попадает в докстринг: кавычки и переводы строк там закрывают
         # его досрочно, поэтому в текст уезжает очищенное значение, а не сырое.
         safe_desc = re.sub(r'[\"\\\n\r]', " ", desc).strip()
@@ -358,11 +352,11 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         if template:
             template_path = ctx.config_path / "templates" / "workspace" / f"{template}.yaml"
             if not template_path.exists():
-                return ctx.err("TEMPLATE_NOT_FOUND", f"Template not found: {template}")
+                raise ContractError("TEMPLATE_NOT_FOUND", facts={"template": template})
             tpl = yaml.safe_load(template_path.read_text(encoding="utf-8")) or {}
             fragments = tpl.get("fragments", [])
         if not fragments:
-            return ctx.err("NO_FRAGMENTS", "No fragments to create")
+            raise ContractError("NO_FRAGMENTS")
         for frag in fragments:
             name = frag.get("name", "")
             if not name:
@@ -388,9 +382,9 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         # Создано ноль при непустом списке — это отказ, а не успех с примечанием: клиент читает
         # `status` и считает структуру созданной, а туда же молча уходит и ЗАПРЕТ записи.
         if skipped and not created:
-            причины = ", ".join(f"{s.get('name') or '(без имени)'}: {s.get('reason')}" for s in skipped)
-            return ctx.err("VALIDATION_ERROR", f"Не создано ни одного фрагмента: {причины}",
-                           reason="У фрагмента обязано быть поле `name`; запрещённый тип файла не пишется.")
+            raise ContractError("VALIDATION_ERROR", errors=[
+                {"field": s.get("name") or "name", "rule": "required" if s["reason"] == "no name" else s["reason"]}
+                for s in skipped])
         facts = [Fact(type="StructureCreated", data={"template": template, "created": len(created),
                                                      "skipped": len(skipped)})]
         # Частичный отказ — отдельное СОБЫТИЕ, а не поле в данных: полем его не заметят.

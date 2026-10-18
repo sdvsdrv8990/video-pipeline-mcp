@@ -86,8 +86,10 @@ try:
     mat.materialize("нет_такой_книги", "x.xlsx")
     ok(False, "несуществующая схема должна падать")
 except TableMaterializerError as e:
-    ok(e.code == "TEMPLATE_NOT_FOUND", f"нет схемы → TEMPLATE_NOT_FOUND (получено {e.code})")
-    ok(bool(e.reason), "в ошибке есть actionable reason")
+    # Обновлено 2026-10-18 (EB-11, прецедент D25): нет объявления на сервере — DECLARATION_MISSING, не «шаблон клиента»;
+    # рецепт — реестр (текст места на проводе мёртв, TX-09), отказ называет файл фактом.
+    ok(e.code == "DECLARATION_MISSING", f"нет схемы → DECLARATION_MISSING (получено {e.code})")
+    ok(bool(e.facts.get("file")), f"отказ называет файл схемы фактом ({e.facts})")
 _broken_dir = Path(tempfile.mkdtemp(prefix="schemas_broken_"))
 (_broken_dir / "b.schema.yaml").write_text("sheets: [name: x\n", encoding="utf-8")
 try:
@@ -166,7 +168,7 @@ pending = [
 phase = mat2.materialize_pending(pending)
 ok(phase["created"] == 2 and phase["total"] == 4, f"2 из 4 книг созданы: {phase['created']}/{phase['total']}")
 ok(len(phase["failed"]) == 2, "две записи отчитались отказом, а не исключением")
-ok({f["code"] for f in phase["failed"]} == {"TEMPLATE_NOT_FOUND", "SCHEMA_INVALID"},
+ok({f["code"] for f in phase["failed"]} == {"DECLARATION_MISSING", "SCHEMA_INVALID"},  # 2026-10-18: EB-11
    f"коды отказов из реестра: {[f['code'] for f in phase['failed']]}")
 ok(all(m["file_id"] for m in phase["materialized"]), "file_id из tables_pending доехал до результата")
 ok((Path(ws2) / "networks" / "n2" / "network_config.xlsx").exists(),
@@ -191,8 +193,8 @@ ok(phase_real["created"] == _with_schema,
    f"материализованы ровно книги с заведённой схемой ({phase_real['created']} из {len(pending_real)})")
 ok(phase_real["materialized"] and (Path(ws3) / phase_real["materialized"][0]["path"]).exists(),
    "книга легла ровно по пути из tables_pending")
-ok(all(f["code"] == "TEMPLATE_NOT_FOUND" for f in phase_real["failed"]),
-   "книги без схемы честно отчитались TEMPLATE_NOT_FOUND не молчаливый успех)")
+ok(all(f["code"] == "DECLARATION_MISSING" for f in phase_real["failed"]),  # 2026-10-18: EB-11
+   "книги без схемы честно отчитались DECLARATION_MISSING, а не молчаливый успех")
 
 print("== 7. Директива владельца: клиент передаёт ИМЕНА, книги делает сервер ==")
 import asyncio
@@ -213,9 +215,9 @@ ctx = ToolContext(eng, ids, sm, None, ExcelEngine(ws4),
                   LinkRegistry(ws4), ws4, CFG)
 structure_group.register(eng, ctx)
 
-res = asyncio.run(eng.tools["structure_create"].handler(
-    type="network", name="fit_net",
-    children={"channel": ["ch_A"], "competitor_channel": [f"comp_{i}" for i in range(20)]}))
+res = asyncio.run(eng.call("structure_create", {  # дверь движка, как у клиента
+    "type": "network", "name": "fit_net",
+    "children": {"channel": ["ch_A"], "competitor_channel": [f"comp_{i}" for i in range(20)]}}))
 data = res.data
 ok(res.status == "success", "пакетное создание (сетка + канал + 20 конкурентов) одним вызовом")
 ok(len(list(ws4.rglob("*.xlsx"))) == len(data["tables_materialized"]),
@@ -224,7 +226,7 @@ ok(data["tables_materialized"] and data["tables_materialized"][0]["book"] == "ne
    "книга создана у созданной сущности (сетка), без участия клиента")
 ok(not list(ws4.rglob("videos/*/")),
    "видео не названы → сущностей видео нет, книг видео тоже нет (умное создание)")
-ok(all(f["code"] == "TEMPLATE_NOT_FOUND" for f in data["tables_deferred"]),
+ok(all(f["code"] == "DECLARATION_MISSING" for f in data["tables_deferred"]),  # 2026-10-18: EB-11
    "книги без декларации отложены честно, а не «созданы»")
 ok(any(f.type == "TableMaterialized" for f in res.facts),
    "факт TableMaterialized доехал в контракт (тип заведён в KNOWN_FACT_TYPES)")
@@ -571,8 +573,8 @@ for _reader, _call10 in _READERS.items():
     ok(_whole == ("", ""), f"{_reader}: целая книга читается моделью, ответ — успех ({_whole})")
     ok(_broken[0] == "DECLARATION_INVALID" and "sheets.0.columns.0.type" in _broken[1],
        f"{_reader}: битая книга → отказ двери с путём ключа, а не строки мимо схемы ({_broken})")
-    ok(_absent[0] == "TEMPLATE_NOT_FOUND",
-       f"{_reader}: объявленной книги нет → TEMPLATE_NOT_FOUND, а не молчаливое «строк нет» ({_absent})")
+    ok(_absent[0] == "DECLARATION_MISSING",  # 2026-10-18: EB-11 — объявления нет на сервере
+       f"{_reader}: объявленной книги нет → DECLARATION_MISSING, а не молчаливое «строк нет» ({_absent})")
     _key10 = _NAMES_SHEET.get(_reader)
     ok(_renamed == ("", "") if _key10 is None else
        _renamed[0] == "DECLARATION_INVALID" and f"{_key10} (literal_error)" in _renamed[1],

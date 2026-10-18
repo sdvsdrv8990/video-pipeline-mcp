@@ -7,7 +7,7 @@
 здесь разбор запроса и упаковка ответа.
 """
 
-from core.contracts import Fact, ToolResult
+from core.contracts import ContractError, Fact, ToolResult
 from core.engine import Engine
 from core.search.query_planner import QueryPlanner
 from tools._context import ANNOTATIONS_READONLY, ToolContext
@@ -31,12 +31,13 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             except yaml.YAMLError as e:
                 # Битый запрос — вина клиента: место ошибки, а не текст запроса.
                 mark = getattr(e, "problem_mark", None)
-                where = f" (строка {mark.line + 1}, столбец {mark.column + 1})" if mark else ""
-                return ctx.err("VALIDATION_ERROR", f"yaml_query не разбирается как YAML{where}")
+                where = {"line": mark.line + 1, "column": mark.column + 1} if mark else {}
+                raise ContractError("VALIDATION_ERROR", errors=[{"field": "yaml_query", "rule": "yaml", **where}]) from e
         elif query_dict:
             data = query_dict
         else:
-            return ctx.err("VALIDATION_ERROR", "Укажи yaml_query или query_dict")
+            raise ContractError("VALIDATION_ERROR",
+                                errors=[{"field": "yaml_query", "rule": "required", "expected": "yaml_query или query_dict"}])
 
         plan = planner.load_query_from_dict(data)
         result = planner.execute_plan(plan)

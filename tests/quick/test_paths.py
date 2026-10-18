@@ -331,7 +331,8 @@ def main():
                                                ws / "ch2" / ".secrets" / "provider_keys.enc"),
         "ключ инстанса (integrity.ensure_key)": (lambda: InstanceIdentity(home, ws).ensure_key(),
                                                  home / "instance_key.pem"),
-        "токен раннера (supervisor._write)": (lambda: RunnerSupervisor(SimpleNamespace(config={}), home)._write(
+        "токен раннера (supervisor._write)": (lambda: RunnerSupervisor(SimpleNamespace(
+            config={}, need=lambda *path, kind=None: {"state_file": "vendor/runner/state.json"}[path[-1]]), home)._write(
             {"token": "t"}), home / "vendor" / "runner" / "state.json"),
         "отпечаток ключа доступа (auth)": (lambda: ensure_digest(home / ".env", env={}), home / ".env"),
     }

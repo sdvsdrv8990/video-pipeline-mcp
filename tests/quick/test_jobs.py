@@ -93,7 +93,8 @@ check("длина 0 — DECLARATION_INVALID с путём ключа, а не id
 missing = declarations_copy()
 (missing / "jobs.yaml").unlink()
 gone = child(missing)
-check("нет jobs.yaml — TEMPLATE_NOT_FOUND, а не форма по умолчанию в коде", gone.get("code") == "TEMPLATE_NOT_FOUND", gone)
+check("нет jobs.yaml — DECLARATION_MISSING, а не форма по умолчанию в коде",  # 2026-10-18: EB-11, прецедент D25
+      gone.get("code") == "DECLARATION_MISSING", gone)
 
 print("== 3. Места — один счёт движка и заданий (CP-05): занятое заданием место видит вызов; ждущих не обгоняют ==")
 RES = Resources.model_validate({"default": "пробный",
@@ -535,6 +536,44 @@ door16, said16 = _guarded16(_door16)
 check("дверь task_status(wait=true): ожидание начато на processing, исполнитель кончил и ушёл между чтением и решением — "
       f"клиент получил итог, а не статус, прочитанный до ухода ({said16})",
       said16 == "completed" and door16.get("result") == {"ok": 1}, door16)
+
+
+def _crash16() -> tuple[dict, list, list]:
+    """Сбой исполнителя вне работы: запись итога в его потоке падает OSError с путём хоста. Ответ — задание у клиента,
+    записи журнала узла и исключения, ушедшие мимо узла границы в `threading.excepthook`."""
+    node = Tasks(Engine(reactions=Reactions(ROOT / "config" / "server_reactions.yaml"), resources=RES16),
+                 root=scratch("crash16_"))
+    heard: list[logging.LogRecord] = []
+    escaped: list = []
+    ear = logging.Handler(logging.DEBUG)
+    ear.emit = heard.append                     # type: ignore[method-assign]
+    logging.getLogger("core.jobs").addHandler(ear)
+    real_write, real_hook = Tasks._write, threading.excepthook
+
+    def failing(self, record):
+        if record.finished is not None and threading.current_thread() is not threading.main_thread():
+            raise OSError(28, "No space left on device", "/host/secret/tasks/x.json")
+        return real_write(self, record)
+
+    Tasks._write, threading.excepthook = failing, escaped.append
+    try:
+        task_id = node.begin("проба", {"сбой": "запись итога"}, "любой", lambda pulse: {"ok": 1})["task_id"]
+        node.settle(task_id, 15)
+    finally:
+        Tasks._write, threading.excepthook = real_write, real_hook
+        logging.getLogger("core.jobs").removeHandler(ear)
+    return node.status([task_id])[0].get("task") or {}, heard, escaped
+
+
+crash16, heard16, escaped16 = _crash16()
+event16 = ((crash16.get("error") or {}).get("facts") or {}).get("event")
+logged16 = [r for r in heard16 if getattr(r, "event", None) == event16 and r.exc_info
+            and isinstance(r.exc_info[1], OSError)]
+check("исполнитель упал вне работы (запись итога — OSError с путём хоста): клиент — TASK_INTERRUPTED с номером события, "
+      f"журнал узла — запись с трассой под тем же номером, мимо узла — ничего ({event16}, записей {len(logged16)}, "
+      f"мимо {len(escaped16)})",
+      (crash16.get("error") or {}).get("code") == "TASK_INTERRUPTED" and bool(event16) and len(logged16) == 1
+      and not escaped16 and "/host/secret" not in str(crash16), crash16)
 
 print("== 4. Узел: занято — pending; отказ работы — в задании; прерванное, простой; плохой id и битая — в элементе ==")
 JOBS = yaml.safe_load((ROOT / "config" / "jobs.yaml").read_text(encoding="utf-8"))

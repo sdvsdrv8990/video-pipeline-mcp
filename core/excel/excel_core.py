@@ -431,7 +431,8 @@ class ExcelEngine:
         """Пересчитать формулы реальным движком LibreOffice headless → путь к вычисленной копии.
 
         openpyxl формулы не считает; LO recalc'ает при загрузке и сохраняет значения.
-        Профиль уникален на вызов (без конфликта параллельных soffice). RECALC_UNAVAILABLE — честно.
+        Профиль уникален на вызов (без конфликта параллельных soffice). Отказ — кодом причины: движка нет
+        (RECALC_UNAVAILABLE), срок (RECALC_TIMEOUT), движок не вернул книгу (RECALC_FAILED); тексты — реестр.
         """
         import shutil
         import subprocess
@@ -440,11 +441,10 @@ class ExcelEngine:
                               "Заведи config/engines.yaml — где искать движки, объявлено там.")
         soffice = locate(engines.section(*RECALC_ENGINE.section, schema=RECALC_ENGINE.schema))
         if not soffice:
-            raise ExcelError("RECALC_UNAVAILABLE", "Движок пересчёта (LibreOffice) недоступен.",
-                             reason="Установи libreoffice-calc для валидации формул реальным пересчётом.")
+            raise ExcelError("RECALC_UNAVAILABLE")
         td = Path(tempfile.mkdtemp(prefix="xlsx_recalc_"))
         try:
-            subprocess.run(
+            done = subprocess.run(
                 # URL профиля — as_uri: на Windows `file://C:\…` LibreOffice не разбирает (нужно file:///C:/…).
                 [soffice, "--headless", "--calc", f"-env:UserInstallation={(td / 'profile').as_uri()}",
                  "--convert-to", "xlsx:Calc MS Excel 2007 XML", "--outdir", str(td), str(src)],
@@ -452,18 +452,15 @@ class ExcelEngine:
             )
         except subprocess.TimeoutExpired as e:
             shutil.rmtree(td, ignore_errors=True)
-            raise ExcelError("RECALC_UNAVAILABLE", "Пересчёт формул превысил таймаут.",
-                             reason="Файл слишком большой/сложный или LibreOffice завис.") from e
+            raise ExcelError("RECALC_TIMEOUT", facts={"timeout_sec": e.timeout}) from e
         except subprocess.CalledProcessError as e:
             shutil.rmtree(td, ignore_errors=True)
             # Вывод — уже текст (child_spawn "replace"); слова LibreOffice несут пути хоста — причиной в журнал.
-            raise ExcelError("RECALC_UNAVAILABLE", "Пересчёт формул не удался.",
-                             facts={"exit_code": e.returncode}) from ChildSaid(e.stderr or "")
+            raise ExcelError("RECALC_FAILED", facts={"exit_code": e.returncode}) from ChildSaid(e.stderr or "")
         out = td / src.name
         if not out.exists():
             shutil.rmtree(td, ignore_errors=True)
-            raise ExcelError("RECALC_UNAVAILABLE", "Пересчёт не дал выходного файла.",
-                             reason="LibreOffice не создал файл — проверь установку.")
+            raise ExcelError("RECALC_FAILED", facts={"exit_code": done.returncode}) from ChildSaid(done.stderr or "")
         return out
 
     def validate_formulas(self, path: str) -> dict:

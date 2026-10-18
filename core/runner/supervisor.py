@@ -9,34 +9,53 @@ pid, порт и токен лежат в файле только для вла�
 
 import contextlib
 import functools
-import itertools
+import hashlib
 import json
 import logging
 import os
+import random
 import secrets
+import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, NamedTuple, NoReturn
 from urllib.parse import urlparse
 
 import psutil
 
 from core.contracts import ContractError
 from core.declaration import Declaration
-from core.declaration_schemas import RUNNER_HEALTH, ProviderUrl
-from core.environment import child_spawn
-from core.jobs import paced
+from core.declaration_schemas import RUNNER_DOCKER_POLL, RUNNER_HEALTH, ProviderUrl
+from core.engine.engine import incident
+from core.environment import ChildSaid, child_spawn
+from core.jobs import backoff, paced
 from core.paths import Files
 from core.providers.download import answers
 from core.providers.resolver import ProviderError
 
+if sys.platform == "win32":
+    import msvcrt
+
 log = logging.getLogger(__name__)
 
 TOKEN_ENV = "MCP_RUNNER_TOKEN"
+READY_ENV = "MCP_RUNNER_READY_FD"               # адрес канала готовности в среде раннера: дескриптор (POSIX) или хэндл
 _CHILDREN: dict[int, subprocess.Popen] = {}     # раннеры, поднятые этим процессом: событие их конца и код — у владельца
+_EXITS: dict[tuple[int, float], str] = {}       # смерть запуска (pid, started) — номер её события в журнале сервера, один раз
+
+
+class _Ready(NamedTuple):
+    """Одноразовый канал готовности раннера: конец чтения — у сервера, конец записи — ребёнку по адресу в его среде."""
+
+    read: int
+    write: int
+    address: str
+    spawn: dict
 
 
 class RunnerSupervisor:
@@ -47,6 +66,7 @@ class RunnerSupervisor:
     resolve: ClassVar = staticmethod(socket.getaddrinfo)
     clock: ClassVar = staticmethod(time.monotonic)
     sleep: ClassVar = staticmethod(time.sleep)
+    rng: ClassVar[random.Random] = random.Random()     # разброс пауз опроса контейнера; подмена — воспроизводимый генератор
 
     def __init__(self, registry, project_root: str | Path):
         self.registry = registry
@@ -81,16 +101,16 @@ class RunnerSupervisor:
         parsed = urlparse(str(self.endpoint.get("url") or ""))
         return f"{parsed.scheme}://{parsed.netloc}"
 
-    def _path(self, key: str, default: str) -> Path:
-        return self.root / str(self.rules.get(key) or default)
+    def _path(self, key: str) -> Path:
+        return self.root / self.registry.need("local", "runner", key, kind=str)
 
     @property
     def state_file(self) -> Path:
-        return self._path("state_file", "vendor/runner/state.json")
+        return self._path("state_file")
 
     @property
     def log_file(self) -> Path:
-        return self._path("log_file", "vendor/runner/runner.log")
+        return self._path("log_file")
 
     # ═══ Состояние ═══
 
@@ -170,18 +190,29 @@ class RunnerSupervisor:
                     "Останови постороннего или смени порт в config/providers.yaml.")
         elif state:
             phase = "running_silent" if self._alive(pid) else "exited"
-            note = ("Процесс жив, но `/health` не отвечает — он ещё встаёт или завис. "
+            note = ("Процесс жив, но `/health` не отвечает — он ещё встаёт или завис."
                     if phase == "running_silent" else
-                    "Раннер умер: процесса нет, а запись о запуске осталась. Причина — в журнале. ")
-            note += f"Журнал: {self.log_file}."
-        return {
+                    "Раннер умер: процесса нет, а запись о запуске осталась. Причина — в журнале.")
+        current = {
             "phase": phase, "pid": pid, "url": self.base_url, "note": note,
             "mode": state.get("mode", ""), "started": state.get("started", 0),
             "uptime_sec": round(time.time() - float(state.get("started") or 0), 1) if state else 0.0,
             "pool": health.get("pool") or {}, "calls": health.get("calls", 0),
             "last_error": health.get("last_error", ""),
-            "log_tail": self._log_tail() if phase in ("exited", "running_silent") else "",
         }
+        if phase in ("exited", "running_silent"):
+            current["log"] = Files(self.root).name(self.log_file)   # место журнала — фактом от корня, не в тексте
+        child = _CHILDREN.get(pid) if phase == "exited" else None
+        if child is not None and child.returncode is not None:
+            current |= _ending(child.returncode)         # код владельца: как раннер кончился — фактом, а не текстом
+        if phase == "exited":
+            # Слова раннера о смерти — в журнал сервера один раз на запуск; клиенту — номер события, а не хвост (TX-02).
+            death = (pid, float(state.get("started") or 0))
+            if death not in _EXITS:
+                _EXITS[death] = incident(log, f"раннер {pid} вышел (код {current.get('exit_code', 'не известен')})",
+                                         ChildSaid(self._log_tail()))
+            current["event"] = _EXITS[death]
+        return current
 
     def _log_tail(self, lines: int = 12) -> str:
         """Последние строки журнала: причина смерти обязана пережить сам процесс."""
@@ -241,14 +272,11 @@ class RunnerSupervisor:
                     gids.append(gid)
         return gids
 
-    def _exited(self, proc: subprocess.Popen) -> ProviderError:
-        """Раннер умер, не начав отвечать: запись о запуске убрана, причина — хвост его журнала, она важнее догадки."""
+    def _exited(self, proc: subprocess.Popen) -> NoReturn:
+        """Раннер вышел, не став готовым: запись о запуске убрана; код и сигнал — фактами отказа, его слова — причиной
+        (в журнал сервера под номером события, а не в текст клиенту)."""
         self.state_file.unlink(missing_ok=True)
-        return ProviderError(
-            "LOCAL_INFERENCE_FAILED",
-            f"Раннер завершился при запуске (код {proc.returncode}).",
-            reason=f"Последнее, что он сказал:\n{self._log_tail()}\nЧастая причина — не "
-                   "поставлена среда инференса: pip install -e \".[local]\".")
+        raise ProviderError("RUNNER_EXITED", facts=_ending(proc.returncode)) from ChildSaid(self._log_tail())
 
     def running(self) -> dict | None:
         """Раннер уже отвечает или встаёт — его состояние (`already`); на порту чужой — отказ; не поднят — None."""
@@ -260,32 +288,98 @@ class RunnerSupervisor:
         return None
 
     def launch(self, workspace: Path, pulse, mode: str = "process") -> dict:
-        """Поднять раннер работой задания (`pulse` — узел заданий) и дождаться готовности: /health ответил — состояние;
-        процесс вышел — отказ с хвостом журнала; задание снято — процесс остановлен, отказ снятия. Срока по часам нет:
-        живой процесс — ход, пауза проб — `local.runner.poll_sec` (`jobs.paced`)."""
+        """Поднять раннер работой задания (`pulse` — узел заданий) и дождаться готовности: готов — состояние; процесс
+        вышел — отказ RUNNER_EXITED; задание снято — процесс остановлен, отказ снятия. Срока по часам нет. Процесс даёт
+        знак готовности сам (`_signalled`); контейнер знака не даёт — его `/health` опрашивается темпом
+        `local.runner.docker_poll` (`jobs.backoff`)."""
         token = secrets.token_urlsafe(32)
-        self.log_file.parent.mkdir(parents=True, exist_ok=True)
         command = self._command(mode, workspace)
-        with self.log_file.open("a", encoding="utf-8") as log:
-            log.write(f"\n=== запуск {time.strftime('%Y-%m-%d %H:%M:%S')} ({mode}) ===\n")
-            log.flush()
-            proc = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, cwd=str(self.root),
-                                    **child_spawn("replace", {TOKEN_ENV: token}))
+        if mode == "docker":
+            poll = self._decl.section(*RUNNER_DOCKER_POLL.section, schema=RUNNER_DOCKER_POLL.schema)
+            proc = self._spawn(command, mode, token, workspace)
+
+            def ready() -> dict | None:
+                if self._probe(token).get("ok"):
+                    return {**self.status(), "already": False}
+                if proc.poll() is not None:
+                    self._exited(proc)
+                return None
+
+            with self._held():
+                return paced(ready, pulse, backoff(poll.pause_sec, poll.pause_max_sec, poll.jitter, self.rng))
+        channel = self._channel()
+        proc = self._spawn(command, mode, token, workspace, channel)
+        with self._held():
+            return self._signalled(proc, channel.read, ready_sign(token), pulse)
+
+    def _spawn(self, command: list[str], mode: str, token: str, workspace: Path,
+               channel: _Ready | None = None) -> subprocess.Popen:
+        """Процесс раннера: вывод — в его журнал, токен и адрес канала готовности — в его среду, запись о запуске — для
+        следующего сервера. Конец записи канала после запуска — только у ребёнка: конец канала приходит с его концом."""
+        extra, spawn = ({READY_ENV: channel.address}, channel.spawn) if channel else ({}, {})
+        try:
+            self.log_file.parent.mkdir(parents=True, exist_ok=True)
+            with self.log_file.open("a", encoding="utf-8") as log:
+                log.write(f"\n=== запуск {time.strftime('%Y-%m-%d %H:%M:%S')} ({mode}) ===\n")
+                log.flush()
+                proc = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, cwd=str(self.root),
+                                        **child_spawn("replace", {TOKEN_ENV: token, **extra}), **spawn)
+        except BaseException:
+            if channel:
+                os.close(channel.read)
+            raise
+        finally:
+            if channel:
+                os.close(channel.write)
         _CHILDREN[proc.pid] = proc
         self._write({"pid": proc.pid, "token": token, "mode": mode, "started": time.time(),
                      "workspace": str(workspace), "command": command})
+        return proc
 
-        def ready() -> dict | None:
-            if self._probe(token).get("ok"):
-                return {**self.status(), "already": False}
-            if proc.poll() is not None:
-                raise self._exited(proc)
-            return None
+    @staticmethod
+    def _channel() -> _Ready:
+        """Канал готовности для ребёнка. Ветка ОС — здесь: POSIX передаёт ребёнку дескриптор (`pass_fds`); Windows —
+        наследуемый хэндл, и только его (`handle_list`): иначе ребёнок унаследовал бы все наследуемые хэндлы сервера."""
+        read, write = os.pipe()
+        if sys.platform == "win32":
+            handle = msvcrt.get_osfhandle(write)
+            os.set_handle_inheritable(handle, True)
+            return _Ready(read, write, str(handle),
+                          {"startupinfo": subprocess.STARTUPINFO(lpAttributeList={"handle_list": [handle]})})
+        return _Ready(read, write, str(write), {"pass_fds": (write,)})
 
+    def _signalled(self, proc: subprocess.Popen, channel: int, sign: str, pulse) -> dict:
+        """Готовность процесса — событием, без опроса и без своего предела: будят знак раннера в канале, конец канала без
+        знака (раннер вышел) и снятие задания; зависание снимает клиент или владелец, статус задания отвечает всё время."""
+        woke, ready = threading.Event(), threading.Event()
+
+        def listen() -> None:
+            with os.fdopen(channel, encoding="ascii", errors="replace") as said:
+                for line in said:
+                    if line.strip() == sign:
+                        ready.set()
+                        break
+                else:
+                    proc.wait()                 # канал кончился без знака: его закрыл конец процесса
+            woke.set()
+
+        pulse.on_cancel(woke.set)
+        pulse({"ждёт": "знак готовности раннера"})
+        threading.Thread(target=listen, name=f"runner-ready-{proc.pid}", daemon=True).start()
+        woke.wait()
+        if pulse.cancelled.is_set():
+            raise pulse.refusal()
+        if ready.is_set():
+            return {**self.status(), "already": False}
+        self._exited(proc)
+
+    @contextlib.contextmanager
+    def _held(self) -> Iterator[None]:
+        """Ожидание готовности: не дождались (отказ, снятие) — процесс остановлен, он не остаётся без задания."""
         try:
-            return paced(ready, pulse, itertools.repeat(self.registry.need("local", "runner", "poll_sec", kind=float)))
+            yield
         except BaseException:
-            self.stop()                         # не дождались готовности: процесс не остаётся без задания
+            self.stop()
             raise
 
     # ═══ Остановка ═══
@@ -306,7 +400,7 @@ class RunnerSupervisor:
                 proc = psutil.Process(pid)
                 proc.terminate()
                 try:
-                    proc.wait(timeout=float(self.rules.get("stop_grace_sec") or 5))
+                    proc.wait(timeout=self.registry.need("local", "runner", "stop_grace_sec", kind=float))
                 except psutil.TimeoutExpired:
                     proc.kill()                       # не отдал по-хорошему — модель могла зависнуть
                     proc.wait()
@@ -323,3 +417,34 @@ class RunnerSupervisor:
         POSIX — отрицательный); чужой pid — None. Своего предела нет: зависание ловит граница вызывающего."""
         child = _CHILDREN.get(pid)
         return None if child is None else child.wait()
+
+
+def ready_sign(token: str) -> str:
+    """Знак готовности раннера — отпечаток его токена: строку канала судят, а не принимают любую; токен в канал не идёт."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def ready_writer(address: str, sign: str) -> Callable[..., None] | None:
+    """Крючок `print` у `web.run_app` раннера: aiohttp зовёт его, когда все сайты слушают, — знак в канал сервера и конец
+    канала. Адреса нет (раннер поднят руками) — None: aiohttp молчит, как при `print=None`."""
+    if not address:
+        return None
+
+    def signal_ready(*_said: object) -> None:
+        if sys.platform == "win32":
+            fd = msvcrt.open_osfhandle(int(address), os.O_WRONLY)
+        else:
+            fd = int(address)
+        with os.fdopen(fd, "w", encoding="ascii") as channel:
+            channel.write(sign + "\n")
+
+    return signal_ready
+
+
+def _ending(code: int) -> dict:
+    """Как кончился свой ребёнок — фактами: код и, если его убил сигнал (POSIX: код отрицательный), имя сигнала."""
+    facts: dict = {"exit_code": code}
+    with contextlib.suppress(ValueError):
+        if code < 0:
+            facts["signal"] = signal.Signals(-code).name
+    return facts

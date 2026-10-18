@@ -293,7 +293,8 @@ finally:
 
 
 def call(tool, **kw):
-    return asyncio.run(_eng.tools[tool].handler(**kw))
+    """Вызов через дверь движка (`Engine.call`), как его делает клиент: отказ места — ToolResult с кодом, а не исключение."""
+    return asyncio.run(_eng.call(tool, kw))
 
 
 s1 = call("structure_create", type="niche", name="gaming", children={"network": ["net1"], "channel": ["chA"]})
@@ -473,10 +474,11 @@ ok(call("structure_find", name="chA", type="channel").data["count"] == 1, "по�
 ok(call("structure_find", text="ничего-подобного").data["count"] == 0, "мимо → пусто, а не всё подряд")
 
 mem26 = "niches/gaming/networks/net1/channels/chA/project_memory.md"
+# Вызов идёт дверью движка: схема memory_write требует reason — набор передаёт его, как обязан клиент.
 call("memory_write", path=mem26, entry_date="2026-08-12", title=f"смонтировали {vid26}",
-     decision=f"видео {vid26} ушло в финал")
+     decision=f"видео {vid26} ушло в финал", reason="монтаж готов")
 call("memory_write", path=mem26, entry_date="2026-08-11", title="дубль удалён",
-     decision="VID_" + "f" * 32 + " был лишним")
+     decision="VID_" + "f" * 32 + " был лишним", reason="дубль")
 idx = call("structure_index_memory", path=mem26)
 ok(idx.data["annotated_count"] == 1 and idx.data["annotated"][0]["id"] == vid26,
    "ID из памяти проекта перенесены в реестр")
@@ -626,7 +628,10 @@ ok(call("fs_read_file", path=f"{V2}/plain.md").data["content"]["flags"] == [],
 _d = call("fs_delete", path=f"{V2}/plain.md")
 ok(_d.status == "error" and _d.error.code == "CONFIRM_REQUIRED",
    "удаление без подтверждения отклонено")
-ok(_d.error.recovery.suggested_params == {"force": True}, "recovery говорит, чем подтвердить")
+# Обновлено 2026-10-18 (EB-11, пункт 10 прохода текстов): CONFIRM_REQUIRED служит и удалению, и установке модели —
+# общий рецепт реестра `fs_delete` с force=true советовал установке удалять; параметр подтверждения — фактом и в рецепте.
+ok(_d.error.facts.get("param") == "force" and "force=true" in _d.error.recovery.reason
+   and _d.error.recovery.suggested_tool is None, f"recovery говорит, чем подтвердить ({_d.error.recovery}, {_d.error.facts})")
 ok((ws18 / V2 / "plain.md").exists(), "файл на месте после отказа")
 ok(call("fs_delete", path=f"{V2}/plain.md", force=True).status == "success", "с force=true удаление проходит")
 
@@ -670,9 +675,10 @@ ok(call("fs_create_python_script", path=f"{V2}/build.py",
         description="сборка сцен").status == "success", "обычный скрипт создаётся")
 _frag = call("fs_create_project_structure",
              fragments=[{"name": f"{V2}/frag.md", "type": "file", "content": "#!/bin/sh\necho x"}])
+# Обновлено 2026-10-18 (TX-09, пункт 10 прохода текстов): причина у фрагмента — в errors (имя и правило), не в тексте места.
 ok(_frag.status == "error" and _frag.error.code == "VALIDATION_ERROR"
-   and "FILE_TYPE_FORBIDDEN" in (_frag.error.message or ""),
-   "фрагмент структуры проверяется, и запрет приходит ГРОМКИМ отказом, а не полем в успехе")
+   and {"field": f"{V2}/frag.md", "rule": "FILE_TYPE_FORBIDDEN"} in _frag.error.errors,
+   f"фрагмент структуры проверяется, и запрет приходит ГРОМКИМ отказом, а не полем в успехе ({_frag.error.errors})")
 _sigs = _fw_cfg.get("forbidden_content") or []
 ok(any(s.get("starts_with") == "#!" for s in _sigs) and any(s.get("starts_with_hex") for s in _sigs),
    "сигнатуры объявлены в firewall.yaml, а не в коде")
@@ -940,7 +946,7 @@ try:
     _structure_group.register(_eng36, _ctx36)
 
     def _call36(tool, **kw):
-        return asyncio.run(_eng36.tools[tool].handler(**kw))
+        return asyncio.run(_eng36.call(tool, kw))  # дверь движка, как у клиента
 
     # Конкурент без нашего канала: лёг мимо сегмента группировки (§4) и ждёт переезда.
     _made36 = _call36("structure_create", type="network", name="net1",
@@ -1132,6 +1138,16 @@ try:
     ok(all(_anchor42 not in _reg42.get(f"CMP42_{n}")["parent_ids"] for n in ("alpha", "third")),
        "связи сняты компенсацией: без переноса связи быть не должно")
     ok(_reg42.get(_comp42["id"])["path"] == _new42, "уже сведённая сущность откатом не задета")
+
+    # D10 (2026-10-18): помеха «каталога нет» — прежде голый FileNotFoundError, и путь в отказе отката терялся; теперь
+    # «есть ли источник» судит перенос двери (FILE_NOT_FOUND с путём), откат несёт его фактом.
+    _reg42.register({"id": "CMP42_gone", "type": "competitor_channel", "name": "gone",
+                     "path": f"{_base42}/gone", "parent_ids": [_by_type42["network"]["id"]]})
+    _gone42 = asyncio.run(_eng42.call("structure_reconcile", {"entity_id": "CMP42_gone", "anchor_name": "ourch"}))
+    ok(_gone42.error is not None and _gone42.error.code == "RECONCILE_ROLLED_BACK"
+       and _gone42.error.facts.get("path") == f"{_base42}/gone" and "facts.path" in _gone42.error.recovery.reason,
+       f"каталога нет — откат называет помеху фактом path, рецепт ведёт к нему "
+       f"({_gone42.error and (_gone42.error.code, _gone42.error.facts, _gone42.error.recovery.reason)})")
 finally:
     _shutil.rmtree(_ws42, ignore_errors=True)
 
@@ -1154,7 +1170,8 @@ try:
     _WP42(_no_decl).check("payload.sh")
     ok(False, "без firewall.yaml запись .sh прошла — контроль выключился молча")
 except _WPE42 as e:
-    ok(e.code == "TEMPLATE_NOT_FOUND", f"нет объявления → отказ, а не тихое «правило не настроено» ({e.code})")
+    ok(e.code == "DECLARATION_MISSING",  # 2026-10-18: EB-11 — объявления нет на сервере
+       f"нет объявления → отказ, а не тихое «правило не настроено» ({e.code})")
 
 _broken42 = Path(_tf42.mkdtemp())
 (_broken42 / "firewall.yaml").write_text("write_allowlist: [не словарь\n", encoding="utf-8")
@@ -1224,10 +1241,19 @@ for _tool45, _name45, _args45 in (
         _head45 = _reader45.read(10)
         _r45 = call(_tool45, **_args45)
         _rest45 = _reader45.read()
-    ok(_r45.status == "success" and (_head45 + _rest45).decode("utf-8") == "## [2026-01-01] СТАРОЕ\n" * 50,
+    ok((_head45 + _rest45).decode("utf-8") == "## [2026-01-01] СТАРОЕ\n" * 50,
        f"{_tool45}: читатель, открывший файл до записи, дочитал старое целиком ({_r45.status})")
-    ok(_f45.read_text(encoding="utf-8") != "## [2026-01-01] СТАРОЕ\n" * 50 and (_f45.stat().st_mode & 0o777) == 0o640,
-       f"{_tool45}: под именем новое, права заменённого файла целы ({oct(_f45.stat().st_mode & 0o777)})")
+    # Обновлено 2026-10-18 (D08, FS-13/14, CI f382d26 Windows): open() на Windows держит файл без FILE_SHARE_DELETE —
+    # заменить его, пока читатель открыт, ОС не даёт; дверь отказывает кодом слоя, а не сырым PermissionError.
+    if sys.platform == "win32":
+        ok(_r45.status == "error" and _r45.error.code == "PLACE_UNWRITABLE"
+           and _r45.error.facts.get("path") == f"write45/{_name45}"
+           and _f45.read_text(encoding="utf-8") == "## [2026-01-01] СТАРОЕ\n" * 50,
+           f"{_tool45}: Windows — замена держимого файла отказана кодом слоя, под именем прежнее ({_r45.error})")
+    else:
+        ok(_r45.status == "success" and _f45.read_text(encoding="utf-8") != "## [2026-01-01] СТАРОЕ\n" * 50
+           and (_f45.stat().st_mode & 0o777) == 0o640,
+           f"{_tool45}: под именем новое, права заменённого файла целы ({_r45.status}, {oct(_f45.stat().st_mode & 0o777)})")
 ok(not [n for n in _os43.listdir(_w45) if n.endswith(".part")], f"остатков записи нет ({_os43.listdir(_w45)})")
 # «Создать» не затирает (FS-07): занятый путь — FILE_EXISTS через путь доставки, чужие байты целы.
 for _tool45, _name45, _args45 in (("fs_create_file", "занят.md", {"content": "ЧУЖОЕ"}),

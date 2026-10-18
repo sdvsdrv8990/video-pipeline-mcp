@@ -244,7 +244,7 @@ async def main():
           r.status=="error" and r.error.code=="COLUMN_HAS_DEPENDENTS")
     check("в отказе названы конкретные формулы", "CALC!B2" in r.error.message)
     # Движок этого набора создан БЕЗ реестра реакций, поэтому recovery здесь не наблюдаем —
-    # проверяем саму запись реестра: именно из неё ctx.err берёт class/recovery.
+    # проверяем саму запись реестра: именно из неё дверь движка (Engine.refusal) берёт class/recovery.
     from core.reactions import Reactions
     _reg28 = Reactions(ROOT / "config" / "server_reactions.yaml").get_error("COLUMN_HAS_DEPENDENTS")
     check("реестр даёт actionable recovery с инструментом",

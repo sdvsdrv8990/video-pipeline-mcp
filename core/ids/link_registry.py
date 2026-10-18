@@ -132,7 +132,7 @@ class LinkRegistry:
                             f"Путь '{path_norm}' уже принадлежит сущности {other_id} ({other.get('type')}).",
                             "Переиспользуй существующий ID вместо генерации нового "
                             "(структура уже создана) или укажи другой каталог.",
-                            "structure_resolve")
+                            "structure_resolve", facts={"path": path_norm, "id": other_id})
             merged = list(dict.fromkeys(
                 (prev.get("parent_ids") or []) + list(entity.get("parent_ids") or [])))
             rec = {

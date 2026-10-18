@@ -45,7 +45,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             if not node_type:
                 raise LinkError("CHAIN_UNRESOLVED", f"Не удалось определить тип каталога: {p}",
                                 "Каталог вне объявленной структуры — создай узел явно через structure_create.",
-                                "structure_resolve")
+                                "structure_resolve", facts={"paths": p, "path": p})
             parent_ids = ctx.chain_resolver.resolve(p)["parent_ids"]
             eid = ctx.id_generator.generate_simple(ctx.taxonomy.prefix(node_type))
             rec = ctx.link_registry.register({
@@ -75,8 +75,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         предков берёт готовыми из каталога назначения.
         """
         if mode not in MODES:
-            return ctx.err("VALIDATION_ERROR", f"Неизвестный режим создания: {mode}.",
-                           f"Допустимо: {', '.join(sorted(MODES))}.")
+            raise ContractError("VALIDATION_ERROR", errors=[{"field": "mode", "rule": "enum", "expected": sorted(MODES)}])
         dirs, template_engine, materializer = _engines(parent_path, mode)
 
         # manual: сервер намеренно НЕ материализует ничего и отдаёт работу инструментам.
@@ -97,8 +96,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             return chain
         blocking = [u["path"] for u in chain["unresolved"] if u["exists"]]
         if blocking and not adopt:
-            return ctx.err("CHAIN_UNRESOLVED",
-                           f"Каталоги-предки существуют, но не зарегистрированы: {', '.join(blocking)}")
+            raise ContractError("CHAIN_UNRESOLVED", facts={"paths": ", ".join(blocking), "path": parent_path})
 
         adopted: list[dict] = []
         if blocking:
@@ -231,21 +229,14 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         резолвером. Серверные шаблоны остаются декларацией и не меняются — правится копия.
         """
         if what not in {"workspace", "tables", "both"}:
-            return ctx.err("VALIDATION_ERROR", f"Неизвестное what: {what}.",
-                           "Допустимо: workspace, tables, both.")
+            raise ContractError("VALIDATION_ERROR",
+                                errors=[{"field": "what", "rule": "enum", "expected": ["workspace", "tables", "both"]}])
         # Адрес обязан быть зарегистрированной сущностью. Резолвер ищет `.templates/` ВВЕРХ по
         # дереву, поэтому копия, положенная выше канала (тем более в корень), молча становится
         # законом для всех сущностей ниже — правка «под один канал» меняла бы чужие.
         entity = ctx.link_registry.find_by_path(path) if str(path).strip() else None
         if entity is None:
-            return ctx.err(
-                "ENTITY_NOT_FOUND",
-                f"Шаблоны копируются в сущность, а не по произвольному адресу: '{path}' не зарегистрирован.",
-                "Адаптированный шаблон обязан лежать в той сущности, под которую его правят "
-                "(например, в канале). Копия выше по дереву начнёт действовать на всё, что ниже, "
-                "и правка под один канал молча изменит соседние. Создай сущность "
-                "(structure_create) или назначь ID существующему каталогу (structure_assign_id).",
-                suggested_tool="structure_assign_id")
+            raise ContractError("ENTITY_NOT_FOUND", facts={"path": Files(ctx.workspace_path).name(path)})
         ok, root = ctx.safe(lambda: ctx.resolve(path))
         if not ok:
             return root
@@ -360,7 +351,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         """
         target = ctx.resolve(path)
         if not target.exists():
-            return ctx.err("FILE_NOT_FOUND", f"Файл памяти не найден: {path}")
+            raise ContractError("FILE_NOT_FOUND", facts={"path": Files(ctx.workspace_path).name(path)})
 
         flagger = ctx.injection_flagger
         heading = ""
@@ -418,13 +409,9 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         # Получаем текущий путь из реестра
         entity = ctx.link_registry.get(entity_id)
         if not entity:
-            return ctx.err("ENTITY_NOT_FOUND", f"Сущность {entity_id} не найдена в реестре.",
-                        "Сначала создай её через structure_create.", "structure_status")
+            raise ContractError("ENTITY_NOT_FOUND", facts={"id": entity_id})
         old_path = entity.get("path", "")
-        # Проверяем что старый путь существует
-        if not ctx.resolve(old_path).exists():
-            return ctx.err("FILE_NOT_FOUND", f"Папка не найдена: {old_path}")
-        # Занятое назначение — FILE_EXISTS самим переносом двери: проверка «нет назначения» до переноса — гонка (FS-14).
+        # Нет источника — FILE_NOT_FOUND, занятое назначение — FILE_EXISTS: оба судит перенос двери, проверка до него — гонка.
         ok, moved_to = ctx.safe(lambda: Files(ctx.workspace_path).move(old_path, new_path))
         if not ok:
             return moved_to
@@ -481,10 +468,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 "old_path": entity["path"], "new_path": f"{target_dir.rstrip('/')}/{entity['name']}"}
 
     def _move_entity(old_path: str, new_path: str) -> None:
-        """Физический перенос дверью слоя (занятое назначение — FILE_EXISTS с путём) + переписывание поддерева в реестре.
-        Бросает при любой помехе."""
-        if not ctx.resolve(old_path).exists():
-            raise FileNotFoundError(f"нет каталога {old_path}")
+        """Физический перенос дверью слоя (нет источника — FILE_NOT_FOUND, занятое назначение — FILE_EXISTS, оба с путём от
+        корня) + переписывание поддерева в реестре. Бросает при любой помехе."""
         Files(ctx.workspace_path).move(old_path, new_path)
         ctx.link_registry.migrate_subtree(old_path, new_path)
 
@@ -498,8 +483,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         if entity_id:
             ent = ctx.link_registry.get(entity_id)
             if not ent:
-                return ctx.err("ENTITY_NOT_FOUND", f"Сущность {entity_id} не найдена в реестре.",
-                               "Проверь ID через structure_status.", "structure_status")
+                raise ContractError("ENTITY_NOT_FOUND", facts={"id": entity_id})
             targets = [ent]
         else:
             targets = [e for e in (ctx.link_registry.get(o["id"])
@@ -524,9 +508,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 _move_entity(new_path, old_path)
             for child_id, parent_id in linked:
                 ctx.link_registry.unlink(child_id, parent_id)
-            raise ContractError("RECONCILE_ROLLED_BACK", "Reconcile откачен: ни одна сущность не сдвинута",
-                                reason="Устрани помеху и повтори.", suggested_tool="structure_status",
-                                facts=e.facts if isinstance(e, ContractError) else {}) from e
+            raise ContractError("RECONCILE_ROLLED_BACK", facts=e.facts if isinstance(e, ContractError) else {}) from e
 
         facts = [Fact(type="EntityLinked", data={
             "child_id": p["id"], "child_type": p["type"], "child_name": "",
@@ -751,8 +733,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                                            mode: str = "default") -> "ToolResult":
         """Фаза ТАБЛИЦЫ: материализация отложенных книг по декларациям (A1′)."""
         if mode not in MODES:
-            return ctx.err("VALIDATION_ERROR", f"Неизвестный режим создания: {mode}.",
-                           f"Допустимо: {', '.join(sorted(MODES))}.")
+            raise ContractError("VALIDATION_ERROR", errors=[{"field": "mode", "rule": "enum", "expected": sorted(MODES)}])
         ok, res = ctx.safe(lambda: _materialize_pending(pending or [], mode))
         if not ok:
             return res

@@ -20,7 +20,12 @@ sys.path.insert(0, str(ROOT))
 
 from core.declaration import workspace_root  # noqa: E402 — импорт после правки sys.path: раннер запускается файлом
 from core.runner.service import RunnerService  # noqa: E402 — импорт после правки sys.path: раннер запускается файлом
-from core.runner.supervisor import TOKEN_ENV  # noqa: E402 — имя двери одно: его объявляет тот, кто токен выпускает
+from core.runner.supervisor import (  # noqa: E402 — имена дверей одни: их объявляет тот, кто токен и канал выпускает
+    READY_ENV,
+    TOKEN_ENV,
+    ready_sign,
+    ready_writer,
+)
 
 
 def main() -> int:
@@ -57,7 +62,9 @@ def main() -> int:
 
     print(f"Раннер локальных моделей: http://{host}:{port} (рабочая область {service.workspace})",
           flush=True)
-    web.run_app(service.app(), host=host, port=port, print=None)
+    # Готовность — знаком в канал того, кто поднял раннер, когда все сайты слушают; поднят руками — молча.
+    web.run_app(service.app(), host=host, port=port, print=ready_writer(os.environ.get(READY_ENV, ""),
+                                                                        ready_sign(service.token)))
     return 0
 
 

@@ -283,7 +283,7 @@ try:
     UniquenessEngine(Path(tempfile.mkdtemp()) / "нет.yaml").config
     ok(False, "отсутствие декларации должно падать")
 except UniquenessError as e:
-    ok(e.code == "TEMPLATE_NOT_FOUND", f"нет декларации → TEMPLATE_NOT_FOUND (получено {e.code})")
+    ok(e.code == "DECLARATION_MISSING", f"нет декларации → DECLARATION_MISSING (получено {e.code})")  # 2026-10-18: EB-11
 
 print("== 8. Параметры расчёта реально грузятся (правка конфига меняет поведение) ==")
 _cfg2 = Path(tempfile.mkdtemp()) / "uniqueness.yaml"

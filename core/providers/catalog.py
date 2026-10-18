@@ -57,12 +57,9 @@ class ModelCatalog:
 
     def source(self, kind: str) -> dict:
         src = (self.local.get("sources") or {}).get(kind)
-        if not src:
-            declared = ", ".join(sorted((self.local.get("sources") or {}))) or "(ничего)"
-            raise ProviderError(
-                "TEMPLATE_NOT_FOUND", f"Для вида '{kind}' не объявлен каталог моделей.",
-                reason=f"Объявлены: {declared}. Добавь источник в config/providers.yaml → "
-                       "local.sources, если нужен ещё один вид.")
+        if not src:  # вид — свободный ввод клиента (в схеме инструмента перечня нет): не из объявленных — ошибка ввода
+            raise ProviderError("VALIDATION_ERROR", errors=[
+                {"field": "kind", "rule": "enum", "expected": sorted(self.local.get("sources") or {})}])
         return src
 
     # ═══ Что уже стоит ═══

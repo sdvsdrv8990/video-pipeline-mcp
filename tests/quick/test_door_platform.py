@@ -3,9 +3,12 @@
 
 На Windows `os.rename` при занятом имени всегда бросает FileExistsError (CPython `Doc/library/os.rst`, `rename`), на Unix
 пустой каталог назначения заменяется молча. Здесь семантика Windows подставлена на время вызова: `sys.platform` —
-"win32", `os.rename` — тот же перенос, но занятое имя — FileExistsError. Что подстановка не меряет (NTFS, жёсткие
-ссылки, права) — мерит CI на Windows.
+"win32", `os.rename` — тот же перенос, но занятое имя — FileExistsError. Законная пара — платформа не Windows, тоже
+подставленная: на раннере Windows настоящая платформа её не даёт. Отказ ОС на двери (FS-13) — подставленный вызов ОС
+бросает то, что бросает Windows, когда файл держат открытым. Что подстановка не меряет (NTFS, жёсткие ссылки, права) —
+мерит CI на Windows.
 """
+import errno
 import os
 import shutil
 import sys
@@ -17,7 +20,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from core.contracts import ContractError
+from core.engine import Engine
 from core.paths import Files
+from core.reactions import Reactions
 
 _checks = 0
 _fails: list[str] = []
@@ -49,6 +54,37 @@ def windows():
         yield
     finally:
         os.rename, sys.platform, shutil.rmtree.avoids_symlink_attacks = real_rename, real_platform, real_safe
+
+
+@contextmanager
+def unix(safe: bool):
+    """Платформа не Windows; `safe` — устойчив ли rmtree к подмене ссылкой (функции по дескрипторам каталогов)."""
+    real_platform, real_safe = sys.platform, shutil.rmtree.avoids_symlink_attacks
+    sys.platform, shutil.rmtree.avoids_symlink_attacks = "linux", safe
+    try:
+        yield
+    finally:
+        sys.platform, shutil.rmtree.avoids_symlink_attacks = real_platform, real_safe
+
+
+@contextmanager
+def held(name: str, *paths: Path):
+    """Вызов ОС `os.<name>` по любому из `paths` отказывает, как Windows по файлу, открытому без FILE_SHARE_DELETE."""
+    owner = os if hasattr(os, name) else shutil
+    real = getattr(owner, name)
+    held_paths = {os.path.realpath(p) for p in paths}
+
+    def refused(*args, **kw):
+        if any(os.path.realpath(str(a)) in held_paths for a in args[:2]):
+            raise PermissionError(errno.EACCES, "Access is denied", str(args[0]))
+        return real(*args, **kw)
+
+    refused.avoids_symlink_attacks = getattr(real, "avoids_symlink_attacks", False)  # type: ignore[attr-defined]
+    setattr(owner, name, refused)
+    try:
+        yield
+    finally:
+        setattr(owner, name, real)
 
 
 def moved(files: Files, src: str, dst: str):
@@ -103,6 +139,8 @@ print("== 4. Удаление каталога на Windows: непустой с
 def removed(path: str):
     try:
         return files.remove(path)
+    except ContractError as e:
+        return e.code, e.facts
     except Exception as e:
         return type(e).__name__
 
@@ -119,15 +157,56 @@ check("Windows: непустой каталог снят (dir), а не OSError 
 check("Windows: каталог за ссылкой внутри не тронут — снята ссылка, а не то, на что она указывает",
       (_outside / "keep.txt").read_text(encoding="utf-8") == "чужое")
 (ws / "videos" / "kept" / "sub").mkdir(parents=True)
-_safe = shutil.rmtree.avoids_symlink_attacks
-shutil.rmtree.avoids_symlink_attacks = False
-try:
+with unix(safe=False):
     got = removed("videos/kept")
-finally:
-    shutil.rmtree.avoids_symlink_attacks = _safe
-check("не Windows и rmtree не устойчив — отказ, как был: исключение Windows не открывает другие платформы",
-      got == "OSError" and (ws / "videos/kept/sub").is_dir(), got)
-check("Unix: устойчивый rmtree снимает каталог", removed("videos/kept") == "dir" and not (ws / "videos/kept").exists())
+check("не Windows и rmtree не устойчив — отказ кодом слоя: исключение Windows не открывает другие платформы",
+      got == ("PLACE_UNWRITABLE", {"operation": "удаление", "path": "videos/kept", "reason": "ENOTSUP"})
+      and (ws / "videos/kept/sub").is_dir(), got)
+with unix(safe=True):
+    got = removed("videos/kept")
+check("Unix: устойчивый rmtree снимает каталог", got == "dir" and not (ws / "videos/kept").exists(), got)
+
+print("== 5. Диск отказал действию двери (D08/D09, FS-13): код слоя с путём от корня, половин нет ==")
+engine = Engine(reactions=Reactions(ROOT / "config" / "server_reactions.yaml"))
+(ws / "notes").mkdir()
+(ws / "notes" / "held.md").write_text("СТАРОЕ", encoding="utf-8")
+refusal: ContractError | None = None
+with held("replace", ws / "notes" / "held.md"):
+    try:
+        files.replace("notes/held.md", "НОВОЕ")
+        escaped = "отказа нет"
+    except ContractError as e:
+        refusal, escaped = e, ""
+    except Exception as e:  # сырое исключение мимо слоя — улика проверки, а не обрыв набора
+        escaped = type(e).__name__
+check("замена держимого файла — PLACE_UNWRITABLE: операция, путь от корня, причина ОС",
+      refusal is not None and (refusal.code, refusal.facts)
+      == ("PLACE_UNWRITABLE", {"operation": "замена", "path": "notes/held.md", "reason": "EACCES"}),
+      (refusal and (refusal.code, refusal.facts)) or escaped)
+check("под именем прежнее содержимое, остатка записи нет",
+      (ws / "notes" / "held.md").read_text(encoding="utf-8") == "СТАРОЕ"
+      and sorted(p.name for p in (ws / "notes").iterdir()) == ["held.md"], sorted(p.name for p in (ws / "notes").iterdir()))
+said = engine.refusal(refusal).error if refusal is not None else None
+check("на двери движка: текст шаблона с операцией и путём от корня, пути хоста нет",
+      said is not None and "замена «notes/held.md»" in said.message and str(ws) not in said.message,
+      said and said.message)
+(ws / "notes" / "move.md").write_text("ПЕРЕНОС", encoding="utf-8")
+with held("unlink", ws / "notes" / "move.md"):
+    got = moved(files, "notes/move.md", "notes/moved.md")
+check("перенос, старое имя которого не снять, — PLACE_UNWRITABLE с путём источника",
+      got == ("PLACE_UNWRITABLE", {"operation": "перенос", "path": "notes/move.md", "reason": "EACCES"}), got)
+check("половины нет: новое имя снято, старое на месте с содержимым",
+      not (ws / "notes" / "moved.md").exists() and (ws / "notes" / "move.md").read_text(encoding="utf-8") == "ПЕРЕНОС")
+(ws / "notes" / "tree" / "sub").mkdir(parents=True)
+with held("rmtree", ws / "notes" / "tree"):
+    got = removed("notes/tree")
+check("удаление, которому отказал диск, — PLACE_UNWRITABLE, а не сырой PermissionError → INTERNAL_ERROR",
+      got == ("PLACE_UNWRITABLE", {"operation": "удаление", "path": "notes/tree", "reason": "EACCES"}), got)
+
+print("== 6. Названного нет (D10): «есть ли источник» судит дверь — FILE_NOT_FOUND с путём от корня, а не сырой OSError ==")
+check("перенос несуществующего — FILE_NOT_FOUND с путём источника",
+      moved(files, "notes/нет", "notes/куда") == ("FILE_NOT_FOUND", {"path": "notes/нет"}))
+check("удаление несуществующего — FILE_NOT_FOUND с путём", removed("notes/нет") == ("FILE_NOT_FOUND", {"path": "notes/нет"}))
 
 print(f"\n{'=' * 50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

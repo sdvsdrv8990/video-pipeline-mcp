@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core.advice import Advice
-from core.contracts import ContractError, Recovery, ToolResult
+from core.contracts import ContractError
 from core.declaration import Declaration, instance_home
 from core.firewall.rules.injection_detector import InjectionDetector
 from core.engine import Engine, TemplateEngine, TemplateResolver
@@ -109,15 +109,6 @@ class ToolContext:
     def chain_resolver(self) -> ChainResolver:
         """Резолвер цепочки по каталогу назначения — собран из уже имеющихся частей."""
         return ChainResolver(self.workspace_path, self.link_registry, self.taxonomy)
-
-    def err(self, code: str, message: str = "", reason: str = "",
-            suggested_tool: str | None = None) -> ToolResult:
-        """Ошибочный ToolResult через реестр реакций (yaml = источник class/recovery).
-
-        Для кода из реестра class/message_template/recovery берутся из server_reactions.yaml
-        (raw message сохраняет специфику). reason/suggested_tool — fallback лишь для кодов вне реестра.
-        """
-        return self.engine._error(code, message, Recovery(reason=reason, suggested_tool=suggested_tool))
 
     def safe(self, call: Callable[[], Any]) -> tuple[bool, Any]:
         """Выполнить sync-вызов ядра; объявленное исключение — готовый отказ (перевод один — `Engine.refusal`),

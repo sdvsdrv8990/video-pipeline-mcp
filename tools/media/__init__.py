@@ -12,7 +12,6 @@
 клиент задачу не теряет и не спасает, её статус прозванивается заново.
 """
 
-import json
 from collections import defaultdict
 from collections.abc import Callable
 from functools import partial
@@ -216,10 +215,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             if not ok:
                 return source_file
             if not source_file.is_file():
-                return ctx.err(
-                    "FILE_NOT_FOUND", f"Исходного файла нет: {input}",
-                    f"Вид ресурса '{resource_type}' перерабатывает готовый файл, а не создаёт "
-                    "новый: в input нужен путь к существующему файлу внутри рабочей области.")
+                raise ContractError("FILE_NOT_FOUND", facts={"path": Files(ctx.workspace_path).name(input)})
         rel = _asset_path(cfg, cycle, table, resource_type, slug, scene_id, params,
                           source_stem=source_file.stem if source_file else "")
         # Тип файла — та же дверь, что у любой записи: результат провайдера не привилегирован.
@@ -246,23 +242,13 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             # изоляцию, и подменить её тишиной значило бы соврать про то, где идёт расчёт.
             api_key = _supervisor().token()
             if not api_key:
-                return ctx.err(
-                    "RUNNER_NOT_RUNNING", "Строка канала просит считать в раннере, а он не поднят.",
-                    "Подними его: media_runner(action='start').")
+                raise ContractError("RUNNER_NOT_RUNNING")
         elif registry.requires_key(decision["provider"], resource_type):
             ok, api_key = ctx.safe(lambda: _key_for(table, decision["provider"]))
             if not ok:
                 return api_key
             if not api_key:
-                return ctx.err(
-                    "PROVIDER_KEY_MISSING",
-                    f"У провайдера '{decision['provider']}' нет ключа доступа для этого канала.",
-                    "Прав читать или записывать ключ у меня нет — это не ограничение вызова, а "
-                    "устройство сервера. Вставить ключ может только владелец и только вручную: "
-                    f"python scripts/set_provider_key.py --channel {table} "
-                    f"--provider {decision['provider']} (ввод скрыт, значение шифруется до записи). "
-                    "Пока ключа нет — поставь в строке канала провайдера, работающего без ключа "
-                    "(например, локального): это обычный table_update.")
+                raise ContractError("PROVIDER_KEY_MISSING", facts={"provider": decision["provider"], "channel": table})
 
         # Что модель принимает и в каких пределах, знает сама модель. Расхождение ловим ДО вызова:
         # у платного провайдера неверный параметр стоит денег, у локального — минут расчёта, и в
@@ -273,14 +259,11 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         if ok:
             gaps = spec_engine.check(spec, params)
             if gaps:
-                return ctx.err(
-                    "VALIDATION_ERROR",
-                    "Строка канала просит у модели то, чего она не умеет: "
-                    + "; ".join(f"{g['param']}={g['value']!r} — {g['problem']}" for g in gaps),
-                    f"Допустимое: {json.dumps({g['param']: g['allowed'] for g in gaps}, ensure_ascii=False)}. "
-                    f"Источник спецификации — {spec.get('source')}. Поправь строку листа провайдеров "
-                    "(table_update) или возьми модель, которая это умеет: "
-                    "media_models(scope='spec', provider=..., model=...).")
+                raise ContractError(  # просит строка книги канала, а не вызов: правится она (table_update)
+                    "BOOK_ROW_INVALID",
+                    facts={"sheet": sheet, "row": decision["row_id"], "spec_source": spec.get("source")},
+                    errors=[{"field": g["param"], "rule": g["problem"], "value": g["value"], "expected": g["allowed"]}
+                            for g in gaps])
 
         ok, adapter = ctx.safe(lambda: registry.load(decision["provider"], resource_type))
         if not ok:
@@ -305,11 +288,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         if outcome.task_id:
             if not callable(getattr(adapter, "poll", None)):
                 # Задача без прозвонки — молчание вместо причины отказа; это отказ, а не «успех».
-                return ctx.err(
-                    "PROVIDER_ADAPTER_MISSING",
-                    f"Адаптер '{decision['provider']}' вернул задачу, но не умеет её прозвонить.",
-                    "Асинхронный провайдер обязан уметь прозвонить статус — иначе причина "
-                    "отказа (модерация, лимит, недоступность) не вернётся никогда.")
+                raise ContractError("PROVIDER_ADAPTER_MISSING", facts={"provider": decision["provider"], "missing": "poll"})
             # Прозвонка нужна не «дождаться», а поймать причину отказа.
             ok, polled = ctx.safe(lambda: _keyless(lambda: cycle.wait(adapter.poll, outcome.task_id), api_key))
             if not ok:
@@ -325,10 +304,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                     return loader
                 url = _url_in(loader.policy.url_fields, answer)
                 if not url:
-                    return ctx.err(
-                        "PROVIDER_FAILED", "Задача готова, но в ответе нет ссылки на результат.",
-                        "Сервер ищет ссылку в полях, объявленных в config/media_tasks.yaml → "
-                        "download.fetch.url_fields. Добавь туда поле этого провайдера.")
+                    raise ContractError("PROVIDER_FAILED", facts={"provider": decision["provider"], "missing": "url"})
                 ok, fetched = ctx.safe(lambda: _keyless(lambda: loader.fetch(
                     url, Files(Path(target).parent), Path(target).name, "result"), api_key))
             if not ok:
@@ -529,10 +505,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         той же ревизией модель — исход «уже стоит» сразу, без задачи; `force` — перекачать.
         """
         if not confirm:
-            return ctx.err(
-                "CONFIRM_REQUIRED", f"Установка '{model_id}' скачает веса на диск сервера.",
-                "Это гигабайты и внешний источник — операция подтверждается явно: повтори с "
-                "confirm=true. Сначала посмотри, что ставишь: media_models(scope='local').")
+            raise ContractError("CONFIRM_REQUIRED",
+                                facts={"operation": "установка модели", "target": model_id, "param": "confirm"})
         ok, task = ctx.safe(lambda: _installer().begin(tasks, "media_model_install", model_id, kind, force=force))
         if not ok:
             return task
@@ -589,9 +563,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         готовности событием, снятие — task_cancel); ответ ждёт готовности в пределах срока вызова клиента (AD-20 б).
         """
         if action not in ("start", "stop", "status"):
-            return ctx.err(
-                "VALIDATION_ERROR", f"Неизвестное действие раннера: '{action}'.",
-                "Действия ровно три: start (поднять), stop (остановить), status (прозвонить).")
+            raise ContractError("VALIDATION_ERROR",
+                                errors=[{"field": "action", "rule": "enum", "expected": ["start", "stop", "status"]}])
         if action != "start":
             ok, state = ctx.safe({"stop": lambda: _supervisor().stop(), "status": lambda: _supervisor().status()}[action])
             return _runner_answer(state, action) if ok else state
@@ -629,8 +602,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "успел — ответ о готовом раннере, не успел — id задания и статус (итог — task_status, снять — "
             "task_cancel: процесс остановится); stop останавливает; status "
             "показывает фазу (running, exited, stopped), pid, время работы и что раннер держит "
-            "поднятым. Упавший раннер виден как exited вместе с хвостом его журнала — сам он не "
-            "перезапускается, потому что тихий подъём спрятал бы причину падения. "
+            "поднятым. Упавший раннер виден как exited с кодом выхода и номером события — причина в журнале "
+            "сервера; сам он не перезапускается, потому что тихий подъём спрятал бы причину падения. "
             "Сервер не поднимает раннер самостоятельно: ни по расписанию, ни при первом вызове — "
             "фоновых процессов у сервера нет по решению владельца. "
             "Считать В раннере или в самом сервере — выбор строки канала (провайдер Local_runner "

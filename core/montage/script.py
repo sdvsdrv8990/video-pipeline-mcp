@@ -32,17 +32,13 @@ class SceneScript:
     def config(self) -> dict:
         spec = (self.book.config.get("script") or {})
         if not spec:
-            raise MontageError(
-                "TEMPLATE_NOT_FOUND", "Шаблон сцены не объявлен.",
-                reason="Заведи раздел `script` в config/montage.yaml — что выдавать, объявлено там.")
+            raise MontageError("DECLARATION_MISSING", facts={"subject": "скрипта сцены", "file": "montage.yaml → script"})
         return spec
 
     def skeleton(self) -> str:
         path = self.book.config_path / "templates" / "scripts" / str(self.config["template"])
         if not path.exists():
-            raise MontageError(
-                "TEMPLATE_NOT_FOUND", f"Скелет скрипта сцены не найден: {path.name}",
-                reason="Файл объявлен в config/montage.yaml → script.template.")
+            raise MontageError("DECLARATION_MISSING", facts={"subject": "скелета скрипта сцены", "file": path.name})
         return path.read_text(encoding="utf-8")
 
     def target(self, table: str, scene_id: str) -> str:

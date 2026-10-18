@@ -528,7 +528,7 @@ async def main():
         _R192(_gone192)
         check("нет реестра реакций → отказ, а не пустой реестр", False, "загрузился тихо")
     except _CE192 as e:
-        check("нет реестра реакций → отказ, а не пустой реестр", e.code == "TEMPLATE_NOT_FOUND", e.code)
+        check("нет реестра реакций → отказ, а не пустой реестр", e.code == "DECLARATION_MISSING", e.code)  # 2026-10-18
 
     _broken192 = _temp_dir() / "server_reactions.yaml"
     _broken192.write_text("PATH_ESCAPE: [не словарь\n", encoding="utf-8")
@@ -562,7 +562,7 @@ async def main():
           _e192.reaction_class == "ai_recoverable" and "«../вне»" in _e192.message,
           f"{_e192.reaction_class} · {_e192.message}")
 
-    # Одна политика у ВСЕХ загрузчиков деклараций: нет файла → TEMPLATE_NOT_FOUND,
+    # Одна политика у ВСЕХ загрузчиков деклараций: нет файла → DECLARATION_MISSING (до 2026-10-18 — TEMPLATE_NOT_FOUND),
     # битый → DECLARATION_INVALID. Инвариант вешается тестом, а не дисциплиной: шесть загрузчиков
     # успели развести шесть разных ответов, и два из них молча ослабляли защиту.
     from core.contracts import ContractError

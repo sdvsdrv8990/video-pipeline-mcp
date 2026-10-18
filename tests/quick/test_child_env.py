@@ -98,7 +98,8 @@ print("== 3. Раннер: свой токен средой ребёнка, се
 
 class _Registry:
     config_file = Path("providers.yaml")
-    config = {"local": {"runner": {"provider": "r", "poll_sec": 0.01}},
+    config = {"local": {"runner": {"provider": "r", "stop_grace_sec": 5,
+                                   "state_file": "state.json", "log_file": "runner.log"}},
               "online": {"http": {"r": {"url": "http://127.0.0.1:9/run"}}}}
 
     def need(self, *path, kind=None):
@@ -115,20 +116,28 @@ class _Pulse:
     def __call__(self, progress=None, working=True):
         pass
 
+    def on_cancel(self, hook):
+        pass
+
     def refusal(self):
         return RuntimeError("снято")
 
 
+# Обновлено 2026-10-18 (D02-e): готовность — знак в канал сервера тем же писателем, что у раннера (`ready_writer`), а не
+# «вторая проба /health ответила»; `{before}` — что ребёнок делает до знака.
+_READY = ("import os, signal, sys; sys.path.insert(0, sys.argv[1]); "
+          "from core.runner.supervisor import READY_ENV, TOKEN_ENV, ready_sign, ready_writer; {before}"
+          "ready_writer(os.environ[READY_ENV], ready_sign(os.environ[TOKEN_ENV]))(); signal.pause()")
+
+
 class _Double(RunnerSupervisor):
-    """Раннер-двойник: ждёт сигнала; прозвонка без сети — «молчит» до запуска и «готов» после."""
-    calls = 0
+    """Раннер-двойник: даёт знак готовности и ждёт сигнала; прозвонка без сети — «отвечает»."""
 
     def _command(self, mode, workspace):
-        return [sys.executable, "-c", "import signal; signal.pause()"]
+        return [sys.executable, "-c", _READY.format(before=""), str(ROOT)]
 
     def _probe(self, token="", within=None):
-        type(self).calls += 1
-        return {"ok": True} if type(self).calls > 1 else {}
+        return {"ok": True}
 
 
 if not Path("/proc/self/environ").exists():
@@ -155,21 +164,15 @@ else:
 
     # Упрямый раннер глушит SIGTERM: stop обязан снять его сам после срока, без вечного ожидания и без зомби.
     class _Stubborn(_Double):
-        """Готовность — отметка, которую ребёнок ставит ПОСЛЕ того, как заглушил SIGTERM: без неё stop успевал
-        послать сигнал раньше заглушки, и «упрямый» умирал как обычный — событие не судило ничего."""
-        calls = 0
+        """Знак готовности ребёнок даёт ПОСЛЕ того, как заглушил SIGTERM: без этого stop успевал послать сигнал раньше
+        заглушки, и «упрямый» умирал как обычный — событие не судило ничего."""
 
         def _command(self, mode, workspace):
-            self.mark = Path(workspace).parent / "заглушил"
-            return [sys.executable, "-c", "import pathlib, signal, sys; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-                    "pathlib.Path(sys.argv[1]).touch(); signal.pause()", str(self.mark)]
-
-        def _probe(self, token="", within=None):
-            type(self).calls += 1
-            return {"ok": True} if type(self).calls > 1 and self.mark.exists() else {}
+            return [sys.executable, "-c", _READY.format(before="signal.signal(signal.SIGTERM, signal.SIG_IGN); "),
+                    str(ROOT)]
 
     class _Grace(_Registry):
-        config = {**_Registry.config, "local": {"runner": {"provider": "r", "poll_sec": 0.01, "stop_grace_sec": 0.3}}}
+        config = {**_Registry.config, "local": {"runner": {**_Registry.config["local"]["runner"], "stop_grace_sec": 0.3}}}
 
     with tempfile.TemporaryDirectory() as tmp:
         stubborn = _Stubborn(_Grace(), tmp)

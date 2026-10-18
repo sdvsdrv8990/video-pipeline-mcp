@@ -42,7 +42,7 @@ targets() {
         for pid in $srv; do pgrep -P "$pid" 2>/dev/null || true; done
         pgrep -f "cloudflared.*${tid:-127\.0\.0\.1:$PORT}" 2>/dev/null || true
         pgrep -f "cloudflared.*127\.0\.0\.1:$PORT" 2>/dev/null || true
-    } | grep -v "^$" | sort -un | grep -v "^$$\$"
+    } | grep -v "^$" | sort -un | grep -v "^$$\$" || true    # нет целей — пустой ответ, а не провал: set -e оборвал бы stop_all
 }
 
 stop_all() {

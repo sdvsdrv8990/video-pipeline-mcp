@@ -197,8 +197,12 @@ def main():
         door(work / "bad.yaml").model
     except ContractError as e:
         said = engine.refusal(e).error
-        check("подсказка доставленного отказа называет файл декларации, а не чужую причину",
-              "bad.yaml" in said.recovery.reason, said.recovery.reason[:120])
+        # Обновлено 2026-10-18 (D26, два читателя реестра): файл — в тексте отказа и у владельца у консоли (recovery.owner);
+        # рецепт ИИ-клиента адреса каталога деклараций не несёт — открыть его он не может.
+        owner = engine.reactions.get_reaction(said.code)["recovery"]["owner"].format_map(said.facts)
+        check("доставленный отказ называет файл декларации в тексте и у владельца, а не чужую причину",
+              "bad.yaml" in said.message and "bad.yaml" in owner and "MCP_CONFIG" not in said.recovery.reason,
+              (said.message[:120], owner[:120]))
     import server as S
     try:
         S._load_resources(work / "bad.yaml")
@@ -255,8 +259,10 @@ def main():
     check("битый YAML — строки файла нет ни в ответе, ни в журнале, ни в причине",
           said is not None and MARK not in repr(said.model_dump()) and not any(MARK in x for x in heard)
           and cause is None, f"причина:{cause!r}")
-    check("битый YAML — подсказка называет файл декларации", said is not None and "broken.yaml" in said.recovery.reason,
-          said and said.recovery.reason[:120])
+    check("битый YAML — текст и строка владельца называют файл декларации (D26, 2026-10-18)",
+          said is not None and "broken.yaml" in said.message
+          and "broken.yaml" in engine.reactions.get_reaction(said.code)["recovery"]["owner"].format_map(said.facts),
+          said and said.message[:120])
 
     print("\n== каталог деклараций: одно решение «где лежат», подсказка называет файл от него ==")
     decl_root = Path(tempfile.mkdtemp(prefix="decl-root-"))
@@ -277,9 +283,12 @@ def main():
         else:
             os.environ["MCP_CONFIG"] = prior
     named = inner.facts.get("file") if inner else None
-    check("файл в подкаталоге назван путём от каталога деклараций, подсказка — им же, без приставки",
-          named == "templates/workspace/x.tpl.yaml" and f" {named} " in f" {inner.recovery.reason}",
-          inner and (named, inner.recovery.reason[:100]))
+    # Обновлено 2026-10-18 (D26, два читателя реестра): адрес файла — в тексте отказа и в строке владельца у консоли
+    # (recovery.owner), а не в рецепте ИИ-клиента: открыть каталог деклараций он не может.
+    owner = (engine.reactions.get_reaction(inner.code)["recovery"]["owner"].format_map(inner.facts) if inner else "")
+    check("файл в подкаталоге назван путём от каталога деклараций — в тексте и у владельца, без приставки",
+          named == "templates/workspace/x.tpl.yaml" and f" {named} " in f" {inner.message} " and f" {named} " in f" {owner}"
+          and "MCP_CONFIG" not in inner.recovery.reason, inner and (named, inner.message[:100], owner[:100]))
     shown = repr(outer.model_dump()) if outer else ""
     check("файл вне каталога деклараций — только имя, пути хоста в ответе нет",
           outer is not None and outer.facts.get("file") == "вне.yaml" and str(work) not in shown
@@ -333,9 +342,10 @@ def main():
             del os.environ["MCP_CONFIG"]
         else:
             os.environ["MCP_CONFIG"] = prior
-    check("реестра нет ни рядом, ни в каталоге деклараций прогона — коды сверять не с чем: TEMPLATE_NOT_FOUND с именем "
+    # Обновлено 2026-10-18 (EB-11, прецедент D25): объявления нет на сервере — DECLARATION_MISSING, а не «шаблон клиента».
+    check("реестра нет ни рядом, ни в каталоге деклараций прогона — коды сверять не с чем: DECLARATION_MISSING с именем "
           "реестра, а не пропуск сверки",
-          said is not None and said.code == "TEMPLATE_NOT_FOUND" and REACTIONS in said.message, said and said.message)
+          said is not None and said.code == "DECLARATION_MISSING" and REACTIONS in said.message, said and said.message)
     check("схема без полей-кодов реестра не требует: resources.yaml в каталоге без реестра читается",
           not (work / REACTIONS).exists() and door(work / "inline.yaml").model is not None)
     cfg = Path(tempfile.mkdtemp(prefix="decl-reg-"))
@@ -380,11 +390,12 @@ def main():
                         ("providers.yaml", "local.install.fetch.timeout_sec", "link_greater"),
                         ("providers.yaml", "local.install.fetch.speed_window_sec", "link_greater")],
           said and (said.facts, sides))
-    check("связь: текст и подсказка называют оба файла, деталь — файл и путь ключа",
+    linked = engine.reactions.get_reaction(CODE)["recovery"]["owner"].format_map(said.facts) if said else ""
+    check("связь: текст и строка владельца называют оба файла, деталь — файл и путь ключа (D26, 2026-10-18)",
           said is not None and "jobs.yaml: stale_after_sec (link_greater)" in said.message
           and "providers.yaml: local.install.fetch.timeout_sec (link_greater)" in said.message
-          and "jobs.yaml" in said.recovery.reason and "providers.yaml" in said.recovery.reason,
-          said and (said.message[:200], said.recovery.reason[:120]))
+          and "jobs.yaml" in linked and "providers.yaml" in linked,
+          said and (said.message[:200], linked[:120]))
     check("связь: значений ключей нет ни в ответе, ни в журнале",
           said is not None and not any(v in repr(said.model_dump()) or any(v in x for x in heard)
                                        for v in ("7171717", "9191919", "8181818")), said and said.facts)
@@ -423,7 +434,7 @@ def main():
         door(work / "нет.yaml").model
         check("нет файла — отказ кодом", False, "загрузилось")
     except ContractError as e:
-        check("нет файла — TEMPLATE_NOT_FOUND, а не пустой объект", e.code == "TEMPLATE_NOT_FOUND", e.code)
+        check("нет файла — DECLARATION_MISSING, а не пустой объект", e.code == "DECLARATION_MISSING", e.code)  # 2026-10-18
 
     print(f"\n{'=' * 50}")
     print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

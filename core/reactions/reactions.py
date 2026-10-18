@@ -2,7 +2,7 @@
 
 Паспорт: зовут по проводу с сервера и прямым импортом из tools · условия reactions, code, UNKNOWN_ERROR ·
   не молчит · поток reaction_to_client.
-Зовёт: ContractError, Declaration, ErrorDetail, Recovery.
+Зовёт: ContractError, Declared (схема ServerReactions), ErrorDetail, Recovery.
 Зовут: из кода никто. Реестр поднимают через пакет `core.reactions`.
 
 Отсутствие реестра — отказ, а не пустой реестр: без него КАЖДЫЙ код выродился бы в неизвестную
@@ -16,7 +16,8 @@ import string
 from pathlib import Path
 
 from core.contracts import ContractError, ErrorDetail, Recovery
-from core.declaration import Declaration
+from core.declaration import Declared
+from core.declaration_schemas import ServerReactions
 
 log = logging.getLogger(__name__)
 
@@ -47,9 +48,10 @@ class Reactions:
         Args:
             config_path: Путь к server_reactions.yaml
         """
-        self.reactions = Declaration(
-            config_path, ContractError, "реакций сервера",
-            "Заведи config/server_reactions.yaml — коды отказов и рецепты объявлены там.").data
+        door = Declared(config_path, ContractError, "реакций сервера",
+                        "Заведи config/server_reactions.yaml — коды отказов и рецепты объявлены там.", ServerReactions)
+        door.model                              # строка реестра — по схеме: битая — DECLARATION_INVALID с путём ключа
+        self.reactions = door.data
 
     def get_error(self, code: str, raw_message: str = "", raw_response: dict | None = None,
                   facts: dict | None = None, errors: list[dict] | None = None) -> ErrorDetail:
@@ -59,13 +61,15 @@ class Reactions:
         name = code if code in self.reactions else "UNKNOWN_ERROR"
         entry = self.reactions.get(name, {})
         recovery, facts = entry.get("recovery", {}), dict(facts or {})
+        params = recovery.get("suggested_params")
         return ErrorDetail(
             code=name,
             reaction_class=entry.get("class", "unknown"),
             message=raw_message or _filled(entry.get("message_template", ""), facts, name),
             recovery=Recovery(
                 suggested_tool=recovery.get("suggested_tool"),
-                suggested_params=recovery.get("suggested_params"),
+                suggested_params={k: _filled(v, facts, name) if isinstance(v, str) else v
+                                  for k, v in params.items()} if params else params,
                 reason=_filled(recovery.get("reason", ""), facts, name),
             ),
             facts=facts,
@@ -95,6 +99,10 @@ def _filled(text: str, facts: dict, code: str) -> str:
 
 
 def cli_text(exc: ContractError, registry: str | Path) -> str:
-    """Отказ для терминала — той же сборкой, что ответ сервера: код, текст и подсказка реестра с фактами отказа."""
-    detail = Reactions(registry).get_error(exc.code, exc.message, facts=exc.facts, errors=exc.errors)
-    return f"✗ {detail.code}: {detail.message}\n  {detail.recovery.reason}"
+    """Отказ для терминала — той же сборкой, что ответ сервера: код, текст и подсказка реестра с фактами отказа; строка
+    `recovery.owner` — что делает владелец у консоли (команда хоста, адрес объявления): клиенту сервера она не уходит."""
+    reactions = Reactions(registry)
+    detail = reactions.get_error(exc.code, exc.message, facts=exc.facts, errors=exc.errors)
+    owner = ((reactions.get_reaction(detail.code) or {}).get("recovery") or {}).get("owner", "")
+    text = f"✗ {detail.code}: {detail.message}\n  {detail.recovery.reason}"
+    return text + (f"\n  {_filled(owner, dict(exc.facts), detail.code)}" if owner else "")
