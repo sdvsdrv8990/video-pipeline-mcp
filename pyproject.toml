@@ -130,7 +130,7 @@ local = [
 # локальной версией (`+cpu`), номер у них общий — поэтому пин, а не пол.
 #   .venv/bin/pip install -e ".[local,cpu]" --extra-index-url https://download.pytorch.org/whl/cpu
 cpu = [
-    "torch==2.13.0+cpu",
+    "torch==2.14.1",
     "accelerate>=1.0",
 ]
 # Расчёт на видеокарте AMD. Пин ЛОКАЛЬНОЙ версии (`+rocm7.1`) — не придирчивость: колесо с PyPI
@@ -150,7 +150,7 @@ gpu-nvidia = [
     "accelerate>=1.0",
 ]
 gpu-amd = [
-    "torch==2.13.0+rocm7.1",
+    "torch==2.14.1",
     # accelerate живёт рядом с torch, а не в `local`: он ЕДИНСТВЕННЫЙ из группы моделей, кто
     # требует torch метаданными, и в `local` он тянул за собой чужую сборку.
     "accelerate>=1.0",
@@ -160,7 +160,7 @@ gpu-amd = [
     # модуля, и обратные зависимости этого не показывают: снос `triton` как «сироты» оставляет
     # `triton/` без `__init__.py`, и diffusers падает `module 'triton' has no attribute 'language'`.
     # Версия совпадает с triton-rocm намеренно.
-    "triton==3.7.1",
+    "triton==3.8.0",
 ]
 
 [project.scripts]
