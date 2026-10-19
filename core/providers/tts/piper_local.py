@@ -33,11 +33,16 @@ class PiperLocalTTS:
         size = model_path.stat().st_size if model_path.is_file() else None
         return self.registry.pool.get(f"piper|{model_path}", load, need_bytes=size, device="cpu")
 
-    def generate(self, request: MediaRequest) -> MediaOutcome:
-        """Озвучить текст в файл. Синхронно: ждать нечего, результат сразу на диске."""
+    def ready(self, request: MediaRequest) -> dict:
+        """Готовность до вызова (MF-13): текст есть, веса голоса готовы — путь и ступень проверки; иначе отказ кодом
+        причины. Зовут дверь до задания и `generate` перед расчётом: диск мог смениться между ними."""
         if not (request.input or "").strip():
             raise ProviderError("VALIDATION_ERROR", errors=[{"field": "input", "rule": "required"}])
-        voice = self._voice(self.registry.ready(request.params.get("model"))["path"])
+        return self.registry.ready(request.params.get("model"))
+
+    def generate(self, request: MediaRequest) -> MediaOutcome:
+        """Озвучить текст в файл. Синхронно: ждать нечего, результат сразу на диске."""
+        voice = self._voice(self.ready(request)["path"])
         syn = self._synthesis_config(request.params)
         request.target.parent.mkdir(parents=True, exist_ok=True)
         try:

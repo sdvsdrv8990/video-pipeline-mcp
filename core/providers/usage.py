@@ -61,17 +61,16 @@ class UsageLedger:
         column = ((self.config.get("limits") or {}).get("usage_column")) or "current_usage"
         if not row_id:                                  # строка из декларации-дефолта: в книге канала её ещё нет
             raise ProviderError("ROW_NOT_FOUND", facts={"sheet": sheet})
-        snapshot = self.state.read_snapshot(table)
-        rows = ((snapshot or {}).get(sheet) or {}).get("rows") or {}
-        row = rows.get(row_id)
-        if row is None:
-            raise ProviderError("ROW_NOT_FOUND", facts={"sheet": sheet, "row": row_id})
-        before = row.get(column) or 0
-        before = float(before) if isinstance(before, (int, float)) else 0.0
-        after = before + float(amount)
-        # Счётчик целый, если целыми были обе части: иначе в книге заводится 3.0 вместо 3.
-        row[column] = int(after) if float(after).is_integer() else after
-        self.state.write_snapshot(table, snapshot)
+        # Под замком снимка: очередь таблицы, применённая в соседнем потоке, не затрёт расход, а расход — её строки.
+        with self.state.edit_snapshot(table) as snapshot:
+            row = ((snapshot.get(sheet) or {}).get("rows") or {}).get(row_id)
+            if row is None:
+                raise ProviderError("ROW_NOT_FOUND", facts={"sheet": sheet, "row": row_id})
+            before = row.get(column) or 0
+            before = float(before) if isinstance(before, (int, float)) else 0.0
+            after = before + float(amount)
+            # Счётчик целый, если целыми были обе части: иначе в книге заводится 3.0 вместо 3.
+            row[column] = int(after) if float(after).is_integer() else after
         return {"row_id": row_id, "column": column, "unit": None,
                 "amount": amount, "before": before, "after": row[column]}
 

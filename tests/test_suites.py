@@ -10,9 +10,11 @@
 
 import ast
 import os
+import signal
 import subprocess
 import sys
 import tomllib
+from itertools import takewhile
 from pathlib import Path
 
 import pytest
@@ -34,8 +36,13 @@ SIM_DIRS = {"virus_injection", "cache_injection", "cache_overflow", "bot_army", 
 SKIP_FILES = {"test_suites.py", "conftest.py"}
 # Не наборы: харнесс — библиотека для наборов, а не набор (в нём нет своих проверок).
 SKIP_DIRS = {"harness"}
-# Как наборы-скрипты называют провал: `✗` у ok()/check(), `[FAIL]` у аудита, сводки «ПРОВАЛЫ»/«FAILED», трасса.
-FAIL_MARKS = ("✗", "[FAIL]", "ПРОВАЛЫ", "FAILED", "Traceback", "Error:")
+# Как наборы-скрипты называют провал — началом строки: `✗` у ok()/check(), `[FAIL]` у аудита, `FAILED` сводки, трасса.
+# Те же слова внутри строки — текст проверки («→ AUTH_FAILED», «в консоли НЕТ /Traceback/»), а не провал.
+FAIL_MARKS = ("✗", "[FAIL]", "FAILED", "Traceback", "Error:")
+# Свой список провалов набора (после итога): его пункты — до пустой строки.
+FAILS_HEAD = "ПРОВАЛЫ:"
+# Своя строка итога набора — счёт проверок.
+SUMMARY_MARKS = ("РЕЗУЛЬТАТ:", "ИТОГО")
 
 
 def _discover() -> list[Path]:
@@ -67,10 +74,16 @@ def _cmd(suite: Path) -> list[str]:
 
 
 def _failure(suite: Path, p: subprocess.CompletedProcess) -> str:
-    """Отчёт о провале набора: строки провала из всего вывода с номерами и хвост — упавшая проверка видна, где бы ни стояла."""
-    lines = f"{p.stdout}\n{p.stderr}".splitlines()
-    marked = [f"{n}: {line}" for n, line in enumerate(lines, 1) if any(m in line for m in FAIL_MARKS)]
-    return (f"{suite} exit={p.returncode}\nстроки провала ({len(marked)}):\n" + "\n".join(marked[:300])
+    """Отчёт о провале набора с номерами строк и хвостом — упавшая проверка видна, где бы ни стояла. Провалы — пункты
+    своего списка «ПРОВАЛЫ:»; нет списка — строки, которые начинаются знаком провала; нет и их — своя строка итога."""
+    lines = list(enumerate(f"{p.stdout}\n{p.stderr}".splitlines(), 1))
+    heads = [i for i, (_, line) in enumerate(lines) if line.strip() == FAILS_HEAD]
+    listed = [] if not heads else list(takewhile(lambda nl: nl[1].strip(), lines[heads[-1] + 1:]))
+    marked = [(n, line) for n, line in lines if line.lstrip().startswith(FAIL_MARKS)]
+    summary = [(n, line) for n, line in lines if line.lstrip("= ").startswith(SUMMARY_MARKS)]
+    title, named = (("провалы по списку набора", listed) if listed else ("строки провала", marked) if marked
+                    else ("строк провала нет — итог набора", summary))
+    return (f"{suite} exit={p.returncode}\n{title} ({len(named)}):\n" + "\n".join(f"{n}: {line}" for n, line in named[:300])
             + f"\n… хвост вывода:\n{p.stdout[-2000:]}\n{p.stderr[-2000:]}")
 
 
@@ -78,9 +91,30 @@ def _failure(suite: Path, p: subprocess.CompletedProcess) -> str:
 def test_suite_passes(suite: Path, repo_root: Path, suite_env: dict[str, str], owner_logs: dict):
     """Набор отрабатывает с exit 0; иначе — строки его провала и хвост вывода попадают в отчёт."""
     # Вывод наборов — UTF-8 при любой локали: на Windows (cp1252) поток читался в None, и падал уже отчёт о провале.
-    p = subprocess.run(_cmd(suite), cwd=repo_root, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       timeout=SUITE_TIMEOUT_SEC, env=suite_env)
-    assert p.returncode == 0, _failure(suite, p)
+    proc = subprocess.Popen(_cmd(suite), cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            encoding="utf-8", errors="replace", env=suite_env)
+    try:
+        out, err = proc.communicate(timeout=SUITE_TIMEOUT_SEC)
+        hung = ""
+    except subprocess.TimeoutExpired:
+        out, err, hung = _stack_of_hung(proc)
+    p = subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
+    assert not hung and p.returncode == 0, hung + _failure(suite, p)
+
+
+def _stack_of_hung(proc: subprocess.Popen) -> tuple[str, str, str]:
+    """Набор не кончился за срок: на POSIX SIGABRT — faulthandler набора (PYTHONFAULTHANDLER) печатает стек всех потоков,
+    и отчёт называет место зависания; на Windows сигнала нет — снятие, как у subprocess.run."""
+    if os.name == "posix":
+        proc.send_signal(signal.SIGABRT)
+    else:
+        proc.kill()
+    try:
+        out, err = proc.communicate(timeout=60)    # стек печатается сразу; держать трубу могут только внуки набора
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, err = proc.communicate()
+    return out, err, f"набор не кончился за {SUITE_TIMEOUT_SEC} с — стек зависания (faulthandler) в выводе ниже\n"
 
 
 @pytest.fixture(scope="session")
@@ -89,7 +123,8 @@ def suite_env(tmp_path_factory) -> dict[str, str]:
     UTF-8 Mode (PEP 540): вывод набора уходит в канал, а у канала Windows кодировка локали — cp1252, и русский print
     ронял набор. Сервер свой вывод решает сам (`server.py` main), его событие идёт без этой переменной."""
     return {**os.environ, "MCP_LOGS": os.environ.get("MCP_LOGS") or str(tmp_path_factory.mktemp("logs")),
-            "MCP_HOME": os.environ.get("MCP_HOME") or str(tmp_path_factory.mktemp("home")), "PYTHONUTF8": "1"}
+            "MCP_HOME": os.environ.get("MCP_HOME") or str(tmp_path_factory.mktemp("home")), "PYTHONUTF8": "1",
+            "PYTHONFAULTHANDLER": "1"}   # зависший набор на SIGABRT печатает стек (_stack_of_hung)
 
 
 @pytest.fixture(scope="session")
@@ -123,6 +158,39 @@ def test_failure_names_check_deep_in_output(tmp_path: Path, repo_root: Path):
     report = _failure(stub, p)
     assert p.returncode == 1 and "5000:   ✗ проверка-иголка" in report and "РЕЗУЛЬТАТ: 5999/6000" in report, report[:600]
     assert "проверка-иголка" not in f"{p.stdout[-4000:]}", "заглушка обязана прятать провал за прежней обрезкой"
+
+
+# Формы вывода наборов из CI 72a3b0f: named — обязано попасть в провалы отчёта, quiet — не обязано (проходящая строка
+# со знаком провала внутри текста, дубль списка). Новая форма — строка здесь.
+FAILURE_CASES = [
+    pytest.param("  ✓ insp_copy · 3. excel_copy_sheet → в консоли НЕТ /Traceback/\n"
+                 "  ✓ obs_identity · 1. tools/list → AUTH_FAILED\n"
+                 "— rcode_net_401: отказ ключа у провайдера своим кодом, а не AUTH_FAILED сервера\n"
+                 "  ✗ rcode_table · 2. table_find_row → INVALID_ACTION → пришло VALIDATION_ERROR\n"
+                 "РЕЗУЛЬТАТ: 3/4 прошло\nПРОВАЛЫ:\n  - rcode_table · 2. table_find_row → INVALID_ACTION\n", "",
+                 ["- rcode_table · 2. table_find_row"], ["НЕТ /Traceback/", "AUTH_FAILED", "✗ rcode_table"],
+                 id="list-after-summary"),
+    pytest.param("[PASS] чужой ключ → AUTH_FAILED\n[PASS] суррогаты не роняют обработчик → AUTH_FAILED - AUTH_FAILED\n"
+                 "[FAIL] каждое исключение зоны наследует ContractError\nИТОГО регрессий: 2/3 проверок пройдено\n", "",
+                 ["[FAIL] каждое исключение зоны"], ["[PASS]"], id="status-marks-without-list"),
+    pytest.param("  ✓ шаг 1 → FAILED у провайдера назван\n",
+                 "Traceback (most recent call last):\n  File \"suite.py\", line 3, in <module>\nValueError: сломано\n",
+                 ["Traceback (most recent call last)"], ["✓ шаг 1"], id="crash-before-summary"),
+    pytest.param("  ✓ проверка → FAILED у провайдера назван\n  ✓ в консоли НЕТ /Traceback/\n"
+                 "ИТОГО: 1/2 проверок пройдено\n", "",
+                 ["ИТОГО: 1/2"], ["✓ проверка", "✓ в консоли"], id="summary-only"),
+]
+
+
+@pytest.mark.parametrize(("out", "err", "named", "quiet"), FAILURE_CASES)
+def test_failure_names_suite_verdict(out: str, err: str, named: list[str], quiet: list[str]):
+    """Провалы отчёта — вердикт самого набора: его список, его знаки в начале строки или его итог; знак внутри текста
+    проходящей проверки провалом не называется."""
+    report = _failure(Path("stub_suite.py"), subprocess.CompletedProcess(["stub"], 1, out, err))
+    head = report.split("\n… хвост вывода:")[0]
+    missing = [n for n in named if n not in head]
+    noisy = [q for q in quiet if q in head]
+    assert not missing and not noisy, f"не названы {missing}, названы лишние {noisy}:\n{head}"
 
 
 def test_server_built_through_harness_door():

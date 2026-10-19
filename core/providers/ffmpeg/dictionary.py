@@ -92,10 +92,14 @@ class FfmpegDictionary:
 
     # ═══ Кодеки и общие параметры выхода ═══
 
+    def encoders(self) -> dict[str, str]:
+        """Объявленная карта «кодек книги → энкодер ffmpeg» целиком."""
+        by_name = ((self.data.get("codecs") or {}).get("video") or {}).get("by_name") or {}
+        return {str(codec): str(encoder) for codec, encoder in by_name.items()}
+
     def encoder(self, codec: str) -> str:
         """Имя кодека из книги → имя энкодера ffmpeg. Человек пишет `h265`, ключу нужен `libx265`."""
-        section = (self.data.get("codecs") or {}).get("video") or {}
-        by_name = section.get("by_name") or {}
+        by_name = self.encoders()
         if codec not in by_name:
             raise FfmpegError("RENDER_PROFILE_INVALID", facts={"column": "codec", "allowed": ", ".join(sorted(by_name))})
         return guard(str(by_name[codec]), "codec")
@@ -116,12 +120,15 @@ class FfmpegDictionary:
 
     # ═══ Жалобы бинаря ═══
 
-    def failure_code(self, stderr: str) -> str:
-        """Код реестра по причине, которую ffmpeg называет последней строкой отказа."""
-        section = self.data.get("failures") or {}
-        by_reason = section.get("by_reason") or {}
+    def failure(self, stderr: str) -> tuple[str, str]:
+        """Код реестра и источник его фактов (`failures.by_reason.<причина>.facts`, пусто — нет) по причине, которую
+        ffmpeg называет последней строкой отказа; незнакомая — `failures.default`."""
         tail = stderr.strip().rsplit("\n", 1)[-1] if stderr.strip() else ""
-        for reason, code in by_reason.items():
+        for reason, rule in (self._decl.need("failures", "by_reason", kind=dict)).items():
             if reason in tail or reason in stderr:
-                return str(code)
-        return str(section.get("default", "RENDER_FAILED"))
+                return str(rule["code"]), str(rule.get("facts") or "")
+        return self.failure_default(), ""
+
+    def failure_default(self) -> str:
+        """Код отказа ffmpeg, причина которого не названа или не подтверждена фактом."""
+        return self._decl.need("failures", "default", kind=str)

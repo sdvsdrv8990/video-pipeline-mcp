@@ -106,21 +106,31 @@ class DiffusersLocalIMG:
             as_dtype=where["dtype"])
         return self.registry.pool.get(key, build, need_bytes=need, device=where["device"])
 
-    def generate(self, request: MediaRequest) -> MediaOutcome:
-        """Нарисовать промпт в файл. Синхронно: результат сразу на диске."""
+    def ready(self, request: MediaRequest) -> dict:
+        """Готовность до вызова (MF-13): промпт есть, каталог весов готов — путь и ступень проверки; иначе отказ кодом
+        причины. Зовут дверь до задания и `generate` перед расчётом: диск мог смениться между ними."""
         if not (request.input or "").strip():
             raise ProviderError("VALIDATION_ERROR", errors=[{"field": "input", "rule": "required"}])
+        return self.registry.ready(request.params.get("model"), must_be_dir=True)
+
+    def generate(self, request: MediaRequest) -> MediaOutcome:
+        """Нарисовать промпт в файл. Синхронно: результат сразу на диске."""
+        weights = self.ready(request)["path"]
         params = request.params
         from ..hardware import placement
         entry = self.registry.model_entry(params.get("model"))
         where = self._where(params)
         place = placement(self._gpu_rules, (self.registry.config.get("local") or {}).get("fit") or {},
                           entry, where)
-        pipe = self._pipeline(self.registry.ready(params.get("model"), must_be_dir=True)["path"],
-                              self._load_kwargs(params, entry), where, place)
+        pipe = self._pipeline(weights, self._load_kwargs(params, entry), where, place)
         request.target.parent.mkdir(parents=True, exist_ok=True)
+        seed = params.get("seed")
         try:
-            images = pipe(prompt=request.input, **self._call_kwargs(params)).images
+            import torch
+            # Дубль вызова (`take` → `seed`) — зерно генератора на процессоре: тот же дубль — тот же кадр на любом устройстве.
+            chance = ({"generator": torch.Generator("cpu").manual_seed(seed)}
+                      if isinstance(seed, int) and not isinstance(seed, bool) else {})
+            images = pipe(prompt=request.input, **self._call_kwargs(params), **chance).images
         except Exception as e:  # среда/память/веса
             raise ProviderError("LOCAL_INFERENCE_FAILED") from e
         files: list[Path] = []

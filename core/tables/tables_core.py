@@ -9,9 +9,12 @@
 """
 
 from __future__ import annotations
+import re
+from datetime import date
 from typing import Literal, get_args
 
 from core.contracts import ContractError
+from core.formulas import computed, declared_language
 
 # Действия, которые можно класть в очередь (пишущие примитивы).
 # get_column/get_row — чтения, в очередь НЕ кладутся (ИНСТРУКЦИЯ §4).
@@ -62,7 +65,6 @@ class TableEngine:
     def _sheet(self, snapshot: dict, sheet: str) -> dict:
         """Достаёт лист (`sheet_of`)."""
         return sheet_of(snapshot, sheet)
-        return snapshot[sheet]
 
     @staticmethod
     def _rows(sheet_obj: dict) -> dict:
@@ -118,7 +120,8 @@ class TableEngine:
 
 
     def _validate_write(self, sheet_obj: dict, sheet: str, column: str, value) -> None:
-        """Общая проверка перед записью поля: computed-защита + enum.
+        """Общая проверка перед записью поля: computed-защита, enum, объявленный тип и формат строки — формулы снимка
+        получают только значения своего типа. Пусто (None, "") — неполные данные, его судит запасное значение формулы.
 
         Немедленный отказ (до постановки в очередь) — как велит «защита формул».
         """
@@ -136,6 +139,14 @@ class TableEngine:
             if allowed and value not in allowed:
                 raise TableError("ENUM_VIOLATION", facts={
                     "column": column, "sheet": sheet, "allowed": ", ".join(map(str, allowed))})
+        if value is None or value == "":
+            return
+        if (kind := col.get("type")) in _ACCEPTS and not _ACCEPTS[kind](value):
+            raise TableError("VALIDATION_ERROR", errors=[{"field": f"{sheet}.{column}", "rule": "type",
+                                                          "expected": kind, "got": type(value).__name__}])
+        if (pattern := col.get("pattern")) and not (isinstance(value, str) and re.fullmatch(pattern, value)):
+            raise TableError("VALIDATION_ERROR", errors=[{"field": f"{sheet}.{column}", "rule": "format",
+                                                          "expected": pattern}])
 
     # ═══ АНАЛИЗ ДАННЫХ ═══
 
@@ -228,6 +239,7 @@ class TableEngine:
         sheet_obj = self._sheet(snapshot, sheet)
         self._row(self._rows(sheet_obj), sheet, row_id)
         self._validate_write(sheet_obj, sheet, column, value)
+        self._key_free(table, sheet_obj, sheet, {column: value}, self._pending(table, sheet, self._rows(sheet_obj)), row_id)
         op = {"action": "set", "sheet": sheet, "row_id": row_id, "column": column, "value": value}
         self.state.push_to_queue(table, op)
         return op
@@ -246,6 +258,7 @@ class TableEngine:
         self._row(self._rows(sheet_obj), sheet, row_id)
         for column, value in data.items():
             self._validate_write(sheet_obj, sheet, column, value)
+        self._key_free(table, sheet_obj, sheet, data, self._pending(table, sheet, self._rows(sheet_obj)), row_id)
         op = {"action": "update", "sheet": sheet, "row_id": row_id, "data": dict(data)}
         self.state.push_to_queue(table, op)
         return op
@@ -259,6 +272,7 @@ class TableEngine:
         sheet_obj = self._sheet(snapshot, sheet)
         for column, value in data.items():
             self._validate_write(sheet_obj, sheet, column, value)
+        self._key_free(table, sheet_obj, sheet, data, self._pending(table, sheet, self._rows(sheet_obj)))
         row_id = self.ids.generate_simple(id_prefix)
         op = {"action": "append", "sheet": sheet, "row_id": row_id, "data": dict(data)}
         self.state.push_to_queue(table, op)
@@ -272,6 +286,36 @@ class TableEngine:
         op = {"action": "delete", "sheet": sheet, "row_id": row_id}
         self.state.push_to_queue(table, op)
         return op
+
+    def _pending(self, table: str, sheet: str, rows: dict) -> dict:
+        """Строки листа, какими их сделает очередь: снимок, поверх — ещё не применённые операции того же листа по порядку
+        (append, update и set дают значения, delete убирает строку)."""
+        held = {rid: dict(row) for rid, row in rows.items()}
+        for item in self.state.read_queue(table):
+            op = item.get("operation") or {}
+            rid = op.get("row_id")
+            if op.get("sheet") != sheet or not rid:
+                continue
+            if op.get("action") == "delete":
+                held.pop(rid, None)
+            elif op.get("action") == "set":
+                held.setdefault(rid, {})[op.get("column")] = op.get("value")
+            else:
+                held.setdefault(rid, {}).update(op.get("data") or {})
+        return held
+
+    def _key_free(self, table: str, sheet_obj: dict, sheet: str, data: dict, held: dict, row_id: str = "") -> None:
+        """Значение ключа (столбец схемы с меткой `key`), которое пишет запись, не держит другая строка `held` — иначе отказ
+        с ID строки, что его держит: новой строке (append, `row_id` пуст) — ROW_KEY_EXISTS, правке строки `row_id` —
+        ROW_KEY_TAKEN. Строка со своим же ключом и пустой ключ не судятся."""
+        for column, spec in self._schema(sheet_obj).items():
+            value = data.get(column)
+            if not (spec or {}).get("key") or value in (None, ""):
+                continue
+            holder = next((rid for rid, row in held.items() if rid != row_id and row.get(column) == value), None)
+            if holder:
+                raise TableError("ROW_KEY_TAKEN" if row_id else "ROW_KEY_EXISTS", facts={
+                    "table": table, "sheet": sheet, "column": column, "value": value, "row_id": holder})
 
     # ═══ ОЧЕРЕДЬ (json_*) ═══
 
@@ -322,50 +366,112 @@ class TableEngine:
             return {"applied": 0, "skipped": [], "xlsx_synced": False,
                     "note": "Очередь пуста — применять нечего."}
 
-        snapshot = self.state.read_snapshot(table) or {}
         applied = 0
         skipped: list[dict] = []
+        # Чтение—правка—запись под замком снимка: учёт расхода и вторая очередь того же снимка не затрут применённое.
+        with self.state.edit_snapshot(table) as snapshot:
+            for item in queued:
+                op = item.get("operation", {})
+                kind = op.get("action")
+                sheet = op.get("sheet")
+                sheet_obj = snapshot.setdefault(sheet, {"schema": {}, "rows": {}})
+                sheet_obj.setdefault("rows", {})
+                rows = sheet_obj["rows"]
+                try:
+                    if kind == "set":
+                        col, rid = op["column"], op["row_id"]
+                        self._row(rows, sheet, rid)             # строка могла исчезнуть до применения
+                        self._validate_write(sheet_obj, sheet, col, op.get("value"))
+                        self._key_free(table, sheet_obj, sheet, {col: op.get("value")}, rows, rid)
+                        rows[rid][col] = op.get("value")
+                    elif kind == "update":
+                        rid, data = op["row_id"], op.get("data", {})
+                        self._row(rows, sheet, rid)
+                        # Сперва проверяем ВСЕ поля, и только потом пишем хоть одно: иначе отказ
+                        # на третьем поле оставил бы строку наполовину изменённой.
+                        for col, value in data.items():
+                            self._validate_write(sheet_obj, sheet, col, value)
+                        self._key_free(table, sheet_obj, sheet, data, rows, rid)
+                        rows[rid].update(data)
+                    elif kind == "append":
+                        self._key_free(table, sheet_obj, sheet, op.get("data", {}), rows)
+                        rows[op["row_id"]] = dict(op.get("data", {}))
+                    elif kind == "delete":
+                        rows.pop(op.get("row_id"), None)
+                    else:
+                        raise TableError("INVALID_ACTION", facts={"action": str(kind),
+                                                                  "allowed": ", ".join(sorted(QUEUEABLE_ACTIONS))})
+                    applied += 1
+                except TableError as e:
+                    skipped.append({"op": op, "code": e.code, "facts": dict(e.facts)})
+            self._recompute(snapshot)   # формулы — по уже применённым строкам, в той же записи снимка
 
-        for item in queued:
-            op = item.get("operation", {})
-            kind = op.get("action")
-            sheet = op.get("sheet")
-            sheet_obj = snapshot.setdefault(sheet, {"schema": {}, "rows": {}})
-            sheet_obj.setdefault("rows", {})
-            rows = sheet_obj["rows"]
-            try:
-                if kind == "set":
-                    col, rid = op["column"], op["row_id"]
-                    self._row(rows, sheet, rid)             # строка могла исчезнуть до применения
-                    self._validate_write(sheet_obj, sheet, col, op.get("value"))
-                    rows[rid][col] = op.get("value")
-                elif kind == "update":
-                    rid, data = op["row_id"], op.get("data", {})
-                    self._row(rows, sheet, rid)
-                    # Сперва проверяем ВСЕ поля, и только потом пишем хоть одно: иначе отказ
-                    # на третьем поле оставил бы строку наполовину изменённой.
-                    for col, value in data.items():
-                        self._validate_write(sheet_obj, sheet, col, value)
-                    rows[rid].update(data)
-                elif kind == "append":
-                    rows[op["row_id"]] = dict(op.get("data", {}))
-                elif kind == "delete":
-                    rows.pop(op.get("row_id"), None)
-                else:
-                    raise TableError("INVALID_ACTION", facts={"action": str(kind),
-                                                              "allowed": ", ".join(sorted(QUEUEABLE_ACTIONS))})
-                applied += 1
-            except TableError as e:
-                skipped.append({"op": op, "code": e.code, "facts": dict(e.facts)})
-
-        self.state.write_snapshot(table, snapshot)
         return {"applied": applied, "skipped": skipped, "xlsx_synced": False,
                 "note": "Применено к read.json. Синк в .xlsx отложен (следующий блок excel_*)."}
+
+    @staticmethod
+    def _recompute(snapshot: dict) -> None:
+        """Вычисляемые столбцы снимка — заново по формулам их схемы (узел формул, движок ironcalc). Снимок без вычисляемых
+        столбцов не трогается, и движок ему не нужен."""
+        if not any((spec or {}).get("computed") for sheet_obj in snapshot.values() if isinstance(sheet_obj, dict)
+                   for spec in (sheet_obj.get("schema") or {}).values()):
+            return
+        _, language = declared_language(TableError)
+        for sheet, rows in computed(snapshot, language).items():
+            for row_id, values in rows.items():
+                snapshot[sheet]["rows"][row_id].update(values)
 
     def clear_queue(self, table: str) -> dict:
         """Очистить очередь без применения (отладка/сброс)."""
         count = self.state.clear_queue(table)
         return {"cleared": count}
+
+    def declare_sheets(self, table: str, book, fallbacks: dict | None = None, patterns: dict | None = None) -> list[str]:
+        """Схемы листов снимка — проекция декларации книги (`BookSchema`): тип, перечень, формат строки (выражение
+        `patterns[(лист, столбец)]` — его судит запись), вычисляемый (столбец F с формулой: сама формула имён и запасное
+        значение `fallbacks[(лист, столбец)]` — по ним считает узел формул), лист-запись. Строки листа не трогаются;
+        листа нет — рождается пустым со схемой."""
+        with self.state.edit_snapshot(table) as snapshot:
+            for sheet in book.sheets:
+                sheet_obj = snapshot.setdefault(sheet.name, {"schema": {}, "rows": {}})
+                sheet_obj["schema"] = {col.name: _declared_column(col, (fallbacks or {}).get((sheet.name, col.name)),
+                                                                  (patterns or {}).get((sheet.name, col.name)))
+                                       for col in sheet.columns}
+                if sheet.record:
+                    sheet_obj["record"] = True
+        return [sheet.name for sheet in book.sheets]
+
+
+def _declared_column(col, fallback: object, pattern: str | None) -> dict:
+    """Столбец схемы снимка из столбца декларации: F без формулы заполняет сервер или ИИ — он остаётся записываемым;
+    id — ключ строки (`key`): двух строк с одним значением лист не держит."""
+    base = {"type": col.type, **({"enum": list(col.enum)} if col.enum else {}), **({"pattern": pattern} if pattern else {}),
+            **({"key": True} if col.flag == "id" else {})}
+    if col.flag == "F" and col.formula:
+        return {**base, "computed": True, "formula": col.formula, "fallback": fallback}
+    return base
+
+
+def _iso_date(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+# Что принимает запись по объявленному типу столбца (перечень судит своя проверка): bool — не число; строковый столбец
+# несёт и числа (метрика — число или статус), список — строкой через запятую или списком строк.
+_ACCEPTS = {
+    "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+    "float": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+    "boolean": lambda v: isinstance(v, bool),
+    "string": lambda v: isinstance(v, (str, int, float)),
+    "date": _iso_date,
+    "list": lambda v: isinstance(v, str) or (isinstance(v, (list, tuple)) and all(isinstance(x, str) for x in v)),
+}
 
 
 def sheet_of(snapshot: dict, sheet: str) -> dict:

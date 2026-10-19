@@ -148,14 +148,21 @@ async def main():
 
     import string
     broken = []
+    templating = _Records()
+    logging.getLogger("core.reactions.reactions").addHandler(templating)
     for code in engine.reactions.reactions:
         entry = engine.reactions.reactions[code]
-        texts = [entry.get("message_template", ""), (entry.get("recovery") or {}).get("reason", "")]
+        recovery = entry.get("recovery") or {}
+        texts = [entry.get("message_template", ""), recovery.get("reason", ""),
+                 *[v for v in (recovery.get("suggested_params") or {}).values() if isinstance(v, str)]]
         names = {f for t in texts for _, f, _, _ in string.Formatter().parse(t) if f}
         got = engine.reactions.get_error(code, facts=dict.fromkeys(names, "ФАКТ"))
-        if any("{" + n + "}" in got.message + got.recovery.reason for n in names):
+        if any("{" + n + "}" in got.message + got.recovery.reason + str(got.recovery.suggested_params) for n in names):
             broken.append(code)
+    logging.getLogger("core.reactions.reactions").removeHandler(templating)
     ok(not broken, f"каждый шаблон реестра заполняется своими фактами (не заполнились: {broken or '—'})")
+    unfed = sorted({x.args[0] for x in templating.records if x.levelno == logging.ERROR})
+    ok(not unfed, f"шаблону и параметрам рецепта поданы все их факты — журнал молчит (назвал: {unfed or '—'})")
 
     r = await engine.call("отказ", {})
     ok(r.status == "error" and r.error.code == "SHEET_NOT_FOUND",

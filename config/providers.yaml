@@ -442,6 +442,13 @@ local:
   source_kinds:
     hf_hub:
       size_header: X-Linked-Size
+      # Срок одной фазы запроса к API хаба (список, ревизия, файлы модели). Клиент сессии хаба сроку не учит:
+      # huggingface_hub v1.31.0 utils/_http.py default_client_factory — httpx.Client(timeout=None), а list_models
+      # своего срока не принимает; значение — DEFAULT_REQUEST_TIMEOUT той же версии (constants.py).
+      timeout_sec: 10
+      # Ответы «источник перегружен или сбоит — повтори позже» (MODEL_SOURCE_UNREACHABLE), а не «ответ сломан»: те же
+      # коды, на которых сам хаб повторяет (huggingface_hub v1.31.0 utils/_http.py:428 _DEFAULT_RETRY_ON_STATUS_CODES).
+      retry_later_statuses: [408, 429, 500, 502, 503, 504]
 
   # ПОДНЯТАЯ МОДЕЛЬ МЕЖДУ ВЫЗОВАМИ. Замер (sd-turbo): 10.9 с на холодную, 1.4 с при тёплом
   # кэше ядра, 0.2 с — если модель уже поднята. Страницы весов кэширует само ядро, а вот разбор в

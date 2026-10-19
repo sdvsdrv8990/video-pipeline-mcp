@@ -40,16 +40,18 @@ class LinkRegistry:
         self.identity = identity
 
     def _load(self) -> dict:
-        if self.path.exists():
-            try:
-                data = json.loads(self.path.read_text(encoding="utf-8"))
-                if isinstance(data, dict) and isinstance(data.get("entities"), dict):
-                    self._verdict = self._check_seal(data)
-                    return data
-            except (json.JSONDecodeError, OSError):
-                pass
-        self._verdict = ""
-        return {"entities": {}}
+        """Реестр с диска. Файла нет — новая рабочая область, реестр законно пуст; файл есть, но не читается как реестр —
+        STATE_INVALID без записи: пустое прочтение затёрло бы все ID при следующей записи."""
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            data = {"entities": {}}
+        except (ValueError, OSError):           # не JSON, не utf-8, ОС не читает
+            data = None
+        if not isinstance(data, dict) or not isinstance(data.get("entities"), dict):
+            raise LinkError("STATE_INVALID", facts={"path": REGISTRY_FILE, "subject": "реестр связей"})
+        self._verdict = self._check_seal(data)
+        return data
 
     def _check_seal(self, data: dict) -> str:
         """Чья это запись. "" — наша (или проверка не подключена)."""

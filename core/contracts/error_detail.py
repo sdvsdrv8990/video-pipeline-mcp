@@ -46,7 +46,7 @@ _КОДЫ = {
     "MODEL_REVISION_UNKNOWN", "MODEL_SOURCE_UNREACHABLE", "MODEL_NAME_TAKEN",
     "MODEL_UNLOADABLE", "BOOK_ROW_INVALID",
     "MODEL_NO_DISK_SPACE", "DISK_SPACE_UNKNOWN", "MODEL_SIZE_UNKNOWN", "TASK_NOT_FOUND",
-    "TASK_INTERRUPTED", "TASK_RECORD_INVALID", "TASK_CANCELLED", "TASK_FINISHED", "TASK_FOREIGN",
+    "TASK_INTERRUPTED", "TASK_RECORD_INVALID", "TASK_CANCELLED", "TASK_FINISHED", "TASK_FOREIGN", "STATE_INVALID",
     "RESOURCE_BUSY", "WORKER_UNAVAILABLE",
     # Объявлены в server_reactions.yaml и реально бросаются, но выпали отсюда —
     # ErrorDetail предупреждал «код не в реестре» на штатных отказах поиска и пересчёта
@@ -67,7 +67,7 @@ _КОДЫ = {
     # Периметр: отказ до разбора запроса как MCP (error.data JSON-RPC)
     "HOST_FORBIDDEN", "ORIGIN_FORBIDDEN", "MEDIA_TYPE_UNSUPPORTED", "REQUEST_UNREADABLE", "REQUEST_MALFORMED",
     "FIREWALL_UNAVAILABLE", "REQUEST_BLOCKED", "RATE_LIMITED",
-    "SHEET_NOT_FOUND", "COLUMN_NOT_FOUND", "ROW_NOT_FOUND",
+    "SHEET_NOT_FOUND", "COLUMN_NOT_FOUND", "ROW_NOT_FOUND", "ROW_KEY_EXISTS", "ROW_KEY_TAKEN",
     "COMPUTED_READONLY", "ENUM_VIOLATION", "INVALID_ACTION",
     # Таблицы: структура (Категория 2, excel_*)
     "WORKBOOK_NOT_FOUND", "SHEET_EXISTS", "SHEET_NAME_INVALID", "LAST_SHEET",
@@ -81,7 +81,7 @@ _КОДЫ = {
     # Декларация config/*.yaml не прошла схему двери (поле и правило — в errors); её нет на сервере
     "DECLARATION_INVALID", "DECLARATION_MISSING",
     # Иерархия ID: цепочка по каталогу назначения
-    "DUPLICATE_PATH", "CHAIN_UNRESOLVED", "TEMPLATE_INVALID",
+    "DUPLICATE_PATH", "CHAIN_UNRESOLVED", "CHAIN_NOT_CREATED", "TEMPLATE_INVALID",
     # Целостность артефактов: подпись инстанса и отпечаток машины
     "FOREIGN_WRITE", "MACHINE_MISMATCH",
     # Тип файла запрещён к записи

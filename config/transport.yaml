@@ -21,12 +21,25 @@ origins:
 # once one JSON response body … passes 16 MB after decompression. The request that response answers fails». Текст
 # отказа (isError) длиннее ~11 000 знаков режется: «keeps only its first 5,000 and last 5,000 characters» — целым
 # остаётся 10 000. Срок вызова не объявлен: без MCP_TOOL_TIMEOUT у клиента «about 28 hours» — его умолчание, не наш срок.
+# Исправлено 2026-10-19 (прочитано 13.10 неполно): code.claude.com/docs/en/env-vars.md, строка MCP_TOOL_TIMEOUT, установлен
+# 2.1.302 — «For an HTTP, SSE, or claude.ai connector server, each request also times out after 60 seconds by default; set
+# this variable, or the per-server `timeout`, above 60000 to raise that per-request limit». Сервер для Claude Code — HTTP
+# (server.py, aiohttp на петле), поэтому срок 60 с. Поднятый пользователем предел (MCP_TOOL_TIMEOUT или `timeout` сервера)
+# серверу не виден: тогда дверь отдаёт статус раньше, чем могла бы, — честно, без обрыва.
+# `reserve_sec` — запас доставки ответа внутри срока: дверь ждёт задание не дольше call_sec − reserve_sec. Замер петли
+# 2026-10-19 00:13 (seamkeeper workspace/orders/infra/job-node/media-generate/reserve_probe.out, проба reserve_probe.py
+# там же): живой server.py, 127.0.0.1, круг task_status N=300 — p50 3,34 мс, p99 19,39 мс, max 30,98 мс, ответ 461 знак;
+# 1 с — p99 с округлением вверх до шага срока (call_sec — целые секунды). Туннель — не мерено: нет замера туннеля, его
+# доля прибавится к запасу claude_ai после замера.
 clients:
   claude_ai:
     reached: tunnel
     answer_chars: 150000
     call_sec: 240
+    reserve_sec: 1
   claude_code:
     reached: loopback
     answer_bytes: 16000000
     error_chars: 10000
+    call_sec: 60
+    reserve_sec: 1

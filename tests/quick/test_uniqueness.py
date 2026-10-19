@@ -215,8 +215,15 @@ ok(not _clean6["compensation"]["active"],
     "SCENE_PROFILE": {"schema": {}, "rows": {
         "R1": {"fragment_type": "layer_bg", "enabled": True, "niche_weight": 0.7},
         "R2": {"fragment_type": "music", "enabled": True, "niche_weight": 0.3}}},
+    "NOTES": {"schema": {}, "rows": {"N1": {"note": "до правки"}}},
 }), encoding="utf-8")
+# Отложенная правка клиента в очереди стола: запись журнала компенсации — своя строка, очередь клиента не применяется
+# (прежде execute_queue стола утаскивал все накопленные правки клиента вместе с записью журнала).
+_queued = _call("table_update", table="v2", sheet="NOTES", row_id="N1", data={"note": "правка клиента"})
 _runs = [_call("uniqueness_check", table="v2", row_id="P1").data["compensation"] for _ in range(3)]
+_notes = json.loads((_ws / "v2" / "read.json").read_text(encoding="utf-8"))["NOTES"]["rows"]["N1"]["note"]
+ok(_queued.status == "success" and _notes == "до правки",
+   f"запись журнала не применила отложенную правку клиента: очередь ждёт его решения ({_notes!r})")
 ok([r["history"] for r in _runs] == [0, 1, 2],
    f"каждое применение приёма записано в проект ({[r['history'] for r in _runs]})")
 ok(all(r.get("recorded") for r in _runs),

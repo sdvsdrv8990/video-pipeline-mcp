@@ -210,13 +210,7 @@ class ModelCatalog:
             return self._revisions[repo]
         from huggingface_hub import HfApi
 
-        try:
-            sha = HfApi().repo_info(repo_id=repo, repo_type="model").sha
-        except Exception as e:
-            refusal = self._hub_refusal(repo, e)
-            if refusal is None:
-                raise
-            raise refusal from e
+        sha = self._hub(repo, lambda: HfApi().repo_info(repo_id=repo, repo_type="model").sha)
         self._revisions[repo] = str(sha or "")
         return self._revisions[repo]
 
@@ -267,7 +261,7 @@ class ModelCatalog:
         min_downloads = int(filters.get("min_downloads") or 0)
         want = [str(f).lower() for f in (src.get("require_formats") or [])]
         rows = []
-        for model in api.list_models(**kwargs):
+        for model in self._hub("", lambda: list(api.list_models(**kwargs))):   # список ограничен kwargs["limit"]
             if model.downloads < min_downloads:
                 continue
             if filters.get("gated") is False and model.gated:
@@ -326,12 +320,13 @@ class ModelCatalog:
         from huggingface_hub import model_info
 
         try:
-            info = model_info(model_id, revision=self.pinned(model_id) or None, files_metadata=True)
-        except Exception as e:  # сеть/закрытый репозиторий
+            info = self._hub(model_id, lambda: model_info(model_id, revision=self.pinned(model_id) or None,
+                                                         files_metadata=True))
+        except Exception as e:  # сеть/закрытый репозиторий — код причины узла хаба; чужое — INTERNAL_ERROR с трассировкой
             # Не знаем — так и говорим: молча выкинуть модель значило бы соврать, что её нет. Причина — в журнал под номером.
-            refusal = self._hub_refusal(model_id, e)
-            code = refusal.code if refusal else ""
-            return {"detail_error": code or "INTERNAL_ERROR", "event": incident(log, f"детали модели {model_id}", e, code)}
+            declared = e.code if isinstance(e, ContractError) else ""
+            return {"detail_error": declared or "INTERNAL_ERROR",
+                    "event": incident(log, f"детали модели {model_id}", e.__cause__ or e, declared)}
         picked, _, chosen = self._pick([s.rfilename for s in info.siblings or []], tuple(want))
         try:
             sizes, unknown = self._part_sizes(model_id, info, picked)
@@ -440,23 +435,41 @@ class ModelCatalog:
         picked = fp16 + [n for n in keep if not n.endswith(".safetensors")] if fp16 else keep
         return picked, refused, self.prefer(picked) or (picked[0] if picked else "")
 
+    def _hub(self, repo: str, call):
+        """Вызов API хаба — один узел: срок фазы запроса объявлен (`local.source_kinds.hf_hub.timeout_sec`) и ставится на
+        общую сессию хаба (её клиент сроку не учит, list_models срока не принимает); сбой — отказ кодом причины
+        (`_hub_refusal`), слова хаба — причиной в журнал. `repo` — о чём спрашиваем; список — без репозитория."""
+        from huggingface_hub.utils import get_session
+
+        get_session().timeout = self._decl.need("local", "source_kinds", "hf_hub", "timeout_sec", kind=float)
+        try:
+            return call()
+        except Exception as e:
+            refusal = self._hub_refusal(repo, e)
+            if refusal is None:
+                raise
+            raise refusal from e
+
     def _hub_refusal(self, repo: str, e: Exception) -> ProviderError | None:
-        """Сбой хаба по репозиторию — отказ кодом причины: закрыто автором, репозитория нет, источник ответил ошибкой или
-        не ответил; иное исключение — не сбой хаба (None)."""
+        """Сбой хаба по репозиторию — отказ кодом причины: закрыто автором, репозитория нет, источник перегружен или не
+        ответил (объявленные статусы «повтори позже», сеть, срок), ответил иной ошибкой; иное — не сбой хаба (None)."""
         from huggingface_hub import constants
         from huggingface_hub.errors import GatedRepoError, HfHubHTTPError, RepositoryNotFoundError
         from huggingface_hub.utils import httpx    # транспорт самого хаба: в 1.x — httpx, в 2.x — httpx2
 
         host = urlparse(constants.ENDPOINT).hostname
+        about = {"model": repo} if repo else {}
         if isinstance(e, GatedRepoError):             # подкласс RepositoryNotFoundError: порядок от частного к общему
             return ProviderError("MODEL_GATED", facts={"model": repo})
         if isinstance(e, RepositoryNotFoundError):
             return ProviderError("MODEL_NOT_IN_CATALOG", facts={"model": repo, "source": host})
         if isinstance(e, HfHubHTTPError):
-            return ProviderError("MODEL_REVISION_UNKNOWN",
-                                 facts={"model": repo, "host": host, "status": e.response.status_code})
+            status = e.response.status_code
+            later = self._decl.need("local", "source_kinds", "hf_hub", "retry_later_statuses", kind=list[int])
+            code = "MODEL_SOURCE_UNREACHABLE" if status in later else "MODEL_REVISION_UNKNOWN"
+            return ProviderError(code, facts={**about, "host": host, "status": status})
         if isinstance(e, (httpx.HTTPError, OSError)):  # сеть; офлайн-режим hf — ConnectionError; имя класса — в журнал
-            return ProviderError("MODEL_SOURCE_UNREACHABLE", facts={"model": repo, "host": host})
+            return ProviderError("MODEL_SOURCE_UNREACHABLE", facts={**about, "host": host})
         return None
 
     # ═══ Правила установки ═══
@@ -769,7 +782,7 @@ class ModelCatalog:
 
         rev = self.revision(model_id)
         # Список файлов и сами файлы обязаны быть из ОДНОГО состояния репозитория.
-        info = model_info(model_id, revision=rev, files_metadata=True)
+        info = self._hub(model_id, lambda: model_info(model_id, revision=rev, files_metadata=True))
         if getattr(info, "gated", False):
             raise ProviderError("MODEL_GATED", facts={"model": model_id})
         siblings = {s.rfilename: s for s in (info.siblings or [])}

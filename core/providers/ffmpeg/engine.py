@@ -123,11 +123,40 @@ class FfmpegEngine:
             raise pulse.refusal()
         stderr = "".join(said)
         if proc.returncode != 0:
-            raise FfmpegError(self.dict.failure_code(stderr), f"ffmpeg завершился с кодом {proc.returncode}",
-                              facts={"exit_code": proc.returncode},
-                              reason="Слова ffmpeg о том, что ему помешало, — в журнале сервера.") \
-                from FfmpegSaid(stderr)
+            raise self._failure(argv, stderr, proc.returncode)
         return stderr
+
+    def _failure(self, argv: list[str], stderr: str, exit_code: int) -> FfmpegError:
+        """Ненулевой код ffmpeg — отказ кодом карты отказов с фактами объявленного источника; причина не подтверждена
+        фактом (пропавшего входа нет) — код по умолчанию. Слова ffmpeg — причиной в журнал (номер события — фактом)."""
+        code, source = self.dict.failure(stderr)
+        facts: dict = {"exit_code": exit_code}
+        if source == "missing_input":         # вход-файл команды — абсолютный путь (lavfi-источник им не бывает)
+            gone = [Path(p) for i, p in enumerate(argv[1:], 1) if argv[i - 1] == "-i"
+                    and Path(p).is_absolute() and not Path(p).exists()]
+            if gone:
+                facts["path"] = self.name(gone[0])
+            else:
+                code = self.dict.failure_default()
+        elif source == "encodable":
+            allowed = self._encodable()
+            if allowed:
+                facts.update(column="codec", allowed=allowed)
+            else:                               # бинарь не назвал энкодеров — причина не подтверждена
+                code = self.dict.failure_default()
+        refused = FfmpegError(code, facts=facts)
+        refused.__cause__ = FfmpegSaid(stderr)
+        return refused
+
+    def _encodable(self) -> str:
+        """Кодеки словаря, чьи энкодеры есть в этом бинаре (`-encoders`): что строка профиля может назвать; бинарь не
+        ответил списком — пусто."""
+        probe = subprocess.run([self.binary(), "-hide_banner", "-encoders"], capture_output=True, text=True,
+                               **child_spawn("replace"))
+        if probe.returncode != 0:
+            return ""
+        present = {line.split()[1] for line in probe.stdout.splitlines() if len(line.split()) > 1}
+        return ", ".join(sorted(codec for codec, encoder in self.dict.encoders().items() if encoder in present))
 
     @staticmethod
     def _follow(proc: subprocess.Popen, pulse, frames: int | None) -> None:

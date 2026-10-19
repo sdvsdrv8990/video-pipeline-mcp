@@ -18,6 +18,12 @@ def register(engine: Engine, ctx: ToolContext) -> None:
 
     planner = QueryPlanner(ctx.table_engine, ctx.state_manager.workspace_path)
 
+    def executed(name: str, plan) -> dict:
+        """План исполнен; упавшие чтения — частями той же формы, что отказ; ни одного удачного — отказ вызова."""
+        result = planner.execute_plan(plan)
+        result["errors"] = ctx.failed_parts(name, result["errors"], result["metadata"]["reads_successful"])
+        return result
+
     async def search_tables(yaml_query: str | None = None, query_dict: dict | None = None) -> "ToolResult":
         """Умный поиск по таблицам через YAML-запрос.
 
@@ -40,7 +46,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                                 errors=[{"field": "yaml_query", "rule": "required", "expected": "yaml_query или query_dict"}])
 
         plan = planner.load_query_from_dict(data)
-        result = planner.execute_plan(plan)
+        result = executed("search_tables", plan)
 
         return ToolResult(status="success", data=result,
                           facts=[Fact(type="SearchCompleted", data={
@@ -65,7 +71,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "limit": limit,
         }
         plan = planner.load_query_from_dict(query)
-        result = planner.execute_plan(plan)
+        result = executed("search_quick", plan)
         return ToolResult(status="success", data=result,
                           facts=[Fact(type="QuickSearch", data={
                               "table": table, "sheet": sheet,
@@ -94,7 +100,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "limit": limit,
         }
         plan = planner.load_query_from_dict(query)
-        result = planner.execute_plan(plan)
+        result = executed("search_multi", plan)
         return ToolResult(status="success", data=result,
                           facts=[Fact(type="MultiSearch", data={
                               "tables": len(tables),

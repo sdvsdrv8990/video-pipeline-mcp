@@ -14,7 +14,7 @@ from core.contracts import Fact, ToolResult
 from core.declaration import Declaration
 from core.engine import Engine
 from core.engine.table_materializer import declared_rows
-from core.tables import TableError
+from core.montage.ledger import append_rows
 from core.uniqueness import UniquenessEngine
 from tools._context import ANNOTATIONS_MODIFY, ToolContext
 
@@ -84,17 +84,12 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                spec.get("source_column", "flag_source"): "server",
                spec.get("reason_column", "reason"): ""}
         try:
-            # Журнал заводит сервер: до первой компенсации листа в данных проекта нет,
-            # а append проверяет существование листа (и правильно делает для клиентских правок).
-            snapshot = ctx.state_manager.read_snapshot(table) or {}
-            if sheet not in snapshot:
-                snapshot[sheet] = {"schema": {}, "rows": {}}
-                ctx.state_manager.write_snapshot(table, snapshot)
-            ctx.table_engine.append(table, sheet, row, id_prefix="UALERT")
-            ctx.table_engine.execute_queue(table)
-            return {"recorded": True, "sheet": sheet}
-        except (TableError, OSError) as e:
-            return {"recorded": False, "reason": str(e)}
+            # Своя строка — в снимок мимо очереди записи (узел журнала рендера): применение очереди утащило бы с собой
+            # отложенные правки клиента; лист журнала до первой компенсации заводит тот же узел.
+            row_id = append_rows(ctx.state_manager, table, sheet, [row], ctx.id_generator, "UALERT")[0]
+            return {"recorded": True, "sheet": sheet, "row_id": row_id}
+        except Exception as e:  # провал записи — частью формой отказа (код, текст реестра, факты), не текстом исключения
+            return {"recorded": False, **ctx.part("uniqueness_check", e)}
 
     async def uniqueness_check(table: str, row_id: str = "") -> "ToolResult":
         """Посчитать уникальность применения патерна и сказать, ХВАТИЛО ЛИ данных.

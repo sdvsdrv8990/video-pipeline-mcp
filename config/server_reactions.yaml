@@ -196,6 +196,22 @@ ROW_NOT_FOUND:
     suggested_tool: table_find_row
     reason: "Если известно ЗНАЧЕНИЕ, а не ID — найди ID через table_find_row(where={{столбец: значение}}); иначе создай строку через table_append."
 
+ROW_KEY_EXISTS:
+  class: ai_recoverable
+  message_template: "Ключ {column}={value} уже есть в листе {sheet}: это строка {row_id}."
+  recovery:
+    suggested_tool: table_update
+    suggested_params: { table: "{table}", sheet: "{sheet}", row_id: "{row_id}" }
+    reason: "Вторая строка с тем же ключом не заводится. Правь строку {row_id} через table_update; новая строка — с другим значением ключа."
+
+ROW_KEY_TAKEN:
+  class: ai_recoverable
+  message_template: "Ключ {column}={value} в листе {sheet} занят строкой {row_id}."
+  recovery:
+    suggested_tool: table_update
+    suggested_params: { table: "{table}", sheet: "{sheet}", row_id: "{row_id}" }
+    reason: "Ничего не изменено. Выбери другое значение ключа или правь строку {row_id}."
+
 COMPUTED_READONLY:
   class: ai_recoverable
   message_template: "Столбец «{column}» вычисляемый (формула) — запись данных запрещена."
@@ -292,7 +308,7 @@ PROVIDER_TIMEOUT:
   message_template: "Провайдер не ответил за отведённое время."
   recovery:
     reason: "Какой предел истёк — в фактах отказа. Вызов, оборванный по сроку после отправки, мог выполниться: проверь задачу у провайдера. Повтор без изменения предела даст то же; работа штатно дольше — подними столбец timeout строки канала (table_update) или сообщи владельцу."
-    owner: "Ожидание задачи — poll.timeout_sec/max_attempts в config/media_tasks.yaml; вызов провайдера — timeout_sec (фаза) и deadline_sec (весь вызов) в config/providers.yaml → online.call или в блоке call провайдера."
+    owner: "Вызов провайдера — timeout_sec (фаза) и deadline_sec (весь вызов) в config/providers.yaml → online.call или в блоке call провайдера; опрос статуса задачи — download.answer (timeout_sec, deadline_sec) в config/media_tasks.yaml."
 
 DOWNLOAD_INCOMPLETE:
   class: server_recoverable
@@ -471,7 +487,7 @@ TASK_CANCELLED:
   class: ai_recoverable
   message_template: "Задание «{task_id}» ({tool}) снято вызовом task_cancel."
   recovery:
-    reason: "Снятие — решение вызывающего, а не сбой. Работа ещё нужна — повтори вызов {tool} с теми же параметрами."
+    reason: "Снятие — решение вызывающего, а не сбой. Работа ещё нужна — повтори вызов {tool} с теми же параметрами. Есть факт paid — провайдер работу уже принял и она оплачена: повтор оплатится заново."
 
 TASK_FINISHED:
   class: ai_recoverable
@@ -518,9 +534,9 @@ MODEL_REVISION_UNKNOWN:
 
 MODEL_SOURCE_UNREACHABLE:
   class: server_recoverable
-  message_template: "Источник «{host}» не ответил: состояние репозитория '{model}' не узнать."
+  message_template: "Источник моделей «{host}» сейчас недоступен — не ответил в срок или перегружен."
   recovery:
-    reason: "Ничего не скачано: повтори установку позже."
+    reason: "Ничего не скачано и не изменено: повтори позже."
 
 MODEL_SOURCE_FORBIDDEN:
   class: ai_recoverable
@@ -616,9 +632,9 @@ USAGE_UNIT_UNKNOWN:
 
 RECALC_UNAVAILABLE:
   class: human_required
-  message_template: "Движок пересчёта формул (LibreOffice) на сервере не найден."
+  message_template: "Движок пересчёта формул «{engine}» на сервере не найден."
   recovery:
-    reason: "Сообщи владельцу: проверка формул идёт только реальным пересчётом, без LibreOffice её нет."
+    reason: "Сообщи владельцу: формулы считает только настоящий движок пересчёта, без него расчёта нет."
 
 RECALC_TIMEOUT:
   class: ai_recoverable
@@ -710,6 +726,14 @@ CHAIN_UNRESOLVED:
     suggested_params: { path: "{path}" }
     reason: "Структура на диске опережает реестр. Посмотри цепочку через structure_resolve и усынови предков (adopt=true) либо выбери другой каталог — сервер не выдумывает ID за существующие каталоги."
 
+CHAIN_NOT_CREATED:
+  class: ai_recoverable
+  message_template: "Папок ещё нет: {paths} — файлу с собственным ID нужна зарегистрированная цепочка предков."
+  recovery:
+    suggested_tool: "structure_resolve"
+    suggested_params: { path: "{path}" }
+    reason: "Ничего не записано. Создай папку сущностью через structure_create (какой тип — покажет structure_resolve) или положи файл в зарегистрированную папку; без assign_id файл создаётся и здесь."
+
 TEMPLATE_INVALID:
   class: human_required
   message_template: "Шаблон {template} объявлен неверно: {field}."
@@ -724,6 +748,13 @@ FOREIGN_WRITE:
     suggested_tool: "structure_check_integrity"
     suggested_params: { }
     reason: "Состояние НЕ изменено. Кто-то ещё пишет в этот workspace (второй сервер, другой агент, ручная правка). Проверь целостность, восстанови файл из бэкапа или подтверди присвоение запуском server.py --re-adopt."
+
+STATE_INVALID:
+  class: integrity
+  message_template: "Служебный файл «{path}» повреждён — не читается как {subject}."
+  recovery:
+    reason: "Состояние не изменено: запись остановлена, пока файл не восстановят, — иначе пустое прочтение затёрло бы все записи. Сообщи владельцу."
+    owner: "Восстанови {path} в рабочей области из резервной копии; содержимое файла в ответе не показано."
 
 MACHINE_MISMATCH:
   class: integrity
@@ -750,7 +781,7 @@ RESULT_TOO_LARGE:
   class: ai_recoverable
   message_template: "Ответ {tool} — {chars} знаков ({bytes} байт UTF-8) — {load}% бюджета ответа клиентов этой установки: целиком клиент его не примет."
   recovery:
-    reason: "Работа сделана, не доставлен только ответ. Сузь запрос: каталог глубже, меньше строк, поиск точнее; файл — страницами: fs_read_file с offset из next_offset прошлого ответа."
+    reason: "Сузь запрос: каталог глубже, меньше строк, поиск точнее; файл — страницами: fs_read_file с offset из next_offset прошлого ответа. Пишущему инструменту этот отказ значит: работа сделана, не влез даже перечень сделанного — проверь чтением, не повторяй."
     owner: "Пределы клиентов — config/transport.yaml → clients; какие клиенты у установки — install.yaml."
 
 LINE_TOO_LONG:
@@ -829,9 +860,9 @@ SCENE_EMPTY:
 
 RENDER_FAILED:
   class: human_required
-  message_template: "ffmpeg отказался собирать: {reason}"
+  message_template: "ffmpeg отказался собирать сцену (код выхода {exit_code}); его слова — в журнале сервера, событие {event}."
   recovery:
-    reason: "Причину называет сам ffmpeg последней строкой. Смотри её: чаще всего это несовместимые параметры ассета и профиля."
+    reason: "Сообщи владельцу номер события: причину ffmpeg называет в журнале сервера, чаще всего это несовместимые параметры ассета и профиля."
 
 RENDER_UNVERIFIED:
   class: integrity

@@ -20,16 +20,16 @@ def append_rows(state, table: str, sheet: str, rows: list[dict], ids, prefix: st
     Одна реализация на два случая — результат рендера и раскладка шаблона: второй копией они
     разошлись бы по мелочам (одна создаёт лист, другая нет).
     """
-    snapshot = state.read_snapshot(table)
-    if snapshot is None:
+    if state.read_snapshot(table) is None:     # пустой снимок `{}` — законная таблица, нет файла — нет таблицы
         raise MontageError("TABLE_NOT_FOUND", facts={"table": table})
-    sheet_obj = snapshot.setdefault(sheet, {"schema": {}, "rows": {}})
     written = []
-    for row in rows:
-        row_id = ids.generate_simple(prefix)
-        sheet_obj.setdefault("rows", {})[row_id] = row
-        written.append(row_id)
-    state.write_snapshot(table, snapshot)
+    # Чтение—правка—запись под замком снимка: очередь таблицы и учёт расхода в соседнем потоке не затрут строки.
+    with state.edit_snapshot(table) as snapshot:
+        sheet_obj = snapshot.setdefault(sheet, {"schema": {}, "rows": {}})
+        for row in rows:
+            row_id = ids.generate_simple(prefix)
+            sheet_obj.setdefault("rows", {})[row_id] = row
+            written.append(row_id)
     return written
 
 

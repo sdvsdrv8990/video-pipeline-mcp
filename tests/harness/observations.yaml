@@ -129,6 +129,14 @@ MediaGenerated:
   present: {ok: true, facts: [FileRead]}
   absent: {ok: false, code: FILE_NOT_FOUND}
 
+# Генерация начата — предмет задание, как у RenderStarted: task_status отвечает успехом и на чужой id.
+MediaStarted:
+  identity: data.task_id
+  observe: task_status
+  with: {task_ids: ["${identity}"]}
+  present: {ok: true, data: {tasks.0.task.task_id: "${identity}"}}
+  absent: {ok: true, data: {tasks.0.error.code: TASK_NOT_FOUND}}
+
 # ── Структура, память, модели, рендер ────────────────────────────────────────────────────────
 NodeCreated:
   identity: data.path

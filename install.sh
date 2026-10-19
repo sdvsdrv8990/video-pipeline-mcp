@@ -93,14 +93,17 @@ case "$TUNNEL_END" in
         ;;
 esac
 
-# 10. Серверный конец туннеля ставится отдельным шагом: ему нужен адрес машины и её пароль,
-# который через этот код не проходит (его спрашивает сам ssh).
+# 10. Серверный конец туннеля — по SSH: адрес и логин из VPM_TUNNEL_HOST/VPM_TUNNEL_USER или вопросом в терминале;
+# пароль, если ключа нет, спрашивает сам ssh. Без адреса и без терминала шаг называет команду.
 case "$TUNNEL_END" in
     server|both)
         echo ""
-        echo "Серверный конец туннеля настраивается отдельно:"
-        echo "  ./scripts/deploy_tunnel_server.sh --host <адрес сервера>"
-        echo "  (без --go печатает план и ничего не выполняет)"
+        if [ -n "${VPM_TUNNEL_HOST:-}" ] || [ -t 0 ]; then
+            ./scripts/deploy_tunnel_server.sh \
+                || echo "  серверный конец не поставлен — причина выше; повтор: ./scripts/deploy_tunnel_server.sh"
+        else
+            echo "Серверный конец туннеля: VPM_TUNNEL_HOST=<адрес> ./scripts/deploy_tunnel_server.sh"
+        fi
         ;;
 esac
 

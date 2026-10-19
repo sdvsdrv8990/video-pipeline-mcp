@@ -19,11 +19,17 @@
         code: BOOK_ROW_INVALID
         detail: {errors.0.field: model, errors.0.rule: required}
 
+# Обновлено 2026-10-19 (media_generate — задание узла, AD-20 б). Что: объявлен срок вызова клиента (call_sec 60), ожидания
+# те же. Почему: отказ раннера рождается в работе задания, без срока клиента исход решала гонка потока с чтением статуса
+# (прогон 19.10 00:02 — зелёный случайно). Роды: negative — тот же код и факты тем же вызовом; positive и destructive — нет.
+# Прогноз до замера: зелёный.
 - scenario: rcode_detail_runner_answer_names_host
   why: раннер ответил 200 телом не JSON — отказ несёт факты причины (хост и что не так), а не только код
   род: отрицательный
   given:
     fixtures: [net_double]
+    declarations:
+      transport.yaml: {clients.claude_code.call_sec: 60}
     network:
       routes: [{host: 127.0.0.1, method: POST, path: /run, replies: [{status: 200, body: "<html>не json</html>"}]}]
     files:

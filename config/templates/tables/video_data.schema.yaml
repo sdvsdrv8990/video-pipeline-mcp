@@ -43,8 +43,8 @@ sheets:
   - name: TRANSCRIPT   # пословная транскрипция по сценам
     columns:
       - { name: scene_id, type: string, flag: id }   # генерится сервером (S01…)
-      - { name: timestamp_start, type: string, flag: F }   # MM:SS, из транскрибации после озвучки
-      - { name: timestamp_end, type: string, flag: F }   # MM:SS, из транскрибации после озвучки
+      - { name: timestamp_start, type: string, flag: F, format: mmss }   # из транскрибации после озвучки
+      - { name: timestamp_end, type: string, flag: F, format: mmss }   # из транскрибации после озвучки
       - { name: duration_sec, type: integer, flag: F, formula: '=SECONDS(timestamp_end)-SECONDS(timestamp_start)' }
       - { name: act_number, type: integer, flag: W }   # 1–7
       - { name: text, type: string, flag: F }   # дословно
@@ -107,8 +107,8 @@ sheets:
     columns:
       - { name: scene_id, type: string, flag: id }   # join-ключ к TRANSCRIPT/SEMANTICS/ASSETS_USED
       - { name: act, type: integer, flag: fk }   # 1–7
-      - { name: timestamp_start, type: string, flag: F }   # из TRANSCRIPT (тайминг → ограничение сцены)
-      - { name: timestamp_end, type: string, flag: F }   # из TRANSCRIPT (тайминг → ограничение сцены)
+      - { name: timestamp_start, type: string, flag: F, format: mmss }   # из TRANSCRIPT (тайминг → ограничение сцены)
+      - { name: timestamp_end, type: string, flag: F, format: mmss }   # из TRANSCRIPT (тайминг → ограничение сцены)
       - { name: text_snippet, type: string, flag: F }   # фрагмент текста сцены
       - { name: bg_assets, type: string, flag: W }   # SVG-роль: фон
       - { name: character_assets, type: string, flag: W }   # SVG-роль: персонажи
@@ -316,5 +316,5 @@ sheets:
       - { name: metric_name, type: string, flag: F }
       - { name: value_this_video, type: string, flag: F }
       - { name: value_channel_avg, type: string, flag: F }   # подтягивается из channel_data
-      - { name: delta_or_status, type: string, flag: F, formula: '=value_this_video-value_channel_avg' }   # не числа — запасное значение
+      - { name: delta_or_status, type: string, flag: F, formula: '=value_this_video-value_channel_avg', degrade_covers: ["#DIV/0!", "#VALUE!"] }   # не числа (статус) — запасное значение, решение владельца 18.10
       - { name: ai_action_flag, type: string, flag: F }   # ⚠️ Rotation needed / Review ACT_3

@@ -19,8 +19,9 @@ KNOWN_FACT_TYPES = {
     # Уникальность (A7.2): число, неполнота входов и сигнал в петлю решений
     "UniquenessComputed", "UniquenessIncomplete", "UniquenessAlert",
     "UniquenessCompensated",
-    # Медиа: какой провайдер и модель выбраны по данным канала и чем кончилось исполнение
-    "ProviderResolved", "MediaGenerated",
+    # Медиа: какой провайдер и модель выбраны по данным канала и чем кончилось исполнение; генерация — задание узла:
+    # вызов, не дождавшийся итога, отдаёт «начата» (предмет — задание), итог — «готово» в результате задания
+    "ProviderResolved", "MediaStarted", "MediaGenerated",
     # Каталог моделей: что доступно и что поставлено на машину
     "ModelsListed", "ModelInstalled", "ModelInstallStarted", "ModelInstallStatus", "ModelSpecRead",
     # Раннер: где именно считаются локальные модели — в сервере или в отдельном процессе
@@ -55,6 +56,8 @@ KNOWN_FACT_TYPES = {
     "IntegrityIssue",
     # Миграция структуры
     "EntityMigrated",
+    # Провод: успех пишущего инструмента больше бюджета клиента — дошли факты, сколько влезло
+    "AnswerTrimmed",
 }
 
 

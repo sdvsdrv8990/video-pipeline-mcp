@@ -14,7 +14,7 @@ from core.contracts import ContractError
 from core.declaration import Declaration, Declared
 from core.declaration_schemas import BookColumn, BookDefaults, BookSchema, BookSheet, book_formula_slips, book_sheets
 from core.engine.template_resolver import server_tables
-from core.formulas import DATA_ROW, compiled, declared_language
+from core.formulas import DATA_ROW, compiled, declared_language, degraded
 
 
 class TableMaterializerError(ContractError):
@@ -24,9 +24,12 @@ class TableMaterializerError(ContractError):
 class TableMaterializer:
     """Материализатор книг таблиц по `*.schema.yaml` поверх ExcelEngine."""
 
-    def __init__(self, excel: ExcelEngine, schemas_dir: str | Path):
+    def __init__(self, excel: ExcelEngine, schemas_dir: str | Path, tables=None):
+        """`tables` — движок снимков (`TableEngine`): книга родилась — снимок той же сущности получает схемы её листов;
+        без него — только книга (пробы и наборы книг)."""
         self.excel = excel
         self.schemas_dir = Path(schemas_dir)
+        self.tables = tables
         self._defaults: Mapping | None = None
 
     # ═══ Деградация формул — правила ЧИТАЮТСЯ, не зашиты ═══
@@ -34,33 +37,18 @@ class TableMaterializer:
     def _degrade_rules(self, schema: BookSchema) -> dict:
         """Запасные значения по типу столбца: книга перекрывает общий `_defaults.yaml`."""
         if self._defaults is None:
-            door = Declared(self.schemas_dir / "_defaults.yaml", TableMaterializerError, "общих правил книг",
-                            schema=BookDefaults)
-            # Нет файла — правил нет (решение читателя); битый — отказ двери, как у книги.
-            self._defaults = door.model.degrade if door.config_file.exists() else {}
+            self._defaults = book_defaults(self.schemas_dir)[1].degrade
         return {**self._defaults, **schema.degrade}
 
     @staticmethod
-    def _excel_literal(value) -> str:
-        """Запасное значение в синтаксис Excel: число — как есть, строка — в кавычках."""
-        if isinstance(value, bool):
-            return "TRUE()" if value else "FALSE()"
-        if isinstance(value, (int, float)):
-            return str(value)
-        return '"' + str(value).replace('"', '""') + '"'
+    def fallback(col: BookColumn, rules: dict) -> object:
+        """Запасное значение формулы столбца на неполных данных — решает декларация: `on_empty` столбца, иначе правило по
+        типу (книга перекрывает `_defaults.yaml`); нет — None, формула без обёртки."""
+        return col.on_empty if col.on_empty is not None else rules.get(col.type)
 
     def _guarded(self, formula: str, col: BookColumn, rules: dict) -> str:
-        """Формула, которая не ломается на неполных данных.
-
-        Оборачиваем в IFERROR: любая ошибка вычисления (#DIV/0!, #REF!, #VALUE!, #NAME?)
-        превращается в объявленное запасное значение. Что подставить — решает декларация,
-        а не код: `on_empty` столбца, иначе правило по типу.
-        """
-        fallback = col.on_empty if col.on_empty is not None else rules.get(col.type)
-        if fallback is None:
-            return formula
-        body = formula[1:] if formula.startswith("=") else formula
-        return f"=IFERROR({body},{self._excel_literal(fallback)})"
+        """Формула строки книги с обёрткой IFERROR запасным значением столбца — та же, что у снимка (`degraded`)."""
+        return degraded(formula, self.fallback(col, rules))
 
     def load_schema(self, book: str) -> BookSchema:
         """Декларация книги из каталога схем этого материализатора — через общую дверь книг (`book_schema`)."""
@@ -103,6 +91,13 @@ class TableMaterializer:
         except ExcelError as e:
             # Ошибка формы книги — код движка Excel уже в реестре реакций, не переобёртываем.
             raise TableMaterializerError(e.code, e.message, e.reason, e.suggested_tool) from e
+        if self.tables is not None:   # снимок лежит рядом с книгой — в каталоге её сущности
+            formats = book_defaults(self.schemas_dir)[1].formats
+            self.tables.declare_sheets(path.rpartition("/")[0], schema, {
+                (sheet.name, col.name): self.fallback(col, rules)
+                for sheet in schema.sheets for col in sheet.columns if col.flag == "F" and col.formula}, {
+                (sheet.name, col.name): formats[col.format].pattern
+                for sheet in schema.sheets for col in sheet.columns if col.format})
 
         return {
             "book": book, "path": path, "level": schema.level,
@@ -170,8 +165,21 @@ def book_schema(tables_dir: str | Path, book: str) -> BookSchema:
         raise door.link_refused(rule, "; ".join(sorted({slip.expected for _, _, slip in same})),
                                 [("sheets", str(i), "columns", str(j), "formula") for i, j, _ in same],
                                 language_door, [(_LANGUAGE_KEY.get(rule, "macros"),)])
+    defaults_door, defaults = book_defaults(tables_dir)
+    if unknown := [(i, j) for i, sheet in enumerate(schema.sheets) for j, col in enumerate(sheet.columns)
+                   if col.format and col.format not in defaults.formats]:
+        raise door.link_refused("column_format", "формат из formats: " + (", ".join(sorted(defaults.formats)) or "—"),
+                                [("sheets", str(i), "columns", str(j), "format") for i, j in unknown],
+                                defaults_door, [("formats",)])
     return schema
 
 
 # Ключ языка формул, на который ссылается изъян формулы книги (прочие изъяны рождает развёрнутый макрос).
 _LANGUAGE_KEY = {"formula_function": "functions", "formula_row": "aggregates"}
+
+
+def book_defaults(tables_dir: str | Path) -> tuple[Declared, BookDefaults]:
+    """Общие правила книг `<tables_dir>/_defaults.yaml` — дверь и модель: запасные значения по типу, что запасное
+    покрывает, форматы строк. Нет файла — правил нет (решение читателя); битый — отказ двери, как у книги."""
+    door = Declared(Path(tables_dir) / "_defaults.yaml", TableMaterializerError, "общих правил книг", schema=BookDefaults)
+    return door, (door.model if door.config_file.exists() else BookDefaults.model_validate({"degrade": {}}))

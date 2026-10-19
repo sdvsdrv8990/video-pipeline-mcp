@@ -99,6 +99,11 @@
     в_дереве: /opt/vpm-tunnel/xray
     версия: ["version"]
 
+# Веб-заглушка серверного конца: на любой путь отдаёт страницу 404 (deploy/tunnel_stub). Ставит её
+# scripts/deploy_tunnel_server.sh рядом с xray; порт объявлен здесь, а не в shell. 443 занят туннелем.
+заглушка:
+  порт: 8080
+
 # Готовый бинарь клиентского конца: ставит scripts/fetch_tunnel_binary.py (зовёт install.sh) дверью загрузки
 # core/providers/download.Fetcher в путь `в_дереве` бинаря `binary` из `бинари`. Схема — core/declaration_schemas.py
 # TunnelBinaryFetch; имя поставщика — только здесь, в каталоге.

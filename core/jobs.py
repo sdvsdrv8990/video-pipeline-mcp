@@ -146,13 +146,21 @@ class Pulse:
         self.cancelled, self.done = threading.Event(), threading.Event()
         self._hooks: list[Callable[[], None]] = []
         self._turn = threading.RLock()          # запись исполнителя и снятие — по очереди: снятое не оживает
+        self._spent: dict = {}
 
     def __call__(self, progress: dict | None = None, working: bool = True) -> None:
         self.put("ход", alive=working, progress=progress)
 
+    def spent(self, **facts) -> None:
+        """Что работа уже потратила необратимо (принятое и оплаченное у провайдера): снятие называет это фактами отказа."""
+        with self._turn:
+            self._spent.update(facts)
+
     def refusal(self) -> ContractError:
-        """Отказ снятия с фактами задания: им кончается работа, заметившая `cancelled`."""
-        return ContractError("TASK_CANCELLED", facts={"task_id": self.record.task.task_id, "tool": self.record.tool})
+        """Отказ снятия с фактами задания и потраченного (`spent`): им кончается работа, заметившая `cancelled`."""
+        with self._turn:
+            return ContractError("TASK_CANCELLED", facts={"task_id": self.record.task.task_id, "tool": self.record.tool,
+                                                          **self._spent})
 
     def on_cancel(self, hook: Callable[[], None]) -> None:
         """Крючок снятия; задание уже снято — крючок зовётся сразу."""

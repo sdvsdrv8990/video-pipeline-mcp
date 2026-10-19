@@ -61,16 +61,16 @@ def spoil(path: tuple, value=None, drop: bool = False):
 
 # (что испорчено, порча, путь ключа в отказе, правило)
 CASES = [
-    ("строка вместо числа", spoil(("classes", "gpu", "max_concurrent"), MARK), "classes.gpu.max_concurrent", "int_type"),
-    ("bool вместо числа", spoil(("classes", "gpu", "max_concurrent"), True), "classes.gpu.max_concurrent", "int_type"),
-    ("лишний ключ — опечатка", spoil(("classes", "gpu", "max_concurent"), 1), "classes.gpu.max_concurent", "extra_forbidden"),
+    ("строка вместо числа", spoil(("classes", "cpu_heavy", "max_concurrent"), MARK), "classes.cpu_heavy.max_concurrent", "int_type"),
+    ("bool вместо числа", spoil(("classes", "cpu_heavy", "max_concurrent"), True), "classes.cpu_heavy.max_concurrent", "int_type"),
+    ("лишний ключ — опечатка", spoil(("classes", "cpu_heavy", "max_concurent"), 1), "classes.cpu_heavy.max_concurent", "extra_forbidden"),
     ("нет обязательного ключа", spoil(("default",), drop=True), "default", "missing"),
     ("класс инструмента не объявлен", spoil(("tools", "media_generate"), "gpuu"), "tools.media_generate", "class_undeclared"),
     ("default не объявлен", spoil(("default",), "inlien"), "default", "class_undeclared"),
-    ("снят с цикла без предела", spoil(("classes", "gpu"), {"offload": True}), "classes.gpu.max_concurrent", "limit_missing"),
-    ("предел без срока повтора", spoil(("classes", "gpu"), {"offload": True, "max_concurrent": 1}),
-     "classes.gpu.retry_after_sec", "retry_missing"),
-    ("предел ноль", spoil(("classes", "gpu", "max_concurrent"), 0), "classes.gpu.max_concurrent", "greater_than"),
+    ("снят с цикла без предела", spoil(("classes", "cpu_heavy"), {"offload": True}), "classes.cpu_heavy.max_concurrent", "limit_missing"),
+    ("предел без срока повтора", spoil(("classes", "cpu_heavy"), {"offload": True, "max_concurrent": 1}),
+     "classes.cpu_heavy.retry_after_sec", "retry_missing"),
+    ("предел ноль", spoil(("classes", "cpu_heavy", "max_concurrent"), 0), "classes.cpu_heavy.max_concurrent", "greater_than"),
 ]
 
 # Те же формы порчи на transport.yaml: пределы клиентов (что испорчено, порча, путь ключа в отказе, правило)
@@ -86,6 +86,12 @@ TRANSPORT_CASES = [
     ("путь клиента не из объявленных", spoil(("clients", "claude_ai", "reached"), "radio"), "clients.claude_ai.reached",
      "literal_error"),
     ("опечатка ключа", spoil(("clients", "claude_ai", "answer_char"), 1), "clients.claude_ai.answer_char", "extra_forbidden"),
+    ("срок без запаса доставки", spoil(("clients", "claude_code", "reserve_sec"), drop=True),
+     "clients.claude_code.reserve_sec", "reserve_missing"),
+    ("запас без срока", spoil(("clients", "claude_code", "call_sec"), drop=True), "clients.claude_code.reserve_sec",
+     "reserve_missing"),
+    ("запас не меньше срока", spoil(("clients", "claude_code", "reserve_sec"), 60), "clients.claude_code.reserve_sec",
+     "reserve_over_call"),
 ]
 
 # (что испорчено, тело декларации, путь чтения `need`, тип чтения): истина — поле и правило схемы двери на том же файле
@@ -137,14 +143,14 @@ def main():
     check("боевой resources.yaml проходит схему целиком", isinstance(model, Resources))
     check("классы и инструменты — как в файле", (len(model.classes), len(model.tools))
           == (len(real["classes"]), len(real["tools"])), f"{len(model.classes)}/{len(model.tools)}")
-    check("поле — типизированное значение, а не строка", model.classes["gpu"].max_concurrent == real["classes"]["gpu"]["max_concurrent"])
+    check("поле — типизированное значение, а не строка", model.classes["cpu_heavy"].max_concurrent == real["classes"]["cpu_heavy"]["max_concurrent"])
     try:
-        model.classes["gpu"] = model.classes["inline"]  # type: ignore[index]
+        model.classes["cpu_heavy"] = model.classes["inline"]  # type: ignore[index]
         check("отображение классов только для чтения", False, "запись прошла")
     except TypeError:
         check("отображение классов только для чтения", True)
     try:
-        model.default = "gpu"  # type: ignore[misc]
+        model.default = "cpu_heavy"  # type: ignore[misc]
         check("объект неизменяем", False, "присваивание прошло")
     except ValidationError as e:
         check("объект неизменяем", e.errors()[0]["type"] == "frozen_instance", e.errors()[0]["type"])
@@ -223,6 +229,8 @@ def main():
               min((c["answer_bytes"] for c in kinds if "answer_bytes" in c), default=None),
               0 if any("call_sec" not in c for c in kinds) else min(c["call_sec"] for c in kinds),
               min((c["error_chars"] for c in kinds if "error_chars" in c), default=None)), got)
+    check("ожидание двери — срок клиента минус запас доставки, самый тесный; клиент без срока — 0 (ответ сразу)",
+          got.wait_sec == min((c["call_sec"] - c["reserve_sec"] if "call_sec" in c else 0) for c in kinds), got)
     for n, (label, apply, field, rule) in enumerate(TRANSPORT_CASES):
         cfg = work / f"wire{n}"
         cfg.mkdir()
@@ -408,12 +416,12 @@ def main():
     write(live, real, 3_000_000_000)
     watched = door(live)
     first = watched.model
-    changed = spoil(("classes", "gpu", "max_concurrent"), 2)(real)
+    changed = spoil(("classes", "cpu_heavy", "max_concurrent"), 2)(real)
     write(live, changed, 3_000_000_000)
     second = watched.model
-    check("правка прошла проверку — новый объект целиком", second is not first and second.classes["gpu"].max_concurrent == 2)
-    check("прежний объект у того, кто его держит, не изменился", first.classes["gpu"].max_concurrent == real["classes"]["gpu"]["max_concurrent"])
-    write(live, spoil(("classes", "gpu", "offload"), "да")(real), 3_000_000_000)
+    check("правка прошла проверку — новый объект целиком", second is not first and second.classes["cpu_heavy"].max_concurrent == 2)
+    check("прежний объект у того, кто его держит, не изменился", first.classes["cpu_heavy"].max_concurrent == real["classes"]["cpu_heavy"]["max_concurrent"])
+    write(live, spoil(("classes", "cpu_heavy", "offload"), "да")(real), 3_000_000_000)
     refused = 0
     for _ in range(2):
         try:
@@ -422,7 +430,7 @@ def main():
             refused += e.code == CODE
     check("битая правка — отказ на каждое чтение, без тихого отката к прежнему объекту", refused == 2, f"отказов {refused}/2")
     write(live, changed, 3_000_000_000)
-    check("починили — снова объект", watched.model.classes["gpu"].max_concurrent == 2)
+    check("починили — снова объект", watched.model.classes["cpu_heavy"].max_concurrent == 2)
     live.write_text("classes: [не словарь\n", encoding="utf-8")
     os.utime(live, ns=(3_000_000_000, 3_000_000_000))
     try:

@@ -31,7 +31,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         dirs = ctx.template_resolver.resolve(target_path, mode)
         return dirs, TemplateEngine(ctx.workspace_path, ctx.id_generator,
                                     dirs["workspace_dir"], ctx.config_path), \
-            TableMaterializer(ctx.excel_engine, dirs["tables_dir"])
+            TableMaterializer(ctx.excel_engine, dirs["tables_dir"], ctx.table_engine)
 
     def _adopt(paths: list[str]) -> list[dict]:
         """Усыновить каталоги, которые есть на диске, но не в реестре (структура опередила реестр).
@@ -721,8 +721,8 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         for item in pending:
             path = str(item.get("path") or "")
             dirs = ctx.template_resolver.resolve(path, mode)
-            part = TableMaterializer(ctx.excel_engine,
-                                     dirs["tables_dir"]).materialize_pending([item])
+            part = TableMaterializer(ctx.excel_engine, dirs["tables_dir"],
+                                     ctx.table_engine).materialize_pending([item])
             out["materialized"] += part["materialized"]
             out["failed"] += part["failed"]
             out["templates"][path] = dirs["source"]

@@ -32,12 +32,16 @@
     - call: table_find_row
       with: {table: videos/пусто, sheet: META, where: {title: Hook}}
       expect: {ok: true, data: {count: 1}}
+    # Обновлено 2026-10-18 (семейство «таблицы и книги», текст места): пустые where/data — VALIDATION_ERROR с полем в
+    # errors (ошибка вызова), прежде INVALID_ACTION «действие не ставится в очередь» — код теперь одной причины. Роды:
+    # отрицательный — тот же вызов отбит, код сменился; положительный (шаг 1) — без изменений. Прогноз: шаги 2–3 красные
+    # на 72a3b0f со старым ожиданием (замер sp-09-t1, logs/scenarios.out:653-655), зелёные с новым.
     - call: table_find_row
       with: {table: videos/пусто, sheet: META, where: {}}
-      expect: {ok: false, code: INVALID_ACTION}
+      expect: {ok: false, code: VALIDATION_ERROR}
     - call: table_update
       with: {table: videos/пусто, sheet: META, row_id: VID_1, data: {}}
-      expect: {ok: false, code: INVALID_ACTION}
+      expect: {ok: false, code: VALIDATION_ERROR}
 
 - scenario: rcode_book_column_twice_and_formula_overwrite
   why: второй столбец с тем же именем и молчаливая перезапись формулы портят книгу у пользователя

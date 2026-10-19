@@ -106,11 +106,15 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 "owner_type": nearest.get("type", ""), "owner_path": nearest.get("path", "")}
 
     def _id_plan(path: str) -> dict:
-        """Цепочка для собственного ID файла; незарегистрированные предки на диске — отказ, предков не выдумываем."""
+        """Цепочка для собственного ID файла; незарегистрированный предок — отказ, предков не выдумываем. Предок на диске
+        усыновляют (CHAIN_UNRESOLVED); предка, которого ещё нет, запись создала бы без регистрации — его создают
+        сущностью (CHAIN_NOT_CREATED), и отказ идёт до записи."""
         plan = ctx.chain_resolver.resolve(str(Path(path).parent))
-        blocking = [u["path"] for u in plan["unresolved"] if u["exists"]]
-        if blocking:
-            raise LinkError("CHAIN_UNRESOLVED", facts={"paths": ", ".join(blocking), "path": str(Path(path).parent)})
+        on_disk = [u["path"] for u in plan["unresolved"] if u["exists"]]
+        absent = [u["path"] for u in plan["unresolved"] if not u["exists"]]
+        if on_disk or absent:
+            raise LinkError("CHAIN_UNRESOLVED" if on_disk else "CHAIN_NOT_CREATED",
+                            facts={"paths": ", ".join(on_disk or absent), "path": str(Path(path).parent)})
         return plan
 
     def _id_refused(path: str, assign_id: bool):
@@ -312,10 +316,11 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             )
             tasks.append(task)
         result = fs_searcher.search_parallel(tasks)
+        errors = ctx.failed_parts("fs_search_multi", result["errors"], len(result["results"]))
         return ToolResult(status="success", data={
             "results": {k: [{"path": r.path, "name": r.name, "entity_type": r.entity_type}
                             for r in v] for k, v in result["results"].items()},
-            "errors": result["errors"],
+            "errors": errors,
             "total_tasks": len(tasks),
         }, facts=[Fact(type="FsSearchMulti", data={"tasks": len(tasks)})])
 

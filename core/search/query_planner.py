@@ -69,25 +69,25 @@ class QueryPlanner:
         return self._parse_plan(data)
 
     def _parse_plan(self, data: dict) -> QueryPlan:
-        """Парсинг данных в QueryPlan."""
-        reads = []
-        for i, r in enumerate(data.get("reads", [])):
-            reads.append(ReadTask(
-                id=f"read_{i}",
-                table=r.get("table", ""),
-                sheet=r.get("sheet", ""),
-                columns=r.get("columns", []),
-                filter=r.get("filter", {}),
-            ))
-        return QueryPlan(
-            name=data.get("name", "unnamed"),
-            description=data.get("description", ""),
-            reads=reads,
-            join=data.get("join"),
-            filter_after=data.get("filter", {}),
-            sort=data.get("sort"),
-            limit=data.get("limit"),
-        )
+        """План из словаря запроса. Форму и типы судит модель плана (pydantic над dataclass): не та — ошибка вызова с
+        путём поля и правилом (`schema_errors`), без пришедшего значения, а не падение сервера."""
+        from pydantic import TypeAdapter, ValidationError
+
+        from core.declaration import schema_errors
+        if not isinstance(data, dict):
+            raise SearchError("VALIDATION_ERROR", errors=[{"field": "query", "rule": "object"}])
+        reads = data.get("reads", [])
+        if isinstance(reads, list):             # известные поля чтения; не словарь — судит модель по месту
+            reads = [{"id": f"read_{i}", "table": r.get("table", ""), "sheet": r.get("sheet", ""),
+                      "columns": r.get("columns", []), "filter": r.get("filter", {})} if isinstance(r, dict) else r
+                     for i, r in enumerate(reads)]
+        try:
+            return TypeAdapter(QueryPlan).validate_python({
+                "name": data.get("name", "unnamed"), "description": data.get("description", ""), "reads": reads,
+                "join": data.get("join"), "filter_after": data.get("filter", {}), "sort": data.get("sort"),
+                "limit": data.get("limit")})
+        except ValidationError as e:
+            raise SearchError("VALIDATION_ERROR", errors=schema_errors(e)) from None
 
     def analyze_dependencies(self, plan: QueryPlan) -> list[list[ReadTask]]:
         """Анализ зависимостей и группировка для параллельного выполнения.
@@ -114,7 +114,8 @@ class QueryPlanner:
         """Выполнение плана запроса; места даёт узел ёмкости (класс `search`), вызывающий их не решает.
 
         Returns:
-            dict с результатами: rows, metadata, errors
+            dict с результатами: rows, metadata, errors — `{task_id, exception}` упавших чтений: в ответ их переводит
+            инструмент (`ToolContext.failed_parts`), текст исключения клиенту не уходит
         """
         from core.capacity import Capacity
 
@@ -136,9 +137,8 @@ class QueryPlanner:
                         result = future.result()
                         all_results.append(result)
                     except Exception as e:
-                        errors.append({"task_id": task.id, "error": str(e)})
+                        errors.append({"task_id": task.id, "exception": e})
                         task.status = "error"
-                        task.error = str(e)
 
         # Объединение результатов
         merged = self._merge_results(all_results, plan)

@@ -118,6 +118,8 @@ try:
 except TaxonomyError as e:  # обновлено 2026-10-18: файл типа решает узел таксономии (Taxonomy.file), код тот же
     ok(e.code == "TEMPLATE_NOT_FOUND" and "channel" in e.facts.get("known", []),
        "неизвестный тип → TEMPLATE_NOT_FOUND с объявленными")
+except Exception as e:  # чтение файла по имени типа — провал этой проверки, а не падение набора
+    ok(False, f"неизвестный тип → {type(e).__name__} вместо TEMPLATE_NOT_FOUND")
 
 print("== 7. пустое имя → VALIDATION_ERROR ==")
 eng, ws = new_engine()
@@ -411,6 +413,14 @@ ok(blocked_file.status == "error" and blocked_file.error.code == "CHAIN_UNRESOLV
 ok(not (ws18 / "niches/gaming/networks/ghostnet2/x.md").exists(), "отказ в ID не оставил файла на диске")
 ok(call("fs_create_file", path="niches/gaming/networks/ghostnet2/x.md", content="").status == "success",
    "тот же файл без assign_id создаётся спокойно")
+for tool, folder in (("fs_create_file", "ghostnet3"), ("fs_write_file", "ghostnet4")):
+    fresh = call(tool, path=f"niches/gaming/networks/{folder}/x.md", content="", assign_id=True)
+    ok(fresh.status == "error" and fresh.error.code == "CHAIN_NOT_CREATED",
+       f"{tool}: ID в папке, которую создала бы сама запись, → отказ CHAIN_NOT_CREATED, не adopt "
+       f"(вышло {fresh.error.code if fresh.error else fresh.status})")
+    ok(not (ws18 / f"niches/gaming/networks/{folder}").exists(), f"{tool}: отказ в ID не оставил ни файла, ни папки")
+    ok(call(tool, path=f"niches/gaming/networks/{folder}/x.md", content="").status == "success",
+       f"{tool}: повтор без assign_id создаёт файл — прошлый отказ его не занял")
 
 print("== 23. Адресация по ID/пути, имя — не адрес (F64) ==")
 c1 = call("structure_create", type="video", name="dup", parent_path="niches/gaming/networks/net1/channels/chA/videos/")
@@ -535,8 +545,8 @@ ws28 = Path(tempfile.mkdtemp(prefix="vpm_s9_"))
 keys28 = Path(tempfile.mkdtemp(prefix="vpm_keys_"))
 ident28 = InstanceIdentity(keys28, ws28)
 ok(ident28.ensure_key() and ident28.key_path.exists(), "ключ инстанса выпущен при первом старте")
-import stat as _stat
-ok(_stat.S_IMODE(ident28.key_path.stat().st_mode) == 0o600, "ключ подписи лежит с правами 0600")
+from tests.harness.access import mode as _mode    # оракул прав: на Windows — защищённый DACL, а не биты режима
+ok(_mode(ident28.key_path) == 0o600, "ключ подписи лежит с правами 0600")
 ok(ident28.key_path.parent != ws28, "ключ лежит ВНЕ workspace (инструментам недоступен)")
 
 reg28 = LinkRegistry(ws28, identity=ident28)
@@ -1617,7 +1627,7 @@ _text49c = "Съешь же ещё этих мягких французских 
 (_ws49c / "кириллица.md").write_text(_text49c, encoding="utf-8")
 _pages49c = _pages_of(lambda tool, **a: asyncio.run(_eng49c.call(tool, a)), "кириллица.md")
 _sizes49c = [len(_json49.dumps(_answer49(p), ensure_ascii=False).encode("utf-8")) for p in _pages49c]
-ok(_budget49(_cfg49c) == _budget49(_cfg49c).__class__(chars=None, bytes=4000, call_sec=0, error_chars=10000)
+ok(_budget49(_cfg49c) == _budget49(_cfg49c).__class__(chars=None, bytes=4000, call_sec=0, wait_sec=0, error_chars=10000)
    and "".join(p.data["content"]["value"] for p in _pages49c) == _text49c and max(_sizes49c) <= 4000,
    f"только консоль: бюджет — байты 4000, срока нет (ожидания 0); склейка == файл, байты страниц ≤ 4000 ({_sizes49c[:4]}…)")
 
@@ -1706,6 +1716,103 @@ for _label50, _name50 in _sick50[:3]:          # узел таксономии: 
            f"узел таксономии: {_label50} — TEMPLATE_NOT_FOUND с объявленными")
     except Exception as e:  # чтение по пути из имени — провал этой проверки, а не падение набора
         ok(False, f"узел таксономии: {_label50} — {type(e).__name__} вместо отказа кодом")
+
+print("== 51. Повреждённый реестр связей — отказ STATE_INVALID без записи, а не пустое прочтение, затирающее ID ==")
+# Причина рождается на диске (обрыв записи, чужая правка), следствие — на двери инструмента: прежде вторая запись
+# поверх пустого прочтения затирала все прежние ID молча, ответом «успех».
+
+
+def _fresh51():
+    ws = Path(tempfile.mkdtemp(prefix="vpm_reg51_"))
+    sm, ids = StateManager(ws), IDGenerator()
+    eng = Engine(reactions=Reactions(CFG / "server_reactions.yaml"), state_manager=sm)
+    _structure_group.register(eng, ToolContext(eng, ids, sm, None, ExcelEngine(ws), TemplateEngine(ws, ids, TPL_DIR),
+                                               LinkRegistry(ws), ws, CFG))
+    return eng, ws
+
+
+_eng51, _ws51 = _fresh51()                       # законный: реестра ещё нет — новая область, запись создаёт его
+_r51 = asyncio.run(_eng51.call("structure_create", {"type": "niche", "name": "первая"}))
+_reg51 = _ws51 / "_id_registry.json"
+_first51 = _reg51.read_bytes() if _reg51.is_file() else b""
+ok(_r51.status == "success" and _first51, f"нет реестра — законно пусто, первая запись создаёт его ({_r51.status})")
+for _label51, _broken51 in (("оборванный JSON", _first51[:-7]), ("не та форма", b'{"entities": []}'),
+                            ("не utf-8", b"\xff\xfe" + _first51)):
+    _reg51.write_bytes(_broken51)
+    _r51 = asyncio.run(_eng51.call("structure_create", {"type": "niche", "name": f"после {_label51}"}))
+    ok(_r51.status == "error" and _r51.error.code == "STATE_INVALID"
+       and _r51.error.facts == {"path": "_id_registry.json", "subject": "реестр связей"}
+       and _reg51.read_bytes() == _broken51 and str(_ws51) not in repr(_r51.error),
+       f"{_label51}: STATE_INVALID, файл не перезаписан, места сервера в ответе нет "
+       f"({_r51.error.code if _r51.error else _r51.status})")
+
+print("== 52. Успех пишущего инструмента больше бюджета — клиенту факты сделанного в бюджете, а не отказ ==")
+# Причина — ответ больше бюджета клиента (испорченный малый claude_ai), следствие — на проводе: прежде пишущий отдавал
+# RESULT_TOO_LARGE после сделанной работы — ID созданного терялись, повтор упирался в DUPLICATE_PATH. Истина — двойник
+# того же вызова мимо провода (все факты) и реестр на диске, а не ответ двери.
+from core.contracts import Fact as _Fact52
+from core.contracts import ToolResult as _Result52
+
+_B52 = 2500
+
+
+def _fresh52(budget):
+    ws = Path(tempfile.mkdtemp(prefix="vpm_ws52_"))
+    cfg = _decl_copy48({"transport.yaml": {"clients.claude_ai.answer_chars": budget}})
+    sm, ids = StateManager(ws), IDGenerator()
+    eng = Engine(reactions=Reactions(cfg / "server_reactions.yaml"), state_manager=sm)
+    ctx = ToolContext(eng, ids, sm, None, ExcelEngine(ws), TemplateEngine(ws, ids, TPL_DIR), LinkRegistry(ws), ws, cfg)
+    _structure_group.register(eng, ctx)
+    _fs_group.register(eng, ctx)
+    wire = _Transport49(engine=eng, config_path=cfg)
+
+    def call(tool, **args):
+        raw = asyncio.run(wire.handle_request(_json49.dumps(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}})))
+        return _json49.loads(raw)["result"]
+    return call, eng, ws
+
+
+_niche52 = {"type": "niche", "name": "большая", "children": {"channel": [f"канал_{i:02d}" for i in range(12)]}}
+_call52, _, _ws52 = _fresh52(_B52)
+_, _twin_eng52, _ = _fresh52(10**9)
+_full52 = asyncio.run(_twin_eng52.call("structure_create", dict(_niche52)))
+_got52 = _call52("structure_create", **_niche52)
+_facts52 = [_Fact52(**f) for f in (_got52.get("structuredContent") or {}).get("facts") or []]
+_mark52 = [f.data for f in _facts52 if f.type == "AnswerTrimmed"]
+_sent52 = [f for f in _facts52 if f.type != "AnswerTrimmed"]
+_reg52 = LinkRegistry(_ws52)
+_ids52 = [f.data["id"] for f in _sent52 if f.type == "NodeCreated"]
+# Максимальность: тот же ответ с ещё одним фактом двойника больше бюджета
+_next52 = _answer49(_Result52(status="success", facts=[*_sent52, *_full52.facts[len(_sent52):][:1], *_facts52[-1:]]))
+ok(_full52.status == "success" and len(_json49.dumps(_answer49(_full52), ensure_ascii=False)) > _B52,
+   f"двойник мимо провода: ответ целиком больше бюджета {_B52} — событие причины есть ({len(_full52.facts)} фактов)")
+ok(not _got52.get("isError") and len(_json49.dumps(_got52, ensure_ascii=False)) <= _B52
+   and [f.type for f in _sent52] == [f.type for f in _full52.facts][:len(_sent52)]
+   and bool(_mark52) and _mark52[0]["facts_sent"] == len(_sent52) < _mark52[0]["facts_total"] == len(_full52.facts)
+   and bool(_ids52) and all(_reg52.get(i) for i in _ids52)
+   and len(_json49.dumps(_next52, ensure_ascii=False)) > _B52,
+   f"пишущий сверх бюджета: успех в бюджете, факты по порядку двойника, ID созданного есть в реестре, ещё один факт "
+   f"не влез бы; AnswerTrimmed — сколько дошло из скольких ({_mark52[0] if _mark52 else _got52})")
+
+_small52 = _call52("fs_create_file", path="малый.md", content="x")
+ok(not _small52.get("isError") and (_small52.get("structuredContent") or {}).get("created") == "малый.md"
+   and not any(f.get("type") == "AnswerTrimmed" for f in (_small52.get("structuredContent") or {}).get("facts") or []),
+   f"законный: пишущий в бюджете — ответ целиком, без AnswerTrimmed ({_small52.get('structuredContent')})")
+for _i52 in range(80):
+    (_ws52 / "дерево" / f"узел_{_i52:03d}").mkdir(parents=True)
+_tree52 = _call52("fs_get_directory_tree", path="дерево")
+ok(_tree52.get("isError") is True
+   and ((_tree52.get("structuredContent") or {}).get("error") or {}).get("code") == "RESULT_TOO_LARGE",
+   f"законный: читающий сверх того же бюджета — отказ RESULT_TOO_LARGE, ничего не изменено ({_tree52.get('isError')})")
+
+_tiny52, _, _wst52 = _fresh52(300)              # бюджет меньше самой сводки: не влезает даже AnswerTrimmed
+_lost52 = _tiny52("fs_create_file", path="сделан.md", content="x")
+_lerr52 = (_lost52.get("structuredContent") or {}).get("error") or {}
+ok(_lost52.get("isError") is True and _lerr52.get("code") == "RESULT_TOO_LARGE" and (_wst52 / "сделан.md").is_file()
+   and "работа сделана" in ((_lerr52.get("recovery") or {}).get("reason") or ""),
+   f"бюджет меньше сводки: отказ, и его текст говорит пишущему, что работа сделана — повтор не нужен "
+   f"({_lerr52.get('code')})")
 
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

@@ -5,6 +5,7 @@
 Проверки между ключами одного файла живут здесь же и называют путь ключа; дверь — `core.declaration.Declared`.
 """
 
+import re
 import string
 import threading
 import warnings
@@ -292,11 +293,15 @@ class PackagesDecl(BaseModel):
 
 ColumnType = Literal["string", "date", "enum", "integer", "float", "list", "boolean"]
 Cell = StrictStr | StrictInt | StrictFloat | StrictBool
+# Значения ошибок Excel — правило языка таблиц (их отдаёт движок пересчёта), не выбор сервера.
+FormulaError = Literal["#DIV/0!", "#VALUE!", "#N/A", "#NUM!", "#REF!", "#NAME?", "#NULL!"]
 
 
 class BookColumn(BaseModel):
     """Столбец листа книги: тип значения (по нему — правило деградации формулы), флаг роли (id — ключ, W — вводится,
-    F — вычисляется формулой, fk — ссылка), допустимые значения перечисления, формула и запасное значение формулы."""
+    F — вычисляется формулой, fk — ссылка), допустимые значения перечисления, формат строки (имя из `_defaults.yaml
+    formats`), формула, запасное значение формулы и ошибки, которые запасное покрывает на заполненных входах (нет —
+    общее `_defaults.yaml degrade_covers`)."""
 
     model_config = STRICT
 
@@ -304,8 +309,10 @@ class BookColumn(BaseModel):
     type: ColumnType
     flag: Literal["id", "W", "F", "fk"]
     enum: Annotated[tuple[StrictStr, ...], Listed] = ()
+    format: StrictStr = ""
     formula: StrictStr = ""
     on_empty: Cell | None = None
+    degrade_covers: Annotated[tuple[FormulaError, ...], Listed] | None = None
 
 
 def _xlsx_title(name: str) -> str:
@@ -385,12 +392,38 @@ def book_sheets(book: BookSchema) -> "dict[str, Sheet]":
     return {sheet.name: Sheet(tuple(c.name for c in sheet.columns), sheet.record) for sheet in book.sheets}
 
 
+class ValueFormat(BaseModel):
+    """Формат строки столбца: регулярное выражение всего значения и образцы, которые ему отвечают (образцы — входы
+    мерила формул и проверка самого выражения)."""
+
+    model_config = STRICT
+
+    pattern: StrictStr = Field(min_length=1)
+    examples: Annotated[tuple[StrictStr, ...], Listed] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _examples_match(self) -> "ValueFormat":
+        try:
+            compiled = re.compile(self.pattern)
+        except re.error as error:
+            raise ValidationError.from_exception_data(type(self).__name__, [
+                _gap("format_pattern", f"регулярное выражение: {error}", ("pattern",))]) from None
+        gaps = [_gap("format_example", f"образец отвечает выражению {self.pattern}", ("examples", str(i)))
+                for i, example in enumerate(self.examples) if not compiled.fullmatch(example)]
+        if gaps:
+            raise ValidationError.from_exception_data(type(self).__name__, gaps)
+        return self
+
+
 class BookDefaults(BaseModel):
-    """`config/templates/tables/_defaults.yaml`: общее правило деградации формул по типу столбца — под всеми книгами."""
+    """`config/templates/tables/_defaults.yaml`: общие правила книг — запасное значение формулы по типу столбца, ошибки,
+    которые запасное покрывает на заполненных входах, и именованные форматы строк."""
 
     model_config = STRICT
 
     degrade: Annotated[Mapping[ColumnType, Cell], ReadOnly]
+    degrade_covers: Annotated[tuple[FormulaError, ...], Listed] = ()
+    formats: Annotated[Mapping[StrictStr, ValueFormat], ReadOnly] = Field(default_factory=lambda: MappingProxyType({}))
 
 
 class FormulaLanguageDecl(BaseModel):
@@ -598,7 +631,8 @@ class Origins(BaseModel):
 class Client(BaseModel):
     """Клиент MCP и его пределы в его же единицах: как он доходит до сервера (`tunnel` — через клиентский конец туннеля,
     `loopback` — с этой машины), сколько ответа берёт (знаки или байты тела — ровно одно), сколько знаков текста отказа
-    принимает целым (не объявлено — не режет) и срок вызова (не объявлен — ожидания нет)."""
+    принимает целым (не объявлено — не режет), срок вызова (не объявлен — ожидания нет) и запас доставки ответа внутри
+    срока (`reserve_sec`): дверь ждёт задание не дольше `call_sec − reserve_sec`, чтобы ответ дошёл до обрыва клиентом."""
 
     model_config = STRICT
 
@@ -607,6 +641,7 @@ class Client(BaseModel):
     answer_bytes: int | None = Field(default=None, gt=0)
     error_chars: int | None = Field(default=None, gt=0)
     call_sec: int | None = Field(default=None, gt=0)
+    reserve_sec: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def _one_budget(self) -> "Client":
@@ -614,6 +649,17 @@ class Client(BaseModel):
         if (self.answer_chars is None) == (self.answer_bytes is None):
             raise ValidationError.from_exception_data(type(self).__name__, [_gap(
                 "budget_one", "ровно один из answer_chars, answer_bytes", ())])
+        return self
+
+    @model_validator(mode="after")
+    def _reserve_within_call(self) -> "Client":
+        # Срок без запаса — дверь ждала бы до самого обрыва клиентом и ответ не дошёл бы; запас без срока ничего не значит.
+        if (self.call_sec is None) != (self.reserve_sec is None):
+            raise ValidationError.from_exception_data(type(self).__name__, [_gap(
+                "reserve_missing", "call_sec и reserve_sec — вместе или ни одного", ("reserve_sec",))])
+        if self.call_sec is not None and self.reserve_sec is not None and self.reserve_sec >= self.call_sec:
+            raise ValidationError.from_exception_data(type(self).__name__, [_gap(
+                "reserve_over_call", "reserve_sec меньше call_sec", ("reserve_sec",))])
         return self
 
 

@@ -13,6 +13,7 @@ import fnmatch
 import os
 import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -116,9 +117,11 @@ class LiveServer:
         deadline = time.time() + self.ready_timeout
         while time.time() < deadline:
             if self.proc.poll() is not None:
-                raise LiveServerError(
-                    f"server.py завершился при старте (код {self.proc.returncode}).\n"
-                    f"{self.console.tail()}")
+                code = self.proc.returncode
+                # Сигнал вместо кода выхода — сервер снят снаружи (обвязка его не снимала), а не отказал сам.
+                cause = (f"снят сигналом {signal.Signals(-code).name} извне, а не кодом отказа сервера" if code < 0
+                         else f"код {code}")
+                raise LiveServerError(f"server.py завершился при старте ({cause}).\n{self.console.tail()}")
             try:
                 if self.rpc.tools_list():
                     return

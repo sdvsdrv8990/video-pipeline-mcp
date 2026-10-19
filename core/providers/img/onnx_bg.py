@@ -9,7 +9,6 @@
 from pathlib import Path
 
 from ..adapters import MediaOutcome, MediaRequest
-from ..resolver import ProviderError
 from .onnx_runtime import OnnxImage
 
 
@@ -17,13 +16,11 @@ class OnnxBGRemoval(OnnxImage):
     """Синхронный адаптер: картинка → png с прозрачным фоном."""
 
     def generate(self, request: MediaRequest) -> MediaOutcome:
-        if request.source is None:
-            raise ProviderError("VALIDATION_ERROR", errors=[{"field": "input", "rule": "required"}])
+        model_path = self.ready(request)["path"]
         params = request.params
-        model_path = self.registry.ready(params.get("model"))["path"]
         session = self.session(model_path)
         prep = self.preprocessing(model_path)
-        image = self.open_image(request.source)
+        image = self.open_image(self.source(request))
         side = self._input_side(params, prep)
         mask = self.run(session, self.to_tensor(image, prep, (side, side)))
         return MediaOutcome(files=[self._compose(image, mask, params, request.target)],

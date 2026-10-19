@@ -103,6 +103,7 @@ class FsSearcher:
             # Слово с переводом строки построчно не найдётся никогда: отказ на входе, а не молчаливое «не найдено».
             if any("\n" in word or "\r" in word for word in task.content_keywords):
                 raise ContractError("VALIDATION_ERROR", errors=[{"field": "content_keywords", "rule": "line_break"}])
+            checked = self._inputs(task)
             limit = line_limit() if task.content_keywords else 0
             # task.root под контролем клиента → обход слоя: каждый элемент через дверь; пусто — сам корень.
             files = Files(self.workspace)
@@ -131,14 +132,10 @@ class FsSearcher:
 
                 # Фильтр по дате модификации
                 mtime = datetime.fromtimestamp(item.stat().st_mtime)
-                if task.modified_after:
-                    after = datetime.fromisoformat(task.modified_after)
-                    if mtime < after:
-                        continue
-                if task.modified_before:
-                    before = datetime.fromisoformat(task.modified_before)
-                    if mtime > before:
-                        continue
+                if "modified_after" in checked and mtime < checked["modified_after"]:
+                    continue
+                if "modified_before" in checked and mtime > checked["modified_before"]:
+                    continue
 
                 # Определяем тип сущности по пути
                 entity_type = self._detect_entity_type(self.workspace / entry.path)
@@ -148,9 +145,8 @@ class FsSearcher:
                     continue
 
                 # Фильтр по имени (regex)
-                if task.name_pattern:
-                    if not re.search(task.name_pattern, named.name):
-                        continue
+                if "name_pattern" in checked and not checked["name_pattern"].search(named.name):
+                    continue
 
                 # Фильтр по содержимому — строка за строкой, без файла целиком в памяти
                 if task.content_keywords:
@@ -174,9 +170,9 @@ class FsSearcher:
 
                 # Фильтр по ID: собственный ID файла ИЛИ его владельцы (иначе фильтр
                 # находил бы только файлы с личностью, а их меньшинство).
-                if task.id_pattern:
+                if "id_pattern" in checked:
                     haystack = "/".join(filter(None, [chain, entity_id]))
-                    if not re.search(task.id_pattern, haystack):
+                    if not checked["id_pattern"].search(haystack):
                         continue
 
                 # Всё, что принадлежит сущности (сама сущность или её потомки)
@@ -212,8 +208,34 @@ class FsSearcher:
             task.error = str(e)
             raise
 
+    @staticmethod
+    def _inputs(task: FsSearchTask) -> dict:
+        """Вход задачи от ИИ — до обхода, одним отказом: regex имени и ID, даты ISO 8601 (с поясом — в местное время, как
+        у времени файла). Кривой — VALIDATION_ERROR с полями и правилами, без пришедших значений, а не падение посреди
+        обхода с INTERNAL_ERROR."""
+        checked: dict = {}
+        bad: list[dict] = []
+        for field_name in ("name_pattern", "id_pattern"):
+            if value := getattr(task, field_name):
+                try:
+                    checked[field_name] = re.compile(value)
+                except re.error as e:
+                    bad.append({"field": field_name, "rule": "regex", "position": e.pos})
+        for field_name in ("modified_after", "modified_before"):
+            if value := getattr(task, field_name):
+                try:
+                    moment = datetime.fromisoformat(value)
+                except ValueError:
+                    bad.append({"field": field_name, "rule": "iso8601", "expected": "2026-08-01, 2026-08-01T12:00"})
+                    continue
+                checked[field_name] = moment.astimezone().replace(tzinfo=None) if moment.tzinfo else moment
+        if bad:
+            raise FsSearchError("VALIDATION_ERROR", errors=bad)
+        return checked
+
     def search_parallel(self, tasks: list[FsSearchTask]) -> dict:
-        """Параллельный поиск по нескольким задачам; места даёт узел ёмкости (класс `search`), вызывающий их не решает."""
+        """Параллельный поиск по нескольким задачам; места даёт узел ёмкости (класс `search`), вызывающий их не решает.
+        Упавшие задачи — `{task_id, exception}`: в ответ их переводит инструмент (`ToolContext.failed_parts`)."""
         from core.capacity import Capacity
 
         results = {}
@@ -231,7 +253,7 @@ class FsSearcher:
                     result = future.result()
                     results[task.id] = result
                 except Exception as e:
-                    errors.append({"task_id": task.id, "error": str(e)})
+                    errors.append({"task_id": task.id, "exception": e})
 
         return {"results": results, "errors": errors}
 
@@ -267,10 +289,18 @@ class FsSearcher:
         return found or "unknown"
 
     def load_query(self, yaml_str: str) -> FsSearchTask:
-        """Загрузка YAML-запроса."""
+        """Загрузка YAML-запроса. Битый YAML или не словарь — ошибка вызова с местом, а не падение сервера; типы полей
+        судит модель задачи (`_typed`)."""
         import yaml
-        data = yaml.safe_load(yaml_str) or {}
-        return FsSearchTask(
+        try:
+            data = yaml.safe_load(yaml_str) or {}
+        except yaml.YAMLError as e:          # место ошибки, а не текст запроса
+            mark = getattr(e, "problem_mark", None)
+            where = {"line": mark.line + 1, "column": mark.column + 1} if mark else {}
+            raise FsSearchError("VALIDATION_ERROR", errors=[{"field": "yaml_query", "rule": "yaml", **where}]) from None
+        if not isinstance(data, dict) or not all(isinstance(data.get(k, {}), dict) for k in ("size", "modified")):
+            raise FsSearchError("VALIDATION_ERROR", errors=[{"field": "yaml_query", "rule": "object"}])
+        return self._typed(
             id="task_0",
             root=data.get("root", ""),
             entity_types=data.get("entity_types", []),
@@ -286,3 +316,15 @@ class FsSearcher:
             modified_before=data.get("modified", {}).get("before", ""),
             limit=data.get("limit", 100),
         )
+
+    @staticmethod
+    def _typed(**fields) -> FsSearchTask:
+        """Задача из полей запроса — типы судит модель задачи (pydantic над dataclass): не тот тип — ошибка вызова с
+        путём поля и правилом (`schema_errors`), без пришедшего значения."""
+        from pydantic import TypeAdapter, ValidationError
+
+        from core.declaration import schema_errors
+        try:
+            return TypeAdapter(FsSearchTask).validate_python(fields)
+        except ValidationError as e:
+            raise FsSearchError("VALIDATION_ERROR", errors=schema_errors(e)) from None

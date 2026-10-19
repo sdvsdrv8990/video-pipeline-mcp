@@ -294,6 +294,8 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
         data = {key: value for key, value in detail.model_dump().items() if value is not None}
         return web.json_response(_jsonrpc_refusal(request_id, rpc_code, data), status=status, headers=headers or {})
 
+    heard_versions: set[str] = set()                # значения MCP-Protocol-Version, уже напечатанные в консоль
+
     async def handle_jsonrpc(request: "web.Request") -> "web.Response":
         """Обработка JSON-RPC запросов: Origin → Auth → Firewall → Transport."""
         # Host — первым, до всего остального. Чужое имя хоста означает, что до нас
@@ -340,12 +342,16 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
                                request_id=req_data.get("id") if isinstance(req_data, dict) else None,
                                rpc=req_data.get("method", "") if isinstance(req_data, dict) else "")
 
-        if firewall:
+        # Пакет JSON-RPC (массив) файрвол судит поэлементно: иначе элементы пакета прошли бы мимо него. Любой элемент не
+        # пропущен — отказ всему пакету (fail-closed). params не объект — в файрвол пустым: транспорт ответит −32602.
+        for item in (req_data if isinstance(req_data, list) else [req_data]) if firewall else []:
+            one = item if isinstance(item, dict) else {}
+            asked = one.get("params")
             try:
                 fw_request = FirewallRequest(
                     ip=request.remote or "127.0.0.1",
-                    method=req_data.get("method", "") if isinstance(req_data, dict) else "",
-                    params=req_data.get("params", {}) if isinstance(req_data, dict) else {},
+                    method=str(one.get("method", "")),
+                    params=asked if isinstance(asked, dict) else {},
                     timestamp=time.time()
                 )
                 fw_result = firewall.check(fw_request)
@@ -355,25 +361,20 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
                 # клиент получает текст внутреннего исключения (имена типов, значения полей).
                 print(f"⛔ [firewall] сбой проверки, запрос отклонён: {e!r}")
                 return _refuse("firewall", "FIREWALL_UNAVAILABLE", -32000, 403, request,
-                               request_id=req_data.get("id") if isinstance(req_data, dict) else None,
-                               rpc=req_data.get("method", "") if isinstance(req_data, dict) else "")
+                               request_id=one.get("id"), rpc=str(one.get("method", "")))
 
             # RATE_LIMIT и BLOCK — разные HTTP-коды и коды реестра; число JSON-RPC лимита то же, что у ключа.
             if fw_result.decision == FirewallDecision.BLOCK:
                 return _refuse("firewall", "REQUEST_BLOCKED", -32000, 403, request, facts={"rule": fw_result.rule},
-                               note=fw_result.reason,
-                               request_id=req_data.get("id") if isinstance(req_data, dict) else None,
-                               rpc=fw_request.method)
+                               note=fw_result.reason, request_id=one.get("id"), rpc=fw_request.method)
             if fw_result.decision == FirewallDecision.RATE_LIMIT:
                 return _refuse("firewall", "RATE_LIMITED", -32001, 429, request,
                                facts={"retry_after_sec": fw_result.retry_after_sec}, note=fw_result.reason,
-                               request_id=req_data.get("id") if isinstance(req_data, dict) else None,
-                               rpc=fw_request.method, headers={"Retry-After": str(fw_result.retry_after_sec)})
+                               request_id=one.get("id"), rpc=fw_request.method,
+                               headers={"Retry-After": str(fw_result.retry_after_sec)})
             if fw_result.decision != FirewallDecision.ALLOW:
                 return _refuse("firewall", "REQUEST_BLOCKED", -32000, 403, request, facts={"rule": fw_result.rule},
-                               note=fw_result.reason,
-                               request_id=req_data.get("id") if isinstance(req_data, dict) else None,
-                               rpc=fw_request.method)
+                               note=fw_result.reason, request_id=one.get("id"), rpc=fw_request.method)
             # Пропуск С причиной = сигнал log-only (деструктивный инструмент). Печатаем его:
             # иначе сигнал живёт только в счётчике, который в проде не читает никто.
             if fw_result.reason:
@@ -382,16 +383,22 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
         # Лог факта подключения клиента: MCP-метод `initialize` = новый сеанс.
         # Это авторитетный сигнал, что Claude AI Web достучался до сервера через туннель.
         if isinstance(req_data, dict) and req_data.get("method") == "initialize":
-            params = req_data.get("params") or {}
-            client = params.get("clientInfo") or {}
+            params = req_data.get("params")             # форма судится: params и clientInfo — объекты, иначе пусто
+            params = params if isinstance(params, dict) else {}
+            client = params.get("clientInfo")
+            client = client if isinstance(client, dict) else {}
             print(
                 f"✅ Claude AI Web подключился: {client.get('name', 'unknown')} "
                 f"{client.get('version', '?')} "
                 f"(MCP protocol {params.get('protocolVersion', '?')}, ip={request.remote or '?'})"
             )
 
+        protocol_version = request.headers.get("MCP-Protocol-Version")
+        if (protocol_version or "") not in heard_versions:
+            heard_versions.add(protocol_version or "")
+            print(f"🔎 MCP-Protocol-Version клиента: {protocol_version[:40] if protocol_version else 'нет'!r}")
         # Обработка запроса. None → это была нотификация → HTTP 202 без тела.
-        response_text = await transport.handle_request(raw_request)
+        response_text = await transport.handle_request(raw_request, protocol_version)
         if response_text is None:
             return web.Response(status=202)
         return web.Response(text=response_text, content_type="application/json")
@@ -622,12 +629,17 @@ def main():
         # Явное подтверждение владельца, что перенос/восстановление — его действие.
         from core.integrity import InstanceIdentity
         from core.ids import LinkRegistry
+        from core.reactions.reactions import cli_text
         ident = InstanceIdentity(instance_home(CONFIG_PATH), WORKSPACE_PATH)
         if not ident.ensure_key():
             print("Подпись недоступна (нет cryptography) — присваивать нечего.", file=sys.stderr)
             return
         reg = LinkRegistry(WORKSPACE_PATH, identity=ident)
-        reg.re_adopt()
+        try:
+            reg.re_adopt()
+        except ContractError as refused:        # повреждённый реестр не присваивается: код и что делать, а не трассировка
+            print(cli_text(refused, CONFIG_PATH / "server_reactions.yaml"), file=sys.stderr)
+            raise SystemExit(2) from None
         print(f"Рабочая область присвоена этому серверу (instance_id {ident.instance_id[:16]}…).")
         print("Прежние подписи считаются недействительными; запись снова разрешена.")
         return

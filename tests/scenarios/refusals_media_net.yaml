@@ -1,12 +1,22 @@
 # Коды отказа сетевого вызова провайдера: причина рождается ответом двойника сети (`given.network`, приспособление
 # `net_double`). Носитель — раннер: токен «живого раннера» засевается в его файл состояния у копии деклараций сервера.
 # Каждый сценарий — свой сервер и своя сеть; законная пара — тот же вызов без токена (RUNNER_NOT_RUNNING, refusals_media_rows).
+#
+# Обновлено 2026-10-19 (media_generate — задание узла, AD-20 б). Что: каждый сценарий объявляет срок вызова клиента
+# (transport.yaml clients.claude_code.call_sec 60), ожидания те же. Почему: отказ вызова раннера рождается в работе задания;
+# дверь отдаёт итог, если задание кончилось в срок клиента, иначе — статус. Без объявленного срока бюджет установки 0
+# (клиент без срока), и исход шага решала гонка потока задания с чтением статуса: прогон 19.10 00:02 — 401, too_large,
+# cut_after_send зелёные, 500, read_timeout, not_json, оба токена — статус processing. Ожидания по родам: negative — те же
+# коды, факты и net_tasks тем же вызовом; positive — законная пара RUNNER_NOT_RUNNING на двери не тронута; destructive —
+# нет; путь «срок вышел — статус задания» мерит test_providers 12c. Прогноз до замера: все 8 сценариев файла зелёные.
 
 - scenario: rcode_net_runner_answer_500
   why: раннер ответил 500 без ErrorDetail — отказ провайдера своим кодом, а не сырой ответ
   род: отрицательный
   given:
     fixtures: [net_double]
+    declarations:
+      transport.yaml: {clients.claude_code.call_sec: 60}
     network:
       routes: [{host: 127.0.0.1, method: POST, path: /run, replies: [{status: 500, json: {detail: сбой}}]}]
     files:
@@ -34,6 +44,8 @@
   род: отрицательный
   given:
     fixtures: [net_double]
+    declarations:
+      transport.yaml: {clients.claude_code.call_sec: 60}
     network:
       routes: [{host: 127.0.0.1, method: POST, path: /run, replies: [{status: 401, json: {detail: чужой токен}}]}]
     files:
@@ -55,6 +67,8 @@
   род: отрицательный
   given:
     fixtures: [net_double]
+    declarations:
+      transport.yaml: {clients.claude_code.call_sec: 60}
     network:
       routes: [{host: 127.0.0.1, method: POST, path: /run, replies: [{error: ReadTimeout}]}]
     files:
@@ -76,6 +90,8 @@
   род: отрицательный
   given:
     fixtures: [net_double]
+    declarations:
+      transport.yaml: {clients.claude_code.call_sec: 60}
     network:
       routes: [{host: 127.0.0.1, method: POST, path: /run, replies: [{status: 200, size: 2000000}]}]
     files:
@@ -97,6 +113,8 @@
   род: отрицательный
   given:
     fixtures: [net_double]
+    declarations:
+      transport.yaml: {clients.claude_code.call_sec: 60}
     network:
       routes: [{host: 127.0.0.1, method: POST, path: /run, replies: [{status: 200, body: "{\"files\": [1, 2, 3]}", cut_after: 3}]}]
     files:
@@ -118,6 +136,8 @@
   род: отрицательный
   given:
     fixtures: [net_double]
+    declarations:
+      transport.yaml: {clients.claude_code.call_sec: 60}
     network:
       routes: [{host: 127.0.0.1, method: POST, path: /run, replies: [{status: 200, body: "<html>не json</html>"}]}]
     files:
@@ -139,6 +159,8 @@
   род: отрицательный
   given:
     fixtures: [net_double]
+    declarations:
+      transport.yaml: {clients.claude_code.call_sec: 60}
     network:
       routes: [{host: 127.0.0.1, method: POST, path: /run, replies: [{status: 200, json: {files: []}}]}]
     files:
@@ -165,6 +187,8 @@
   род: отрицательный
   given:
     fixtures: [net_double]
+    declarations:
+      transport.yaml: {clients.claude_code.call_sec: 60}
     network:
       routes: [{host: 127.0.0.1, method: POST, path: /run, replies: [{status: 200, json: {files: []}}]}]
     files:

@@ -117,11 +117,14 @@ filters:
 #
 # Каждая строка ниже получена ЗАПУСКОМ (ffmpeg 8.1.2), а не догадкой о формулировках. Незнакомая
 # жалоба уходит в `default`: молча объявить её «нашей» значило бы соврать о причине.
+# Факты отказа — откуда они (`facts`): `missing_input` — вход команды (`-i`), которого нет на диске в момент отказа; нет
+# такого — причина не подтверждена, код `default`; `encodable` — кодеки словаря, чьи энкодеры есть в этом бинаре
+# (`-encoders`). Без ключа фактов, кроме кода выхода и номера события, нет: слова ffmpeg — в журнал сервера.
 failures:
   by_reason:
-    "Encoder not found": RENDER_PROFILE_INVALID      # кодек строки профиля этот ffmpeg не умеет
-    "No such file or directory": FILE_NOT_FOUND      # ассет из книги пропал между записью и рендером
-    "Invalid data found when processing input": RENDER_INPUT_UNPREPARED
+    "Encoder not found": {code: RENDER_PROFILE_INVALID, facts: encodable}       # кодек профиля этот ffmpeg не умеет
+    "No such file or directory": {code: FILE_NOT_FOUND, facts: missing_input}   # ассет пропал между записью и рендером
+    "Invalid data found when processing input": {code: RENDER_FAILED}          # какой вход — по словам не судим
   default: RENDER_FAILED
 
 # ═══ КОДЕКИ: имя из книги → энкодер ffmpeg ═══

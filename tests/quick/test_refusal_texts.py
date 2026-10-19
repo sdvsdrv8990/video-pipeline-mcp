@@ -106,12 +106,49 @@ CASES = [
      {"sheet": "Нет", "known": "Лист1"}, ["Нет", "Лист1"], [], [], []),
     ("лист уже есть", "excel_add_sheet", {"path": "книга.xlsx", "sheet": "Лист1"}, "SHEET_EXISTS",
      {"sheet": "Лист1"}, ["Лист1"], [], [], []),
+    ("переименование на занятое имя", "excel_rename_sheet", {"path": "книга.xlsx", "sheet": "Лист1", "new_name": "Лист1"},
+     "SHEET_EXISTS", {"sheet": "Лист1"}, ["Лист1"], [], [], []),
+    ("копия на занятое имя", "excel_copy_sheet", {"path": "книга.xlsx", "sheet": "Лист1", "new_name": "Лист1"},
+     "SHEET_EXISTS", {"sheet": "Лист1"}, ["Лист1"], [], [], []),
+    # Опись №6 (ложная вина): адрес и цвет от ИИ — ошибка вызова с полем и правилом, прежде INTERNAL_ERROR human_required.
+    ("ячейка вне A1", "excel_insert_formula", {"path": "книга.xlsx", "sheet": "Лист1", "cell": "A0", "formula": "=1"},
+     "VALIDATION_ERROR", {}, ["errors"], [], [], [{"field": "cell", "rule": "a1_cell"}]),
+    ("диапазон оборван", "excel_apply_formatting", {"path": "книга.xlsx", "sheet": "Лист1", "target": "A1:", "bold": True},
+     "VALIDATION_ERROR", {}, ["errors"], [], [], [{"field": "target", "rule": "a1_range"}]),
+    ("цвет не aRGB", "excel_apply_formatting", {"path": "книга.xlsx", "sheet": "Лист1", "target": "A1", "fill": "#FF0000"},
+     "VALIDATION_ERROR", {}, ["errors"], [], [], [{"field": "fill", "rule": "argb_hex"}]),
+    ("диапазон чтения не A1", "excel_read_range", {"path": "книга.xlsx", "sheet": "Лист1", "cell_range": "Б1"},
+     "VALIDATION_ERROR", {}, ["errors"], [], [], [{"field": "cell_range", "rule": "a1_range"}]),
+    # Опись №6, поиск: regex, дата, YAML и типы полей запроса — до обхода, ошибкой вызова с полем.
+    ("regex имени не разбирается", "fs_smart_search", {"directory": "есть", "name_pattern": "[незакрыт"},
+     "VALIDATION_ERROR", {}, ["errors"], [], [], [{"field": "name_pattern", "rule": "regex"}]),
+    ("regex ID не разбирается", "fs_smart_search", {"directory": "есть", "id_pattern": "(?P<"},
+     "VALIDATION_ERROR", {}, ["errors"], [], [], [{"field": "id_pattern", "rule": "regex"}]),
+    ("дата не ISO 8601", "fs_smart_search", {"directory": "есть", "modified_after": "вчера"},
+     "VALIDATION_ERROR", {}, ["errors"], [], [], [{"field": "modified_after", "rule": "iso8601"}]),
+    ("YAML запроса битый", "fs_search_yaml", {"yaml_query": "root: [незакрыт"},
+     "VALIDATION_ERROR", {}, ["errors"], [], [], [{"field": "yaml_query", "rule": "yaml"}]),
+    ("YAML запроса не словарь", "fs_search_yaml", {"yaml_query": "- список"},
+     "VALIDATION_ERROR", {}, ["errors"], [], [], [{"field": "yaml_query", "rule": "object"}]),
+    ("поле запроса не того типа", "fs_search_yaml", {"yaml_query": "limit: много"},
+     "VALIDATION_ERROR", {}, ["errors"], [], [], [{"field": "limit", "rule": "int_parsing"}]),
+    ("чтение плана не словарь", "search_tables", {"query_dict": {"reads": ["не словарь"]}},
+     "VALIDATION_ERROR", {}, ["errors"], [], [], [{"field": "reads.0", "rule": "dataclass_type"}]),
     ("столбца нет — имя и лист", "excel_delete_column", {"path": "книга.xlsx", "sheet": "Лист1", "column": "Нет"},
      "COLUMN_NOT_FOUND", {"column": "Нет", "sheet": "Лист1"}, ["«Нет»", "«Лист1»"], [], [], []),
     ("столбец уже есть", "excel_add_column", {"path": "книга.xlsx", "sheet": "Лист1", "column": "A"}, "COLUMN_EXISTS",
      {"column": "A", "sheet": "Лист1"}, ["«A»", "«Лист1»"], [], [], []),
     ("порядок листов — не все листы книги", "excel_reorder_sheets", {"path": "книга.xlsx", "order": ["Нет"]},
      "VALIDATION_ERROR", {}, [], [], [], [{"field": "order", "rule": "all_sheets"}]),
+    # Предок без регистрации: рецепт — по факту диска у предка. Нет на диске — создать сущностью; есть — усыновить.
+    ("ID в папке, которой нет: создать, не усыновлять", "fs_create_file",
+     {"path": "нет/папки/x.md", "assign_id": True}, "CHAIN_NOT_CREATED", {"paths": "нет, нет/папки", "path": "нет/папки"},
+     ["нет/папки"], ["Ничего не записано", "structure_create"], ["adopt"], []),
+    ("ID в папке на диске без записи: усыновить", "fs_create_file", {"path": "есть/x.md", "assign_id": True},
+     "CHAIN_UNRESOLVED", {"paths": "есть", "path": "есть"}, ["есть"], ["adopt=true"], ["structure_create"], []),
+    ("предок на диске и под ним нового нет: сперва усыновить стоящий", "fs_create_file",
+     {"path": "есть/новая/x.md", "assign_id": True}, "CHAIN_UNRESOLVED", {"paths": "есть", "path": "есть/новая"},
+     ["есть"], ["adopt=true"], ["structure_create"], []),
 ]
 
 print("== 1. Причина у места — следствие на двери: код, факты, текст и рецепт своей причины ==")
@@ -323,6 +360,73 @@ try:
 finally:
     OnlineCatalog.transport, OnlineCatalog.resolve = seams
 check("ни один случай не ушёл в сеть: ключа нет — запрос не уходит", not sent, sent)
+
+print("== 6. Сбой части поиска (опись №7): часть — формой отказа, ни одной удачной — отказ вызова ==")
+# Прежде упавшее чтение уходило в успех как errors[{error: str(e)}]: «TABLE_NOT_FOUND» строкой без фактов и рецепта,
+# одиночный поиск по несуществующей таблице — «успех» с нулём строк, который ИИ читает как «ничего не нашлось».
+engine._state_manager.write_snapshot("поиск/есть", {"META": {"schema": {}, "rows": {"R1": {"title": "x"}}}})
+got = call("search_quick", table="поиск/есть", sheet="META")
+check("законный: таблица есть — строки, сбоев нет", got.status == "success" and got.data["rows"] and not got.data["errors"],
+      got.error or got.data)
+got = call("search_quick", table="нет_таблицы", sheet="META")
+check("одно чтение упало — отказ вызова кодом своей причины, а не «успех» с пустым итогом",
+      got.status == "error" and got.error.code == "TABLE_NOT_FOUND" and got.error.facts.get("table") == "нет_таблицы",
+      got.error or got.data)
+got = call("search_multi", tables=[{"table": "поиск/есть", "sheet": "META"}, {"table": "нет_таблицы", "sheet": "META"}])
+part = ((got.data or {}).get("errors") or [{}])[0]
+check("часть упала — строки удачной и часть формой отказа: код, текст реестра, факты",
+      got.status == "success" and got.data["rows"] and part.get("code") == "TABLE_NOT_FOUND"
+      and part.get("message") == registry.get_error("TABLE_NOT_FOUND", facts={"table": "нет_таблицы"}).message
+      and part.get("facts", {}).get("table") == "нет_таблицы", part)
+got = call("fs_search_multi", queries=[{"root": "../../etc"}])
+check("поиск файлов вне рабочей области — отказ PATH_ESCAPE, а не «успех» с кодом строкой",
+      got.status == "error" and got.error.code == "PATH_ESCAPE", got.error or got.data)
+got = call("fs_search_multi", queries=[{"root": "есть", "name_pattern": "["}, {"root": "есть"}])
+part = ((got.data or {}).get("errors") or [{}])[0]
+check("часть пакета с кривым regex — VALIDATION_ERROR с полем, соседняя часть отработала (опись №6)",
+      got.status == "success" and got.data["results"] and part.get("code") == "VALIDATION_ERROR"
+      and listed(part.get("errors") or [], {"field": "name_pattern", "rule": "regex"}), part)
+
+print("== 7. Хаб моделей перегружен, офлайн или молчит (опись №5): отказ «источник недоступен», срок объявлен ==")
+# Прежде список хаба (list_models) не был обёрнут: 429/5xx/офлайн уходили INTERNAL_ERROR «инструмент упал», а сессия хаба
+# ждала ответа без срока (huggingface_hub 1.31.0: httpx.Client(timeout=None)).
+import huggingface_hub as _hf7
+from huggingface_hub.errors import HfHubHTTPError as _HubHTTP7
+from huggingface_hub.utils import get_session as _hub_session7
+
+_url7 = "https://huggingface.co/api/models"
+_hub_timeout7 = Declaration(ROOT / "config" / "providers.yaml", ContractError, "провайдеров").need(
+    "local", "source_kinds", "hf_hub", "timeout_sec")
+_real_api7 = _hf7.HfApi
+for _label7, _cause7, _status7 in (
+        ("429", _HubHTTP7("429", response=httpx.Response(429, request=httpx.Request("GET", _url7))), 429),
+        ("503", _HubHTTP7("503", response=httpx.Response(503, request=httpx.Request("GET", _url7))), 503),
+        ("офлайн", httpx.ConnectError("нет сети"), None), ("срок", httpx.ReadTimeout("срок вышел"), None)):
+    class _Broken7:
+        def list_models(self, **kw):
+            raise _cause7
+
+    _hf7.HfApi = _Broken7
+    try:
+        got = call("media_models", scope="local", kind="image")
+    finally:
+        _hf7.HfApi = _real_api7
+    err = got.error
+    check(f"список хаба, {_label7}: MODEL_SOURCE_UNREACHABLE с хостом, текст — шаблон реестра",
+          err is not None and err.code == "MODEL_SOURCE_UNREACHABLE" and err.facts.get("host") == "huggingface.co"
+          and err.facts.get("status") == _status7 and wants(err.code) <= set(err.facts)
+          and err.message == registry.get_error(err.code, facts=err.facts).message,
+          err or got.data)
+check("срок фазы запроса хаба — объявленный, а не «без срока»",
+      _hub_session7().timeout.read == float(_hub_timeout7), _hub_session7().timeout)
+
+print("== 8. Законные адреса книги (опись №6): ячейка, столбец, диапазон читаются, а не падают ==")
+for _label8, _range8, _shape8 in (("одна ячейка", "A1", (1, 1)), ("диапазон", "A1:B2", (2, 2)), ("столбец", "A:A", None)):
+    got = call("excel_read_range", path="книга.xlsx", sheet="Лист1", cell_range=_range8)
+    rows8 = (got.data or {}).get("values") or []
+    check(f"чтение {_label8} {_range8}: строки, а не INTERNAL_ERROR",
+          got.status == "success" and rows8 and (_shape8 is None or (len(rows8), len(rows8[0])) == _shape8),
+          got.error or got.data)
 
 print(f"\n{'=' * 50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

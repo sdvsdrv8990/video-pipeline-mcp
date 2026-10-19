@@ -73,6 +73,10 @@ dependencies = [
     "psutil>=7.2",
     # Подпись артефактов и ключ инстанса (core/integrity): без неё подпись молча отключается.
     "cryptography>=42.0",
+    # Формулы книги и снимка одним языком (core/formulas, решение владельца 18.10): движок нужен двери деклараций и снимкам,
+    # не только тестам. Пол — версия, прошедшая пробу 12/12 против LibreOffice (orders/infra/formula-refs). Риск: PyPI
+    # «Development Status :: 3 - Alpha», Scorecard нет (api.securityscorecards.dev 404) — мера держится на пробе.
+    "ironcalc>=0.9.0",
     # NB: бинарь туннеля — НЕ pip-пакет (ставится install.sh).
 ]
 

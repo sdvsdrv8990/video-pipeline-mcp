@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -25,6 +27,16 @@ def _atomic_write_json(path: Path, data: Any):
     """JSON снимка, очереди и реестра — заменой слоя (FS-06): читатель видит старый файл целиком или новый, обрыв
     оставляет остаток с владельцем. Путь уже прошёл дверь у вызывающего; корень здесь — каталог самого файла."""
     Files(path.parent).replace(path.name, json.dumps(data, indent=2, ensure_ascii=False))
+
+
+_SNAPSHOT_LOCKS: dict[Path, threading.Lock] = {}    # замок снимка — по его пути на процесс, а не по экземпляру
+_SNAPSHOT_LOCKS_GUARD = threading.Lock()
+
+
+def _snapshot_lock(path: Path) -> threading.Lock:
+    """Замок одного снимка: писатели одного файла идут по очереди при любом числе экземпляров, разные снимки — нет."""
+    with _SNAPSHOT_LOCKS_GUARD:
+        return _SNAPSHOT_LOCKS.setdefault(path.resolve(), threading.Lock())
 
 
 # Журнал сервера — не место для содержимого рабочей области и секретов.
@@ -97,7 +109,24 @@ class StateManager:
             PathRefused: путь вне workspace или в закрытом каталоге
         """
         snapshot_file = Files(self.workspace_path).place(entity_path) / "read.json"
-        _atomic_write_json(snapshot_file, data)
+        with _snapshot_lock(snapshot_file):         # целиком — не посреди чужой правки снимка
+            _atomic_write_json(snapshot_file, data)
+
+    @contextmanager
+    def edit_snapshot(self, entity_path: str) -> Iterator[dict]:
+        """Чтение—правка—запись снимка одной операцией, всё или ничего: отдаёт снимок (файла нет — пустой dict) для правки
+        на месте; выход без исключения — запись целиком, исключение — снимок прежний. Замок — на путь снимка в процессе,
+        поэтому писатели одного снимка (очередь таблицы, учёт расхода, книга сцен) не теряют записей друг друга. Вложенный
+        edit_snapshot или write_snapshot того же снимка внутри ждёт сам себя.
+
+        Raises:
+            PathRefused: путь вне workspace или в закрытом каталоге
+        """
+        snapshot_file = Files(self.workspace_path).place(entity_path) / "read.json"
+        with _snapshot_lock(snapshot_file):
+            snapshot = self.read_snapshot(entity_path) or {}
+            yield snapshot
+            _atomic_write_json(snapshot_file, snapshot)
 
     def push_to_queue(self, entity_path: str, operation: dict) -> bool:
         """Добавление операции в очередь (write.json).

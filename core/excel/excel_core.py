@@ -94,6 +94,33 @@ class ExcelEngine:
         if unknown:
             raise ExcelError("COLUMN_NOT_FOUND", facts={"column": ", ".join(unknown), "sheet": sheet})
 
+    @staticmethod
+    def _address(field: str, value: str, *, cell: bool = False) -> str:
+        """Адрес A1 от ИИ — судит сама openpyxl: ячейка (`cell`) или диапазон. Кривой — VALIDATION_ERROR с полем и
+        правилом, без пришедшего значения, а не падение сервера."""
+        from openpyxl.utils.cell import coordinate_from_string, range_boundaries
+        from openpyxl.utils.exceptions import CellCoordinatesException
+        try:
+            coordinate_from_string(value) if cell else range_boundaries(value)
+        except (ValueError, CellCoordinatesException):
+            raise ExcelError("VALIDATION_ERROR", errors=[{"field": field, "rule": "a1_cell" if cell else "a1_range",
+                                                          "expected": "A1" if cell else "A1, A1:C3"}]) from None
+        return value
+
+    @staticmethod
+    def _colours(**colours: str | None) -> None:
+        """Цвета от ИИ судит openpyxl (aRGB hex); кривые — одним VALIDATION_ERROR с полями, без пришедших значений."""
+        from openpyxl.styles.colors import Color
+        bad = []
+        for field, value in colours.items():
+            if value:
+                try:
+                    Color(rgb=value)
+                except ValueError:
+                    bad.append({"field": field, "rule": "argb_hex", "expected": "RRGGBB, AARRGGBB"})
+        if bad:
+            raise ExcelError("VALIDATION_ERROR", errors=bad)
+
     def _save(self, wb, path: str):
         wb.save(self._resolve(path))
 
@@ -350,7 +377,7 @@ class ExcelEngine:
         """Формула в ячейку. Защита: не перезаписывает существующую формулу молча."""
         wb = self._load(path)
         ws = self._sheet(wb, sheet)
-        target = ws[cell]
+        target = ws[self._address("cell", cell, cell=True)]
         existing = target.value
         if isinstance(existing, str) and existing.startswith("=") and not overwrite:
             raise ExcelError("FORMULA_PROTECTED", facts={"cell": cell, "sheet": sheet})
@@ -363,9 +390,10 @@ class ExcelEngine:
                          font_color: str | None = None) -> dict:
         """Стили на ячейку/диапазон (A1 или A1:C3). fill/font_color — HEX 'RRGGBB'."""
         from openpyxl.styles import PatternFill, Font
+        self._colours(fill=fill, font_color=font_color)
         wb = self._load(path)
         ws = self._sheet(wb, sheet)
-        cells = ws[target]
+        cells = ws[self._address("target", target)]
         # нормализуем в плоский список ячеек (одна ячейка → кортеж кортежей у диапазона)
         flat: list = []
         if hasattr(cells, "__iter__"):
@@ -401,7 +429,12 @@ class ExcelEngine:
         """ОТЛАДКА: сырой 2D-массив. НЕ рабочий путь чтения (см. json_read_snapshot)."""
         wb = self._load(path)
         ws = self._sheet(wb, sheet)
-        matrix = [[c.value for c in row] for row in ws[cell_range]] if cell_range else []
+        from openpyxl.utils.cell import range_boundaries
+        matrix = []
+        if cell_range:                          # по границам: одна ячейка и целый столбец — тоже диапазон
+            min_col, min_row, max_col, max_row = range_boundaries(self._address("cell_range", cell_range))
+            matrix = [[c.value for c in row]
+                      for row in ws.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col)]
         return {"path": path, "sheet": sheet, "range": cell_range, "values": matrix,
                 "note": "Отладочное чтение сырых ячеек. Рабочее чтение данных — json_read_snapshot."}
 
@@ -420,7 +453,7 @@ class ExcelEngine:
         engines = Declaration(declarations_root() / RECALC_ENGINE.file, ExcelError, "движков сервера")
         soffice = locate(engines.section(*RECALC_ENGINE.section, schema=RECALC_ENGINE.schema))
         if not soffice:
-            raise ExcelError("RECALC_UNAVAILABLE")
+            raise ExcelError("RECALC_UNAVAILABLE", facts={"engine": "LibreOffice"})
         td = Path(tempfile.mkdtemp(prefix="xlsx_recalc_"))
         try:
             done = subprocess.run(

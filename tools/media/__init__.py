@@ -5,32 +5,37 @@
 
 Граница внутри группы такая. ВИДИМОСТЬ: чем сейчас исполняется ресурс, откуда это взято, не идёт
 ли работа уже на запасном и не близок ли предел. ИСПОЛНЕНИЕ: строка канала превращается в файл
-рабочей области с приёмкой по диску и учтённым расходом; синхронный провайдер отдаёт файл сразу,
-асинхронный — идентификатор задачи, и тогда сервер прозванивает её внутри того же вызова.
+рабочей области с приёмкой по диску и учтённым расходом — заданием узла заданий: синхронный провайдер
+отдаёт файл в работе задания, асинхронный — идентификатор задачи, и работа прозванивает её до итога
+провайдера или снятия задания.
 
-Демона нет — решение владельца: за туннелем один клиент. Отсюда честная граница: отвалившийся
-клиент задачу не теряет и не спасает, её статус прозванивается заново.
+Демона нет — решение владельца: задание живёт в процессе сервера. Отвалившийся клиент задание не
+теряет и не спасает: итог — task_status по id.
 """
 
 from collections import defaultdict
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
+from typing import TypeVar
 
 from core.contracts import ContractError, ErrorDetail, Fact, Later, ToolResult
 from core.engine import Engine
 from core.engine.table_materializer import declared_rows
 from core.jobs import Tasks
-from core.providers import (AdapterRegistry, MediaRequest, ModelSpec, ProviderError, ProviderResolver,
-                            TaskCycle, UsageLedger)
+from core.providers import (AdapterRegistry, MediaRequest, ModelSpec, ProviderResolver, TaskCycle,
+                            UsageLedger)
 from core.paths import Files
 from core.providers.catalog import ModelCatalog, OnlineCatalog
 from core.providers.download import results
 from core.providers.hardware import probe
 from core.providers.installer import ModelInstaller
+from core.providers.task_cycle import PLACE as GENERATE_PLACE
 from core.runner import RunnerSupervisor
 from core.secrets import SecretError, redact
 from tools._context import ANNOTATIONS_MODIFY, ANNOTATIONS_READONLY, ToolContext
+
+T = TypeVar("T")
 
 
 def register(engine: Engine, ctx: ToolContext) -> None:
@@ -144,7 +149,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             e.__cause__ = Exception(redact(f"{type(cause).__name__}: {cause}", [api_key]))
         return e
 
-    def _keyless(call: Callable[[], object], api_key: str) -> object:
+    def _keyless(call: Callable[[], T], api_key: str) -> T:
         """Вызов провайдера, чей отказ проходит `_hidden` до перевода."""
         try:
             return call()
@@ -182,13 +187,16 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         return f"{table}/{rule.get('dir', 'assets')}/{name}"
 
     async def media_generate(table: str, resource_type: str, input: str, scene_id: str,
-                             video_slug: str = "") -> "ToolResult":
-        """Исполнить ресурс активным провайдером канала: озвучить текст, нарисовать промпт.
+                             video_slug: str = "", take: int = 0) -> ToolResult | Later:
+        """Исполнить ресурс активным провайдером канала: озвучить текст, нарисовать промпт — заданием узла заданий.
 
-        Провайдер и модель берутся из строки канала (кого именно — покажет
-        `media_provider_status`). Синхронный провайдер отдаёт файл сразу; асинхронный —
-        идентификатор задачи, и сервер прозванивает её здесь же, пока не придёт готовность
-        или отказ. Файл принимается по диску, расход прибавляется строке провайдера.
+        Провайдер и модель берутся из строки канала (кого именно — покажет `media_provider_status`). Источник, решение,
+        место файла, ключ, параметры модели и готовность исполнителя (`ready`: вход, веса) судятся в вызове — их отказ
+        приходит сразу, без задания; генерация, прозвонка задачи провайдера, забор и приёмка файла по диску, расход
+        строке провайдера — работа задания (`GENERATE_PLACE`). Ответ ждёт итога в пределах
+        срока вызова клиента (AD-20 б); повтор того же вызова с тем же дублем `take` в окне — то же задание, вторая
+        генерация не заводится; другой дубль — новое задание. Адаптеру дубль уходит параметром `seed`: понимает его тот,
+        чья карта параметров его называет.
         """
         resolver = ProviderResolver(ctx.config_path / "providers.yaml")
         ok, cfg = ctx.safe(lambda: resolver.config)
@@ -230,9 +238,9 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         # иначе каждый новый адаптер обязан помнить про mkdir, и первый забывший роняет вызов.
         target.parent.mkdir(parents=True, exist_ok=True)
 
-        # Ключ проверяется ДО подъёма адаптера — он свойство провайдера, а не кода, и без
-        # него вызов не состоится в любом случае. Берётся из закрытого файла канала и живёт
-        # только до конца вызова.
+        # Ключ проверяется ДО задания — он свойство провайдера, а не кода, и без него генерация не
+        # состоится в любом случае. Берётся из закрытого файла канала и живёт в памяти работы до
+        # конца задания: в запись задания (параметры, итог) не попадает.
         registry = AdapterRegistry(ctx.config_path / "providers.yaml", ctx.config_path.parent)
         api_key = ""
         if registry.key_source(decision["provider"], resource_type) == "runner":
@@ -250,7 +258,7 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             if not api_key:
                 raise ContractError("PROVIDER_KEY_MISSING", facts={"provider": decision["provider"], "channel": table})
 
-        # Что модель принимает и в каких пределах, знает сама модель. Расхождение ловим ДО вызова:
+        # Что модель принимает и в каких пределах, знает сама модель. Расхождение ловим ДО задания:
         # у платного провайдера неверный параметр стоит денег, у локального — минут расчёта, и в
         # обоих случаях ответ «не то, что просили» приходит без жалобы.
         spec_engine = ModelSpec(registry)
@@ -268,72 +276,86 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         ok, adapter = ctx.safe(lambda: registry.load(decision["provider"], resource_type))
         if not ok:
             return adapter
-
-        request = MediaRequest(input=input, params=params, target=target,
+        take = int(take)        # схема пускает 2.0 как целое: дубль в ключе и зерно адаптеру — целым
+        request = MediaRequest(input=input, params={**params, "seed": take}, target=target,
                                models_dir=registry.models_dir, api_key=api_key, source=source_file,
                                provider=decision["provider"], resource_type=resource_type,
                                workspace=ctx.workspace_path)
 
-        def generate():
+        def on_row(step: Callable[[], T]) -> T:
+            """Шаг адаптера, чей отказ обработки строки — с листом и строкой, которые знает резолвер."""
             try:
-                return adapter.generate(request)
-            except ContractError as e:  # отказ обработки строки — с листом и строкой, которые знает резолвер
+                return step()
+            except ContractError as e:
                 raise e.with_facts(sheet=sheet, row=decision["row_id"])
 
-        ok, outcome = ctx.safe(lambda: _keyless(generate, api_key))
+        # Готовность (вход, веса) известна до работы — отказ на двери, задание не заводится; работа судит её снова.
+        if callable(getattr(adapter, "ready", None)):
+            ok, readiness = ctx.safe(lambda: _keyless(lambda: on_row(lambda: adapter.ready(request)), api_key))
+            if not ok:
+                return readiness
+
+        def work(pulse) -> dict:
+            """Генерация, расход, прозвонка задачи провайдера, забор и приёмка — итог задания; отказ любого шага — отказ
+            задания со скрытым ключом (`_keyless`). Оплачено то, что принял провайдер (итог или id задачи `generate`):
+            расход пишется до прозвонки, и снятие посреди неё оплаченное не обнуляет."""
+            outcome = _keyless(lambda: on_row(lambda: adapter.generate(request)), api_key)
+            usage = _charge(table, sheet, source, decision, input, 1 if outcome.task_id else len(outcome.files))
+            pulse.spent(paid={"provider": decision["provider"], "charged": usage["charged"],
+                              **{k: usage[k] for k in ("amount", "unit") if k in usage}})
+            waited: dict = {}
+            if outcome.task_id:
+                if not callable(getattr(adapter, "poll", None)):
+                    # Задача без прозвонки — молчание вместо причины отказа; это отказ, а не «успех».
+                    raise ContractError("PROVIDER_ADAPTER_BROKEN", facts={"provider": decision["provider"]}) from TypeError(
+                        f"исполнитель {type(adapter).__name__} вернул задачу без прозвонки poll")
+                # Прозвонка нужна не «дождаться», а поймать причину отказа. Своего срока нет: предел — итог провайдера и
+                # снятие задания (пауза между опросами прерывается снятием).
+                waited = _keyless(lambda: cycle.follow(adapter.poll, outcome.task_id, pulse), api_key)
+                answer = waited.get("answer") or {}
+                if callable(getattr(adapter, "fetch", None)):
+                    _keyless(lambda: adapter.fetch(answer, target), api_key)
+                else:
+                    # Адаптер не забирает файл сам — забираем по ссылке из ответа задачи.
+                    loader = results(ctx.config_path / "media_tasks.yaml")
+                    url = _url_in(loader.policy.url_fields, answer)
+                    if not url:
+                        raise ContractError("PROVIDER_FAILED", facts={"provider": decision["provider"], "missing": "url"})
+                    _keyless(lambda: loader.fetch(url, Files(Path(target).parent), Path(target).name, "result"), api_key)
+                outcome.files = [target]
+
+            # дверь корня: путь через ссылку ФС — тот же файл
+            verified = [cycle.verify_download(Files(ctx.workspace_path).name(path), ctx.workspace_path)
+                        for path in outcome.files]
+            files = [v["path"] for v in verified]
+            return {
+                "table": table, "resource_type": resource_type, "provider": decision["provider"],
+                "model": params.get("model", ""), "source": source, "files": files, "verified": verified,
+                "on_fallback": decision["exhausted_chain"], "warning": decision["warning"],
+                # Где считалось: карта или процессор. Без этого «медленно» неотличимо от «сломано».
+                "compute": outcome.meta.get("compute") or {},
+                "usage": usage, "provider_task": {k: v for k, v in waited.items() if k != "answer"},
+                "facts": [{"type": "MediaGenerated", "data": {
+                    "table": table, "resource_type": resource_type, "provider": decision["provider"],
+                    "model": params.get("model", ""), "files": files,
+                    "usage_after": usage.get("after"), "charged": usage.get("charged")}}]}
+
+        call = {"table": table, "resource_type": resource_type, "input": input, "scene_id": scene_id,
+                "video_slug": video_slug, "take": take}
+        # Повтор в окне — то же задание, пока те же дубль, строка провайдера и исходный файл: другой дубль, правка строки
+        # или новый исходник — новая работа (AD-21).
+        seen = source_file.stat() if source_file else None
+        key = {**call, "provider": decision["provider"], "params": params,
+               "source": [seen.st_size, seen.st_mtime_ns, seen.st_ino] if seen else None}
+        twin = tasks.twin("media_generate", call, key=key)
+        ok, entry = ctx.safe(lambda: tasks.begin("media_generate", call, GENERATE_PLACE, work, key=key))
         if not ok:
-            return outcome
-
-        waited: dict = {}
-        if outcome.task_id:
-            if not callable(getattr(adapter, "poll", None)):
-                # Задача без прозвонки — молчание вместо причины отказа; это отказ, а не «успех».
-                raise ContractError("PROVIDER_ADAPTER_BROKEN", facts={"provider": decision["provider"]}) from TypeError(
-                    f"исполнитель {type(adapter).__name__} вернул задачу без прозвонки poll")
-            # Прозвонка нужна не «дождаться», а поймать причину отказа.
-            ok, polled = ctx.safe(lambda: _keyless(lambda: cycle.wait(adapter.poll, outcome.task_id), api_key))
-            if not ok:
-                return polled
-            waited = polled
-            answer = waited.get("answer") or {}
-            if callable(getattr(adapter, "fetch", None)):
-                ok, fetched = ctx.safe(lambda: _keyless(lambda: adapter.fetch(answer, target), api_key))
-            else:
-                # Адаптер не забирает файл сам — забираем по ссылке из ответа задачи.
-                ok, loader = ctx.safe(lambda: results(ctx.config_path / "media_tasks.yaml"))
-                if not ok:
-                    return loader
-                url = _url_in(loader.policy.url_fields, answer)
-                if not url:
-                    raise ContractError("PROVIDER_FAILED", facts={"provider": decision["provider"], "missing": "url"})
-                ok, fetched = ctx.safe(lambda: _keyless(lambda: loader.fetch(
-                    url, Files(Path(target).parent), Path(target).name, "result"), api_key))
-            if not ok:
-                return fetched
-            outcome.files = [target]
-
-        verified = []
-        for path in outcome.files:
-            rel_file = Files(ctx.workspace_path).name(path)     # дверь корня: путь через ссылку ФС — тот же файл
-            ok, report = ctx.safe(partial(cycle.verify_download, rel_file, ctx.workspace_path))
-            if not ok:
-                return report
-            verified.append(report)
-
-        usage = _charge(table, sheet, source, decision, input, len(verified))
-        data = {
-            "table": table, "resource_type": resource_type, "provider": decision["provider"],
-            "model": params.get("model", ""), "source": source,
-            "files": [v["path"] for v in verified], "verified": verified,
-            "on_fallback": decision["exhausted_chain"], "warning": decision["warning"],
-            # Где считалось: карта или процессор. Без этого «медленно» неотличимо от «сломано».
-            "compute": outcome.meta.get("compute") or {},
-            "usage": usage, "task": {k: v for k, v in waited.items() if k != "answer"},
-        }
-        return ToolResult(status="success", data=data, facts=[Fact(type="MediaGenerated", data={
-            "table": table, "resource_type": resource_type, "provider": decision["provider"],
-            "model": params.get("model", ""), "files": data["files"],
-            "usage_after": usage.get("after"), "charged": usage.get("charged")})])
+            return entry
+        return _later(entry["task_id"], _generated, Fact(type="MediaStarted", data={
+            "task_id": entry["task_id"], "table": table, "resource_type": resource_type, "scene_id": scene_id,
+            "provider": decision["provider"], "model": params.get("model", ""), "take": take}),
+            {"same_task": {"task_id": entry["task_id"], "take": take}}
+            if twin is not None and twin.get("task_id") == entry["task_id"] else None)
 
     def _charge(table: str, sheet: str, source: str, decision: dict,
                 text: str, files: int) -> dict:
@@ -345,9 +367,11 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 "прибавлять счётчик некуда. Заполни лист провайдеров книги канала.")}
         try:
             report = ledger.charge_call(table, sheet, decision, text=text, files=files)
-        except ProviderError as e:
-            # Файл уже сделан: молча «успех без расхода» означал бы вечный лимит.
-            return {"charged": False, "code": e.code, "reason": e.message}
+        except Exception as e:
+            # Провайдер уже принял работу: сбой учёта не отменяет её, а виден кодом реестра (чужой — с номером события).
+            error = engine.failure("media_generate", e).error
+            assert error is not None
+            return {"charged": False, "code": error.code, "reason": error.message}
         report["charged"] = True
         return report
 
@@ -461,23 +485,30 @@ def register(engine: Engine, ctx: ToolContext) -> None:
 
     tasks = Tasks(engine)
 
-    def _later(task_id: str, done: Callable[[dict], ToolResult]) -> Later:
-        """Ответ вызова, поставившего задание (AD-20 б): ждать его конца событием в пределах срока вызова клиента
-        (`client_budget.call_sec`; не объявлен — 0, ожидания нет). Кончилось — `done(итог)` с `task_id`; отказ или
-        снятие — отказ задания; не кончилось — статус, `task_id` и `next`."""
+    def _later(task_id: str, done: Callable[[dict], ToolResult], started: Fact | None = None,
+               extra: dict | None = None) -> Later:
+        """Ответ вызова, поставившего задание (AD-20 б): ждать его конца событием не дольше `client_budget.wait_sec` —
+        срок клиента минус запас доставки, чтобы ответ дошёл до обрыва. Кончилось — `done(итог)` с `task_id`; отказ или
+        снятие — отказ задания; не кончилось — статус, `task_id`, `next` и факт-предмет `started`, если он есть. Срок 0 —
+        статус по построению: сервер не ждал, итог не в этом вызове, как бы ни успел поток задания.
+        `extra` — данные вызова в обоих ответах успеха (что повтор отдал то же задание)."""
         async def finish() -> ToolResult:
-            entry = (await tasks.until_end([task_id], ctx.client_budget.call_sec))[0]
-            task = entry.get("task") or {}
-            refused = entry.get("error") or task.get("error")
-            if refused:
-                return ToolResult(status="error", error=ErrorDetail.model_validate(refused), data={"task_id": task_id})
-            if task.get("status") == "completed":
-                result = done(task["result"])
-                return result.model_copy(update={"data": {**(result.data or {}), "task_id": task_id}})
-            return ToolResult(status="success", data={"task_id": task_id, "task": task, "next": (
-                f"Задание идёт дольше срока вызова клиента — итог по id: task_status(task_ids=['{task_id}']) отвечает "
-                "сразу; wait=true держит вызов до смены статуса — только клиенту без короткого срока вызова. Долго или "
-                "молчит (idle_sec в статусе) — task_cancel.")})
+            wait = ctx.client_budget.wait_sec
+            if not wait:
+                task = tasks.status([task_id])[0].get("task") or {}
+            else:
+                entry = (await tasks.until_end([task_id], wait))[0]
+                task = entry.get("task") or {}
+                refused = entry.get("error") or task.get("error")
+                if refused:
+                    return ToolResult(status="error", error=ErrorDetail.model_validate(refused), data={"task_id": task_id})
+                if task.get("status") == "completed":
+                    result = done(task["result"])
+                    return result.model_copy(update={"data": {**(result.data or {}), "task_id": task_id, **(extra or {})}})
+            return ToolResult(status="success", data={"task_id": task_id, "task": task, **(extra or {}), "next": (
+                f"Итог задания — по id: task_status(task_ids=['{task_id}']) отвечает сразу; wait=true держит вызов до смены "
+                "статуса — только клиенту без короткого срока вызова. Долго или молчит (idle_sec в статусе) — "
+                "task_cancel.")}, facts=[started] if started else [])
         return Later(finish)
 
     def _installer() -> ModelInstaller:
@@ -696,15 +727,27 @@ def register(engine: Engine, ctx: ToolContext) -> None:
             "нему внутри рабочей области, а не текст — что именно ждёт вид ресурса, объявлено "
             "сервером. Файл кладётся в рабочую область по объявленному "
             "имени ассета и принимается ПО ДИСКУ (существует, не пуст), а не по коду ответа. "
-            "Асинхронный провайдер прозванивается циклом внутри этого же вызова — чтобы причина "
-            "отказа (модерация, лимит, недоступность) вернулась текстом, а не молчанием. "
-            "После вызова расход прибавляется строке провайдера, поэтому дневной лимит и переход "
-            "на fallback работают, а не остаются теорией."),
+            "Генерация идёт заданием сервера, ответ ждёт её в пределах срока вызова клиента: успела — "
+            "файлы и расход, не успела — id задания и статус (итог — task_status, снять — task_cancel). "
+            "Повтор того же вызова с тем же take вскоре после первого отдаёт то же задание: вторая генерация не "
+            "заводится; другой вариант — take+1. "
+            "Асинхронный провайдер прозванивается до своего итога — причина отказа (модерация, лимит, "
+            "недоступность) приходит отказом задания, а не молчанием. Расход прибавляется строке "
+            "провайдера после приёмки файла, поэтому дневной лимит и переход на fallback работают."),
         input_schema={"type": "object", "properties": {
             "table": {"type": "string", "description": "Путь сущности с данными канала (где лежит read.json)"},
             "resource_type": {"type": "string", "description": "Вид ресурса из листа провайдеров (tts_characters, image_generations, bg_removals, upscales, …)"},
             "input": {"type": "string", "description": "Текст озвучки, промпт картинки — либо путь к исходному файлу для видов, перерабатывающих готовое (bg_removals, upscales)"},
             "scene_id": {"type": "string", "description": "Фрагмент/сцена — попадает в имя файла и связывает ассет с листом сцен"},
             "video_slug": {"type": "string", "description": "Имя видео в названии файла (пусто → имя каталога сущности)"},
+            "take": {"type": "integer", "minimum": 0, "description": (
+                "Дубль: 0 — первый. Тот же вызов с тем же дублем — тот же результат без второй генерации и оплаты; "
+                "другой вариант того же промпта — take+1. Модели, которые принимают зерно, получают его как seed")},
         }, "required": ["table", "resource_type", "input", "scene_id"]},
         handler=media_generate, group="media", annotations=ANNOTATIONS_MODIFY)
+
+
+def _generated(result: dict) -> ToolResult:
+    """Ответ генерации — один для вызова, дождавшегося итога, и для итога задания: данные итога и его факты."""
+    return ToolResult(status="success", data={k: v for k, v in result.items() if k != "facts"},
+                      facts=[Fact(**fact) for fact in result["facts"]])

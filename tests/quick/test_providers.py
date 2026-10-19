@@ -221,6 +221,7 @@ import asyncio as _aio
 import json as _json
 import importlib.util as _ilu
 import logging as _logging
+from core.contracts import ErrorDetail as _ED, Fact as _Fact, ToolResult as _TR
 from core.engine import Engine as _Eng
 from core.ids import IDGenerator as _IDG
 from core.reactions import Reactions as _Reactions
@@ -240,7 +241,25 @@ _register(_eng, _IDG(), _sm)
 
 
 def _call(tool, **params):
-    return _aio.run(_eng.call(tool, params))
+    return _ended(_eng, _aio.run(_eng.call(tool, params)))
+
+
+def _ended(engine, answer):
+    """Генерация — задание узла: ответ без итога (статус задания и `next`) ждёт смену статуса (task_status wait=true) до
+    конца и отдаёт итог формой ответа — данные и факты результата; отказ задания — отказом. Прочие ответы — как есть."""
+    if answer.status != "success" or "next" not in (answer.data or {}):
+        return answer
+    task = answer.data.get("task") or {}
+    while task.get("status") in ("pending", "processing"):
+        waited = _aio.run(engine.call("task_status", {"task_ids": [task["task_id"]], "wait": True}))
+        if waited.status != "success":
+            return waited
+        task = waited.data["tasks"][0].get("task") or {}
+    if task.get("status") != "completed":
+        return _TR(status="error", error=_ED(**task["error"]), data={"task_id": task.get("task_id")})
+    result = task["result"]
+    return _TR(status="success", data={**{k: v for k, v in result.items() if k != "facts"}, "task_id": task["task_id"]},
+               facts=[_Fact(**fact) for fact in result["facts"]])
 
 
 _r = _call("media_provider_status", table="ch")
@@ -276,55 +295,13 @@ print("== 10. Цикл ожидания задачи + приёмка загру
 from core.providers import TaskCycle, TaskCycleError
 from core.paths import PathEscapeError
 
-_tc = TaskCycle(ROOT / "config" / "media_tasks.yaml", sleep=lambda s: None)
+_tc = TaskCycle(ROOT / "config" / "media_tasks.yaml")
 ok(_tc.classify("succeeded") == "done" and _tc.classify("failed") == "failed"
    and _tc.classify("что_то_своё") == "running",
    "слова статусов берутся из декларации, неизвестное считается «ещё выполняется»")
-_seq = iter([{"status": "queued"}, {"status": "processing"}, {"status": "succeeded"}])
-_w = _tc.wait(lambda tid, within: next(_seq), "T1")
-ok(_w["outcome"] == "done" and _w["attempts"] == 3, f"ждём до готовности ({_w['attempts']} опроса)")
-ok(_w["unknown_status"] == ["processing", "queued"],
-   "непонятые статусы копятся в отчёте, а не выдаются за успех и не обрывают ожидание")
-try:
-    _tc.wait(lambda tid, within: {"status": "failed", "error": "модерация"}, "T2")
-    ok(False, "отказ провайдера должен падать")
-except TaskCycleError as e:
-    # Обновлено 2026-10-18 (П3 плана текста места): слово статуса — фактом, причина провайдера — причиной в журнал
-    # (ProviderSaid), а не рецептом клиенту.
-    ok(e.code == "PROVIDER_FAILED" and e.facts.get("status") == "failed" and "модерация" in str(e.__cause__),
-       f"отказ провайдера → код реестра, причина провайдера сохранена в журнале ({e.facts}, {e.__cause__!r})")
-_stuck = iter([{"status": "крутится"}] * 500)
-try:
-    _tc.wait(lambda tid, within: next(_stuck), "T3")
-    ok(False, "вечная задача должна обрываться пределом")
-except TaskCycleError as e:
-    # Обновлено 2026-10-18 (П3): последний статус, задача, опросы и секунды — фактами (TX-05), а не текстом места.
-    ok(e.code == "PROVIDER_TIMEOUT" and e.facts.get("status") == "крутится" and e.facts.get("task_id") == "T3",
-       f"предел ожидания срабатывает и называет последний статус, а не молчит ({e.facts})")
-
-# Срок идёт вниз: опрос получает остаток poll.timeout_sec, пауза его не перешагивает, после срока опроса нет.
-_clock10 = {"now": 0.0, "asked": []}
-
-
-def _poll10(tid, within):
-    _clock10["asked"].append((round(_clock10["now"], 3), within))   # остаток как пришёл: не число — улика события
-    _clock10["now"] += 1.0                           # опрос занимает секунду
-    return {"status": "крутится"}
-
-
-_tc10 = TaskCycle(ROOT / "config" / "media_tasks.yaml",
-                  sleep=lambda s: _clock10.__setitem__("now", _clock10["now"] + s), now=lambda: _clock10["now"])
-_limit10 = float(yaml.safe_load((ROOT / "config" / "media_tasks.yaml").read_text(encoding="utf-8"))["poll"]["timeout_sec"])
-try:
-    _tc10.wait(_poll10, "T4")
-    _e10 = None
-except TaskCycleError as e:
-    _e10 = e
-ok(_e10 is not None and _e10.code == "PROVIDER_TIMEOUT"
-   and all(isinstance(within, float) and abs(at + within - _limit10) < 1e-3 for at, within in _clock10["asked"])
-   and all(at < _limit10 for at, _ in _clock10["asked"]) and _clock10["now"] <= _limit10 + 1e-6,
-   f"каждый опрос получил остаток срока ожидания, после срока опросов нет, ожидание кончилось в срок "
-   f"({len(_clock10['asked'])} опросов, последний {_clock10['asked'][-1:]}, конец {_clock10['now']} из {_limit10})")
+# Обновлено (№16, AD-20 б): ожидание `wait` со своим сроком и пределом попыток снято вместе со сроком — прозвонка живёт в
+# работе задания (`follow`): конец — итог провайдера или снятие. События «предел срабатывает» и «остаток срока» ушли со
+# сроком; «непонятые статусы копятся» и «отказ провайдера» — на `follow` ниже. Прогноз: исходы те же, срока нет.
 
 # Прозвонка в задании узла (2a): нашего срока нет — конец — итог провайдера или снятие; пауза темпом poll прерывается.
 import threading as _thr10
@@ -354,10 +331,27 @@ def _paced10(seconds: float) -> TaskCycle:
 
 _long10 = [{"status": "крутится"}] * 80 + [{"status": "succeeded"}]
 _seq10, _pulse10 = iter(_long10), _Pulse10()
-_f10 = _paced10(0.001).follow(lambda tid, within: next(_seq10), "T5", _pulse10) or {}  # None — без исхода
+try:
+    _f10 = _paced10(0.001).follow(lambda tid, within: next(_seq10), "T5", _pulse10) or {}  # None — без исхода
+except _CE10 as e:                                   # отказ — исход события, а не падение набора
+    _f10 = {"refused": (e.code, e.facts)}
+_why10 = f", отказ {_f10['refused']}" if _f10.get("refused") else ""
 ok(_f10.get("outcome") == "done" and _f10.get("attempts") == len(_long10) and _pulse10.beats == len(_long10) - 1,
-   f"прозвонка в задании: нашего срока и предела попыток нет — {_f10.get('attempts')} опросов (прежний предел max_attempts "
-   f"— 60), готово по слову провайдера; ход — {_pulse10.beats} проб в pulse")
+   f"прозвонка в задании: нашего срока и предела попыток нет — {_f10.get('attempts')} опросов, готово по слову "
+   f"провайдера; ход — {_pulse10.beats} проб в pulse{_why10}")
+_seq10q = iter([{"status": "queued"}, {"status": "processing"}, {"status": "succeeded"}])
+_w = _paced10(0.001).follow(lambda tid, within: next(_seq10q), "T1", _Pulse10())
+ok(_w["outcome"] == "done" and _w["attempts"] == 3, f"ждём до готовности ({_w['attempts']} опроса)")
+ok(_w["unknown_status"] == ["processing", "queued"],
+   "непонятые статусы копятся в отчёте, а не выдаются за успех и не обрывают ожидание")
+try:
+    _paced10(0.001).follow(lambda tid, within: {"status": "failed", "error": "модерация"}, "T2", _Pulse10())
+    ok(False, "отказ провайдера должен падать")
+except TaskCycleError as e:
+    # Обновлено 2026-10-18 (П3 плана текста места): слово статуса — фактом, причина провайдера — причиной в журнал
+    # (ProviderSaid), а не рецептом клиенту.
+    ok(e.code == "PROVIDER_FAILED" and e.facts.get("status") == "failed" and "модерация" in str(e.__cause__),
+       f"отказ провайдера → код реестра, причина провайдера сохранена в журнале ({e.facts}, {e.__cause__!r})")
 _asked10, _pulse10s, _end10 = _thr10.Event(), _Pulse10(), {}
 
 
@@ -558,6 +552,13 @@ _nom = _call("media_generate", table="v", resource_type="tts_characters",
 ok(_nom.status == "error" and _nom.error.code == "LOCAL_MODEL_MISSING"
    and "media_model_install" in (_nom.error.recovery.reason if _nom.error.recovery else ""),
    "нет весов → честный отказ и назван инструмент, которым модель ставят")
+# Готовность исполнителя (MF-13) известна до работы: отказ приходит самим вызовом, задания нет — сырой ответ двери.
+_nom_door = _aio.run(_eng.call("media_generate", {"table": "v", "resource_type": "tts_characters", "input": "текст",
+                                                  "scene_id": "s1", "video_slug": "demo"}))
+ok(_nom_door.status == "error" and _nom_door.error is not None and _nom_door.error.code == "LOCAL_MODEL_MISSING"
+   and not (_nom_door.data or {}).get("task_id"),
+   f"нет весов — отказ на двери до задания: лишнего круга task_status ради известной беды нет "
+   f"({_nom_door.status}, {_nom_door.error.code if _nom_door.error else (_nom_door.data or {}).get('task_id')})")
 
 (_ws / "v" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
     "L1": {**_row_local, "model": ""}}}}), encoding="utf-8")
@@ -738,7 +739,9 @@ ok(len(_подходят.data["models"]) + _подходят.data["filtered_out"
 ok(_все.data["filtered_out"] == 0 and _все.data["fits"] is False,
    "без запроса отбора никто ничего не режет: список остаётся полным")
 
-print("== 12b. Асинхронный провайдер: цикл прозвонки живёт ВНУТРИ вызова ==")
+# Обновлено (media_generate — задание узла, AD-20 б): прозвонка живёт в работе задания, а не в вызове; итог — результат
+# задания (`_ended`), отчёт прозвонки — `provider_task`. Прогноз: те же исходы, что у синхронной формы.
+print("== 12b. Асинхронный провайдер: цикл прозвонки живёт в работе задания ==")
 import types as _types
 
 # Двойник асинхронного провайдера: он отвечает задачей, а не файлом. Ставим его в реестр
@@ -843,19 +846,19 @@ try:
     _srv.CONFIG_PATH = _acfg_dir
     _eng_a = _Eng(reactions=_REACTIONS, state_manager=_sm)
     _register(_eng_a, _IDG(), _sm)
-    _ga = _aio.run(_eng_a.call("media_generate", {
+    _ga = _ended(_eng_a, _aio.run(_eng_a.call("media_generate", {
         "table": "a", "resource_type": "tts_characters", "input": "пять!",
-        "scene_id": "s1", "video_slug": "demo"}))
+        "scene_id": "s1", "video_slug": "demo"})))
     (_ws / "a" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
         "A1": {**_arow, "provider": "Обл_link"}}}}), encoding="utf-8")
-    _gl = _aio.run(_eng_a.call("media_generate", {
+    _gl = _ended(_eng_a, _aio.run(_eng_a.call("media_generate", {
         "table": "a", "resource_type": "tts_characters", "input": "ссылка",
-        "scene_id": "s2", "video_slug": "demo"}))
+        "scene_id": "s2", "video_slug": "demo"})))
     (_ws / "a" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
         "A1": {**_arow, "provider": "Обл_nopoll"}}}}), encoding="utf-8")
-    _gn = _aio.run(_eng_a.call("media_generate", {
+    _gn = _ended(_eng_a, _aio.run(_eng_a.call("media_generate", {
         "table": "a", "resource_type": "tts_characters", "input": "без прозвонки",
-        "scene_id": "s3", "video_slug": "demo"}))
+        "scene_id": "s3", "video_slug": "demo"})))
 finally:
     _srv.CONFIG_PATH = _cfg_was
     _httpd.shutdown()
@@ -870,10 +873,267 @@ ok(_gn.status == "error" and _gn_e is not None and _gn_e.code == "PROVIDER_ADAPT
    f"задача без прозвонки — исполнитель не поднимает нужного: код, провайдер и номер события фактами, устройство — "
    f"в журнал ({_gn_e and (_gn_e.code, _gn_e.facts, _gn_e.message)})")
 ok(_ga.status == "success", f"асинхронная задача доведена до файла ({_ga.error.code if _ga.error else 'ok'})")
-ok(_ga.data["task"]["attempts"] == 3 and _ga.data["task"]["outcome"] == "done",
-   f"прозвонка шла внутри ЭТОГО вызова, пока задача не была готова ({_ga.data['task'].get('attempts')} опроса)")
+ok(_ga.data["provider_task"]["attempts"] == 3 and _ga.data["provider_task"]["outcome"] == "done",
+   f"прозвонка шла в работе задания, пока задача провайдера не была готова "
+   f"({_ga.data['provider_task'].get('attempts')} опроса)")
 ok((_ws / _ga.data["files"][0]).is_file() and _ga.data["usage"]["charged"],
    "файл забран по ссылке и расход учтён — та же приёмка, что у локального провайдера")
+
+print("== 12c. Генерация — задание узла: ответ двери в срок клиента, снятие посреди прозвонки, повтор — то же задание ==")
+import time as _time12c
+from core.jobs import Tasks as _Tasks12c
+
+
+class _FakeSlow:
+    """Провайдер, чья задача готова, когда скажет набор (`ready`): до того — «processing». Счёт генераций и опросов;
+    `polled` — первый опрос состоялся (снятие ложится посреди прозвонки, а не до неё)."""
+
+    ready, polled = _thr.Event(), _thr.Event()
+    calls: dict = {"generate": 0, "poll": 0, "seeds": []}
+
+    def __init__(self, models_dir):
+        self.models_dir = models_dir
+
+    def generate(self, request):
+        from core.providers import MediaOutcome
+        _FakeSlow.calls["generate"] += 1
+        _FakeSlow.calls["seeds"].append(request.params.get("seed"))
+        return MediaOutcome(task_id=f"SLOW-{_FakeSlow.calls['generate']}")
+
+    def poll(self, task_id, within=None):
+        _FakeSlow.calls["poll"] += 1
+        _FakeSlow.polled.set()
+        return {"status": "succeeded"} if _FakeSlow.ready.is_set() else {"status": "processing"}
+
+    def fetch(self, answer, target):
+        Path(target).write_bytes(b"RIFFslow-audio")
+        return {"bytes": 14}
+
+
+_fake._FakeSlow = _FakeSlow
+# Срок вызова клиента 0 (клиент без срока): дверь отдаёт статус по построению — ветвь двери, которую мерит этот раздел.
+_ccfg_dir = declarations_copy({"providers.yaml": {"adapters.by_provider.Обл_slow": "fake_async:_FakeSlow"},
+                               "media_tasks.yaml": {"poll.interval_sec": 0.01, "poll.max_interval_sec": 0.01},
+                               "transport.yaml": {"clients.claude_code.call_sec": None,
+                                                  "clients.claude_code.reserve_sec": None}})
+(_ws / "c").mkdir()
+(_ws / "c" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+    "C1": {**_arow, "provider": "Обл_slow"}}}}), encoding="utf-8")
+
+
+def _used12c() -> int:
+    return _json.loads((_ws / "c" / "read.json").read_text(encoding="utf-8"))["RESOURCE_LIMITS"]["rows"]["C1"]["current_usage"]
+
+
+def _asked12c(engine, params: dict) -> tuple:
+    """Вызов двери в своём потоке: ответ, пока провайдер ещё считает (`ready` не поднят), — в срок. Не ответила за 10 с
+    — не в срок: провайдер отпускается, чтобы набор не висел, ответ — тот, что пришёл после."""
+    got: dict = {}
+    caller = _thr.Thread(target=lambda: got.update(answer=_aio.run(engine.call("media_generate", params))), daemon=True)
+    caller.start()
+    caller.join(10)
+    in_time = not caller.is_alive()
+    if not in_time:
+        _FakeSlow.ready.set()
+        caller.join(10)
+    return got.get("answer"), in_time
+
+
+_cfg_was = _srv.CONFIG_PATH
+try:
+    _srv.CONFIG_PATH = _ccfg_dir
+    # Места классов — из декларации, как у сервера: генерация ждёт места generate (снятие до принятия провайдером).
+    _eng_c = _Eng(reactions=_REACTIONS, state_manager=_sm, resources=_srv._load_resources(_ccfg_dir / "resources.yaml"))
+    _register(_eng_c, _IDG(), _sm)
+    _ask12c ={"table": "c", "resource_type": "tts_characters", "input": "долгая", "scene_id": "s1", "video_slug": "demo"}
+    _door12c, _in_time12c = _asked12c(_eng_c, _ask12c)
+    _dd12c = _door12c.data or {}
+    ok(_in_time12c and _door12c.status == "success" and bool(_dd12c.get("task_id")) and "files" not in _dd12c
+       and (_dd12c.get("task") or {}).get("status") in ("pending", "processing") and "task_status" in _dd12c.get("next", "")
+       and [(f.type, f.data.get("task_id")) for f in _door12c.facts] == [("MediaStarted", _dd12c.get("task_id"))],
+       f"провайдер ещё считает — дверь отвечает в срок вызова клиента: id задания, статус, next и факт-предмет "
+       f"MediaStarted, а не ждёт файл (в срок {_in_time12c}, {_door12c.status}, "
+       f"{(_dd12c.get('task') or {}).get('status')}, {[f.type for f in _door12c.facts]})")
+    _FakeSlow.ready.set()
+    _done12c = _ended(_eng_c, _door12c)
+    _used_after12c = _used12c()
+    ok(_done12c.status == "success" and (_ws / _done12c.data["files"][0]).read_bytes() == b"RIFFslow-audio"
+       and _done12c.data["usage"]["charged"] and _used_after12c == len("долгая")
+       and _done12c.data["task_id"] == _dd12c.get("task_id") and [f.type for f in _done12c.facts] == ["MediaGenerated"],
+       f"провайдер готов — итог того же задания: файл принят по диску, расход учтён, факт MediaGenerated "
+       f"({_done12c.error.code if _done12c.error else 'ok'}, расход {_used_after12c})")
+
+    _made12c = _FakeSlow.calls["generate"]
+    _again_door12c = _aio.run(_eng_c.call("media_generate", _ask12c))     # ответ двери: пометка повтора живёт в нём
+    _again12c = _ended(_eng_c, _again_door12c)
+    ok(_again12c.status == "success" and _again12c.data.get("task_id") == _dd12c.get("task_id")
+       and _FakeSlow.calls["generate"] == _made12c and _used12c() == _used_after12c
+       and ((_again_door12c.data or {}).get("same_task") or {}).get("task_id") == _dd12c.get("task_id")
+       and "same_task" not in _dd12c,
+       f"повтор того же вызова в окне — то же задание, и ответ это называет (same_task): вторая генерация и второе "
+       f"списание не заводятся (AD-21) (генераций {_FakeSlow.calls['generate']} из {_made12c}, расход {_used12c()}, "
+       f"{(_again_door12c.data or {}).get('same_task')})")
+    _take12c = _ended(_eng_c, _aio.run(_eng_c.call("media_generate", {**_ask12c, "take": 1})))
+    ok(_take12c.status == "success" and _take12c.data.get("task_id") not in (None, _dd12c.get("task_id"))
+       and _FakeSlow.calls["generate"] == _made12c + 1 and _FakeSlow.calls["seeds"] == [0, 1]
+       and "same_task" not in _take12c.data,
+       f"другой дубль (take+1) — новое задание и вторая генерация; зерно провайдеру — дубль "
+       f"(генераций {_FakeSlow.calls['generate']}, зёрна {_FakeSlow.calls['seeds']})")
+    _used_after12c = _used12c()
+
+    _FakeSlow.ready.clear()
+    _FakeSlow.polled.clear()
+    _made12c = _FakeSlow.calls["generate"]
+    _cut12c, _cut_in_time12c = _asked12c(_eng_c, {**_ask12c, "input": "снимаемая", "scene_id": "s2"})
+    _cid12c = str((_cut12c.data or {}).get("task_id"))
+    _FakeSlow.polled.wait(10)
+    # Место generate одно и занято прозвонкой s2: задание s3 ждёт места — провайдер его ещё не видел.
+    _queued12c = (_aio.run(_eng_c.call("media_generate", {**_ask12c, "input": "ждущая", "scene_id": "s3"})).data or {})
+    _qid12c = str(_queued12c.get("task_id"))
+    _queued_was12c = (_queued12c.get("task") or {}).get("status")
+    _aio.run(_eng_c.call("task_cancel", {"task_ids": [_qid12c]}))
+    _qend12c = _Tasks12c(_eng_c).settle(_qid12c, 10).get("task") or {}
+    _qfacts12c = (_qend12c.get("error") or {}).get("facts") or {}
+    ok(_queued_was12c == "pending" and _qend12c.get("status") == "cancelled" and "paid" not in _qfacts12c
+       and _FakeSlow.calls["generate"] == _made12c + 1 and _used12c() == _used_after12c + len("снимаемая"),
+       f"снятие до принятия провайдером (задание ждёт места) — cancelled без факта paid, генерации нет, расход не "
+       f"двигается ({_queued_was12c} → {_qend12c.get('status')}, факты {_qfacts12c}, генераций "
+       f"{_FakeSlow.calls['generate'] - _made12c} из 1 — только s2, расход +{_used12c() - _used_after12c} — только s2)")
+    _gone12c = _aio.run(_eng_c.call("task_cancel", {"task_ids": [_cid12c]}))
+    _settled12c = _time12c.monotonic()
+    _end12c = _Tasks12c(_eng_c).settle(_cid12c, 10).get("task") or {}
+    _by_event12c = _time12c.monotonic() - _settled12c < 9    # исполнитель кончился по снятию, а не сроком settle
+    # 19.10 (№4): задача, которую провайдер принял, оплачена — снятие посреди прозвонки её расход не обнуляет.
+    _paid12c = ((_end12c.get("error") or {}).get("facts") or {}).get("paid") or {}
+    ok(_cut_in_time12c and _gone12c.status == "success" and _end12c.get("status") == "cancelled" and _by_event12c
+       and not (_ws / "c" / "assets" / "audio" / "demo_tts_s2.wav").exists()
+       and _used12c() == _used_after12c + len("снимаемая")
+       and _paid12c.get("provider") == "Обл_slow" and _paid12c.get("charged") is True
+       and _paid12c.get("amount") == len("снимаемая") and bool(_paid12c.get("unit")),
+       f"снятие посреди прозвонки — задание cancelled, прозвонка кончилась по снятию, файла нет; задачу провайдер принял "
+       f"— расход учтён, и снятие называет оплаченное фактом paid ({_end12c.get('status')}, по событию {_by_event12c}, "
+       f"расход +{_used12c() - _used_after12c} из {len('снимаемая')}, paid {_paid12c})")
+
+    from core.providers.usage import UsageLedger as _Ledger12c
+    _FakeSlow.ready.set()
+    _charge_was12c, _made12c = _Ledger12c.charge, _FakeSlow.calls["generate"]
+
+    def _ledger_down12c(self, *a, **k):
+        raise OSError(28, "No space left on device", "/srv/workspace/c/read.json")
+
+    _Ledger12c.charge = _ledger_down12c
+    try:
+        _ask_paid12c = {**_ask12c, "input": "оплаченная", "scene_id": "s4"}
+        _paid12c = _ended(_eng_c, _aio.run(_eng_c.call("media_generate", _ask_paid12c)))
+        _again_paid12c = _ended(_eng_c, _aio.run(_eng_c.call("media_generate", _ask_paid12c)))
+    finally:
+        _Ledger12c.charge = _charge_was12c
+    _pu12c = (_paid12c.data or {}).get("usage") or {}
+    ok(_paid12c.status == "success" and (_ws / _paid12c.data["files"][0]).is_file() and _pu12c.get("charged") is False
+       and _pu12c.get("code") == "INTERNAL_ERROR" and "событие" in str(_pu12c.get("reason"))
+       and "/srv/workspace" not in _json.dumps(_paid12c.data, ensure_ascii=False)
+       and _again_paid12c.data.get("task_id") == _paid12c.data.get("task_id") and _FakeSlow.calls["generate"] == _made12c + 1,
+       f"учёт расхода упал после оплаты — работа провайдера не потеряна: файл и итог, charged false с кодом и номером "
+       f"события, путь хоста не в ответе; повтор — то же задание, вторая оплата не заводится "
+       f"({_paid12c.status}, {_pu12c}, генераций {_FakeSlow.calls['generate'] - _made12c} из 1)")
+finally:
+    _srv.CONFIG_PATH = _cfg_was
+
+print("== 12d. Срок клиента у двери: срок 0 — статус по построению; срок есть — итог тем же вызовом, долгое — статус до "
+      "срока клиента ==")
+
+
+class _FakeFail:
+    """Провайдер, чья задача отказывает на первом опросе: работа кончается сразу."""
+
+    def __init__(self, models_dir):
+        self.models_dir = models_dir
+
+    def generate(self, request):
+        from core.providers import MediaOutcome
+        return MediaOutcome(task_id="FAIL-1")
+
+    def poll(self, task_id, within=None):
+        return {"status": "failed", "error": "модерация"}
+
+
+_fake._FakeFail = _FakeFail
+(_ws / "f").mkdir()
+(_ws / "f" / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+    "F1": {**_arow, "provider": "Обл_fail"}}}}), encoding="utf-8")
+_adapters12d = {"adapters.by_provider.Обл_slow": "fake_async:_FakeSlow", "adapters.by_provider.Обл_fail": "fake_async:_FakeFail"}
+_pace12d = {"poll.interval_sec": 0.01, "poll.max_interval_sec": 0.01}
+
+
+def _engine12d(transport: dict):
+    """Движок на копии деклараций с этим сроком клиента; копия держит своих двойников провайдеров."""
+    copy = declarations_copy({"providers.yaml": _adapters12d, "media_tasks.yaml": _pace12d,
+                              **({"transport.yaml": transport} if transport else {})})
+    was = _srv.CONFIG_PATH
+    try:
+        _srv.CONFIG_PATH = copy
+        engine = _Eng(reactions=_REACTIONS, state_manager=_sm)
+        _register(engine, _IDG(), _sm)
+        return engine
+    finally:
+        _srv.CONFIG_PATH = was
+
+
+_eng0 = _engine12d({"clients.claude_code.call_sec": None, "clients.claude_code.reserve_sec": None})
+_eng60 = _engine12d({})                                       # боевой transport.yaml: срок claude_code 60, запас 1
+_eng3 = _engine12d({"clients.claude_code.call_sec": 3})       # запас 1 из боевого файла: дверь ждёт 2 с
+
+
+def _asked12d(engine, table: str, scene: str):
+    return _aio.run(engine.call("media_generate", {"table": table, "resource_type": "tts_characters", "input": "дубль",
+                                                   "scene_id": scene, "video_slug": "demo"}))
+
+
+# Шов на месте гонки: чтение итога ждёт конца задания — поток задания выиграл гонку у двери, как бы ни лёг планировщик.
+_until12d = _Tasks12c.until_end
+
+
+async def _won12d(self, task_ids, within):
+    for one in task_ids:
+        self.settle(one, 5)
+    return await _until12d(self, task_ids, within)
+
+
+_Tasks12c.until_end = _won12d
+try:
+    _f0 = _asked12d(_eng0, "f", "s20")
+finally:
+    _Tasks12c.until_end = _until12d
+_f0_end = _ended(_eng0, _f0)
+ok(_f0.status == "success" and "next" in (_f0.data or {}) and _f0_end.status == "error"
+   and _f0_end.error is not None and _f0_end.error.code == "PROVIDER_FAILED",
+   f"срок 0 × мгновенный отказ: вызов — статус по построению (сервер не ждал), отказ — следующим task_status "
+   f"({_f0.status}, {_f0_end.error.code if _f0_end.error else 'успех'})")
+_FakeSlow.ready.clear()
+_r0 = _asked12d(_eng0, "c", "s21")
+ok(_r0.status == "success" and ((_r0.data or {}).get("task") or {}).get("status") in ("pending", "processing")
+   and "next" in (_r0.data or {}),
+   f"срок 0 × идёт: статус задания и next ({_r0.status}, {((_r0.data or {}).get('task') or {}).get('status')})")
+_FakeSlow.ready.set()
+_ended(_eng0, _r0)
+
+_f60 = _asked12d(_eng60, "f", "s22")
+ok(_f60.status == "error" and _f60.error is not None and _f60.error.code == "PROVIDER_FAILED"
+   and bool((_f60.data or {}).get("task_id")),
+   f"срок 60 × мгновенный отказ: отказ задания тем же вызовом, с id задания "
+   f"({_f60.status}, {_f60.error.code if _f60.error else ''})")
+_s60 = _asked12d(_eng60, "c", "s23")
+ok(_s60.status == "success" and bool((_s60.data or {}).get("files")) and "next" not in (_s60.data or {}),
+   f"срок 60 × быстрый итог: файлы тем же вызовом, без круга task_status ({_s60.status}, {(_s60.data or {}).get('files')})")
+
+_FakeSlow.ready.clear()
+_long_began12d = _time12c.monotonic()
+_l3 = _asked12d(_eng3, "c", "s24")
+_long_sec12d = _time12c.monotonic() - _long_began12d
+ok(_l3.status == "success" and "next" in (_l3.data or {}) and bool((_l3.data or {}).get("task_id")) and _long_sec12d < 3,
+   f"задание длиннее срока клиента — статус с id пришёл до срока: {_long_sec12d:.2f} с при сроке 3 с (запас 1 с)")
+_FakeSlow.ready.set()
+_ended(_eng3, _l3)
 
 print("== 13. Загрузка по ссылке провайдера: адрес и размер проверяются ДО диска ==")
 import http.server as _http
@@ -1062,7 +1322,7 @@ try:
     _sm_k = _SM(_ws, journal=_Journal(_klog, 1 << 20, 1))
     _eng_k = _Eng(reactions=_REACTIONS, state_manager=_sm_k)
     _register(_eng_k, _IDG(), _sm_k)
-    _kcall = lambda tool, **p: _aio.run(_eng_k.call(tool, p))  # локальный хелпер
+    _kcall = lambda tool, **p: _ended(_eng_k, _aio.run(_eng_k.call(tool, p)))  # локальный хелпер
 
     _nokey = _kcall("media_generate", table="k", resource_type="tts_characters",
                     input="текст", scene_id="s1", video_slug="demo")
@@ -1155,6 +1415,8 @@ import asyncio, hashlib, json, socket, sys, tempfile
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 state, tries = sys.argv[2], []
+if sys.argv[3] == "socketpair-tcp":    # как на Windows: socketpair (self-pipe цикла asyncio) — TCP через петлю
+    socket.socketpair = socket._fallback_socketpair
 real_gai, real_connect = socket.getaddrinfo, socket.socket.connect
 def gai(host, *args, **kwargs):
     tries.append(f"dns {host}")
@@ -1162,6 +1424,8 @@ def gai(host, *args, **kwargs):
         raise socket.gaierror("сеть оборвана")
     return real_gai(host, *args, **kwargs)
 def connect(self, address):
+    if isinstance(address, tuple) and address[0] in ("127.0.0.1", "::1"):
+        return real_connect(self, address)    # петля процесса — не сеть: её берёт socketpair цикла событий
     tries.append(f"connect {address}")
     if state == "обрыв":
         raise ConnectionResetError("сеть оборвана")
@@ -1184,18 +1448,26 @@ print(json.dumps({"status": said.status, "n": len(ids), "sha": hashlib.sha256("\
 '''
 _env15n = {k: v for k, v in os.environ.items() if k != OnlineCatalog.LOCAL_PRICES}
 _said15n: dict = {}
-for _state15n in ("обрыв", "сеть как есть"):
-    _run15n = _sp15n.run([sys.executable, "-c", _child15n, str(ROOT), _state15n], capture_output=True, text=True,
-                         encoding="utf-8", env=_env15n, cwd=str(ROOT))
+# Обновлено 2026-10-19 (CI 72a3b0f, windows 3.11/3.12): шов обрыва рвал и петлю — на Windows socketpair цикла asyncio идёт
+# TCP через 127.0.0.1, цикл не создавался ('ProactorEventLoop' object has no attribute '_ssock'), живой ребёнок считал петлю
+# попыткой сети. Петля — не сеть; третий ребёнок повторяет Windows здесь (socketpair через TCP). Прогноз: все три — тот ответ.
+for _state15n, _pair15n in (("обрыв", "native"), ("сеть как есть", "native"), ("обрыв", "socketpair-tcp")):
+    _run15n = _sp15n.run([sys.executable, "-c", _child15n, str(ROOT), _state15n, _pair15n], capture_output=True,
+                         text=True, encoding="utf-8", env=_env15n, cwd=str(ROOT))
     _lines15n = _run15n.stdout.strip().splitlines()
-    _said15n[_state15n] = (_json.loads(_lines15n[-1]) if _run15n.returncode == 0 and _lines15n else
-                           {"status": f"rc {_run15n.returncode}", "err": _run15n.stderr.strip()[-200:]})
-_cut15n, _live15n = _said15n["обрыв"], _said15n["сеть как есть"]
+    _said15n[(_state15n, _pair15n)] = (_json.loads(_lines15n[-1]) if _run15n.returncode == 0 and _lines15n else
+                                       {"status": f"rc {_run15n.returncode}", "err": _run15n.stderr.strip()[-200:]})
+_cut15n, _live15n = _said15n[("обрыв", "native")], _said15n[("сеть как есть", "native")]
+_win15n = _said15n[("обрыв", "socketpair-tcp")]
 ok(_cut15n.get("status") == "success" and _cut15n.get("n", 0) > 0 and not _cut15n.get("tries")
    and not _live15n.get("tries") and (_cut15n.get("n"), _cut15n.get("sha")) == (_live15n.get("n"), _live15n.get("sha")),
    f"реестр шлюза — карта цен установленной версии: при обрыве сети и при живой тот же ответ двери "
    f"({_cut15n.get('n')} / {_live15n.get('n')} моделей, sha {_cut15n.get('sha')} / {_live15n.get('sha')}), попыток сети "
    f"{len(_cut15n.get('tries') or [])} / {len(_live15n.get('tries') or [])} {_cut15n.get('err') or _live15n.get('err') or ''}")
+ok(_win15n.get("status") == "success" and not _win15n.get("tries")
+   and (_win15n.get("n"), _win15n.get("sha")) == (_live15n.get("n"), _live15n.get("sha")),
+   f"обрыв сети при socketpair через TCP-петлю (как на Windows): тот же ответ двери, петля цикла событий — не попытка "
+   f"сети ({_win15n.get('n')} моделей, попыток {len(_win15n.get('tries') or [])} {_win15n.get('err') or ''})")
 
 _mcat = ModelCatalog(CFG, ROOT / "vendor" / "models")
 # Правила установки — чистая проверка, сети не требует.
@@ -2270,8 +2542,7 @@ try:
        and _req13["json"]["input"]["scale"] == 2,
        "тело собрано по контракту провайдера: вложенный input, файл как data-URI, поля из строки")
 
-    _cycle13 = TaskCycle(ROOT / "config" / "media_tasks.yaml", sleep=lambda _s: None)
-    _waited13 = _cycle13.wait(_ad13.poll, _out13.task_id)
+    _waited13 = _paced10(0.001).follow(_ad13.poll, _out13.task_id, _Pulse10())
     ok(_waited13["outcome"] == "done" and _waited13["attempts"] == 2,
        f"промежуточный статус не выдан за успех — ждали до конца ({_waited13['attempts']} опроса)")
     _gets13 = len(_seen["gets"])
@@ -2396,23 +2667,28 @@ try:
        f"прежде — только на опросе), ни тела, ни ключа туда ({_ei13 and (_ei13.code, _ei13.facts)}, "
        f"запросов {len(_seen['gets'])}, вызовов {len(_seen['requests'])})")
 
-    # Срок идёт вниз сквозь цепочку (TS-13): цикл ожидания отдаёт опросу остаток, дверь опроса укладывает в него повторы.
-    # Часы одни на цикл и дверь; поставщик отвечает «processing», а с 240-й секунды статус молчит (фаза — тайм-аут).
-    _clock13 = {"now": 0.0}
+    # Замолчавший статус посреди прозвонки (TS-13): своего срока у прозвонки нет (№16) — её кончает отказ двери опроса,
+    # уложившей повторы в свой срок download.answer.deadline_sec. Часы двери подставные; поставщик дважды отвечает
+    # «processing», потом статус молчит (фаза — тайм-аут).
+    # Обновлено (№16): прежде мерился остаток poll.timeout_sec цикла `wait`; срок снят, прогноз — тот же отказ, конец —
+    # в сроке двери от начала тишины.
+    _clock13 = {"now": 0.0, "answers": 0, "silent_at": None}
     _real_time13 = (_HI13.__dict__["clock"], _HI13.__dict__["sleep"], _HI13.__dict__["transport"])
 
     def _late_wire(request):
-        if _clock13["now"] >= 240:
+        if _clock13["answers"] >= 2:
+            _clock13["silent_at"] = _clock13["now"] if _clock13["silent_at"] is None else _clock13["silent_at"]
             _clock13["now"] += request.extensions["timeout"]["connect"]
             raise _httpx.ConnectTimeout("статус молчит")
+        _clock13["answers"] += 1
         _clock13["now"] += 0.1
         return _httpx.Response(200, json={"status": "processing"})
 
     def _ahead13(seconds):
         _clock13["now"] += seconds
 
-    _limit13 = float(yaml.safe_load((ROOT / "config" / "media_tasks.yaml").read_text(encoding="utf-8"))["poll"]
-                     ["timeout_sec"])
+    _limit13 = float(yaml.safe_load((ROOT / "config" / "media_tasks.yaml").read_text(encoding="utf-8"))["download"]
+                     ["answer"]["deadline_sec"])
     _stand13["post"] = lambda method, url, **kw: _Resp(201, {
         "id": "late", "urls": {"get": "https://api.replicate.com/v1/predictions/late"}})
     _adl13 = _reg.load("Replicate", "upscales")
@@ -2423,16 +2699,17 @@ try:
     _HI13.clock, _HI13.sleep = staticmethod(lambda: _clock13["now"]), staticmethod(_ahead13)
     _HI13.transport = _httpx.MockTransport(_late_wire)
     try:
-        TaskCycle(ROOT / "config" / "media_tasks.yaml", sleep=_ahead13, now=lambda: _clock13["now"]).wait(
-            _adl13.poll, _taskl13.task_id)
+        _paced10(0.001).follow(_adl13.poll, _taskl13.task_id, _Pulse10())
         _el13 = None
     except _CE13 as e:
         _el13 = e
     finally:
         _HI13.clock, _HI13.sleep, _HI13.transport = _real_time13
-    ok(_el13 is not None and _el13.code == "PROVIDER_FAILED" and _clock13["now"] <= _limit13 + 1e-6,
-       f"статус замолчал на 240-й секунде — опрос с повторами уложился в остаток ожидания, всё ожидание — в "
-       f"poll.timeout_sec ({_el13 and (_el13.code, _el13.facts)}, конец {_clock13['now']:.2f} из {_limit13:g} с)")
+    _quiet13 = _clock13["now"] - (_clock13["silent_at"] if _clock13["silent_at"] is not None else _clock13["now"])
+    ok(_el13 is not None and _el13.code == "PROVIDER_FAILED" and _clock13["silent_at"] is not None
+       and _quiet13 <= _limit13 + 1e-6,
+       f"статус замолчал посреди прозвонки — отказ двери опроса, повторы уложились в её срок, прозвонка кончилась, а не "
+       f"висит ({_el13 and (_el13.code, _el13.facts)}, тишина {_quiet13:.2f} из {_limit13:g} с)")
 
     # Синхронный бинарный ответ (RemoveBg): тип по формату строки, поток в остаток с пределом, обрыв POST — не повтор.
     import core.providers.img.http_image as _him13
@@ -2760,6 +3037,24 @@ ok(_deny14b.status == "error" and _e14b is not None and _e14b.code == "BOOK_ROW_
    and "S1" in _e14b.message and _e14b.recovery and _e14b.recovery.suggested_tool == "table_update",
    f"без весов: строка канала просит невозможное — BOOK_ROW_INVALID с листом, строкой и полем, рецепт table_update "
    f"({_e14b and (_e14b.code, _e14b.facts, _e14b.errors, _e14b.message)})")
+
+# 14c. Имя файла кэша спеки — не склейка имени модели: модель из книги и вызова несёт `\`, `..`, диск Windows, и прежде
+# `cache_dir / f"{provider}__{model}.json"` на Windows писал вне каталога (C:\Users\…). Сеть подменена спекой провайдера.
+_ms14c = ModelSpec(AdapterRegistry(CFG, Path(tempfile.mkdtemp(prefix="vpm_spec14c_"))))
+_asked14c: list = []
+_ms14c._from_provider = (  # type: ignore[method-assign]
+    lambda p, m, k: _asked14c.append(m) or {"schema": {"type": "object"}, "source": "provider"})
+_names14c = ("org/model", r"a\..\..\..\Users\x\AppData\evil", "../../../../etc/x", "C:\\Windows\\x")
+for _model14c in _names14c:
+    _ms14c.of("Prov", _model14c)
+_files14c = sorted(p.relative_to(_ms14c.models_dir).as_posix() for p in _ms14c.models_dir.rglob("*") if p.is_file())
+_cache14c = _ms14c.cache_dir.relative_to(_ms14c.models_dir).as_posix()
+ok(len(_files14c) == len(_names14c)
+   and all(_re.fullmatch(rf"{_re.escape(_cache14c)}/[0-9a-f]{{32}}\.json", f) for f in _files14c),
+   f"кэш спеки: по файлу на модель, имя — хеш внутри каталога кэша, без разделителей пути ({_files14c})")
+for _model14c in _names14c:                     # законный: та же пара — из кэша, без источника
+    _ms14c.of("Prov", _model14c)
+ok(_asked14c == list(_names14c), f"повторный запрос той же модели — из кэша ({len(_asked14c)} обращений к источнику)")
 
 print("== 15. Поднятая модель переживает вызов: пул с бюджетом (S24) ==")
 import time as _time
@@ -3277,7 +3572,11 @@ try:
         _c17("media_runner", action="stop")
 
         # Срок вызова клиента не объявлен (клиент без срока) — ожидания нет: ответ сразу с id, итог — task_status (AD-20 б).
-        _srv.CONFIG_PATH = declarations_copy({"providers.yaml": _runner_decl17},
+        # Обновлено 2026-10-19: боевой срок Claude Code теперь 60 с (transport.yaml, MCP_TOOL_TIMEOUT) — «срока нет»
+        # объявляет копия; прогноз — тот же исход.
+        _srv.CONFIG_PATH = declarations_copy({"providers.yaml": _runner_decl17,
+                                              "transport.yaml": {"clients.claude_code.call_sec": None,
+                                                                 "clients.claude_code.reserve_sec": None}},
                                              root=Path(tempfile.mkdtemp(prefix="runner_s_")))
         _eng17s = _Eng(reactions=_REACTIONS, state_manager=_sm)
         _register(_eng17s, _IDG(), _sm)
@@ -3359,6 +3658,31 @@ try:
     ok(_other_alive17 and _other_ended17 is None and not _Sup17._alive(_other17.pid),
        f"чужой процесс: жив — по pid, конца владельца нет (ended {_other_ended17}), умер — не жив")
 
+    # Раннер умер, ОС отдала его pid другому процессу: запись о запуске сверяется со временем создания, посторонний
+    # процесс сигнала не получает. Двойник — процесс набора с тем же pid, что в записи, и другим временем создания.
+    _cfg_i17 = declarations_copy({"providers.yaml": _runner_decl17}, root=Path(tempfile.mkdtemp(prefix="runner_i_")))
+    _sup_i17 = _Sup17(AdapterRegistry(_cfg_i17 / "providers.yaml", _cfg_i17.parent), _cfg_i17.parent)
+    _twin17 = _sp17.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=_sp17.PIPE)
+    try:
+        _born17 = _Sup17._born(_twin17.pid)
+        _state_i17 = _cfg_i17.parent / "state.json"
+        _state_i17.write_text(_json.dumps({"pid": _twin17.pid, "created": (_born17 or 0) + 1.0}), encoding="utf-8")
+        _phase_i17 = _sup_i17.status()["phase"]
+        _spared17 = _sup_i17.stop()
+        _twin_alive17 = _twin17.poll() is None
+        _state_i17.write_text(_json.dumps({"pid": _twin17.pid, "created": _born17}), encoding="utf-8")
+        _hit17 = _sup_i17.stop()
+        _twin_gone17 = _twin17.poll() is not None     # код съедает psutil.wait в stop: он подбирает ребёнка набора сам
+    finally:
+        if _twin17.poll() is None:
+            _twin17.kill()
+        _twin17.communicate()
+    ok(_born17 is not None and _phase_i17 in ("exited", "foreign") and _twin_alive17 and _spared17["stopped"] is False
+       and "занят другим процессом" in _spared17["note"] and _hit17["stopped"] is True and _twin_gone17,
+       f"pid записи о запуске у другого процесса (время создания не то) — статус exited, сигнала нет, ответ называет "
+       f"причину; тот же pid со своим временем — снят ({_phase_i17}, жив {_twin_alive17}, {_spared17['note'][:60]}; "
+       f"свой: stopped {_hit17['stopped']}, кончился {_twin_gone17})")
+
     # Политика раннера — только из декларации (D02-b, D02-g): пропавший ключ — отказ двери, а не тихое умолчание кода.
     _holes17: dict[str, str] = {}
     for _key17 in ("state_file", "log_file", "stop_grace_sec"):
@@ -3368,7 +3692,9 @@ try:
         _dummy17 = _sp17.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=_sp17.PIPE)
         try:
             if _key17 == "stop_grace_sec":
-                (_cfg_h17.parent / "state.json").write_text(_json.dumps({"pid": _dummy17.pid}), encoding="utf-8")
+                # 19.10: запись о запуске несёт время создания — без него stop не верит pid и до срока снятия не доходит.
+                (_cfg_h17.parent / "state.json").write_text(_json.dumps(
+                    {"pid": _dummy17.pid, "created": _Sup17._born(_dummy17.pid)}), encoding="utf-8")
                 _sup_h17.stop()
             else:
                 getattr(_sup_h17, _key17)
@@ -3546,7 +3872,9 @@ try:
     _job17r = _node17r.begin("media_runner", {"action": "start"}, "",
                              lambda pulse: _sleeper17r.launch(_ws, pulse))["task_id"]
     _waiting17r.wait(10)
-    _pid17r = _json.loads(_sleeper17r.state_file.read_text(encoding="utf-8"))["pid"]
+    _launched17r = _json.loads(_sleeper17r.state_file.read_text(encoding="utf-8"))
+    _pid17r = _launched17r["pid"]
+    _born17r = _Sup17._born(_pid17r)                 # пока процесс жив: личность по ОС
     _going17r = (_node17r.status([_job17r])[0].get("task") or {}).get("status")
     _cut17r = (_node17r.cancel([_job17r])[0].get("task") or {}).get("status")
     _node17r.settle(_job17r, 10)
@@ -3554,6 +3882,9 @@ try:
        and _probes17r["n"] == 0 and _clock17r["now"] == 0.0,
        f"процесс жив и молчит — подъём ждёт знак событием ({_probes17r['n']} прозвонок, часы {_clock17r['now']:g} с) и "
        f"остаётся {_going17r}; снятие — {_cut17r} сразу, процесс остановлен (pid {_pid17r})")
+    ok(_born17r is not None and _launched17r.get("created") == _born17r,
+       f"запись о запуске раннера несёт личность процесса — pid и время создания по ОС: следующий сервер сверит её, "
+       f"прежде чем слать сигнал (created {_launched17r.get('created')}, по ОС {_born17r})")
 
     # D02-e: контейнер знака не даёт (дескриптор не пересекает его границу) — его /health опрашивается по политике
     # local.runner.docker_poll: пауза вдвое до потолка, добавка доли jitter от шва rng. Оракул — формула политики на своём
@@ -3865,7 +4196,9 @@ def _model_fetch(work: Path, records: list[str]) -> None:
             "image": {"kind": "hf_hub", "dest": "img"},
             "bg_removal": {"kind": "hf_hub", "dest": "bg", "require_formats": [".onnx"]},
         },
-        "source_kinds": {"hf_hub": {"size_header": "X-Linked-Size"}},
+        # Обновлено 2026-10-18 (опись №5): вид источника — как у сервера (заголовок размера, срок и статусы узла хаба).
+        "source_kinds": yaml.safe_load((ROOT / "config" / "providers.yaml").read_text(encoding="utf-8"))["local"][
+            "source_kinds"],
         "install": {
             "allow_sources": ["huggingface.co"],
             "allow_suffixes": [".safetensors", ".onnx", ".json", ".txt"],
@@ -4900,12 +5233,16 @@ def _model_fetch(work: Path, records: list[str]) -> None:
        f"источник — зеркало: отказ ревизии называет хост зеркала, а не huggingface.co ({mirrored})")
     # Обновлено 2026-10-17 (слово владельца, EB-11): сбой сети — свой код MODEL_SOURCE_UNREACHABLE, а не «ревизия не
     # узнана» с именем класса библиотеки в тексте; класс исключения — причиной в журнал под номером события (TX-02).
+    # Обновлено 2026-10-18 (опись №5): перегрузка (503 — из объявленных local.source_kinds.hf_hub.retry_later_statuses) —
+    # MODEL_SOURCE_UNREACHABLE «источник сейчас недоступен, повтори позже», как сеть и срок; статус — фактом, не текстом.
+    # Прежде MODEL_REVISION_UNKNOWN «ответ 503» — повтор позже не назывался. Прогноз: rev-busy меняет код, прочие те же.
     ok(got == {"org/rev-gated": "MODEL_GATED", "org/rev-none": "MODEL_NOT_IN_CATALOG",
-               "org/rev-busy": "MODEL_REVISION_UNKNOWN", "org/rev-net": "MODEL_SOURCE_UNREACHABLE", "org/rev-odd": "ValueError"},
+               "org/rev-busy": "MODEL_SOURCE_UNREACHABLE", "org/rev-net": "MODEL_SOURCE_UNREACHABLE",
+               "org/rev-odd": "ValueError"},
        f"код на причину: закрыто, нет, перегрузка, сеть — свои; чужое исключение не переименовано ({got})")
-    ok("huggingface.co" in said["org/rev-none"] and "ответ 503" in said["org/rev-busy"]
+    ok("huggingface.co" in said["org/rev-none"] and "huggingface.co" in said["org/rev-busy"]
        and "huggingface.co" in said["org/rev-net"] and "ConnectError" not in said["org/rev-net"],
-       f"клиент видит источник и ответ: код HTTP; сбой сети — хост без имени класса библиотеки ({said})")
+       f"клиент видит источник; сбой сети и перегрузка — хост без имени класса библиотеки ({said})")
     ok(net_wire and "ConnectError" not in net_wire and "huggingface.co" in net_wire,
        f"имени класса библиотеки нет нигде в отказе сбоя сети — ни в тексте, ни в фактах ({net_wire})")
     ok(pinned == "rev-bg" and "org/bg" not in asked_rev, "закреплённая ревизия источник не спрашивает")

@@ -7,6 +7,7 @@
 называется в ответе. Спеки нет — так и говорим: «не знаем» не выдаётся за «ограничений нет».
 """
 
+import hashlib
 import json
 import logging
 import time
@@ -40,6 +41,11 @@ class ModelSpec:
 
     # ═══ Кэш ═══
 
+    @staticmethod
+    def _key(provider: str, model: str) -> str:
+        """Имя файла кэша — хеш пары, а не склейка: имя модели из книги и вызова несёт `/`, `\\`, `..`, диск Windows."""
+        return hashlib.sha256(json.dumps([provider, str(model)]).encode("utf-8")).hexdigest()[:32]
+
     def _cached(self, key: str) -> dict:
         path = self.cache_dir / f"{key}.json"
         if not path.is_file():
@@ -65,7 +71,7 @@ class ModelSpec:
         Порядок — от самого достоверного к самому дешёвому. Ни один источник не обязателен:
         не нашлось нигде — возвращаем пустую схему и говорим об этом прямо.
         """
-        key = f"{provider}__{str(model).replace('/', '_')}" or provider
+        key = self._key(provider, model)
         if not refresh:
             cached = self._cached(key)
             if cached:

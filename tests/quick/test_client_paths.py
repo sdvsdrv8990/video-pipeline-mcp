@@ -155,7 +155,10 @@ _cfg.write_text(yaml.safe_dump({"local": {
                 "bg_removal": {"kind": "hf_hub", "dest": "bg", "require_formats": [".onnx"]}},
     "install": {"allow_suffixes": [".safetensors", ".onnx", ".json"], "deny_suffixes": [".bin"],
                 "max_total_mb": 100, "prefer_files": ["*model.onnx"],
-                "revisions": {"org/bg": "rev-bg", "org/sd": "rev-sd", "voices/piper": "rev-voices"}}}},
+                "revisions": {"org/bg": "rev-bg", "org/sd": "rev-sd", "voices/piper": "rev-voices"}},
+    # Обновлено 2026-10-18 (опись №5): вызов хаба — узел со сроком и статусами из вида источника; вид — как у сервера.
+    "source_kinds": yaml.safe_load((ROOT / "config" / "providers.yaml").read_text(encoding="utf-8"))["local"][
+        "source_kinds"]}},
     allow_unicode=True), encoding="utf-8")
 
 

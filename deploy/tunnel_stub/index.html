@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>404 Not Found</title>
+<style>
+  :root {
+    --bg: #0f1115; --fg: #e7e9ee; --muted: #8b90a0; --line: #272b36; --accent: #5b8cff;
+  }
+  :root:not([data-theme="dark"]) {
+    @media (prefers-color-scheme: light) {
+      --bg: #f6f7f9; --fg: #1c1f26; --muted: #6a7080; --line: #e2e5ec; --accent: #2f6bff;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f6f7f9; --fg: #1c1f26; --muted: #6a7080; --line: #e2e5ec; --accent: #2f6bff;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: grid; place-items: center; padding: 16px;
+  }
+  main { text-align: center; max-width: 30rem; }
+  .code {
+    font: 700 clamp(4rem, 18vw, 7rem)/1 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    letter-spacing: 0.04em; margin: 0;
+  }
+  .rule { height: 1px; background: var(--line); margin: 1.25rem auto; width: 8rem; }
+  h1 { font-size: 1.05rem; font-weight: 600; margin: 0 0 0.35rem; }
+  p { color: var(--muted); margin: 0; font-size: 0.95rem; }
+  .dot { color: var(--accent); }
+</style>
+</head>
+<body>
+<div id="root">
+  <main>
+    <p class="code">404</p>
+    <div class="rule"></div>
+    <h1>Page not found</h1>
+    <p>The requested resource could not be found on this server.</p>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+<script>
+  // React mounts the same markup the HTML already shows, so the page is correct even if the
+  // scripts above fail to load (blocked CDN, no network). No JSX: avoids a build step.
+  (function () {
+    if (!window.React || !window.ReactDOM) return;
+    var h = React.createElement;
+    var App = h("main", null,
+      h("p", { className: "code" }, "4", h("span", { className: "dot" }, "0"), "4"),
+      h("div", { className: "rule" }),
+      h("h1", null, "Page not found"),
+      h("p", null, "The requested resource could not be found on this server."));
+    ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+  })();
+</script>
+</body>
+</html>

@@ -123,6 +123,22 @@ class ToolContext:
                 raise
             return False, refused
 
+    def failed_parts(self, name: str, failed: list[dict], done: int) -> list[dict]:
+        """Сбои частей пакета (`{task_id, exception}` задач поиска) — той же сборкой, что отказ вызова (`Engine.failure`):
+        код, текст реестра, факты; чужое исключение — INTERNAL_ERROR с номером события. Не прошла ни одна часть — отказ
+        вызова первой причиной: «успех» с пустым итогом ИИ читает как «ничего не нашлось»."""
+        if failed and not done:
+            raise failed[0]["exception"]
+        return [{"task_id": part["task_id"], **self.part(name, part["exception"])} for part in failed]
+
+    def part(self, name: str, exc: BaseException) -> dict:
+        """Отказ одной части ответа (задача поиска, запись журнала) — код, текст реестра, факты, как у отказа вызова."""
+        detail = self.engine.failure(name, exc).error
+        if detail is None:
+            return {}
+        return {"code": detail.code, "message": detail.message, "facts": detail.facts,
+                **({"errors": detail.errors} if detail.errors else {})}
+
 
 def build_context(engine: Engine, id_generator: IDGenerator, state_manager: StateManager,
                   config_path: Path) -> ToolContext:

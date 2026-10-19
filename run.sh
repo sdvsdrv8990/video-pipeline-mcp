@@ -12,9 +12,9 @@ fi
 # Активация окружения
 source .venv/bin/activate
 
-# Запуск сервера + туннеля ОДНОЙ командой.
-# --tunnel поднимает туннель вместе с сервером; сервер слушает 127.0.0.1.
-#   ./run.sh --no-tunnel   только локально, без публичного URL
+# Запуск по объявлению установки (config/install.yaml): сервер и тот конец туннеля, что объявлен этой машине.
+# Сервер слушает 127.0.0.1; публичный адрес даёт только туннель.
+#   ./run.sh --no-tunnel   этот запуск без туннеля, объявление не меняется
 #   ./run.sh --no-auth     цикл разработки: коннектор подцепляется без ключа
 TUNNEL="--tunnel"
 STOP=""
@@ -29,13 +29,17 @@ done
 PORT="${VPM_PORT:-8080}"
 
 # Аварийная остановка. Цели ищутся НЕСКОЛЬКИМИ независимыми уликами, потому что одна отказывает:
-# порт молчит при упавшем сервере, имя не находит переименованное, родство теряет сироту упавшего сервера,
-# id туннеля пуст в quick-режиме. Вердикт выносится по СОСТОЯНИЮ (порт свободен, процессов нет).
+# порт молчит при упавшем сервере, родство теряет сироту упавшего сервера, id туннеля пуст в quick-режиме.
+# Вердикт выносится по СОСТОЯНИЮ (порт свободен, процессов нет).
+# По имени — только сервер, запущенный этим скриптом из этого дерева: серверы тестов (абсолютный путь, --port) и копий
+# других сессий целями не бывают.
 targets() {
     local tid srv pid
     tid=$(grep -oP 'tunnel_id:\s*"\K[^"]+' config/tunnel.yaml 2>/dev/null || true)
     srv=$({ ss -ltnp 2>/dev/null | grep ":$PORT " | grep -oP 'pid=\K[0-9]+'
-            pgrep -f "python3? .*server\.py" 2>/dev/null || true; } | sort -un)
+            for pid in $(pgrep -f "^python3? server\.py( --tunnel)?$" 2>/dev/null || true); do
+                [ "$(readlink "/proc/$pid/cwd" 2>/dev/null)" = "$PWD" ] && echo "$pid"
+            done; } | sort -un)
     {
         echo "$srv"
         # Дети сервера — туннель по родству, а не по имени: бинарь в дереве назван нейтрально (bin/tunnel).
@@ -78,16 +82,31 @@ if ! DECLARED="$(python3 -c 'from core.deploy import install; m,t=install(); pri
 fi
 MCP_HERE="${DECLARED% *}"
 TUNNEL_END="${DECLARED#* }"
+ROLE_FIX="  Сервер и туннель Cloudflare здесь — роль Local: VPM_INSTALL_CHOICE=local python3 scripts/installer_tui.py"
 # Отказ называет объявление, а не факт машины: пакет сервера в .venv может стоять от прежней установки.
 if [ "$MCP_HERE" != "True" ]; then
-    echo "✗ сервер не запущен: config/install.yaml объявляет эту машину без сервера MCP (mcp: false, туннель: $TUNNEL_END)."
-    echo "  Сервер и туннель здесь — роль Local: VPM_INSTALL_CHOICE=local python3 scripts/installer_tui.py"
+    echo "✗ не запущено: config/install.yaml объявляет машину без сервера MCP, только конец туннеля «$TUNNEL_END»."
+    echo "  Туннель без сервера run.sh не поднимает: запуска концов xray ещё нет (вход через свой сервер — в работе)."
+    echo "$ROLE_FIX"
     exit 2
 fi
-# Клиент — консоль на этой машине: туннель не объявлен, сервер только по петле.
-if [ "$TUNNEL_END" = "none" ]; then
-    TUNNEL=""
-fi
+case "$TUNNEL_END" in
+    none) TUNNEL="" ;;   # консоль на этой машине: сервер только по петле
+    client) ;;
+    *)
+        # Серверный конец (xray) — не cloudflared: поднять вместо него Cloudflare значило бы молча сменить вход.
+        if [ -n "$TUNNEL" ]; then
+            echo "✗ не запущено: config/install.yaml объявляет серверный конец туннеля «$TUNNEL_END» (xray), а run.sh"
+            echo "  поднимает только туннель Cloudflare. Запуска концов xray ещё нет (вход через свой сервер — в работе)."
+            echo "  Сервер без туннеля: ./run.sh --no-tunnel"
+            echo "$ROLE_FIX"
+            exit 2
+        fi
+        ;;
+esac
+LAUNCH="сервер только для этой машины"
+[ -n "$TUNNEL" ] && LAUNCH="сервер + туннель Cloudflare"
+echo "▶ объявлено: сервер MCP, конец туннеля «$TUNNEL_END»; этот запуск — $LAUNCH"
 
 # Предупреждение «без ключа + туннель» печатает сам сервер: его зовут и напрямую (server.py --tunnel).
 python3 server.py $TUNNEL

@@ -1,10 +1,10 @@
-"""core/providers/task_cycle.py — ожидание асинхронной задачи провайдера и приёмка загрузки.
+"""core/providers/task_cycle.py — прозвонка асинхронной задачи провайдера и приёмка загрузки.
 
-Цикл нужен не «дождаться готового», а ПОЙМАТЬ ОТКАЗ: модерация, лимит, невалидный вход — без
-прозвонки это молчание, а причину надо отдать ИИ. Планировщика нет (решение владельца): цикл —
-часть вызова, и отвалившийся клиент задачу не теряет и не спасает, её статус прозванивается
-заново. Ни одного имени провайдера: опрос передаётся функцией, имена статусов объявлены. Приёмка
-смотрит на ДИСК, а не на «200 OK»: бывает нулевой размер и обрыв на середине.
+Прозвонка нужна не «дождаться готового», а ПОЙМАТЬ ОТКАЗ: модерация, лимит, невалидный вход — без
+неё это молчание, а причину надо отдать ИИ. Живёт в работе задания узла (`follow`): своего срока нет,
+конец — итог провайдера или снятие задания; отвалившийся клиент задание не теряет и не спасает. Ни
+одного имени провайдера: опрос передаётся функцией, имена статусов объявлены. Приёмка смотрит на
+ДИСК, а не на «200 OK»: бывает нулевой размер и обрыв на середине.
 """
 
 import time
@@ -19,17 +19,18 @@ from core.jobs import paced
 
 from .resolver import ProviderSaid
 
+PLACE = "generate"              # класс места работы генерации: число мест — resources.yaml `work`
+
 
 class TaskCycleError(ContractError):
     """Ошибка ожидания/загрузки в формате контракта (код из server_reactions.yaml)."""
 
 
 class TaskCycle:
-    """Ожидание задачи провайдера + приёмка скачанного файла по декларации."""
+    """Прозвонка задачи провайдера + приёмка скачанного файла по декларации."""
 
-    def __init__(self, config_file: str | Path, sleep=time.sleep, now=time.monotonic):
+    def __init__(self, config_file: str | Path, now=time.monotonic):
         self.config_file = Path(config_file)
-        self._sleep = sleep          # инъекция: в тестах ожидание не должно занимать минуты
         self._now = now
         self._decl = Declaration(config_file, TaskCycleError, "ожидания")
 
@@ -47,46 +48,6 @@ class TaskCycle:
             if low in {str(s).lower() for s in (table.get(kind) or [])}:
                 return kind
         return "running"
-
-    def wait(self, poll, task_id: str) -> dict:
-        """Опрашивать `poll(task_id, остаток)` до готовности. Возвращает последний ответ + журнал попыток.
-
-        Неизвестный статус НЕ обрывает ожидание и не выдаётся за успех: он копится в отчёте,
-        чтобы после таймаута было видно, что именно отвечал провайдер. Срок `timeout_sec` идёт вниз: опрос получает
-        остаток в секундах (повторяет сбой дверь опроса, а не цикл), пауза между опросами остатка не перешагивает.
-        """
-        p = self.config.get("poll") or {}
-        interval = float(p.get("interval_sec", 3))
-        backoff = float(p.get("backoff", 1.0))
-        max_interval = float(p.get("max_interval_sec", interval))
-        timeout = float(p.get("timeout_sec", 300))
-        max_attempts = int(p.get("max_attempts", 60))
-        known = {str(s).lower() for kind in ("done", "failed")
-                 for s in (self.config.get("statuses") or {}).get(kind) or []}
-
-        started = self._now()
-        attempts = 0
-        unknown: list[str] = []
-        while True:
-            attempts += 1
-            answer = poll(task_id, timeout - (self._now() - started)) or {}
-            status = answer.get("status", "")
-            kind = self.classify(status)
-            if kind == "done":
-                return {"outcome": "done", "attempts": attempts, "answer": answer,
-                        "unknown_status": sorted(set(unknown)),
-                        "waited_sec": round(self._now() - started, 3)}
-            if kind == "failed":
-                raise self._provider_failed(status, answer)
-            if str(status).lower() not in known:
-                unknown.append(str(status))
-            left = timeout - (self._now() - started)
-            if attempts >= max_attempts or left <= 0:
-                raise self._overdue(task_id, attempts, started, status)
-            self._sleep(min(interval, left))
-            interval = min(interval * backoff, max_interval)
-            if self._now() - started >= timeout:
-                raise self._overdue(task_id, attempts, started, status)
 
     def follow(self, poll, task_id: str, pulse) -> dict:
         """Прозвонка задачи провайдера в работе задания узла (`pulse`) до её итога: готово — последний ответ и журнал
@@ -128,11 +89,6 @@ class TaskCycle:
         if answer.get("error"):
             refused.__cause__ = ProviderSaid(str(answer["error"])[:300])
         return refused
-
-    def _overdue(self, task_id: str, attempts: int, started: float, status: str) -> TaskCycleError:
-        """Срок ожидания задачи вышел: сколько опросов, сколько секунд и что провайдер ответил последним."""
-        return TaskCycleError("PROVIDER_TIMEOUT", facts={
-            "task_id": task_id, "attempts": attempts, "elapsed_sec": round(self._now() - started, 1), "status": status})
 
     # ═══ Приёмка загрузки ═══
 

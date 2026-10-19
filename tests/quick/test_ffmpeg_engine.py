@@ -295,6 +295,35 @@ ok(_threads[_threads.index("-threads") + 1] == str(Capacity().share("render"))
    and _threads.index("-progress") == 2 and _threads[-2:] == ["-y", "выход"],
    f"запуск: ход в stdout после -nostdin, потоки — доля ядер на место рендера перед -y ({_threads})")
 
+# Карта отказов ffmpeg (config/ffmpeg_filters.yaml failures): код и факты из объявленного источника, без подтверждающего
+# факта — код по умолчанию; слова ffmpeg — причиной (в журнал), не в ответ. Бинарь — подставной процесс с жалобой.
+_gone_in = Path(tempfile.mkdtemp()) / "пропал.png"
+_here_in = Path(__file__).resolve()
+for _label, _said, _inputs, _want in (
+        ("вход пропал", "x: No such file or directory", [_gone_in], ("FILE_NOT_FOUND", {"path": _gone_in.name})),
+        ("жалоба на файл, а все входы на месте", "x: No such file or directory", [_here_in], ("RENDER_FAILED", {})),
+        ("данные входа битые", "Invalid data found when processing input", [_here_in], ("RENDER_FAILED", {})),
+        ("незнакомая жалоба", "что-то иное", [], ("RENDER_FAILED", {}))):
+    _complain = f"import sys; sys.stderr.write({_said!r}); sys.exit(3)"
+    _argv = [sys.executable, "-c", _complain, "-nostdin", *[a for p in _inputs for a in ("-i", str(p))], "-y", "выход"]
+    try:
+        _ENGINE.run(_argv, None, None)
+        ok(False, f"отказ ffmpeg, {_label}: прошёл успехом")
+    except FfmpegError as _e:
+        ok(_e.code == _want[0] and _e.facts == {"exit_code": 3, **_want[1]} and _said in str(_e.__cause__)
+           and _said not in f"{_e.message} {_e.facts}",
+           f"отказ ffmpeg, {_label}: {_want[0]} с фактами источника, слова ffmpeg — причиной ({_e.code}, {_e.facts})")
+if shutil.which("ffmpeg"):                      # энкодеры спрашиваются у настоящего бинаря
+    try:
+        _ENGINE.run([sys.executable, "-c", "import sys; sys.stderr.write('Encoder not found'); sys.exit(1)",
+                     "-nostdin", "-y", "выход"], None, None)
+        ok(False, "энкодера нет в бинаре: прошёл успехом")
+    except FfmpegError as _e:
+        _codecs = set((_e.facts.get("allowed") or "").split(", ")) - {""}
+        ok(_e.code == "RENDER_PROFILE_INVALID" and _e.facts.get("column") == "codec"
+           and _codecs and _codecs <= set(DICT.encoders()),
+           f"энкодера нет в бинаре: RENDER_PROFILE_INVALID, допустимы кодеки, которые этот ffmpeg умеет ({_e.facts})")
+
 print(f"\n{'='*50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
 if _fails:

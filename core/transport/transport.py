@@ -10,7 +10,7 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
-from core.contracts import ContractError, ToolResult
+from core.contracts import ContractError, Fact, ToolResult
 from core.declaration import Declared
 from core.declaration_schemas import TRANSPORT, TransportDeclaration
 
@@ -76,11 +76,12 @@ class Transport:
         self.firewall = firewall
         self.config_path = config_path
 
-    async def handle_request(self, raw_request: str) -> str | None:
+    async def handle_request(self, raw_request: str, protocol_version: str | None = None) -> str | None:
         """Обработка JSON-RPC запроса.
 
         Args:
             raw_request: Сырой JSON-RPC запрос
+            protocol_version: заголовок MCP-Protocol-Version запроса; нет — версия по умолчанию спецификации
 
         Returns:
             JSON-RPC ответ, либо None для нотификаций (вызывающий шлёт HTTP 202).
@@ -89,7 +90,22 @@ class Transport:
             request = json.loads(raw_request)
         except json.JSONDecodeError as e:
             return self._error_response(None, -32700, f"Parse error: {e}")
+        if not isinstance(request, list):
+            return await self._one(request)
+        # Пакет — только в версии, которая его требует (BATCH_PROTOCOL_VERSIONS); ответ — массив ответов без нотификаций,
+        # пустой пакет — одна ошибка −32600.
+        version = protocol_version or self.UNNAMED_PROTOCOL_VERSION
+        if version not in self.BATCH_PROTOCOL_VERSIONS:
+            return self._error_response(None, -32600, f"Invalid Request: пакет JSON-RPC в версии {version} не принимается")
+        if not request:
+            return self._error_response(None, -32600, "Invalid Request: пустой пакет")
+        answers = [answer for answer in [await self._one(item) for item in request] if answer is not None]
+        return "[" + ",".join(answers) + "]" if answers else None
 
+    async def _one(self, request: Any) -> str | None:
+        """Один запрос JSON-RPC: не объект — −32600, params не объект — −32602 (MCP: params — объект)."""
+        if not isinstance(request, dict):
+            return self._error_response(None, -32600, "Invalid Request: запрос — объект JSON-RPC")
         jsonrpc = request.get("jsonrpc", "2.0")
         method = request.get("method", "")
         params = request.get("params", {})
@@ -98,7 +114,7 @@ class Transport:
         # Нотификация — сообщение без "id" (или из пространства notifications/).
         # На неё НЕЛЬЗЯ отвечать JSON-RPC-ответом (JSON-RPC 2.0 / MCP): возвращаем
         # None, а HTTP-слой отдаёт 202 Accepted без тела.
-        is_notification = ("id" not in request) or method.startswith("notifications/")
+        is_notification = ("id" not in request) or str(method).startswith("notifications/")
         if is_notification:
             # notifications/initialized и прочие клиентские нотификации: принять и молчать.
             return None
@@ -106,6 +122,8 @@ class Transport:
         # Проверка версии протокола JSON-RPC
         if jsonrpc != "2.0":
             return self._error_response(request_id, -32600, "Invalid Request: version must be 2.0")
+        if not isinstance(params, dict):
+            return self._error_response(request_id, -32602, "Invalid params: params — объект")
 
         # Обработка методов
         if method == "tools/list":
@@ -157,12 +175,22 @@ class Transport:
             return self._success_response(request_id, answer(self.engine.failure(name, refused)))
         result = await self.engine.call(name, arguments)
         # Ответ больше бюджета клиентов установки не шлётся: клиент обрезал бы или отверг его молча — отказ называет вес.
+        # Пишущий инструмент (readOnlyHint не true; без аннотации — пишет, MCP 2025-06-18) работу уже сделал: его успех
+        # уходит фактами сделанного в бюджете, а не отказом — иначе ID созданного теряются и повтор упирается в занятое.
         if budget.load(result) > 1:
-            result = self.engine.failure(name, budget.refused(name, result))
+            tool = self.engine.get_tool(name)
+            writes = result.status == "success" and not (tool and (tool.annotations or {}).get("readOnlyHint"))
+            result = (budget.trimmed(name, result) if writes else None) or self.engine.failure(
+                name, budget.refused(name, result))
         return self._success_response(request_id, answer(result))
 
     # Версии протокола, которые сервер понимает (по убыванию новизны).
     SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
+    # Пакет JSON-RPC — MUST принимать в 2025-03-26 (basic, «Batching»); в 2025-06-18 тело POST — один запрос (transports,
+    # «Sending Messages», п.3; changelog PR #416). Без заголовка MCP-Protocol-Version сервер SHOULD считать версию
+    # 2025-03-26 (transports, «Protocol Version Header»): сессий сервер не держит, версию запроса знает только заголовок.
+    BATCH_PROTOCOL_VERSIONS = ("2025-03-26",)
+    UNNAMED_PROTOCOL_VERSION = "2025-03-26"
 
     def _handle_initialize(self, request_id: Any, params: dict) -> str:
         """Обработка initialize с согласованием версии.
@@ -241,6 +269,8 @@ def client_budget(config_path: Path) -> "Budget":
     return Budget(chars=min((c.answer_chars for c in clients if c.answer_chars), default=None),
                   bytes=min((c.answer_bytes for c in clients if c.answer_bytes), default=None),
                   call_sec=min((c.call_sec or 0 for c in clients), default=0),
+                  wait_sec=min(((c.call_sec - c.reserve_sec) if c.call_sec and c.reserve_sec else 0 for c in clients),
+                               default=0),
                   error_chars=min((c.error_chars for c in clients if c.error_chars), default=None))
 
 
@@ -248,11 +278,13 @@ def client_budget(config_path: Path) -> "Budget":
 class Budget:
     """Бюджет ответа установки — самый тесный из её клиентов по каждой мере: знаки (`chars`) и байты UTF-8 тела
     (`bytes`); None — мера не ограничена. `call_sec` — срок вызова самого тесного клиента; клиент без объявленного срока —
-    0: ожидания нет. `error_chars` — сколько знаков текста отказа клиент принимает целым (None — не режет)."""
+    0: ожидания нет. `wait_sec` — сколько дверь ждёт итог задания: срок клиента минус запас доставки ответа, самый тесный;
+    0 — ответ сразу. `error_chars` — сколько знаков текста отказа клиент принимает целым (None — не режет)."""
 
     chars: int | None
     bytes: int | None
     call_sec: int
+    wait_sec: int
     error_chars: int | None = None
 
     def load(self, result: ToolResult) -> float:
@@ -263,6 +295,25 @@ class Budget:
 
     def refused(self, tool: str, result: ToolResult) -> ContractError:
         """Отказ RESULT_TOO_LARGE: сколько ответ весит в каждой мере и какую долю бюджета занял бы."""
+        return ContractError("RESULT_TOO_LARGE", facts=self._weight(tool, result))
+
+    def trimmed(self, tool: str, result: ToolResult) -> ToolResult | None:
+        """Успех пишущего инструмента в бюджете: работа сделана, клиенту уходят её факты — сколько влезет по порядку, без
+        данных; вес целого и что не дошло — фактом AnswerTrimmed. Не влезает и он — None."""
+        weight = self._weight(tool, result)
+
+        def cut(sent: int) -> ToolResult:
+            return ToolResult(status="success", facts=[*result.facts[:sent], Fact(type="AnswerTrimmed", data={
+                **weight, "facts_sent": sent, "facts_total": len(result.facts)})])
+
+        low, high = -1, len(result.facts)           # наибольшее sent, при котором ответ в бюджете; -1 — не влез ни один
+        while low < high:
+            middle = (low + high + 1) // 2
+            low, high = (middle, high) if self.load(cut(middle)) <= 1 else (low, middle - 1)
+        return cut(low) if low >= 0 else None
+
+    def _weight(self, tool: str, result: ToolResult) -> dict[str, Any]:
+        """Вес ответа так, как его шлёт провод: знаки, байты UTF-8 и доля бюджета в процентах."""
         text = json.dumps(answer(result), ensure_ascii=False)
-        return ContractError("RESULT_TOO_LARGE", facts={
-            "tool": tool, "chars": len(text), "bytes": len(text.encode("utf-8")), "load": round(100 * self.load(result))})
+        return {"tool": tool, "chars": len(text), "bytes": len(text.encode("utf-8")),
+                "load": round(100 * self.load(result))}

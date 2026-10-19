@@ -63,6 +63,8 @@ bin/tunnel
 .cloudflared/
 # Машинная декларация туннеля (режим, hostname, id); секрета в ней нет — токен в среде сервера, MCP_TUNNEL_TOKEN
 config/tunnel.yaml
+# Клиентские параметры серверного конца (uuid — ключ доступа); пишет scripts/deploy_tunnel_server.sh
+config/deploy.local.yaml
 tests/.journal/
 
 # logs/trail — след вызовов сервера (рантайм), из него собирают сценарий; не исходник

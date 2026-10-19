@@ -23,6 +23,19 @@ class OnnxImage:
     def rules(self) -> dict:
         return ((self.registry.config.get("local") or {}).get("onnx")) or {}
 
+    def ready(self, request) -> dict:
+        """Готовность до вызова (MF-13): исходная картинка названа, веса модели готовы — путь и ступень проверки; иначе
+        отказ кодом причины. Зовут дверь до задания и `generate` перед расчётом: диск мог смениться между ними."""
+        self.source(request)
+        return self.registry.ready(request.params.get("model"))
+
+    @staticmethod
+    def source(request) -> Path:
+        """Исходная картинка запроса; не названа — отказ поля `input`."""
+        if request.source is None:
+            raise ProviderError("VALIDATION_ERROR", errors=[{"field": "input", "rule": "required"}])
+        return request.source
+
     def session(self, model_path: Path):
         """Сессия живёт в пуле процесса: адаптер создаётся на каждый вызов, а модель — нет."""
         providers = [str(p) for p in (self.rules.get("providers") or ["CPUExecutionProvider"])]

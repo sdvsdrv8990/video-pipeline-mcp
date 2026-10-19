@@ -94,18 +94,25 @@ class WhisperLocalSTT:
                 {"field": "response_format", "rule": "enum", "expected": sorted(WRITERS)}])
         return WRITERS[ext]
 
-    def generate(self, request: MediaRequest) -> MediaOutcome:
-        """Транскрибировать аудио в файл. Синхронно: результат сразу на диске."""
+    def ready(self, request: MediaRequest) -> dict:
+        """Готовность до вызова (MF-13): аудио лежит, формат итога известен, веса готовы — путь и ступень проверки;
+        иначе отказ кодом причины. Зовут дверь до задания и `generate` перед расчётом: диск мог смениться между ними."""
         source = request.source
         if source is None or not source.is_file():
             raise ProviderError("VALIDATION_ERROR", errors=[
                 {"field": "input", "rule": "required" if source is None else "not_file"}])
+        self._writer(request.target)
+        return self.registry.ready(request.params.get("model"))
+
+    def generate(self, request: MediaRequest) -> MediaOutcome:
+        """Транскрибировать аудио в файл. Синхронно: результат сразу на диске."""
+        ref = self.ready(request)["path"]
         writer = self._writer(request.target)
         where = self._where(request.params)
         # Опись хранит путь к ФАЙЛУ весов, а `from_pretrained` нужен каталог с конфигом и
         # токенайзером рядом. Различаем по диску, а не по имени модели.
+        source = request.source
         name = request.params.get("model")
-        ref = self.registry.ready(name)["path"]
         entry = self.registry.model_entry(name) or {}
         pipe = self._pipe(ref if ref.is_dir() else ref.parent, where,
                           str(entry.get("revision") or "main"))

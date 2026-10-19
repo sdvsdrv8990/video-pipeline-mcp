@@ -175,6 +175,22 @@ class RunnerSupervisor:
         except psutil.Error:
             return False
 
+    @staticmethod
+    def _born(pid: int) -> float | None:
+        """Время создания процесса по ОС (psutil) — личность pid; процесса нет — None."""
+        try:
+            return psutil.Process(pid).create_time()
+        except psutil.Error:
+            return None
+
+    def _ours(self, state: dict) -> bool:
+        """Процесс записи о запуске жив и это он: pid сверен со временем создания из записи — ОС отдаёт pid умершего
+        раннера другому процессу, и сигнал по голому pid ушёл бы постороннему. Записи без времени верить нельзя."""
+        pid = int(state.get("pid") or 0)
+        if pid in _CHILDREN or not self._alive(pid):
+            return self._alive(pid)
+        return self._born(pid) == state.get("created")
+
     def status(self) -> dict:
         """Жив, не поднят, умер или занял чужой порт — но никогда не молчание."""
         state = self._read()
@@ -183,12 +199,12 @@ class RunnerSupervisor:
         phase = "stopped"
         note = "Раннер не поднят. Локальные модели считаются в самом сервере."
         if health.get("ok"):
-            phase = "running" if pid and self._alive(pid) else "foreign"
+            phase = "running" if pid and self._ours(state) else "foreign"
             note = ("Раннер отвечает." if phase == "running" else
                     "На объявленном порту кто-то отвечает, но это не наш процесс: наш pid мёртв. "
                     "Останови постороннего или смени порт в config/providers.yaml.")
         elif state:
-            phase = "running_silent" if self._alive(pid) else "exited"
+            phase = "running_silent" if self._ours(state) else "exited"
             note = ("Процесс жив, но `/health` не отвечает — он ещё встаёт или завис."
                     if phase == "running_silent" else
                     "Раннер умер: процесса нет, а запись о запуске осталась. Причина — в журнале.")
@@ -261,7 +277,9 @@ class RunnerSupervisor:
         userns-remap флагом не решается: uid 0 там — первый subuid, это настройка демона (там же, :11-13)."""
         if self._rootless():
             return []
-        uid = os.getuid() if hasattr(os, "getuid") else 0
+        if sys.platform == "win32" or not hasattr(os, "getuid"):    # ОС без uid/gid: владельца хоста флагом не задать
+            return ["--user", NOBODY]
+        uid = os.getuid()
         return ["--user", f"{uid}:{os.getgid()}" if uid else NOBODY]
 
     @staticmethod
@@ -355,8 +373,8 @@ class RunnerSupervisor:
             if channel:
                 os.close(channel.write)
         _CHILDREN[proc.pid] = proc
-        self._write({"pid": proc.pid, "token": token, "mode": mode, "started": time.time(),
-                     "workspace": str(workspace), "command": command})
+        self._write({"pid": proc.pid, "created": self._born(proc.pid), "token": token, "mode": mode,
+                     "started": time.time(), "workspace": str(workspace), "command": command})
         return proc
 
     @staticmethod
@@ -416,7 +434,7 @@ class RunnerSupervisor:
             container = str((self.rules.get("docker") or {}).get("container") or "")
             stopped = subprocess.run(["docker", "stop", container], check=False,
                                      capture_output=True, **child_spawn("replace")).returncode == 0
-        elif self._alive(pid):
+        elif self._ours(state):
             # Ветку ОС держит psutil: terminate — SIGTERM на POSIX и TerminateProcess на Windows; wait ждёт событие
             # конца процесса (и подбирает ребёнка), а не опрашивает его.
             with contextlib.suppress(psutil.NoSuchProcess):
@@ -428,11 +446,13 @@ class RunnerSupervisor:
                     proc.kill()                       # не отдал по-хорошему — модель могла зависнуть
                     proc.wait()
             stopped = True
+        taken = not stopped and state.get("mode") != "docker" and self._alive(pid)
         _CHILDREN.pop(pid, None)
         self.state_file.unlink(missing_ok=True)
         return {"phase": "stopped", "stopped": stopped, "pid": pid,
-                "note": ("Раннер остановлен — локальные модели снова считаются в сервере."
-                         if stopped else "Раннер и не был поднят.")}
+                "note": ("Раннер остановлен — локальные модели снова считаются в сервере." if stopped else
+                         f"Раннер уже не жив: его pid {pid} занят другим процессом — сигнала ему нет, запись о запуске "
+                         "убрана." if taken else "Раннер и не был поднят.")}
 
     @staticmethod
     def ended(pid: int) -> int | None:

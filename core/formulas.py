@@ -16,6 +16,7 @@ from openpyxl.formula.tokenizer import Token, Tokenizer, TokenizerError
 from openpyxl.utils.cell import get_column_letter, quote_sheetname
 from openpyxl.xml.constants import MAX_ROW
 
+from core.contracts import ContractError
 from core.declaration import Declared, declarations_root
 from core.declaration_schemas import FORMULAS, FormulaLanguageDecl
 
@@ -56,16 +57,15 @@ def declared_language(error_cls) -> tuple[Declared[FormulaLanguageDecl], Languag
     return door, Language(frozenset(model.functions), frozenset(model.aggregates), MappingProxyType(dict(model.macros)))
 
 
-class _MacroError(ValueError):
-    """Макрос не разворачивается: число аргументов, незакрытый вызов или макрос в самом себе."""
-
-
 def slips(formula: str, sheet: str, sheets: Mapping[str, Sheet], language: Language | None = None) -> list[Slip]:
     """Изъяны формулы листа `sheet`. Без языка — только имена и синтаксис (схема книги языка не знает); с языком —
     ещё функции, макросы и ссылка на лист-список вне агрегата (судит дверь книги, связь двух деклараций)."""
+    text, problem = _expanded(formula, language.macros) if language else (formula, "")
+    if problem:
+        return [Slip("formula_syntax", problem)]
     try:
-        tokens = Tokenizer(_expanded(formula, language.macros) if language else formula).items
-    except (TokenizerError, _MacroError) as error:
+        tokens = Tokenizer(text).items
+    except TokenizerError as error:
         return [Slip("formula_syntax", str(error))]
     found = _syntax(tokens)
     for token, inside in _walk(tokens):
@@ -82,7 +82,7 @@ def compiled(formula: str, sheet: str, sheets: Mapping[str, Sheet], row: int, la
     """Формула строки `row` листа `sheet` адресами A1. Зовётся после суда (`slips` пуст): изъян здесь — ошибка узла."""
     if gaps := slips(formula, sheet, sheets, language):
         raise ValueError(f"формула не прошла суд: {gaps}")
-    tokens = Tokenizer(_expanded(formula, language.macros)).items
+    tokens = Tokenizer(_expanded(formula, language.macros)[0]).items
     for token, inside in _walk(tokens):
         if token.type == Token.OPERAND and token.subtype == Token.RANGE:
             token.value = _address(token.value, sheet, sheets, row, bool(language.aggregates & set(inside)))
@@ -145,27 +145,33 @@ def _syntax(tokens: list[Token]) -> list[Slip]:
     return found
 
 
-def _expanded(formula: str, macros: Mapping[str, str]) -> str:
-    """Свои функции декларации — выражениями Excel: вызов `ИМЯ(арг, …)` заменяется телом с {1}, {2}, … в скобках."""
+def _expanded(formula: str, macros: Mapping[str, str]) -> tuple[str, str]:
+    """Свои функции декларации — выражениями Excel: вызов `ИМЯ(арг, …)` заменяется телом с {1}, {2}, … в скобках.
+    Возвращает текст и изъян развёртки (пусто — развёрнуто): изъян — суд формулы, а не исключение."""
     known = {name.upper(): body for name, body in macros.items()}
     for _ in range(len(known) * 8 + 1):       # вложенность макросов конечна; больше — макрос зовёт сам себя
-        tokens = Tokenizer(formula).items
+        try:
+            tokens = Tokenizer(formula).items
+        except TokenizerError as error:
+            return formula, str(error)
         call = next((i for i, t in enumerate(tokens)
                      if t.type == Token.FUNC and t.subtype == Token.OPEN and t.value[:-1].upper() in known), None)
         if call is None:
-            return formula
+            return formula, ""
         name = tokens[call].value[:-1].upper()
-        args, end = _arguments(tokens, call)
-        try:
-            body = _ARG.sub(lambda m: "(" + args[int(m[1]) - 1] + ")", known[name])
-        except IndexError:
-            raise _MacroError(f"макрос {name}: аргументов {len(args)}, тело ждёт больше") from None
+        if (found := _arguments(tokens, call)) is None:
+            return formula, f"вызов макроса {name} не закрыт"
+        args, end = found
+        wanted = max((int(m[1]) for m in _ARG.finditer(known[name])), default=0)
+        if wanted > len(args):
+            return formula, f"макрос {name}: аргументов {len(args)}, тело ждёт {wanted}"
+        body = _ARG.sub(lambda m: "(" + args[int(m[1]) - 1] + ")", known[name])
         formula = "=" + "".join(t.value for t in tokens[:call]) + body + "".join(t.value for t in tokens[end + 1:])
-    raise _MacroError("макрос разворачивается сам в себя")
+    return formula, "макрос разворачивается сам в себя"
 
 
-def _arguments(tokens: list[Token], call: int) -> tuple[list[str], int]:
-    """Аргументы вызова, открытого токеном `call`, текстом, и место закрывающей скобки."""
+def _arguments(tokens: list[Token], call: int) -> tuple[list[str], int] | None:
+    """Аргументы вызова, открытого токеном `call`, текстом, и место закрывающей скобки; вызов не закрыт — None."""
     args: list[str] = []
     current: list[str] = []
     depth = 0
@@ -179,4 +185,64 @@ def _arguments(tokens: list[Token], call: int) -> tuple[list[str], int]:
             continue
         depth += 1 if token.subtype == Token.OPEN else -1 if token.subtype == Token.CLOSE else 0
         current.append(token.value)
-    raise _MacroError("вызов макроса не закрыт")
+    return None
+
+
+def degraded(formula: str, fallback: object) -> str:
+    """Формула, которая не ломается на неполных данных: IFERROR с объявленным запасным значением; нет его — как есть.
+    Одна обёртка книги и снимка. Ошибку имени сюда не пустит дверь книги: IFERROR остаётся ошибкам данных."""
+    if fallback is None:
+        return formula
+    return f"=IFERROR({formula.removeprefix('=')},{_excel_literal(fallback)})"
+
+
+def _excel_literal(value: object) -> str:
+    """Запасное значение в синтаксис Excel: число — как есть, строка — в кавычках."""
+    if isinstance(value, bool):
+        return "TRUE()" if value else "FALSE()"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return '"' + str(value).replace('"', '""') + '"'
+
+
+def computed(sheets: Mapping[str, Mapping], language: Language) -> dict[str, dict[str, dict[str, object]]]:
+    """Значения вычисляемых столбцов снимка — {лист: {строка: {столбец: значение}}}. Листы снимка несут схему (порядок
+    столбцов, у вычисляемого — формула имён и запасное значение), строки и признак записи `record`; формула строки — та
+    же, что у книги (`compiled` + `degraded`), считает движок ironcalc. Движка нет — RECALC_UNAVAILABLE, а не 0."""
+    try:
+        import ironcalc   # по требованию: язык формул нужен и там, где снимков не считают (дверь деклараций)
+    except ImportError:
+        raise ContractError("RECALC_UNAVAILABLE", facts={"engine": "ironcalc"}) from None
+    names = list(sheets)
+    lang = {name: Sheet(tuple(sheets[name].get("schema") or {}), bool(sheets[name].get("record"))) for name in names}
+    model = ironcalc.create("snapshot", "en", "UTC")
+    for index, name in enumerate(names):
+        if index:
+            model.new_sheet()
+        model.rename_sheet(index, name)
+    places: dict[tuple[str, str, str], tuple[int, int, int]] = {}
+    for index, name in enumerate(names):
+        schema = sheets[name].get("schema") or {}
+        for at, (row_id, row) in enumerate((sheets[name].get("rows") or {}).items(), start=DATA_ROW):
+            for column, (number, spec) in zip(schema, enumerate(schema.values(), start=1)):
+                if (spec or {}).get("computed") and spec.get("formula"):
+                    text = compiled(spec["formula"], name, lang, at, language)
+                    model.update_cell_with_formula(index, at, number, degraded(text, spec.get("fallback")))
+                    places[(name, row_id, column)] = (index, at, number)
+                elif row.get(column) is not None:
+                    _put(model, index, at, number, row[column])
+    model.evaluate()
+    out: dict[str, dict[str, dict[str, object]]] = {}
+    for (name, row_id, column), (index, at, number) in places.items():
+        out.setdefault(name, {}).setdefault(row_id, {})[column] = model.get_cell_value(index, at, number)
+    return out
+
+
+def _put(model, sheet: int, row: int, column: int, value: object) -> None:
+    """Значение ячейки движку по его типу: строка остаётся текстом, а не разбирается как ввод человека."""
+    if isinstance(value, bool):
+        model.update_cell_with_bool(sheet, row, column, value)
+    elif isinstance(value, (int, float)):
+        model.update_cell_with_number(sheet, row, column, float(value))
+    else:
+        model.update_cell_with_text(sheet, row, column, str(value))
