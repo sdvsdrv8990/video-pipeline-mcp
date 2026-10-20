@@ -216,44 +216,6 @@ def _port_holder(port: int) -> str:
     return ""
 
 
-def tunnel_start_lines(улика: dict, public_url: str | None, origin: str,
-                       соединений: int) -> tuple[str, list[str], bool]:
-    """Публичный адрес после подъёма туннеля, когда соединитель готов: статус для строки «Статус», строки консоли и ждёт
-    ли адрес итога надзора. Ответил наш процесс — адрес есть; ответил край кодом края — край ещё не принял адрес на новый
-    соединитель: итог — следующая проба надзора, рядом — что проверить фактами (соединений с краем по /ready, адрес, куда
-    должен вести вход туннеля); ответил чужой процесс — ⚠️ «ведёт не к этому серверу» и куда должен вести вход; проба не
-    прошла — отказ текстом реестра (`cli_text`: текст и что делать владельцу), а не словарём фактов. `origin` — адрес,
-    который слушает сервер."""
-    local = f"{origin}/mcp"
-    if улика["дошло"]:
-        return (f"поднят → {public_url}/mcp",
-                ["", f"🌐 Публичный URL (вставь в коннектор Claude): {public_url}/mcp",
-                 f"   проверено снаружи: {улика['текст']}"], False)
-    if улика["кто"] == "край":
-        return ("соединитель готов, край ещё не принял адрес — проверка в надзоре",
-                ["", f"⏳ Публичный URL {public_url}/mcp: край туннеля ещё не принял адрес ({улика['текст']}) — "
-                     "проверю в надзоре.",
-                 f"   соединитель готов: соединений с краем {соединений} (/ready); вход туннеля должен вести на {origin}",
-                 f"   локально сервер работает: {local}"], True)
-    if улика["кто"] == "чужой процесс":
-        return ("соединитель готов, публичный адрес ведёт не к этому серверу",
-                ["", f"⚠️  Публичный адрес {public_url}/mcp ведёт не к этому серверу.", f"   {улика['текст']}",
-                 f"   сервер слушает {origin}: вход туннеля должен вести сюда"], False)
-    from core.reactions.reactions import cli_text
-    сказано = (cli_text(улика["отказ"], CONFIG_PATH / "server_reactions.yaml").replace("\n", "\n   ")
-               if улика.get("отказ") else f"проверено: {улика['текст']}")
-    return ("соединитель готов, проверка публичного адреса не прошла",
-            ["", "⚠️  Публичный адрес не подтверждён: туннель соединился, проверка снаружи не прошла.", f"   {сказано}",
-             f"   локально сервер работает: {local}"], False)
-
-
-def tunnel_address_verdict(улика: dict, public_url: str | None) -> str:
-    """Итог публичного адреса пробой надзора — строка консоли: ответил наш процесс — 🟢, иначе — ⚠️ с уликой."""
-    if улика["дошло"]:
-        return f"🟢 [tunnel] публичный адрес отвечает → {public_url}/mcp ({улика['текст']})"
-    return f"⚠️  [tunnel] публичный адрес НЕ отвечает: {улика['текст']} — локально сервер работает"
-
-
 async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = False):
     """Запуск сервера.
 
@@ -475,41 +437,19 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
     # Поднимаем туннель вместе с сервером (одной командой).
     tunnel = None
     tunnel_status_str = "нет"
-    адрес_ждёт = False      # соединитель готов, а за адрес ещё отвечал край: итог даст следующая проба надзора
+    цикл = TunnelCycle(f"http://{host}:{port}")
     if use_tunnel:
         from core.transport.tunnel import CloudflaredTunnel, TunnelCancelled
         tunnel = CloudflaredTunnel(port=port, config_path=CONFIG_PATH / "tunnel.yaml")
         try:
             # В потоке: подъём длится попытками по сроку, а цикл событий должен услышать Ctrl+C сразу (отмена задачи).
-            public_url = await asyncio.to_thread(tunnel.start)
-            # Статус спрашивается ДВАЖДЫ и у разных свидетелей: сервер метрик соединителя говорит, что соединения с краем
-            # есть, а проба — доходит ли запрос снаружи до нашего процесса. Край начинает вести адрес на новый соединитель
-            # не сразу: его ответ за нас сразу после «готов» — «ещё не принял», а итог скажет проба надзора.
+            await asyncio.to_thread(tunnel.start)
+            # Соединения с краем называет сервер метрик соединителя, а доходит ли запрос снаружи до нас — проба; край
+            # начинает вести адрес на новый соединитель не сразу, поэтому фазу дальше ведёт цикл надзора (TunnelCycle).
             st = await asyncio.to_thread(tunnel.status)
-            улика = await asyncio.to_thread(tunnel.probe)
-            if st["connected"]:
-                tunnel_status_str, строки, адрес_ждёт = tunnel_start_lines(улика, public_url, f"http://{host}:{port}",
-                                                                          st["connections"])
-                print("\n".join(строки))
-                # Рекомендация: quick → named для продакшена — когда проба адреса не прошла.
-                if not улика["дошло"] and not адрес_ждёт and "trycloudflare.com" in (public_url or ""):
-                    print()
-                    print("💡 Рекомендация: quick-режим подходит для разработки.")
-                    print("   Для продакшена используй named-режим:")
-                    print("   • токен: экспорт MCP_TUNNEL_TOKEN из дашборда Cloudflare")
-                    print("   • credentials: домен + файл credentials (см. tunnel.py)")
-            else:
-                tunnel_status_str = "процесс жив, но соединение НЕ установлено"
-                print()
-                print("⚠️  Туннель запущен, но соединение не установлено.")
-                if st["last_error"]:
-                    print(f"   Причина: {st['last_error']}")
-                print(f"   Uptime: {st['uptime_sec']}s | Попыток перезапуска: {st['attempts']}")
-                print()
-                print("   Режимы работы Cloudflare Tunnel:")
-                print("   • quick (без аккаунта): работает сразу, URL эфемерный (*.trycloudflare.com)")
-                print("   • named + token: нужен токен из дашборда (env MCP_TUNNEL_TOKEN)")
-                print("   • named + credentials: нужен домен + credentials файл")
+            print()
+            print("\n".join(await asyncio.to_thread(цикл.step, st, tunnel.probe)))
+            tunnel_status_str = цикл.статус
         except (TunnelCancelled, asyncio.CancelledError) as e:
             # Отмена оператора, а не поломка: Ctrl+C ушёл всей группе процессов — первым его слышит процесс туннеля
             # (отказ подъёма) или сервер (отмена задачи). Флаг остановки снимает подъём в потоке на любой фазе, иначе
@@ -542,12 +482,6 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
     print("Для остановки: Ctrl+C")
 
     try:
-        # Мониторинг туннеля: печатаем ТОЛЬКО изменения статуса, а не шум каждые N сек.
-        # Восстановление соединения выполняет супервизор в CloudflaredTunnel сам —
-        # здесь только наблюдаем его status() и сообщаем переходы в консоль.
-        # dict: блок туннеля ниже под `if not tunnel: continue`; статус спрашивает сервер метрик — в потоке, не в цикле событий
-        prev = await asyncio.to_thread(tunnel.status) if tunnel else {}
-
         # Хот-релоад декларативного config без рестарта: «сменился ли файл» — по содержимому, тем же узлом, что у двери
         # деклараций. firewall.yaml → firewall.reload() (fail-closed), server_reactions.yaml →
         # reactions.load(). tunnel.yaml НЕ входит: смена режима/порта требует
@@ -583,31 +517,10 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
 
             if not tunnel:
                 continue
+            # Восстановление соединения ведёт надзор в CloudflaredTunnel сам; здесь — только строки смены фазы.
             st = await asyncio.to_thread(tunnel.status)
-
-            # 1) Публичный URL сменился (для quick-режима — норма при реконнекте процесса).
-            #    Самое важное сообщение: старый адрес в коннекторе Claude уже мёртв.
-            if st["public_url"] and st["public_url"] != prev["public_url"]:
-                print()
-                print(f"🌐 [tunnel] ПУБЛИЧНЫЙ URL ИЗМЕНИЛСЯ → {st['public_url']}/mcp")
-                print("   ⚠️  Обнови адрес в коннекторе Claude AI Web — старый больше не отвечает.")
-                print()
-            # 2) Соединение потеряно.
-            if prev["connected"] and not st["connected"]:
-                reason = st["last_error"] or "нет соединения"
-                print(f"🔴 [tunnel] соединение потеряно (uptime={st['uptime_sec']}s, попыток={st['attempts']}): {reason}")
-            # 3) Соединение восстановлено.
-            elif not prev["connected"] and st["connected"]:
-                print(f"🟢 [tunnel] соединение восстановлено → {st['public_url']}/mcp")
-            # 4) Новая ошибка без смены флага connected.
-            elif st["last_error"] and st["last_error"] != prev["last_error"]:
-                print(f"⚠️  [tunnel] {st['last_error']}")
-            # 5) На старте за адрес ещё отвечал край: следующая проба — итог, без окна-числа.
-            if адрес_ждёт and st["connected"]:
-                адрес_ждёт = False
-                print(tunnel_address_verdict(await asyncio.to_thread(tunnel.probe), st["public_url"]))
-
-            prev = st
+            for строка in await asyncio.to_thread(цикл.step, st, tunnel.probe):
+                print(строка)
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
@@ -616,6 +529,87 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
             tunnel.stop()
         await wire.stop_socket_watch(socket_task)
         await runner.cleanup()
+
+
+class TunnelCycle:
+    """Состояние туннеля для консоли по событиям цикла надзора: строка печатается только на смене фазы, адрес — только
+    подтверждённый пробой снаружи (ответил наш процесс). Фазы: подключение (соединителя с краем нет), потеря (было
+    соединение — нет), ждёт края (соединитель готов, край отвечает своим кодом или молчит), адрес, чужой процесс, адреса нет,
+    надзор остановлен. Проба идёт, пока адрес не подтверждён, и снова — после потери, перезапуска соединителя или смены
+    адреса; подтверждённый адрес между событиями не переспрашивается. `origin` — адрес, который слушает сервер."""
+
+    def __init__(self, origin: str):
+        self.origin = origin
+        self.фаза: str | None = None
+        self.статус = ""                          # хвост строки «Статус: ГОТОВ | Туннель: …» — фазой первого шага
+        self._было: dict = {}
+        self._адрес: str | None = None             # последний адрес, подтверждённый пробой
+
+    def step(self, st: dict, probe) -> list[str]:
+        """Строки консоли по снимку `status()` туннеля; `probe` зовётся, только когда нужна проверка снаружи. Новая
+        ошибка соединителя без смены фазы — своей строкой."""
+        было, self._было = self._было, st
+        строки = self._lines(st, было, probe)
+        if not строки and было and st["last_error"] and st["last_error"] != было["last_error"]:
+            строки = [f"⚠️  [tunnel] {st['last_error']}"]
+        return строки
+
+    def _lines(self, st: dict, было: dict, probe) -> list[str]:
+        строки: list[str] = []
+        перезапуск = bool(было) and st["attempts"] != было["attempts"]
+        if перезапуск and st["connected"] and self.фаза not in (None, "подключение", "потеря"):
+            строки += self._enter("потеря", st, None)        # соединитель умер и поднялся между двумя взглядами
+        if st["supervision"].get("state") != "идёт":
+            return строки + self._enter("надзор", st, None)
+        if not st["connected"]:
+            return строки + self._enter("подключение" if self.фаза in (None, "подключение") else "потеря", st, None)
+        if self.фаза == "адрес" and not перезапуск and st["public_url"] == self._адрес:
+            return строки
+        улика = probe()
+        фаза = {"наш процесс": "адрес", "край": "ждёт края", "нет ответа": "ждёт края",
+                "чужой процесс": "чужой процесс"}.get(улика["кто"], "адреса нет")
+        return строки + self._enter(фаза, st, улика)
+
+    def _enter(self, фаза: str, st: dict, улика: dict | None) -> list[str]:
+        if фаза == self.фаза and not (фаза == "адрес" and st["public_url"] != self._адрес):
+            return []
+        self.фаза = фаза
+        ошибка = f": {st['last_error']}" if st["last_error"] else ""
+        if фаза == "подключение":
+            self.статус = "подключаюсь к краю"
+            return [f"⏳ [tunnel] {self.статус}{ошибка}"]
+        if фаза == "потеря":
+            self.статус = "соединение потеряно, переподключаюсь"
+            return [f"🔴 [tunnel] соединение с краем потеряно{ошибка} — публичный адрес не отвечает, переподключаюсь"]
+        if фаза == "надзор":
+            надзор = st["supervision"]
+            self.статус = "надзор остановлен — туннель не поднимется"
+            return [f"🔴 [tunnel] надзор туннеля остановлен: {надзор.get('reason')} (событие {надзор.get('event')}) — "
+                    "туннель больше не поднимается, перезапусти сервер"]
+        assert улика is not None                   # дальше — фазы, которые даёт только проба
+        url = f"{st['public_url']}/mcp"
+        if фаза == "адрес":
+            сменился = self._адрес is not None and st["public_url"] != self._адрес
+            self._адрес = st["public_url"]
+            self.статус = f"адрес проверен снаружи → {url}"
+            return ([f"🌐 [tunnel] Публичный URL (вставь в коннектор Claude): {url} — проверено снаружи: {улика['текст']}"]
+                    + (["   адрес изменился — обнови его в коннекторе Claude AI Web, старый больше не отвечает"]
+                       if сменился else []))
+        if фаза == "ждёт края":
+            self.статус = "ждёт края"
+            if улика.get("отказ") is not None:
+                from core.reactions.reactions import cli_text
+                почему = cli_text(улика["отказ"], CONFIG_PATH / "server_reactions.yaml").replace("\n", "\n   ")
+            else:
+                почему = улика["текст"]
+            return [f"⏳ [tunnel] соединений с краем {st['connections']}, край ещё не ведёт адрес к серверу — жду",
+                    f"   {почему}"]
+        if фаза == "чужой процесс":
+            self.статус = "адрес ведёт не к этому серверу"
+            return [f"⚠️  [tunnel] публичный адрес ведёт не к этому серверу: {улика['текст']}",
+                    f"   вход туннеля должен вести на {self.origin}"]
+        self.статус = "публичный адрес неизвестен"
+        return [f"⚠️  [tunnel] {улика['текст']}"]
 
 
 def main():
