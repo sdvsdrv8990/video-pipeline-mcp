@@ -22,6 +22,7 @@ import socket
 import stat
 import sys
 import time
+import urllib.parse
 import urllib.request
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -114,6 +115,13 @@ class _Again(Exception):
         self.refusal, self.wait, self.applied = refusal, wait, applied
 
 
+def unapplied(error: BaseException) -> bool:
+    """Отказ двери пришёл до того, как провайдер принял запрос: не ушёл или ответ из `unprocessed` — признак последней
+    попытки (`_Again.applied`, причина отказа), а не догадка по коду. Иной отказ мог исполниться и списаться — False."""
+    cause = error.__cause__
+    return isinstance(cause, _Again) and not cause.applied
+
+
 P = TypeVar("P", bound=RequestPolicy)
 A = TypeVar("A", bound=AddressedPolicy)
 
@@ -131,8 +139,9 @@ class Fetcher(Generic[P]):
 
     def __init__(self, policy: P, *, transport=None, resolve=socket.getaddrinfo, sleep=time.sleep,
                  rng: random.Random | None = None, proxies=urllib.request.getproxies_environment, mark=None,
-                 clock=time.monotonic, slot: Slot | None = None):
+                 clock=time.monotonic, slot: Slot | None = None, port: int | None = None):
         self.policy = policy
+        self.port = port                        # открытая петля (`addressed`): ровно объявленный порт, не любой на хосте
         self.transport = transport
         self.resolve = resolve
         self.sleep = sleep
@@ -380,6 +389,9 @@ class Fetcher(Generic[P]):
             raise ContractError("DOWNLOAD_FORBIDDEN", facts={"host": target.host, "allowed": ", ".join(schemes)})
         if hosts and target.host not in hosts:
             raise ContractError("DOWNLOAD_FORBIDDEN", facts={"host": target.host, "allowed": ", ".join(hosts)})
+        if self.port is not None and (target.port or PORTS[target.scheme]) != self.port:
+            raise ContractError("DOWNLOAD_FORBIDDEN", facts={"host": f"{target.host}:{target.port or PORTS[target.scheme]}",
+                                                             "allowed": f"{target.host}:{self.port}"})
 
     def _judge(self, target) -> str:
         """IP для прямого соединения: все адреса имени — публичные, соединение — на первый, второго разрешения нет."""
@@ -729,10 +741,13 @@ def addressed(policy: A, slot: Slot[A], url: str, **seams) -> Fetcher[A]:
     """Загрузчик обращения к объявленному адресу по политике `policy` раздела `slot` (вызывающий мог её перекрыть, суд
     схемы — его): хост — хост объявленного адреса `url` (`ProviderUrl` — хост без подстановки `{…}`), списка хостов рядом
     с адресом нет. Внутреннюю сеть (`block_private: false`) и открытый канал (схема не https) политика открывает только
-    литералу петли — там сеть не пересекается; иначе отказ до запроса."""
+    литералу петли — там сеть не пересекается, и ровно объявленному порту: на петле слушает кто угодно; иначе отказ до
+    запроса."""
     host = declared_host(url)
     opened = [*(["block_private: false"] if not policy.block_private else []),
               *(s for s in policy.schemes if s.lower() != "https")]
     if opened and not _loopback(host):
         raise ContractError("DOWNLOAD_FORBIDDEN", facts={"host": host, "allowed": f"литерал петли ({', '.join(opened)})"})
-    return Fetcher(policy.model_copy(update={"hosts": (host,)}), slot=slot, **seams)
+    parts = urllib.parse.urlsplit(url)
+    port = (parts.port or PORTS.get(parts.scheme.lower())) if opened else None
+    return Fetcher(policy.model_copy(update={"hosts": (host,)}), slot=slot, port=port, **seams)

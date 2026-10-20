@@ -1697,7 +1697,11 @@ _out50 = Path(tempfile.mkdtemp())
                                    encoding="utf-8")
 _tpl50 = _ctx.config_path / "templates" / "workspace"
 _known50 = sorted(p.name[: -len(".tpl.yaml")] for p in _tpl50.glob("*.tpl.yaml"))   # оракул — файлы каталога
-_sick50 = (("../", _os50.path.relpath(_out50 / "чужой", _tpl50)), ("абсолютный путь", str(_out50 / "чужой")),
+try:
+    _up50 = _os50.path.relpath(_out50 / "чужой", _tpl50)
+except ValueError:   # Windows: временный каталог на другом диске — пути вверх нет; чужой файл держит абсолютный путь
+    _up50 = "../чужой"
+_sick50 = (("../", _up50), ("абсолютный путь", str(_out50 / "чужой")),
            ("суффикс объявленного файла", f"{_known50[0]}.tpl"), ("объявленное имя", _known50[0]))
 for _label50, _name50 in _sick50:
     _r50 = _call47("fs_create_project_structure", template=_name50)

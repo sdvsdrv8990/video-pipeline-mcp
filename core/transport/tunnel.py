@@ -25,7 +25,7 @@ from pydantic_core import PydanticCustomError
 
 from core.contracts import ContractError
 from core.declaration import Declaration
-from core.declaration_schemas import TUNNEL_PROBE, TUNNEL_SUPERVISION
+from core.declaration_schemas import TUNNEL_METRICS, TUNNEL_PROBE, TUNNEL_READINESS, TUNNEL_SUPERVISION
 from core.engine.engine import incident
 from core.environment import child_spawn
 from core.jobs import backoff
@@ -122,10 +122,15 @@ class CloudflaredTunnel:
         self.jitter = надзор.jitter                         # доля добавки к паузе
         self.ready_timeout = надзор.ready_timeout_seconds   # предел одной попытки первого подъёма
         self.first_attempts = надзор.first_attempts         # попыток первого подъёма
+        self.stop_grace = надзор.stop_grace_seconds         # ждём конца соединителя после terminate, затем kill
+        # Готовность — событием поставщика (сервер метрик соединителя), описание — данными каталога, а не кодом.
+        self.readiness = каталог_проверок().section(*TUNNEL_READINESS.section, schema=TUNNEL_READINESS.schema)
         # Шов генератора добавки: худшее время перезапуска воспроизводимо; часы — шов класса `clock` (монотонные).
         self.rng = random.Random()
 
         self._proc: subprocess.Popen | None = None
+        self._ended: threading.Event | None = None   # конец вывода процесса — событие его читателя (`_drain`)
+        self._fatal_line: str | None = None          # непоправимый отказ из вывода соединителя
         self._public_url: str | None = None
         self._stopping = False
         self._stopped = threading.Event()   # остановка как событие: пауза перезапуска прерывается им, а не опросом
@@ -175,10 +180,12 @@ class CloudflaredTunnel:
         Токен — только из среды сервера (MCP_TUNNEL_TOKEN); yaml — только не-секретные поля.
         """
         url = f"http://127.0.0.1:{self.port}"
+        # Сервер метрик — на адресе, который назначили мы: по нему спрашивается готовность (`_ready`).
+        head = [self.binary, "tunnel", self.readiness.metrics_flag, self.readiness.metrics_address, "--no-autoupdate"]
         if self.mode == "named":
             # Путь 1: connector-токен (ID+секрет внутри токена).
             if self._by_token():
-                return [self.binary, "tunnel", "--no-autoupdate", "run"]
+                return [*head, "run"]
             # Путь 2: локальные credentials + UUID/имя туннеля.
             ref = self.tunnel_id or self.tunnel_name
             if not ref:
@@ -186,13 +193,13 @@ class CloudflaredTunnel:
                     "mode=named требует токен в среде сервера (MCP_TUNNEL_TOKEN) ЛИБО tunnel_id/tunnel_name "
                     "(+ credentials_file) в config/tunnel.yaml. Получи их в дашборде Cloudflare после привязки домена."
                 )
-            cmd = [self.binary, "tunnel", "--no-autoupdate"]
+            cmd = list(head)
             if self.credentials_file:
                 cmd += ["--credentials-file", self.credentials_file]
             cmd += ["run", "--url", url, ref]
             return cmd
         # quick (по умолчанию): эфемерный trycloudflare-URL, без аккаунта/домена/токена.
-        return [self.binary, "tunnel", "--no-autoupdate", "--url", url]
+        return [*head, "--url", url]
 
     def _named_url(self) -> str:
         """Публичный URL named-туннеля (постоянный домен)."""
@@ -228,59 +235,46 @@ class CloudflaredTunnel:
         return (None, None)
 
     def _await_ready(self, lines, poll_fn, deadline: float | None = None) -> str:
-        """Готовность по СОСТОЯНИЮ СОЕДИНЕНИЯ, а не по таймеру.
+        """Готовность — событием поставщика, а не строкой журнала и не таймером.
 
-        Читает поток строк cloudflared:
-          • quick  → готов, когда есть URL И событие соединения;
-          • named  → готов, когда есть событие соединения.
-        Отказ = 'fatal'-строка ИЛИ закрытие потока (процесс вышел) →
-        поднимаем TunnelError с РЕАЛЬНЫМ текстом cloudflared.
+        Вывод соединителя читает его единственный читатель (`_drain`, свой поток): дренаж, текст ошибок, непоправимый
+        отказ, конец вывода. Готов — сервер метрик называет соединения с краем (`_ready`), у quick есть и адрес
+        (`_quick_url`); пока нет — следующий вопрос через объявленную паузу (`готовность.pause_sec`), её прерывает конец
+        вывода. Отказ = непоправимая строка, конец вывода (процесс вышел) или срок — TunnelError с текстом соединителя.
 
         Args:
             lines: итератор строк (stdout процесса или фейковые данные в тесте).
             poll_fn: функция → код возврата процесса или None (жив ли он).
         """
-        url = None
         # Срок ждут ВСЕГДА: у прежнего ожидания предела не было вовсе, и туннель, которому режут
         # путь до края (VPN, firewall), держал подъём молча — вывод обрывался, вердикта не было.
         предел = deadline if deadline is not None else time.monotonic() + self.ready_timeout
-        # Счётчик, а не признак: cloudflared держит НЕСКОЛЬКО рёбер, и `Unregistered connIndex=2`
-        # при живых остальных не означает «связи нет». Супервизор считает так же — один словарь,
-        # одна арифметика.
-        connections = 0
-        last_err = None
-
-        for raw in lines:
-            if not raw:
+        with self._status_lock:
+            self._last_error = self._fatal_line = None
+        ended = self._ended = threading.Event()
+        threading.Thread(target=self._drain, args=(lines, ended), daemon=True, name="tunnel-drain").start()
+        while True:
+            if self._fatal_line:
+                raise TunnelError(f"cloudflared отказал: {self._fatal_line}")
+            if self._ready()["готов"]:
+                адрес = self._named_url() if self.mode == "named" else self._quick_url()
+                if адрес:
+                    self._public_url = адрес
+                    return адрес
+            if ended.is_set():
                 break
             if time.monotonic() > предел:
                 raise TunnelError(
                     f"соединение не установлено за {self.ready_timeout:.0f} с"
-                    + (f" (последнее от cloudflared: {last_err})" if last_err else "")
+                    + (f" (последнее от cloudflared: {self._last_error})" if self._last_error else "")
                     + ". Путь до края Cloudflare (порт 7844) закрыт или идёт через сеть, которая "
                       "его режет — проверь VPN/файрвол")
-            kind, val = self._classify_line(raw)
-            if kind == "url":
-                url = val
-            elif kind == "connected":
-                connections += 1
-            elif kind == "disconnected":
-                # Последнее ребро потеряно ДО готовности: держать прежнее «соединено» значит отдать
-                # URL туннеля, которого уже нет. Ждём следующей регистрации.
-                connections = max(0, connections - 1)
-            elif kind == "fatal":
-                raise TunnelError(f"cloudflared отказал: {val}")
-            elif kind == "error":
-                last_err = val  # мягкая ошибка/ретрай — как контекст
-            elif kind is not None:
-                assert_never(kind)
+            ended.wait(self.readiness.pause_sec)
+        if self._fatal_line:
+            raise TunnelError(f"cloudflared отказал: {self._fatal_line}")
+        last_err = self._last_error
 
-            # Триггер готовности — наличие соединения (для quick ещё и URL).
-            if connections and (url is not None or self.mode == "named"):
-                self._public_url = url if url is not None else self._named_url()
-                return self._public_url
-
-        # Поток закрылся → процесс завершился, соединение не установлено.
+        # Вывод кончился → процесс завершился, соединение не установлено.
         code = poll_fn()
         if code == 0:
             # УСПЕШНЫЙ код — не отказ ни при каком тексте лога: cloudflared так выходит по сигналу,
@@ -384,7 +378,8 @@ class CloudflaredTunnel:
             proc.kill()
 
     def _spawn(self) -> "subprocess.Popen":
-        """Запуск процесса cloudflared (с фиксацией времени старта)."""
+        """Запуск процесса cloudflared (с фиксацией времени старта); адрес его сервера метрик до запуска свободен."""
+        self._metrics_address_free()
         self._proc_started = self.clock()
         return subprocess.Popen(
             self._build_command(),
@@ -416,50 +411,37 @@ class CloudflaredTunnel:
     # ── Супервизор ──────────────────────────────────────────────────────────
 
     def _apply_line(self, raw: str):
-        """Обновление статуса по строке лога (соединения/ошибки/URL)."""
+        """Строка вывода соединителя — текст для человека: ошибка — в статус, непоправимый отказ — ещё и признак
+        `_fatal_line`. Соединение, его потеря и адрес quick решает сервер метрик (`_ready`, `_quick_url`), а не строка."""
         kind, val = self._classify_line(raw)
         with self._status_lock:
-            if kind == "connected":
-                self._connections += 1
-                self._connected = True
-                self._attempts = 0          # соединение восстановлено → сброс разгона
-                self._last_error = None
-            elif kind == "disconnected":
-                self._connections = max(0, self._connections - 1)
-                self._connected = self._connections > 0
-            elif kind == "url":
-                self._public_url = val
-            elif kind == "error" or kind == "fatal":
-                self._last_error = val
-            elif kind is not None:
-                assert_never(kind)
+            match kind:
+                case "error":
+                    self._last_error = val
+                case "fatal":
+                    self._last_error = self._fatal_line = val
+                case "connected" | "disconnected" | "url" | None:
+                    pass
+                case _:
+                    assert_never(kind)
 
     def _start_supervisor(self):
-        """Фоновый цикл: следит за процессом И соединением, дренажит stdout,
-        перезапускает cloudflared с backoff при смерти процесса.
-
-        Дренаж обязателен: после готовности start() перестаёт читать stdout —
-        без чтения буфер пайпа переполнится и cloudflared зависнет на записи.
-        Транзиентные обрывы соединения НЕ рестартят процесс (их лечит сам
-        cloudflared, держащий пул edge-соединений) — рестарт только при смерти
-        процесса, чтобы не плодить подключения и не упереться в лимиты.
+        """Фоновый цикл: ждёт конца процесса соединителя — события его читателя (`_drain`, он же дренаж: без чтения буфер
+        трубы переполнится и соединитель встанет на записи) — и перезапускает его с паузой вдвое. Соединение и его
+        обрывы видит сервер метрик (`status`); ради них процесс не перезапускается — обрывы лечит сам соединитель, держащий
+        пул соединений с краем, — рестарт только при смерти процесса, без лишних подключений и лимитов края. Умерший
+        процесс подобран и его труба закрыта до перезапуска (`_release`).
         """
         def _run():
             try:
                 while not self._stopping:
-                    proc = self._proc
-                    if proc is None or proc.stdout is None:
+                    proc, ended = self._proc, self._ended
+                    if proc is None or ended is None:
                         break
-
-                    # Блокирующее чтение до EOF: дренаж + обновление статуса соединения.
-                    for raw in proc.stdout:
-                        if self._stopping:
-                            return
-                        self._apply_line(raw)
-
-                    # stdout закрылся → процесс cloudflared завершился (HP = down).
-                    if self._stopping:
-                        break
+                    ended.wait()                        # вывод кончился → процесс соединителя завершился
+                    if self._stopping or self._supervision.get("state") != "идёт":
+                        break                           # остановка или читатель вывода остановил надзор сбоем
+                    self._release(proc)
                     uptime = (self.clock() - self._proc_started) if self._proc_started else 0.0
                     with self._status_lock:
                         self._connected = False
@@ -472,15 +454,24 @@ class CloudflaredTunnel:
                     if self._stopping:
                         break
                     try:
-                        self._proc = self._spawn()
+                        fresh = self._spawn()
                     except Exception as e:
                         self._halted("перезапуск не удался", e)
                         return
+                    self._ended, self._proc = threading.Event(), fresh
+                    threading.Thread(target=self._drain, args=(fresh.stdout, self._ended), daemon=True,
+                                     name="tunnel-drain").start()
+                    if self._stopping:                  # остановка пришла, пока процесс порождался: гасим его здесь
+                        self._end_attempt()
             except Exception as e:              # прочий сбой потока надзора — тем же узлом, а не трассой в stderr
-                self._halted("поток надзора упал", e)
+                self._fell(e)
 
         self._supervisor = threading.Thread(target=_run, daemon=True)
         self._supervisor.start()
+
+    def _fell(self, exc: BaseException) -> None:
+        """Прочий сбой потока надзора (цикл перезапуска или читатель вывода) — одной причиной `_halted`."""
+        self._halted("поток надзора упал", exc)
 
     def _halted(self, причина: str, exc: BaseException) -> None:
         """Надзор кончился сбоем: причина с трассировкой — в журнал сервера под номером события, состояние надзора —
@@ -531,8 +522,9 @@ class CloudflaredTunnel:
                         resolve=self.resolve, clock=self.clock, sleep=self.sleep)
         try:
             код, заголовки = дверь.status(адрес, {"User-Agent": "vpm-tunnel-probe"}, within=timeout)
-        except ContractError as отказ:
-            return {"дошло": False, "код": None, "кто": "нет ответа", "текст": f"{отказ.code}: {отказ.facts}"}
+        except ContractError as отказ:          # текст владельцу — реестром (`cli_text`), а не словарём фактов
+            return {"дошло": False, "код": None, "кто": "нет ответа", "отказ": отказ,
+                    "текст": f"{отказ.code} ({отказ.facts.get('status', '—')})"}
         кто = заголовки.get("server", "")
         край = self._край_ответил(код, кто)
         return {"дошло": not край, "код": код, "кто": кто or ("край" if край else "неизвестен"),
@@ -550,11 +542,18 @@ class CloudflaredTunnel:
         return хост if _TRYCLOUDFLARE_RE.fullmatch(f"https://{хост}") else ""
 
     def status(self) -> dict:
-        """Снимок здоровья туннеля (для мониторинга/логов сервера)."""
+        """Снимок здоровья туннеля (для мониторинга/логов сервера): соединение и адрес quick — живым ответом сервера
+        метрик соединителя (`_ready`, `_quick_url`), а не строкой его журнала."""
         proc = self._proc
+        running = proc is not None and proc.poll() is None
+        готов = self._ready() if running else {"готов": False, "соединений": 0}
+        адрес = self._quick_url() if готов["готов"] and self.mode != "named" else None
         with self._status_lock:
+            self._connected, self._connections = bool(готов["готов"]), int(готов["соединений"])
+            if адрес:
+                self._public_url = адрес
             return {
-                "running": proc is not None and proc.poll() is None,
+                "running": running,
                 "connected": self._connected,
                 "connections": self._connections,
                 "attempts": self._attempts,
@@ -580,10 +579,22 @@ class CloudflaredTunnel:
         if proc and proc.poll() is None:
             proc.terminate()
             try:
-                proc.wait(timeout=5)
+                proc.wait(timeout=self.stop_grace)
             except subprocess.TimeoutExpired:
                 proc.kill()
         self._proc = None
+        if proc:
+            self._release(proc)
+
+    def _release(self, proc: "subprocess.Popen") -> None:
+        """Кончившийся процесс подобран, его труба закрыта, когда её больше не читают (читатель `_drain` кончился по концу
+        вывода) — иначе их закрывает сборщик мусора с ResourceWarning: дескриптор течёт на каждую попытку и перезапуск."""
+        proc.wait()
+        ended = self._ended
+        if ended is not None:
+            ended.wait()
+        if proc.stdout is not None:
+            proc.stdout.close()
 
     @staticmethod
     def _cancelled() -> "TunnelCancelled":
@@ -600,6 +611,59 @@ class CloudflaredTunnel:
         без_личности = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
         свой = {_TOKEN_ENV: self.tunnel_token} if self._by_token() else {}
         return child_spawn("replace", свой, environ=без_личности)
+
+    def _metrics(self, path: str) -> object:
+        """Ответ сервера метрик соединителя по пути `path` — дверью загрузчика: петля и порт — ровно объявленный адрес
+        (`готовность.<поставщик>.metrics_address`), JSON в память в пределе политики `метрики`. Отказ двери — ContractError."""
+        адрес = f"http://{self.readiness.metrics_address}"
+        return answers(каталог_проверок(), TUNNEL_METRICS, адрес, transport=self.transport, resolve=self.resolve,
+                       clock=self.clock, sleep=self.sleep).answer(f"{адрес}{path}", {})
+
+    def _ready(self) -> dict:
+        """Готовность соединителя — событием поставщика, а не строкой журнала: поле `ready_field` ответа `ready_path` —
+        счёт соединений с краем, готов — больше нуля. Не слушает, 503 («соединений нет») или чужое тело — «не готов» с
+        кодом причины, а не исключение."""
+        try:
+            ответ = self._metrics(self.readiness.ready_path)
+        except ContractError as отказ:
+            return {"готов": False, "соединений": 0, "почему": отказ.code}
+        счёт = ответ.get(self.readiness.ready_field) if isinstance(ответ, dict) else None
+        счёт = счёт if isinstance(счёт, int) and not isinstance(счёт, bool) else 0
+        return {"готов": счёт > 0, "соединений": счёт, "почему": ""}
+
+    def _quick_url(self) -> str | None:
+        """Адрес quick-туннеля — поле `quick_field` ответа `quick_path` сервера метрик, а не регуляркой по журналу; нет
+        ответа или поля — None."""
+        try:
+            ответ = self._metrics(self.readiness.quick_path)
+        except ContractError:
+            return None
+        хост = ответ.get(self.readiness.quick_field) if isinstance(ответ, dict) else None
+        return f"https://{хост}" if isinstance(хост, str) and хост else None
+
+    def _metrics_address_free(self) -> None:
+        """Адрес сервера метрик никто не слушает до запуска соединителя: иначе готовность прочлась бы у чужого процесса.
+        Ответ любым кодом (и 503) — адрес слушают; сбой соединения — свободен. Занят — громкий отказ с адресом."""
+        try:
+            self._metrics(self.readiness.ready_path)
+        except ContractError as отказ:
+            if not isinstance(отказ.facts.get("status"), int):
+                return
+        raise TunnelError(f"адрес сервера метрик туннеля {self.readiness.metrics_address} уже слушает другой процесс — "
+                          "освободи порт или смени готовность.cloudflared.metrics_address в config/tunnel_diagnostics.yaml")
+
+    def _drain(self, lines, ended: threading.Event) -> None:
+        """Единственный читатель вывода процесса соединителя: дренаж трубы (без чтения буфер переполнится, и соединитель
+        встанет на записи), ошибки и непоправимый отказ — в статус; конец вывода — событие `ended`: процесс кончился."""
+        try:
+            for raw in lines:
+                if not raw:
+                    break
+                self._apply_line(raw)
+        except Exception as e:                  # сбой чтения или разбора — тем же узлом надзора, а не тихий конец вывода
+            self._fell(e)
+        finally:
+            ended.set()
 
 
 def declared_hostname(config_path: str | Path | None) -> str:

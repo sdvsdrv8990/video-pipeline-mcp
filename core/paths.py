@@ -97,6 +97,30 @@ def _sync_dir(folder: Path) -> None:
         os.close(fd)
 
 
+# Открытие на чтение под Windows (Win32 CreateFileW): права и режимы — константы ОС, не политика.
+_GENERIC_READ, _OPEN_EXISTING, _ATTR_NORMAL = 0x80000000, 3, 0x80
+_SHARE_ALL = 0x1 | 0x2 | 0x4                      # FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+
+
+def open_shared(target: Path):
+    """Файл на чтение так, что его можно заменить, пока он открыт (FS-06): на Windows обычное открытие не даёт
+    FILE_SHARE_DELETE, и `os.replace` писателя в другом потоке отказывает (EACCES) — открытие идёт CreateFileW со всеми
+    флагами совместного доступа; на прочих ОС замена открытого файла законна и так."""
+    if sys.platform != "win32":
+        return open(target, "rb")
+    import ctypes
+    import msvcrt
+
+    create = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
+    create.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32,
+                       ctypes.c_uint32, ctypes.c_void_p]
+    create.restype = ctypes.c_void_p
+    handle = create(str(target), _GENERIC_READ, _SHARE_ALL, None, _OPEN_EXISTING, _ATTR_NORMAL, None)
+    if handle in (None, ctypes.c_void_p(-1).value):    # INVALID_HANDLE_VALUE: код Windows → OSError своего рода
+        raise ctypes.WinError(ctypes.get_last_error(), str(target))
+    return os.fdopen(msvcrt.open_osfhandle(handle, os.O_RDONLY | getattr(os, "O_BINARY", 0)), "rb")
+
+
 @dataclass(frozen=True)
 class Files:
     """Дверь к диску одного корня: всё, что сервер делает с файлом этого корня, начинается с `place`."""
@@ -346,7 +370,7 @@ class Files:
         target = self.place(path)
         if target.is_dir():
             raise ContractError("VALIDATION_ERROR", errors=[{"field": "path", "rule": "not_file"}])
-        with open(target, "rb") as f:
+        with open_shared(target) as f:
             head = f.read(limit + 1)
             size = os.fstat(f.fileno()).st_size
         truncated = len(head) > limit
@@ -358,6 +382,16 @@ class Files:
         except UnicodeDecodeError:
             raise ContractError("FILE_NOT_TEXT", facts={"path": self.name(path)}) from None
         return Text(text, size, truncated)
+
+    def read_bytes(self, path: str | Path, *, secrets: bool = False) -> bytes:
+        """Файл целиком через дверь — открытием, которое не мешает писателю заменить его в это время (`open_shared`):
+        так читают файлы, которые сервер пишет заменой (записи заданий, снимки, состояние). Нет файла — FileNotFoundError."""
+        with open_shared(self.place(path, secrets=secrets)) as f:
+            return f.read()
+
+    def read_text(self, path: str | Path, *, secrets: bool = False) -> str:
+        """`read_bytes` текстом UTF-8."""
+        return self.read_bytes(path, secrets=secrets).decode("utf-8")
 
 
 @dataclass(frozen=True)

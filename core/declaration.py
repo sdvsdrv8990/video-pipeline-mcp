@@ -163,8 +163,10 @@ def schema_errors(error: ValidationError, prefix: tuple[str, ...] = ()) -> list[
 def contents(path: Path) -> bytes | None:
     """Содержимое декларации — ключ «сменилась ли» для двери и для горячей перезагрузки сервера: метка времени ФС бывает
     грубее правки (NTFS — 100 нс, FAT — 2 с). Нет файла — None."""
+    from core.paths import open_shared         # здесь, а не в шапке: core.paths → core.write_policy → этот модуль
     try:
-        return path.read_bytes()
+        with open_shared(path) as f:            # опись поставленного пишется заменой, пока её читают
+            return f.read()
     except FileNotFoundError:
         return None
 

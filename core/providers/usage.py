@@ -60,7 +60,7 @@ class UsageLedger:
         """Прибавить расход строке провайдера. Возвращает «было → стало» для отчёта."""
         column = ((self.config.get("limits") or {}).get("usage_column")) or "current_usage"
         if not row_id:                                  # строка из декларации-дефолта: в книге канала её ещё нет
-            raise ProviderError("ROW_NOT_FOUND", facts={"sheet": sheet})
+            raise ProviderError("PROVIDER_ROW_NOT_IN_BOOK", facts={"table": table, "sheet": sheet})
         # Под замком снимка: очередь таблицы, применённая в соседнем потоке, не затрёт расход, а расход — её строки.
         with self.state.edit_snapshot(table) as snapshot:
             row = ((snapshot.get(sheet) or {}).get("rows") or {}).get(row_id)

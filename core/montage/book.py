@@ -62,7 +62,7 @@ class SceneBook:
         if not rows:
             rows, source, owner = self._named_rows("profile"), "declaration", ""
         if not rows:                            # профилей нет ни у канала, ни в декларации
-            raise MontageError("ROW_NOT_FOUND", facts={"sheet": spec["sheet"]})
+            raise MontageError("RENDER_PROFILE_MISSING", facts={"sheet": spec["sheet"]})
         wanted = profile_id or self._selected(table, spec)
         by_id = {str(row.get(spec["id_column"])): row for row in rows}
         allowed = ", ".join(sorted(by_id))

@@ -113,12 +113,26 @@ logging.getLogger("core.transport.tunnel").addHandler(ear)
 HOST = "/host/secret/bin/cloudflared"
 
 
+class Out:
+    """Труба вывода подставного процесса: строки по порядку и закрытие — закрыта ли, видно (утечка дескриптора)."""
+
+    def __init__(self, lines=()):
+        self._lines, self.closed = iter(lines), False
+
+    def __iter__(self):
+        return self._lines
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def halted(spawn=None, line=None) -> tuple[dict, list[logging.LogRecord]]:
-    """Надзор на поддельном процессе: его stdout кончился (процесс умер) или строка разбора падает; конец потока надзора —
-    событием (`join` без своего предела)."""
+    """Надзор на поддельном процессе: его вывод кончился (процесс умер) или строка разбора падает; вывод читает его
+    читатель (`_drain`), как после подъёма; конец потока надзора — событием (`join` без своего предела)."""
     tunnel = built(declarations_copy())
     assert isinstance(tunnel, CloudflaredTunnel)
-    tunnel._proc = SimpleNamespace(stdout=iter([line] if line else []), poll=lambda: 1)   # type: ignore[assignment]
+    tunnel._proc = SimpleNamespace(stdout=Out([line] if line else []), poll=lambda: 1,       # type: ignore[assignment]
+                                   wait=lambda timeout=None: 1)
     tunnel._sleep_interruptible = lambda delay: None                                     # type: ignore[method-assign]
     if spawn is not None:
         tunnel._spawn = spawn                                                              # type: ignore[method-assign]
@@ -127,6 +141,10 @@ def halted(spawn=None, line=None) -> tuple[dict, list[logging.LogRecord]]:
             raise ValueError(f"строка не разбирается: {raw}")
         tunnel._apply_line = broken                                                        # type: ignore[method-assign]
     heard.clear()
+    tunnel._ended = threading.Event()
+    reader = threading.Thread(target=tunnel._drain, args=(tunnel._proc.stdout, tunnel._ended))
+    reader.start()
+    reader.join()
     tunnel._start_supervisor()
     assert tunnel._supervisor is not None
     tunnel._supervisor.join()
@@ -170,7 +188,7 @@ class Proc:
     """Подставной cloudflared: строки stdout и конец; terminate — погашен."""
 
     def __init__(self, lines=()):
-        self.stdout, self.ended = iter(lines), False
+        self.stdout, self.ended = Out(lines), False
 
     def poll(self):
         return 0 if self.ended else None
@@ -214,11 +232,11 @@ class Half:
 class InPlace:
     """Поток надзора исполняется в потоке набора: его конец — событие самого сценария, ждать нечего."""
 
-    def __init__(self, target, daemon=None):
-        self.target = target
+    def __init__(self, target, args=(), daemon=None, name=None):
+        self.target, self.args = target, args
 
     def start(self) -> None:
-        self.target()
+        self.target(*self.args)
 
     def join(self, timeout=None) -> None:
         return None
@@ -242,9 +260,12 @@ def lifted(outcomes: list, *, stop_before: bool = False, stop_in_spawn: bool = F
         return proc
 
     def ready(stream, poll_fn, deadline=None):
+        """Готовность попытки по плану; удачная — как `_await_ready`: вывод процесса читает его читатель (`_drain`)."""
         outcome = plan.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
+        tunnel._ended = threading.Event()
+        InPlace(target=tunnel._drain, args=(stream, tunnel._ended)).start()
         return outcome
 
     tunnel._binary_available = lambda: True             # type: ignore[method-assign]
@@ -256,7 +277,8 @@ def lifted(outcomes: list, *, stop_before: bool = False, stop_in_spawn: bool = F
     tunnel.clock = clock.time                           # type: ignore[misc]
     held = tunnel_module.time, tunnel_module.threading
     tunnel_module.time = clock                          # type: ignore[assignment]
-    tunnel_module.threading = SimpleNamespace(Thread=InPlace, Timer=threading.Timer, Lock=threading.Lock)  # type: ignore[assignment]
+    tunnel_module.threading = SimpleNamespace(Thread=InPlace, Timer=threading.Timer, Lock=threading.Lock,  # type: ignore[assignment]
+                                              Event=threading.Event)
     try:
         if stop_before:
             tunnel.stop()
@@ -282,6 +304,14 @@ check("процесс упавшей попытки погашен до повт
       [p.ended for p in run["procs"]])
 check("надзор после удачного повтора жив: все строки процесса дошли до разбора",
       run["lines"] == ["INF a", "INF b", "INF c"], run["lines"])
+# 20.10: дескриптор трубы вывода не течёт — кончившийся процесс подобран и его труба закрыта (прежде их закрывал сборщик
+# мусора с ResourceWarning: tunnel.py _end_attempt и перезапуск надзора).
+check("труба вывода кончившегося процесса закрыта: упавшей попытки и умершего после подъёма",
+      len(run["procs"]) >= 2 and run["procs"][0].stdout.closed and run["procs"][1].stdout.closed,
+      [p.stdout.closed for p in run["procs"]])
+check("остановка во время перезапуска надзором: новый процесс погашен и его труба закрыта, а не оставлен жить",
+      len(run["procs"]) == 3 and run["procs"][2].ended and run["procs"][2].stdout.closed,
+      [(p.ended, p.stdout.closed) for p in run["procs"]])
 
 print("== 6. Остановка во время подъёма (D41): флаг до попытки и после порождения — отмена, процесс не остаётся ==")
 run = lifted([URL], stop_before=True)

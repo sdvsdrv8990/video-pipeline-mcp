@@ -115,7 +115,7 @@ class RunnerSupervisor:
 
     def _read(self) -> dict:
         try:
-            return json.loads(self.state_file.read_text(encoding="utf-8"))
+            return json.loads(Files(self.state_file.parent).read_text(self.state_file.name))
         except (OSError, json.JSONDecodeError):
             return {}
 

@@ -33,7 +33,7 @@ def _read_env(env_path: Path) -> dict[str, str]:
     out: dict[str, str] = {}
     if not env_path.exists():
         return out
-    for line in env_path.read_text(encoding="utf-8").splitlines():
+    for line in Files(env_path.parent).read_text(env_path.name).splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue

@@ -464,9 +464,10 @@ class Tasks:
         return record
 
     def _load(self, path: str) -> _Record:
-        """Запись с диска через дверь корня; нет файла — FileNotFoundError, не JSON или не схема — ValueError."""
+        """Запись с диска через дверь корня — чтением, которое не мешает исполнителю заменить её в это время (на Windows
+        иначе замена отказывает EACCES); нет файла — FileNotFoundError, не JSON или не схема — ValueError."""
         try:
-            return _Record.model_validate(json.loads(self.files.place(path).read_text(encoding="utf-8")))
+            return _Record.model_validate(json.loads(self.files.read_text(path)))
         except ValidationError as e:
             raise ValueError(f"запись не по схеме: {e.error_count()} нарушений") from None
 

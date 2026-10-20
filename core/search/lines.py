@@ -5,6 +5,7 @@
 перевода строки, значит совпадение лежит внутри одной строки: сравнение идёт строка за строкой, без арифметики стыков.
 """
 
+import io
 import unicodedata
 from collections.abc import Generator, Iterable
 from contextlib import closing
@@ -12,6 +13,7 @@ from pathlib import Path
 
 from core.capacity import Capacity
 from core.contracts import ContractError
+from core.paths import open_shared
 
 _WIDEST = 4    # байт на знак строки Python в худшем случае (PEP 393: строка хранит знаки по 1, 2 или 4 байта)
 
@@ -32,7 +34,7 @@ def numbered(path: Path, limit: int, *, name: str, errors: str) -> Generator[tup
     """Строки файла с номерами от 1, без перевода строки. Строка длиннее `limit` знаков — отказ LINE_TOO_LONG с её
     номером, а не память общего процесса. `errors` — обработчик битых байт декодера (`codecs`): `replace` ставит U+FFFD,
     и две половины слова через битый байт не склеиваются; `strict` — UnicodeDecodeError, код отказа знает вызывающий."""
-    with open(path, encoding="utf-8", errors=errors, newline=None) as f:
+    with io.TextIOWrapper(open_shared(path), encoding="utf-8", errors=errors, newline=None) as f:
         for number, line in enumerate(iter(lambda: f.readline(limit + 1), ""), 1):
             if len(line) > limit and not line.endswith("\n"):
                 raise ContractError("LINE_TOO_LONG", facts={"path": name, "line": number, "limit": limit})

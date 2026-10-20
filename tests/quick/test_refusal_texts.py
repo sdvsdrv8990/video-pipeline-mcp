@@ -69,6 +69,7 @@ def listed(errors: list[dict], want: dict) -> bool:
 call("fs_create_file", path="есть/план.md", content="# план")
 call("excel_create_workbook", path="книга.xlsx", sheet="Лист1")
 call("excel_add_column", path="книга.xlsx", sheet="Лист1", column="A")
+call("fs_create_file", path="таблица/read.json", content='{"Лист": {"schema": {}, "rows": {"R1": {"a": 1}}}}')
 # (род, инструмент, параметры, код, факты ⊂, в тексте, в рецепте, не в рецепте, errors ⊃)
 CASES = [
     ("файла нет — путь от корня и куда смотреть", "fs_read_file", {"path": "нет/файла.md"}, "FILE_NOT_FOUND",
@@ -149,6 +150,9 @@ CASES = [
     ("предок на диске и под ним нового нет: сперва усыновить стоящий", "fs_create_file",
      {"path": "есть/новая/x.md", "assign_id": True}, "CHAIN_UNRESOLVED", {"paths": "есть", "path": "есть/новая"},
      ["есть"], ["adopt=true"], ["structure_create"], []),
+    # ROW_NOT_FOUND — только «строки с этим ID в листе нет» (EB-11): текст называет строку и лист.
+    ("строки с этим ID нет — строка и лист в тексте", "table_get_row", {"table": "таблица", "sheet": "Лист", "row_id": "R9"},
+     "ROW_NOT_FOUND", {"row": "R9", "sheet": "Лист"}, ["R9", "Лист"], ["table_find_row"], [], []),
 ]
 
 print("== 1. Причина у места — следствие на двери: код, факты, текст и рецепт своей причины ==")

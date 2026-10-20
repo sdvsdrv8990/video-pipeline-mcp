@@ -347,6 +347,9 @@ sheets:
       - { name: resource_type, type: string, flag: id }
       - { name: provider, type: string, flag: W }
       - { name: fallback_provider, type: string, flag: W }
+      # Отказы провайдера, которые уводят работу на fallback_provider (слова providers.yaml → fallback_on, через
+      # запятую). Пусто — уводит только исчерпанный лимит: замена модели или голоса без согласия строки не делается.
+      - { name: fallback_on, type: string, flag: W }
       - { name: daily_limit, type: integer, flag: W }
       - { name: current_usage, type: integer, flag: W }
       - { name: warning_threshold, type: integer, flag: W }

@@ -557,6 +557,7 @@ class TunnelSupervision(BaseModel):
     jitter: float = Field(ge=0, le=1)
     ready_timeout_seconds: float = Field(gt=0)
     first_attempts: StrictInt = Field(ge=1)
+    stop_grace_seconds: float = Field(gt=0)
 
     @model_validator(mode="after")
     def _coherent(self) -> "TunnelSupervision":
@@ -564,6 +565,24 @@ class TunnelSupervision(BaseModel):
             raise ValidationError.from_exception_data(type(self).__name__, [_gap(
                 "backoff_over_ceiling", "пауза перезапуска не выше retry_max_seconds", ("retry_base_seconds",))])
         return self
+
+
+class TunnelReadiness(BaseModel):
+    """`config/tunnel_diagnostics.yaml → готовность.<поставщик>`: готовность соединителя — событием поставщика, а не строкой
+    его журнала. Сервер метрик соединителя садится на адрес, который назначает сервер (`metrics_flag metrics_address` в
+    команде; адрес занят — громкий отказ, а не случайный порт поставщика), путь `ready_path` отвечает JSON, где поле
+    `ready_field` — счёт соединений с краем (готов — больше нуля); путь `quick_path` — адрес quick-туннеля полем
+    `quick_field`. Пока соединитель встаёт, готовность спрашивается с паузой `pause_sec`: события об этом поставщик не шлёт."""
+
+    model_config = STRICT
+
+    metrics_flag: StrictStr
+    metrics_address: StrictStr
+    ready_path: StrictStr
+    ready_field: StrictStr
+    quick_path: StrictStr
+    quick_field: StrictStr
+    pause_sec: float = Field(gt=0)
 
 
 class RunnerDockerPoll(BaseModel):
@@ -712,12 +731,14 @@ JOBS = Slot("jobs.yaml", (), Jobs)
 RATE_LIMIT = Slot("firewall.yaml", ("rate_limit",), RateLimit)
 TUNNEL_BINARY_FETCH = Slot("tunnel_diagnostics.yaml", ("загрузка_клиента",), TunnelBinaryFetch)
 TUNNEL_SUPERVISION = Slot("tunnel_diagnostics.yaml", ("надзор",), TunnelSupervision)
+TUNNEL_READINESS = Slot("tunnel_diagnostics.yaml", ("готовность", "cloudflared"), TunnelReadiness)
+TUNNEL_METRICS = Slot("tunnel_diagnostics.yaml", ("метрики",), AnswerPolicy)
 TRANSPORT = Slot("transport.yaml", (), TransportDeclaration)
 RECALC_ENGINE = Slot("engines.yaml", ("recalc",), EnginePlaces)
 FORMULAS = Slot("formulas.yaml", (), FormulaLanguageDecl)
 SLOTS = (RESOURCES, PACKAGES, MODEL_INSTALL, MODEL_FETCH, RESULT_FETCH, ONLINE_ANSWER, ONLINE_CALL, RESULT_ANSWER,
          RUNNER_HEALTH, RUNNER_DOCKER_POLL, TUNNEL_PROBE, JOBS, RATE_LIMIT, TUNNEL_BINARY_FETCH, TUNNEL_SUPERVISION,
-         TRANSPORT, RECALC_ENGINE, FORMULAS)
+         TUNNEL_READINESS, TUNNEL_METRICS, TRANSPORT, RECALC_ENGINE, FORMULAS)
 
 
 def registry_codes(model: BaseModel) -> frozenset[str]:

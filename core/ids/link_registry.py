@@ -43,7 +43,7 @@ class LinkRegistry:
         """Реестр с диска. Файла нет — новая рабочая область, реестр законно пуст; файл есть, но не читается как реестр —
         STATE_INVALID без записи: пустое прочтение затёрло бы все ID при следующей записи."""
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            data = json.loads(Files(self.ws).read_text(REGISTRY_FILE))
         except FileNotFoundError:
             data = {"entities": {}}
         except (ValueError, OSError):           # не JSON, не utf-8, ОС не читает

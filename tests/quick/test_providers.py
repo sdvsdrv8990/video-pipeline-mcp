@@ -440,7 +440,15 @@ try:
     _led.charge("u", "RESOURCE_LIMITS", "", 1)
     ok(False, "расход без ID строки должен падать")
 except ProviderError as e:
-    ok(e.code == "ROW_NOT_FOUND", f"дефолт декларации нельзя «зарядить» молча ({e.code})")
+    # Обновлено (разделение ROW_NOT_FOUND по причинам, EB-11): строки нет в книге — свой код с таблицей и листом.
+    ok(e.code == "PROVIDER_ROW_NOT_IN_BOOK" and e.facts == {"table": "u", "sheet": "RESOURCE_LIMITS"},
+       f"дефолт декларации нельзя «зарядить» молча: строки провайдера нет в книге ({e.code}, {e.facts})")
+try:
+    _led.charge("u", "RESOURCE_LIMITS", "R404", 1)
+    ok(False, "расход в строку, которой нет в листе, должен падать")
+except ProviderError as e:
+    ok(e.code == "ROW_NOT_FOUND" and e.facts == {"sheet": "RESOURCE_LIMITS", "row": "R404"},
+       f"строки с этим ID в листе нет — ROW_NOT_FOUND со строкой и листом ({e.code}, {e.facts})")
 
 print("== 12. Исполнение локальной моделью: файл, приёмка, расход (шаг 3, часть 3) ==")
 from core.providers import AdapterRegistry, MediaRequest
@@ -1039,6 +1047,30 @@ try:
 finally:
     _srv.CONFIG_PATH = _cfg_was
 
+print("== 12c-учёт. Провайдер из дефолта декларации: строки в книге канала нет — отказ учёта кодом, списания нет ==")
+# Причина — книга канала без листа провайдеров (исполняет дефолт декларации), следствие — usage на двери media_generate.
+_decl_prov = _active["tts_characters"]
+_dcfg_dir = declarations_copy({"providers.yaml": {f"adapters.by_provider.{_decl_prov}": "fake_async:_FakeSlow"},
+                               "media_tasks.yaml": {"poll.interval_sec": 0.01, "poll.max_interval_sec": 0.01}})
+(_ws / "d").mkdir()
+(_ws / "d" / "read.json").write_text("{}", encoding="utf-8")
+_FakeSlow.ready.set()
+_cfg_was_d = _srv.CONFIG_PATH
+try:
+    _srv.CONFIG_PATH = _dcfg_dir
+    _eng_d = _Eng(reactions=_REACTIONS, state_manager=_sm, resources=_srv._load_resources(_dcfg_dir / "resources.yaml"))
+    _register(_eng_d, _IDG(), _sm)
+    _gd = _ended(_eng_d, _aio.run(_eng_d.call("media_generate", {"table": "d", "resource_type": "tts_characters",
+                                                                 "input": "дефолт", "scene_id": "s1", "video_slug": "demo"})))
+    _ud = (_gd.data or {}).get("usage") or {}
+    ok(_gd.status == "success" and _ud.get("charged") is False and _ud.get("code") == "PROVIDER_ROW_NOT_IN_BOOK"
+       and "RESOURCE_LIMITS" in str(_ud.get("reason")) and "не списан" in str(_ud.get("reason"))
+       and _json.loads((_ws / "d" / "read.json").read_text(encoding="utf-8")) == {},
+       f"провайдер из дефолта декларации: работа выдана, учёт — PROVIDER_ROW_NOT_IN_BOOK с листом, книга канала не тронута "
+       f"({_gd.status}, {_ud})")
+finally:
+    _srv.CONFIG_PATH = _cfg_was_d
+
 print("== 12d. Срок клиента у двери: срок 0 — статус по построению; срок есть — итог тем же вызовом, долгое — статус до "
       "срока клиента ==")
 
@@ -1134,6 +1166,107 @@ ok(_l3.status == "success" and "next" in (_l3.data or {}) and bool((_l3.data or 
    f"задание длиннее срока клиента — статус с id пришёл до срока: {_long_sec12d:.2f} с при сроке 3 с (запас 1 с)")
 _FakeSlow.ready.set()
 _ended(_eng3, _l3)
+
+print("== 12e. Запасной провайдер: уводит только «не применён» и только по слову строки (fallback_on) ==")
+from core.contracts import ContractError as _CE12e
+from core.providers.download import _Again as _Again12e
+
+
+class _FakeBusy:
+    """Провайдер не принял запрос: отказ той формы, что даёт дверь вызова на 429 из unprocessed провайдера (§13)."""
+    calls = {"generate": 0}
+
+    def __init__(self, models_dir):
+        self.models_dir = models_dir
+
+    def generate(self, request):
+        type(self).calls["generate"] += 1
+        refusal = _CE12e("PROVIDER_FAILED", facts={"host": "busy.example", "status": 429, "retry_after_sec": 7.0})
+        raise refusal from _Again12e(refusal, 7.0, applied=False)
+
+
+class _FakeSent(_FakeBusy):
+    """Запрос ушёл и оборвался по сроку: мог исполниться и списаться (дверь: applied)."""
+    calls = {"generate": 0}
+
+    def generate(self, request):
+        type(self).calls["generate"] += 1
+        refusal = _CE12e("PROVIDER_TIMEOUT", facts={"host": "sent.example", "status": "ReadTimeout"})
+        raise refusal from _Again12e(refusal, applied=True)
+
+
+class _FakeSpare:
+    """Запасной провайдер строки: файл тем же вызовом."""
+    calls = {"generate": 0}
+
+    def __init__(self, models_dir):
+        self.models_dir = models_dir
+
+    def generate(self, request):
+        from core.providers import MediaOutcome
+        _FakeSpare.calls["generate"] += 1
+        Path(request.target).write_bytes(b"RIFFspare-audio")
+        return MediaOutcome(files=[Path(request.target)])
+
+
+_fake._FakeBusy, _fake._FakeSent, _fake._FakeSpare = _FakeBusy, _FakeSent, _FakeSpare
+# Книга на случай: fb — уход объявлен; fn — запасной есть, слова нет; fs — слово есть, но запрос ушёл.
+for _book12e, _first12e in (("fb", {"provider": "Обл_busy", "fallback_on": "unprocessed"}),
+                            ("fn", {"provider": "Обл_busy", "fallback_on": ""}),
+                            ("fs", {"provider": "Обл_sent", "fallback_on": "unprocessed"})):
+    (_ws / _book12e).mkdir()
+    (_ws / _book12e / "read.json").write_text(_json.dumps({"RESOURCE_LIMITS": {"schema": {}, "rows": {
+        "R1": {**_arow, **_first12e, "fallback_provider": "Обл_spare"},
+        "R2": {**_arow, "provider": "Обл_spare", "fallback_provider": "", "fallback_on": ""}}}}), encoding="utf-8")
+_cfg12e = declarations_copy({
+    "providers.yaml": {"adapters.by_provider.Обл_busy": "fake_async:_FakeBusy",
+                       "adapters.by_provider.Обл_sent": "fake_async:_FakeSent",
+                       "adapters.by_provider.Обл_spare": "fake_async:_FakeSpare"},
+    "transport.yaml": {"clients.claude_code.call_sec": None, "clients.claude_code.reserve_sec": None}})
+_was12e = _srv.CONFIG_PATH
+try:
+    _srv.CONFIG_PATH = _cfg12e
+    _eng12e = _Eng(reactions=_REACTIONS, state_manager=_sm)
+    _register(_eng12e, _IDG(), _sm)
+finally:
+    _srv.CONFIG_PATH = _was12e
+
+
+def _gen12e(book: str):
+    return _ended(_eng12e, _aio.run(_eng12e.call("media_generate", {
+        "table": book, "resource_type": "tts_characters", "input": "запасной", "scene_id": "s1", "video_slug": "demo"})))
+
+
+def _used12e(book: str, row: str) -> int:
+    return _json.loads((_ws / book / "read.json").read_text(encoding="utf-8"))["RESOURCE_LIMITS"]["rows"][row]["current_usage"]
+
+
+_calls12e = lambda: (_FakeBusy.calls["generate"], _FakeSent.calls["generate"], _FakeSpare.calls["generate"])
+_before12e = _calls12e()
+_fb12e = _gen12e("fb")
+_on12e = (_fb12e.data or {}).get("on_fallback") or []
+ok(_fb12e.status == "success" and _fb12e.data.get("provider") == "Обл_spare" and len(_on12e) == 1
+   and _on12e[0].get("provider") == "Обл_busy" and "429" in str(_on12e[0].get("reason"))
+   and _on12e[0].get("retry_after_sec") == 7.0 and _calls12e() == (_before12e[0] + 1, _before12e[1], _before12e[2] + 1)
+   and _used12e("fb", "R1") == 0 and _used12e("fb", "R2") == len("запасной")
+   and [f.data.get("provider") for f in _fb12e.facts] == ["Обл_spare"],
+   f"провайдер не принял запрос (429), строка объявила fallback_on — работа у запасного: ответ называет его и "
+   f"причину ухода, расход — у того, кто исполнил ({_fb12e.status}, {(_fb12e.data or {}).get('provider')}, "
+   f"{_on12e}, вызовы {_calls12e()}, расход R1 {_used12e('fb', 'R1')} R2 {_used12e('fb', 'R2')})")
+_before12e = _calls12e()
+_fn12e = _gen12e("fn")
+_fnf12e = (_fn12e.error.facts if _fn12e.error else None) or {}
+ok(_fn12e.status == "error" and _fn12e.error is not None and _fn12e.error.code == "PROVIDER_FAILED"
+   and _fnf12e.get("fallback") == "none" and _calls12e() == (_before12e[0] + 1, _before12e[1], _before12e[2]),
+   f"запасной в строке есть, а слова fallback_on нет — замены без согласия строки не делается: отказ как есть с фактом "
+   f"fallback none ({_fn12e.error.code if _fn12e.error else 'успех'}, {_fnf12e.get('fallback')}, вызовы {_calls12e()})")
+_before12e = _calls12e()
+_fs12e = _gen12e("fs")
+_fsf12e = (_fs12e.error.facts if _fs12e.error else None) or {}
+ok(_fs12e.status == "error" and _fs12e.error is not None and _fs12e.error.code == "PROVIDER_TIMEOUT"
+   and "fallback" not in _fsf12e and _calls12e() == (_before12e[0], _before12e[1] + 1, _before12e[2]),
+   f"запрос ушёл и оборвался по сроку — на запасного не уводит, даже когда строка объявила fallback_on: работа могла "
+   f"исполниться и списаться ({_fs12e.error.code if _fs12e.error else 'успех'}, вызовы {_calls12e()})")
 
 print("== 13. Загрузка по ссылке провайдера: адрес и размер проверяются ДО диска ==")
 import http.server as _http
@@ -1416,7 +1549,16 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 state, tries = sys.argv[2], []
 if sys.argv[3] == "socketpair-tcp":    # как на Windows: socketpair (self-pipe цикла asyncio) — TCP через петлю
-    socket.socketpair = socket._fallback_socketpair
+    def tcp_pair(family=socket.AF_INET, type=socket.SOCK_STREAM, proto=0):
+        # Форма запасного socketpair CPython (Lib/socket.py) своим кодом: socket._fallback_socketpair есть только с 3.12.
+        with socket.socket(family, type, proto) as lsock:
+            lsock.bind(("127.0.0.1", 0))
+            lsock.listen()
+            csock = socket.socket(family, type, proto)
+            csock.connect(lsock.getsockname())
+            ssock, _ = lsock.accept()
+        return ssock, csock
+    socket.socketpair = tcp_pair
 real_gai, real_connect = socket.getaddrinfo, socket.socket.connect
 def gai(host, *args, **kwargs):
     tries.append(f"dns {host}")
@@ -2784,6 +2926,7 @@ try:
            and len(_posts13) == 1 and not _left13(_ws / "rb13c.png"),
            f"обрыв посреди тела POST — исход неизвестен без повтора, ни файла, ни остатка "
            f"({_e13b and (_e13b.code, _e13b.facts)}, POST: {len(_posts13)})")
+        _e13cut = _e13b                  # отказ после отправки — к суду признака «не применён» ниже
         _e13b = _remove_bg(_ws / "rb13t.png", fmt="tiff")
         ok(_e13b is not None and _e13b.code == "SCHEMA_INVALID" and not _posts13,
            f"формат строки без объявленного типа — отказ объявления до запроса ({_e13b and _e13b.code}, POST: {_posts13})")
@@ -2810,6 +2953,24 @@ try:
         _e13r = e
     ok(_tries["n"] == 2 and _e13r is None,
        f"перегрузка (429) повторена по столбцу retry_count строки канала ({_tries['n']}, {_e13r and _e13r.code})")
+
+    # Признак «не применён» рождается у двери: 429 из unprocessed провайдера на последней попытке — да, обрыв тела после
+    # отправки (выше) — нет. По нему и только по нему media_generate уводит работу на запасного (12e).
+    from core.providers.download import unapplied as _unapplied13
+    _stand13["post"] = lambda method, url, **kw: _Resp(429, {"detail": "rate limited"}, headers={"Retry-After": "0"})
+    try:
+        _ad13r.generate(MediaRequest(input="pic/frame.png", params={**_rows13, "retry_count": 0},
+                                     target=_ws / "up13busy.png", models_dir=_reg.models_dir,
+                                     source=_ws / "pic" / "frame.png", api_key="k", provider="Replicate"))
+        _e13busy = None
+    except _CE13 as e:
+        _e13busy = e
+    finally:
+        _stand13["post"] = _stand_request
+    ok(_e13busy is not None and _unapplied13(_e13busy) and _e13cut is not None and not _unapplied13(_e13cut),
+       f"дверь вызова: 429 провайдера без повторов — «не применён», обрыв тела после отправки — нет "
+       f"({_e13busy and _e13busy.code} → {_e13busy is not None and _unapplied13(_e13busy)}, "
+       f"{_e13cut and _e13cut.code} → {_e13cut is not None and _unapplied13(_e13cut)})")
 
     _calls401 = {"n": 0}
 
@@ -3312,25 +3473,41 @@ ok(all(flag in _docker17 for flag in _harden17),
    f"({[flag for flag in _harden17 if flag not in _docker17] or 'всё на месте'})")
 
 
-def _user17(rootless: bool, uid: int | None) -> list[str]:
-    """`--user` собранной команды при демоне rootless/с root и uid сервера `uid` (None — ОС без uid)."""
-    real_rootless, real_os = _Sup17.__dict__["_rootless"], _rsup17.os
+class _Platform17:
+    """sys супервизора с подменённой платформой (PT-12: ветка ОС меряется подменой на любой машине); прочее — настоящее."""
+
+    def __init__(self, platform: str):
+        self.platform = platform
+
+    def __getattr__(self, name):
+        return getattr(sys, name)
+
+
+def _user17(rootless: bool, uid: int | None, platform: str = "linux") -> list[str]:
+    """`--user` собранной команды при демоне rootless/с root, uid сервера `uid` (None — ОС без uid) на платформе
+    `platform`."""
+    real_rootless, real_os, real_sys = _Sup17.__dict__["_rootless"], _rsup17.os, _rsup17.sys
     _Sup17._rootless = staticmethod(lambda: rootless)
     _rsup17.os = (_types.SimpleNamespace(getgid=lambda: 0) if uid is None else
                   _types.SimpleNamespace(getuid=lambda: uid, getgid=lambda: uid))
+    _rsup17.sys = _Platform17(platform)
     try:
         built = _Sup17(_reg, ROOT)._command("docker", _ws)
     finally:
-        _Sup17._rootless, _rsup17.os = real_rootless, real_os
+        _Sup17._rootless, _rsup17.os, _rsup17.sys = real_rootless, real_os, real_sys
     return built[built.index("--user"):built.index("--user") + 2] if "--user" in built else []
 
 
+# 20.10 (CI dcb0c41, Windows): событие подменяло os, а не платформу — на win32 ветка ОС шла раньше режимов демона, и все
+# случаи давали nobody. Платформа теперь подменяется явно: режимы POSIX — как Linux на любом CI, ветка Windows — свой случай.
 _users17 = {case: _user17(*args) for case, args in {"демон с root, сервер 1000": (False, 1000),
                                                     "rootless": (True, 1000), "сервер root": (False, 0),
-                                                    "ОС без uid": (False, None)}.items()}
+                                                    "ОС без uid": (False, None),
+                                                    "Windows, демон с root": (False, 1000, "win32")}.items()}
 ok(_users17 == {"демон с root, сервер 1000": ["--user", "1000:1000"], "rootless": [],
-                "сервер root": ["--user", _rsup17.NOBODY], "ОС без uid": ["--user", _rsup17.NOBODY]},
-   f"пользователь контейнера по режиму демона: {_users17}")
+                "сервер root": ["--user", _rsup17.NOBODY], "ОС без uid": ["--user", _rsup17.NOBODY],
+                "Windows, демон с root": ["--user", _rsup17.NOBODY]},
+   f"пользователь контейнера по режиму демона и платформе: {_users17}")
 
 # Следствие на двери: файл, который процесс контейнера записал в смонтированную область, принадлежит пользователю сервера.
 # Из собранной команды сняты только приметы этой машины (имя, порт, устройства, тома кроме области); образ —

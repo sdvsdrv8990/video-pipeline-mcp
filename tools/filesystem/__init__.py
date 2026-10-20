@@ -113,8 +113,9 @@ def register(engine: Engine, ctx: ToolContext) -> None:
         on_disk = [u["path"] for u in plan["unresolved"] if u["exists"]]
         absent = [u["path"] for u in plan["unresolved"] if not u["exists"]]
         if on_disk or absent:
+            # Каталог — имя резолвера (через `/` на любой ОС), а не str(Path): на Windows тот дал бы обратный слеш.
             raise LinkError("CHAIN_UNRESOLVED" if on_disk else "CHAIN_NOT_CREATED",
-                            facts={"paths": ", ".join(on_disk or absent), "path": str(Path(path).parent)})
+                            facts={"paths": ", ".join(on_disk or absent), "path": plan["target"]})
         return plan
 
     def _id_refused(path: str, assign_id: bool):

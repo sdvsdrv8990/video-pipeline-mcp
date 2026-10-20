@@ -91,10 +91,24 @@ class ProviderResolver:
         meta = set(self.config.get("meta_columns") or [])
         return {k: v for k, v in row.items() if k not in meta and not k.startswith("_")}
 
+    def fallback_on(self, row: dict) -> frozenset[str]:
+        """Слова ячейки `fallback_on` строки: после каких отказов провайдера работа уходит на её fallback_provider. Пусто —
+        ни после каких; слово вне объявленных (`fallback_on` декларации) — отказ строки, а не тихое «ни после каких»."""
+        column = self._decl.need("source", "fallback_on_column", kind=str)
+        words = frozenset(w.strip() for w in str(row.get(column) or "").split(",") if w.strip())
+        declared = self._decl.need("fallback_on", kind=list)
+        if stray := sorted(words - set(declared)):
+            raise ProviderError("BOOK_ROW_INVALID", facts={"sheet": self.sheet, "row": row.get("_row_id", "")},
+                                errors=[{"field": column, "rule": "declared_word", "value": ", ".join(stray),
+                                         "expected": ", ".join(declared)}])
+        return words
+
     # ═══ Выбор ═══
 
-    def resolve(self, rows: list[dict], resource_type: str, source: str = "") -> dict:
-        """Кем исполнять `resource_type` прямо сейчас: строка данных → решение для адаптера."""
+    def resolve(self, rows: list[dict], resource_type: str, source: str = "",
+                refused: dict[str, dict] | None = None) -> dict:
+        """Кем исполнять `resource_type` прямо сейчас: строка данных → решение для адаптера. `refused` — провайдеры, чей
+        отказ этой работе увёл её дальше по цепочке (провайдер → причина): они обходятся, как исчерпанные, со своей причиной."""
         type_col = self.type_column
         prov_col = self._decl.need("source", "provider_column", kind=str)
         fb_col = self._decl.need("source", "fallback_column", kind=str)
@@ -113,7 +127,10 @@ class ProviderResolver:
             if not name or name in chain:
                 break                                   # пусто или кольцо в данных — дальше не идём
             chain.append(name)
-            if not self._exhausted(current):
+            if name in (refused or {}):
+                skipped.append({"provider": name, **(refused or {})[name]})
+            elif not self._exhausted(current):
+                self.fallback_on(current)   # слово строки судится до работы, а не на первом отказе провайдера
                 return {
                     "resource_type": resource_type,
                     "provider": name,
@@ -129,7 +146,8 @@ class ProviderResolver:
                     "chain": chain,
                     "source": source,
                 }
-            skipped.append({"provider": name, "reason": "лимит исчерпан"})
+            else:
+                skipped.append({"provider": name, "reason": "лимит исчерпан"})
             nxt = current.get(fb_col)
             if not nxt or nxt not in by_provider:
                 break

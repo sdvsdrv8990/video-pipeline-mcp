@@ -5,25 +5,35 @@
 пустой каталог назначения заменяется молча. Здесь семантика Windows подставлена на время вызова: `sys.platform` —
 "win32", `os.rename` — тот же перенос, но занятое имя — FileExistsError. Законная пара — платформа не Windows, тоже
 подставленная: на раннере Windows настоящая платформа её не даёт. Отказ ОС на двери (FS-13) — подставленный вызов ОС
-бросает то, что бросает Windows, когда файл держат открытым. Что подстановка не меряет (NTFS, жёсткие ссылки, права) —
-мерит CI на Windows.
+бросает то, что бросает Windows, когда файл держат открытым. Чтение (раздел 7) — подставной kernel32: с какими флагами
+совместного доступа дверь открывает файл и проходит ли замена, пока он открыт. Что подстановка не меряет (NTFS, жёсткие
+ссылки, права, настоящий CreateFileW) — мерит CI на Windows.
 """
+import ctypes
 import errno
 import os
 import shutil
 import sys
 import tempfile
+import types
 from contextlib import contextmanager
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from core import paths
+from core import auth, owner_only, paths
 from core.contracts import ContractError
+from core.declaration import contents
 from core.engine import Engine
+from core.ids.link_registry import LinkRegistry
+from core.jobs import Tasks
 from core.paths import Files
 from core.reactions import Reactions
+from core.runner.supervisor import RunnerSupervisor
+from core.search.lines import numbered
+from core.secrets import ChannelSecrets
+from core.state.state_manager import StateManager
 
 _checks = 0
 _fails: list[str] = []
@@ -238,6 +248,169 @@ print("== 6. Названного нет (D10): «есть ли источник
 check("перенос несуществующего — FILE_NOT_FOUND с путём источника",
       moved(files, "notes/нет", "notes/куда") == ("FILE_NOT_FOUND", {"path": "notes/нет"}))
 check("удаление несуществующего — FILE_NOT_FOUND с путём", removed("notes/нет") == ("FILE_NOT_FOUND", {"path": "notes/нет"}))
+
+print("== 7. Читатель не держит замену (FS-06; CI dcb0c41 — EACCES замены записи задания на Windows) ==")
+_GONE = ctypes.c_void_p(-1).value          # INVALID_HANDLE_VALUE при restype c_void_p
+_READ, _WRITE, _DELETE = 0x1, 0x2, 0x4     # FILE_SHARE_*
+
+
+@contextmanager
+def win32_open(calls: list):
+    """Открытие и замена — как на Windows, без настоящей ОС под ними: подставной kernel32.CreateFileW пишет свои
+    аргументы в `calls` и отдаёт fd копии файла; os.replace отказывает EACCES, пока имя держит открытие без
+    FILE_SHARE_DELETE (Win32 CreateFileW, dwShareMode); нет файла — ERROR_FILE_NOT_FOUND. Отдаёт `crt(path)` — открытие
+    `open()` CPython на Windows (_wsopen_s, _SH_DENYNO: READ|WRITE без DELETE)."""
+    opened: list[tuple[int, tuple[int, int], int, str]] = []   # fd копии, её (dev, ino), флаги, настоящий путь имени
+    copies: list[str] = []
+    last = [0]
+
+    def hold(name, share: int) -> int:
+        fd, copy = tempfile.mkstemp(dir=scratch)
+        copies.append(copy)
+        os.write(fd, Path(name).read_bytes())
+        os.lseek(fd, 0, os.SEEK_SET)
+        st = os.fstat(fd)
+        opened.append((fd, (st.st_dev, st.st_ino), share, os.path.realpath(name)))
+        return fd
+
+    def create(name, access, share, security, disposition, attributes, template):
+        calls.append((os.path.realpath(name), access, share, disposition))
+        if not os.path.isfile(name):
+            last[0] = 2
+            return _GONE
+        return hold(name, share)
+
+    def replace(src, dst, **kw):
+        for fd, ident, share, name in opened:
+            try:
+                alive = (lambda st: (st.st_dev, st.st_ino))(os.fstat(fd)) == ident
+            except OSError:
+                alive = False
+            if alive and name == os.path.realpath(dst) and not share & _DELETE:
+                raise PermissionError(errno.EACCES, "Access is denied", str(src), None, str(dst))
+        real_replace(src, dst, **kw)
+
+    @contextmanager
+    def crt(path):
+        fd = hold(path, _READ | _WRITE)
+        try:
+            yield
+        finally:
+            os.close(fd)
+
+    saved = {n: getattr(ctypes, n, None) for n in ("WinDLL", "WinError", "get_last_error")}
+    real_replace, real_platform, real_msvcrt = os.replace, sys.platform, sys.modules.get("msvcrt")
+    ctypes.WinDLL = lambda name, use_last_error=False: types.SimpleNamespace(CreateFileW=create)  # type: ignore[misc]
+    ctypes.WinError = lambda code=None, descr=None: OSError(errno.ENOENT if code == 2 else errno.EACCES, descr)
+    ctypes.get_last_error = lambda: last[0]
+    sys.modules["msvcrt"] = types.SimpleNamespace(open_osfhandle=lambda handle, flags: handle)  # type: ignore[assignment]
+    os.replace, sys.platform = replace, "win32"
+    try:
+        yield crt
+    finally:
+        os.replace, sys.platform = real_replace, real_platform
+        for n, v in saved.items():
+            if v is not None:
+                setattr(ctypes, n, v)
+            elif hasattr(ctypes, n):
+                delattr(ctypes, n)
+        if real_msvcrt is None:
+            sys.modules.pop("msvcrt", None)
+        else:
+            sys.modules["msvcrt"] = real_msvcrt
+        for copy in copies:
+            Path(copy).unlink(missing_ok=True)
+
+
+def replaced(path: str, data: str):
+    """"" — замена прошла; иначе (код, факты) отказа слоя или имя сырого исключения."""
+    try:
+        files.replace(path, data)
+        return ""
+    except ContractError as e:
+        return e.code, e.facts
+    except Exception as e:  # сырое исключение мимо слоя — улика проверки, а не обрыв набора
+        return type(e).__name__
+
+
+scratch = tempfile.mkdtemp(prefix="door-win32-")
+(ws / "tasks").mkdir()
+record = ws / "tasks" / "t1.json"
+record.write_text('{"v": 1}', encoding="utf-8")
+calls: list = []
+with win32_open(calls) as crt:
+    with crt(record):
+        sick = replaced("tasks/t1.json", '{"v": 2}')
+    with paths.open_shared(record) as reader:
+        healthy = replaced("tasks/t1.json", '{"v": 3}')
+        seen = reader.read()
+    got_bytes = files.read_bytes("tasks/t1.json")
+    try:
+        files.read_bytes("tasks/нет.json")
+        missing = "отказа нет"
+    except FileNotFoundError:
+        missing = "FileNotFoundError"
+    except Exception as e:
+        missing = type(e).__name__
+check("модель Windows жива: читатель open() без FILE_SHARE_DELETE держит замену — PLACE_UNWRITABLE, как красил CI",
+      sick == ("PLACE_UNWRITABLE", {"operation": "замена", "path": "tasks/t1.json", "reason": "EACCES"}), sick)
+check("читатель двери открыт — замена проходит, под именем новое, читатель дочитывает прежнее",
+      healthy == "" and record.read_text(encoding="utf-8") == '{"v": 3}' and seen == b'{"v": 1}', (healthy, seen))
+check("дверь просит у ОС чтение существующего со всеми флагами совместного доступа (READ|WRITE|DELETE)",
+      calls[-2] == (os.path.realpath(record), 0x80000000, _READ | _WRITE | _DELETE, 3) and got_bytes == b'{"v": 3}',
+      calls[-2:])
+check("нет файла — FileNotFoundError, как ждут читатели записей (ERROR_FILE_NOT_FOUND → ENOENT)",
+      missing == "FileNotFoundError", missing)
+
+# Читатели файлов, которые сервер пишет заменой: каждый — через дверь (тот же вызов ОС) и с тем же прочитанным.
+(ws / "ch").mkdir()
+(ws / "ch" / "read.json").write_text('{"s": 1}', encoding="utf-8")
+(ws / "ch" / "write.json").write_text('[{"op": 1}]', encoding="utf-8")
+(ws / "_id_registry.json").write_text('{"entities": {}}', encoding="utf-8")
+(ws / "runner").mkdir()
+(ws / "runner" / "state.json").write_text('{"token": "t"}', encoding="utf-8")
+(ws / "installed.yaml").write_text("models: []\n", encoding="utf-8")
+(ws / "notes" / "lines.md").write_text("раз\nдва\n", encoding="utf-8")
+(ws / ".env").write_text("A=1\n", encoding="utf-8")
+keys = ChannelSecrets(ws, ws / "home")
+(ws / "home").mkdir()
+keys.set("ch", "p", "ключ")
+tasks = Tasks.__new__(Tasks)
+tasks.files = files
+state = StateManager(ws)
+runner = RunnerSupervisor(types.SimpleNamespace(need=lambda *keys, kind: "runner/state.json", config={}), ws)
+readers = {
+    "Tasks._load": (lambda: tasks._load("tasks/t1.json"), "tasks/t1.json", ValueError),
+    "StateManager.read_snapshot": (lambda: state.read_snapshot("ch"), "ch/read.json", {"s": 1}),
+    "StateManager.read_queue": (lambda: state.read_queue("ch"), "ch/write.json", [{"op": 1}]),
+    "StateManager.push_to_queue": (lambda: state.push_to_queue("ch", {"op": 2}), "ch/write.json", True),
+    "StateManager.clear_queue": (lambda: state.clear_queue("ch"), "ch/write.json", 2),
+    "StateManager.execute_queue": (lambda: state.execute_queue("ch"), "ch/write.json", []),
+    "LinkRegistry._load": (lambda: LinkRegistry(ws)._load(), "_id_registry.json", {"entities": {}}),
+    "RunnerSupervisor._read": (lambda: runner._read(), "runner/state.json", {"token": "t"}),
+    "declaration.contents": (lambda: contents(ws / "installed.yaml"), "installed.yaml", b"models: []\n"),
+    "search.lines.numbered": (lambda: list(numbered(ws / "notes" / "lines.md", 100, name="lines.md", errors="strict")),
+                              "notes/lines.md", [(1, "раз"), (2, "два")]),
+    "auth._read_env": (lambda: auth._read_env(ws / ".env"), ".env", {"A": "1"}),
+    "ChannelSecrets.get": (lambda: keys.get("ch", "p"), "ch/.secrets/provider_keys.enc", "ключ"),
+    "Files.read": (lambda: files.read("notes/lines.md", 100).text, "notes/lines.md", "раз\nдва\n"),
+}
+real_restrict = owner_only.restrict
+owner_only.restrict = lambda path, mode: None   # права ключа на Windows — DACL ОС, их подстановка не мерит
+try:
+    for label, (call, rel, want) in readers.items():
+        calls.clear()
+        with win32_open(calls):
+            try:
+                got = call()
+            except Exception as e:
+                got = type(e)
+        shares = {share for name, _, share, _ in calls if name == os.path.realpath(ws / rel)}
+        check(f"{label}: читает через дверь со всеми флагами совместного доступа и то же, что на диске",
+              shares == {_READ | _WRITE | _DELETE} and got == want, (sorted(shares), got))
+finally:
+    owner_only.restrict = real_restrict
+shutil.rmtree(scratch, ignore_errors=True)
 
 print(f"\n{'=' * 50}")
 print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")

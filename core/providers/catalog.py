@@ -719,7 +719,7 @@ class ModelCatalog:
             if not files.place(rel).is_file():
                 self.fetcher().fetch(self._source_url(repo, revision, name), files, rel, "source",
                                      headers=self._hf_headers())
-        return files.place(rel).read_text(encoding="utf-8")
+        return files.read_text(rel)
 
     def _remember(self, entry: dict) -> None:
         """Дописать в опись, заменив прежнюю запись того же имени (второй копии не заводим). Опись общая для всех моделей

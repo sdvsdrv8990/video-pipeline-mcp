@@ -29,6 +29,11 @@ def _atomic_write_json(path: Path, data: Any):
     Files(path.parent).replace(path.name, json.dumps(data, indent=2, ensure_ascii=False))
 
 
+def _read_json(path: Path) -> Any:
+    """JSON, который пишет `_atomic_write_json`, — чтением двери: открытый читателем файл писатель заменить может."""
+    return json.loads(Files(path.parent).read_text(path.name))
+
+
 _SNAPSHOT_LOCKS: dict[Path, threading.Lock] = {}    # замок снимка — по его пути на процесс, а не по экземпляру
 _SNAPSHOT_LOCKS_GUARD = threading.Lock()
 
@@ -95,8 +100,7 @@ class StateManager:
         if not snapshot_file.exists():
             return None
 
-        with open(snapshot_file, "r", encoding="utf-8") as f:
-            return json.load(f)
+        return _read_json(snapshot_file)
 
     def write_snapshot(self, entity_path: str, data: dict):
         """Запись снапшота (read.json).
@@ -147,8 +151,7 @@ class StateManager:
         with self._lock:
             queue = []
             if queue_file.exists():
-                with open(queue_file, "r", encoding="utf-8") as f:
-                    queue = json.load(f)
+                queue = _read_json(queue_file)
 
             queue.append({
                 "timestamp": time.time(),
@@ -169,8 +172,7 @@ class StateManager:
         with self._lock:
             if not queue_file.exists():
                 return []
-            with open(queue_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+            return _read_json(queue_file)
 
     def execute_queue(self, entity_path: str) -> list[dict]:
         """Выполнение очереди операций.
@@ -191,8 +193,7 @@ class StateManager:
             if not queue_file.exists():
                 return []
 
-            with open(queue_file, "r", encoding="utf-8") as f:
-                queue = json.load(f)
+            queue = _read_json(queue_file)
 
             _atomic_write_json(queue_file, [])
 
@@ -210,8 +211,7 @@ class StateManager:
         with self._lock:
             if not queue_file.exists():
                 return 0
-            with open(queue_file, "r", encoding="utf-8") as f:
-                count = len(json.load(f))
+            count = len(_read_json(queue_file))
             _atomic_write_json(queue_file, [])
         return count
 

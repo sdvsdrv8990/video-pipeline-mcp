@@ -851,14 +851,16 @@ try:
           hosts == ("api.provider.example",), hosts)
 
     # Обновлено в B3: разделов обращения к объявленному адресу стало четыре (ответы и прозвонки раннера и туннеля);
-    # в B4 — пять (вызов провайдера online.call) и правило схемы deadline_sec ≥ 2 × timeout_sec у всех.
+    # в B4 — пять (вызов провайдера online.call) и правило схемы deadline_sec ≥ 2 × timeout_sec у всех; 20.10 — шесть
+    # (сервер метрик соединителя туннеля `метрики`: готовность — событием поставщика, а не строкой журнала).
     live = {slot.section: slot for slot in SLOTS if issubclass(slot.schema, AddressedPolicy)}
     taken = {path: attempt(lambda: Declaration(ROOT / "config" / slot.file, ContractError, slot.file).section(
         *slot.section, schema=slot.schema))[1] for path, slot in live.items()}
     check("живые декларации: каждый раздел обращения к объявленному адресу проходит свою схему — ответы (online.answer, "
-          "download.answer), вызов провайдера (online.call), прозвонка раннера (local.runner.health), прозвонка туннеля",
+          "download.answer), вызов провайдера (online.call), прозвонка раннера (local.runner.health), прозвонка туннеля, "
+          "сервер метрик соединителя",
           set(live) == {("online", "answer"), ("online", "call"), ("download", "answer"), ("local", "runner", "health"),
-                        ("прозвонка",)}
+                        ("прозвонка",), ("метрики",)}
           and not any(taken.values()), {k: v and v.facts for k, v in taken.items()})
     providers = yaml.safe_load((ROOT / "config" / "providers.yaml").read_text(encoding="utf-8"))
     urls = [(f"{section}.{name}", body["url"]) for section, table in (

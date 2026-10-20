@@ -7,13 +7,20 @@
 токена, поэтому ни сети, ни процессов здесь нет.
 """
 
+import gc
 import os
+import re
 import secrets
 import shutil
+import socket
 import sys
 import tempfile
 import time
+import warnings
 from pathlib import Path
+from types import SimpleNamespace
+
+import httpx
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -22,12 +29,68 @@ from core.environment import SECRETS
 from core.transport.tunnel import CloudflaredTunnel, TunnelCancelled, TunnelError
 from tests.harness.live_server import declarations_copy
 
+
+def _свободный_порт() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+# 20.10: готовность — у сервера метрик соединителя. Набор не спрашивает чужой (у владельца может жить настоящий
+# cloudflared): адрес метрик в копии деклараций — свободный порт петли, MCP_CONFIG — эта копия на весь набор.
+МЕТРИКИ = f"127.0.0.1:{_свободный_порт()}"
+_КОПИЯ = declarations_copy({"tunnel_diagnostics.yaml": {"готовность.cloudflared.metrics_address": МЕТРИКИ}})
+os.environ["MCP_CONFIG"] = str(_КОПИЯ)
 # Декларация туннеля — у прогона, в копии деклараций харнесса: машинный config/tunnel.yaml владельца в копию не идёт.
 # Обновлено 2026-10-17: пороги отступа супервизора — политика сервера в tunnel_diagnostics.yaml → надзор (там те же
 # 2/60/60), машинный файл несёт только режим; ключ надзора в нём — отказ двери.
-CFG = declarations_copy() / "tunnel.yaml"
+CFG = _КОПИЯ / "tunnel.yaml"
 CFG.write_text("mode: quick\n", encoding="utf-8")
 results = []
+
+
+class Стенд:
+    """Подставной сервер метрик соединителя — по исходникам cloudflared 2026.5.0 (metrics/readiness.go, metrics.go):
+    /ready — JSON {status, readyConnections, connectorId}, 200 при соединениях > 0, иначе 503; /quicktunnel — {"hostname"}.
+    Состояние ведёт сам стенд по своим образцам строк вывода (истина — не от механизма): регистрация — +1, потеря — −1,
+    адрес quick — hostname. `слушает=False` — на адресе никого (сбой соединения). В `with` — транспорт класса туннеля."""
+
+    def __init__(self, слушает: bool = True, соединений: int = 0, хост: str = ""):
+        self.слушает, self.соединений, self.хост, self.спросы = слушает, соединений, хост, []
+
+    def поток(self, строки):
+        for raw in строки:
+            if "Unregistered tunnel connection" in raw or "Lost connection with the edge" in raw:
+                self.соединений = max(0, self.соединений - 1)
+            elif "Registered tunnel connection" in raw:
+                self.соединений += 1
+            if адрес := re.search(r"https://([a-z0-9-]+\.trycloudflare\.com)", raw):
+                self.хост = адрес.group(1)
+            yield raw
+
+    def handle(self, request):
+        self.спросы.append((request.url.host, request.url.port, request.url.path))
+        if not self.слушает:
+            raise httpx.ConnectError("порт метрик молчит", request=request)
+        if request.url.path == "/ready":
+            код = 200 if self.соединений else 503
+            return httpx.Response(код, json={"status": код, "readyConnections": self.соединений,
+                                             "connectorId": "00000000-0000-0000-0000-000000000000"})
+        if request.url.path == "/quicktunnel":
+            return httpx.Response(200, json={"hostname": self.хост})
+        return httpx.Response(404)
+
+    def __enter__(self) -> "Стенд":
+        self._прежний = CloudflaredTunnel.__dict__["transport"]
+        CloudflaredTunnel.transport = httpx.MockTransport(self.handle)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        CloudflaredTunnel.transport = self._прежний
+
+
+# Пустой стенд на весь набор: адрес метрик никто не слушает — ни один случай не уходит в настоящую сеть.
+CloudflaredTunnel.transport = httpx.MockTransport(Стенд(слушает=False).handle)
 
 
 def check(name, cond, detail=""):
@@ -37,16 +100,19 @@ def check(name, cond, detail=""):
 
 def test_command_building():
     # quick-режим = БЕЗ конфига (иначе подхватит машинный named config/tunnel.yaml и тест не изолирован).
+    # 20.10: во всех режимах — флаг сервера метрик с объявленным адресом (готовность — /ready, а не строка журнала).
+    голова = ["tunnel", "--metrics", МЕТРИКИ, "--no-autoupdate"]
     t = CloudflaredTunnel(port=8080)
-    check("cmd quick", t._build_command()[1:] == ["tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:8080"])
+    check("cmd quick", t._build_command()[1:] == [*голова, "--url", "http://127.0.0.1:8080"], t._build_command()[1:])
 
     t2 = CloudflaredTunnel(port=8080); t2.mode = "named"; t2.tunnel_token = "TOK"
     check("cmd named token: токена в argv нет — он уходит средой ребёнка",
-          t2._build_command()[1:] == ["tunnel", "--no-autoupdate", "run"], t2._build_command()[1:])
+          t2._build_command()[1:] == [*голова, "run"], t2._build_command()[1:])
 
     t3 = CloudflaredTunnel(port=8080); t3.mode = "named"; t3.tunnel_token = ""; t3.tunnel_id = "uuid-123"; t3.credentials_file = "/x/cred.json"
     check("cmd named credentials",
-          t3._build_command()[1:] == ["tunnel", "--no-autoupdate", "--credentials-file", "/x/cred.json", "run", "--url", "http://127.0.0.1:8080", "uuid-123"])
+          t3._build_command()[1:] == [*голова, "--credentials-file", "/x/cred.json", "run", "--url", "http://127.0.0.1:8080", "uuid-123"],
+          t3._build_command()[1:])
 
     t4 = CloudflaredTunnel(port=8080); t4.mode = "named"; t4.tunnel_token = ""; t4.tunnel_id = ""; t4.tunnel_name = ""
     try:
@@ -65,16 +131,38 @@ def test_readiness_event_driven():
         "INF |  https://random-words-here.trycloudflare.com  |\n",
         "INF Registered tunnel connection connIndex=0 connection=abc location=fra\n",
     ]
+    # 20.10: готовность — сервер метрик (стенд ведёт состояние поставщика по тем же строкам), прежние тексты — та же мера.
     t = CloudflaredTunnel(port=8080); t.mode = "quick"
-    url = t._await_ready(iter(quick_log), alive)
+    with Стенд() as с:
+        url = t._await_ready(с.поток(quick_log), alive)
     check("quick: ready on CONNECTION, returns URL", url == "https://random-words-here.trycloudflare.com", url)
 
     t2 = CloudflaredTunnel(port=8080); t2.mode = "quick"
     try:
-        t2._await_ready(iter(["INF |  https://abc.trycloudflare.com  |\n"]), exited)
+        with Стенд() as с:
+            t2._await_ready(с.поток(["INF |  https://abc.trycloudflare.com  |\n"]), exited)
         check("quick: URL without connection is NOT ready", False)
     except TunnelError:
         check("quick: URL without connection is NOT ready", True)
+
+    # Решает /ready, а не строка: журнал молчит о соединении, а сервер метрик называет два — готов; журнал пишет
+    # «Registered», а сервер метрик отвечает 503 — не готов.
+    t9 = CloudflaredTunnel(port=8080); t9.mode = "named"; t9.hostname = "mcp.example.com"
+    with Стенд(соединений=2) as с:
+        try:
+            url9 = t9._await_ready(iter(["INF Starting metrics server\n"]), alive)
+        except TunnelError as e:                # не готов — вердикт события, а не падение набора
+            url9 = f"не готов: {e}"
+    check("готовность — /ready: строки «Registered» нет, сервер метрик называет 2 соединения — готов",
+          url9 == "https://mcp.example.com" and any(путь == "/ready" for _, _, путь in с.спросы), (url9, с.спросы[:2]))
+    t10 = CloudflaredTunnel(port=8080); t10.mode = "named"; t10.hostname = "mcp.example.com"
+    try:
+        with Стенд():
+            t10._await_ready(iter(["INF Registered tunnel connection connIndex=0\n"]), exited)
+        вышло = "готов"
+    except TunnelError as e:
+        вышло = str(e)
+    check("журнал пишет «Registered», а сервер метрик — 503 (соединений нет): не готов", вышло != "готов", вышло[:80])
 
     # Второй образец — текст cloudflared 2026.5.0 (`TUNNEL_TOKEN=мусор cloudflared tunnel run`, код 255): прежний набор
     # знал только первый, и отказ установленной версии выходил без причины.
@@ -96,7 +184,8 @@ def test_readiness_event_driven():
         check("exit: real error, not abstract timeout", "без соединения" in str(e) and "Failed to dial" in str(e), str(e)[:60])
 
     t5 = CloudflaredTunnel(port=8080); t5.mode = "named"; t5.hostname = "mcp.example.com"
-    url5 = t5._await_ready(iter(["INF Registered tunnel connection connIndex=0\n"]), alive)
+    with Стенд() as с:
+        url5 = t5._await_ready(с.поток(["INF Registered tunnel connection connIndex=0\n"]), alive)
     check("named: connected -> hostname URL", url5 == "https://mcp.example.com", url5)
 
     # Потеря соединения ДО готовности: признак «соединено» обязан сброситься, иначе сервер отдаёт
@@ -108,23 +197,26 @@ def test_readiness_event_driven():
     ]
     t6 = CloudflaredTunnel(port=8080); t6.mode = "quick"
     try:
-        t6._await_ready(iter(lost_log), exited)
+        with Стенд() as с:
+            t6._await_ready(с.поток(lost_log), exited)
         check("quick: connection lost before URL is NOT ready", False)
     except TunnelError:
         check("quick: connection lost before URL is NOT ready", True)
 
     t7 = CloudflaredTunnel(port=8080); t7.mode = "quick"
-    url7 = t7._await_ready(iter([*lost_log, "INF Registered tunnel connection connIndex=1\n"]), alive)
+    with Стенд() as с:
+        url7 = t7._await_ready(с.поток([*lost_log, "INF Registered tunnel connection connIndex=1\n"]), alive)
     check("quick: re-registration after loss is ready again", url7 == "https://gone.trycloudflare.com", url7)
 
     # Рёбер у cloudflared несколько: падение ОДНОГО при живых остальных готовность не отменяет.
     t8 = CloudflaredTunnel(port=8080); t8.mode = "quick"
-    url8 = t8._await_ready(iter([
-        "INF Registered tunnel connection connIndex=0\n",
-        "INF Registered tunnel connection connIndex=1\n",
-        "INF Unregistered tunnel connection connIndex=0\n",
-        "INF |  https://multi.trycloudflare.com  |\n",
-    ]), alive)
+    with Стенд() as с:
+        url8 = t8._await_ready(с.поток([
+            "INF Registered tunnel connection connIndex=0\n",
+            "INF Registered tunnel connection connIndex=1\n",
+            "INF Unregistered tunnel connection connIndex=0\n",
+            "INF |  https://multi.trycloudflare.com  |\n",
+        ]), alive)
     check("quick: one edge of many lost -> still ready", url8 == "https://multi.trycloudflare.com", url8)
 
 
@@ -146,18 +238,23 @@ def test_supervisor_backoff_and_status():
     check("пауза воспроизводима на шве rng: base·(1+jitter·0.5)",
           abs(t._backoff_delay(1) - t.retry_base * (1 + t.jitter * 0.5)) < 1e-9, t._backoff_delay(1))
 
-    t._apply_line("INF Registered tunnel connection connIndex=0\n")
-    t._apply_line("INF Registered tunnel connection connIndex=1\n")
-    s = t.status(); check("two connections -> connected, count=2", s["connected"] and s["connections"] == 2, s["connections"])
-    t._apply_line("INF Unregistered tunnel connection connIndex=1\n")
-    s = t.status(); check("one drop -> still connected (1)", s["connected"] and s["connections"] == 1, s["connections"])
-    t._apply_line("INF Lost connection with the edge\n")
-    s = t.status(); check("all dropped -> disconnected (0)", (not s["connected"]) and s["connections"] == 0, s["connections"])
-
-    t._attempts = 7; t._last_error = "boom"
-    t._apply_line("INF Registered tunnel connection connIndex=0\n")
-    s = t.status(); check("reconnect resets attempts & clears error", s["attempts"] == 0 and s["last_error"] is None,
-                          f"att={s['attempts']} err={s['last_error']}")
+    # 20.10: соединение — у сервера метрик (/ready), а не по строке журнала; строка — только текст ошибки. Прежнее событие
+    # «reconnect resets attempts & clears error» снято: разгон сбрасывает стабильный прогон (_next_attempts, выше).
+    t._proc = SimpleNamespace(poll=lambda: None)        # процесс жив: статус спрашивает его сервер метрик
+    with Стенд(соединений=2):
+        s = t.status()
+    check("two connections -> connected, count=2", s["connected"] and s["connections"] == 2, s["connections"])
+    with Стенд(соединений=1):
+        s = t.status()
+    check("one drop -> still connected (1)", s["connected"] and s["connections"] == 1, s["connections"])
+    with Стенд(соединений=0):
+        t._apply_line("INF Registered tunnel connection connIndex=0\n")
+        s = t.status()
+    check("строка «Registered» при 503 сервера метрик — не соединён (0): решает /ready, не журнал",
+          (not s["connected"]) and s["connections"] == 0, s["connections"])
+    t._apply_line('ERR Failed to dial edge error="dial tcp: timeout"\n')
+    check("строка ошибки — текст в статус, соединение не трогает",
+          "Failed to dial" in str(t._last_error), t._last_error)
 
     check("classify: Unregistered -> disconnected",
           CloudflaredTunnel._classify_line("x Unregistered tunnel connection connIndex=0")[0] == "disconnected")
@@ -165,7 +262,10 @@ def test_supervisor_backoff_and_status():
           CloudflaredTunnel._classify_line("x Registered tunnel connection connIndex=0")[0] == "connected")
 
     need = {"running", "connected", "connections", "attempts", "public_url", "last_error", "uptime_sec"}
-    check("status() shape complete", need.issubset(t.status().keys()), sorted(t.status().keys()))
+    with Стенд(соединений=1):
+        форма = t.status()
+    t._proc = None
+    check("status() shape complete", need.issubset(форма.keys()), sorted(форма.keys()))
 
 
 def test_cancel_is_not_failure():
@@ -219,8 +319,9 @@ def test_ready_has_a_limit():
         check("срок вышел -> отказ, а не бесконечное ожидание", False, str(e))
 
     t2 = CloudflaredTunnel(port=8080); t2.mode = "named"; t2.hostname = "mcp.example.com"
-    url = t2._await_ready(iter(["INF Registered tunnel connection connIndex=0\n"]), lambda: None,
-                          deadline=time.monotonic() + 30)
+    with Стенд() as с:
+        url = t2._await_ready(с.поток(["INF Registered tunnel connection connIndex=0\n"]), lambda: None,
+                              deadline=time.monotonic() + 30)
     check("успевшее соединение сроком не наказывается", url == "https://mcp.example.com", url)
 
     # Убитый сторожем процесс отдаёт код -9, неотличимый от чужого `kill`: вердикт обязан назвать
@@ -560,17 +661,22 @@ def test_secret_reaches_child_by_env():
                   "TUNNEL_CRED_CONTENTS": "{}"}
     случаи = (
         ("токен: в argv его нет, в среде ребёнка — свой, а не унаследованный; секретов сервера нет", "named",
-         {"MCP_TUNNEL_TOKEN": секрет, "MCP_AUTH_TOKEN": ключ, **наследство}, {}, ["tunnel", "--no-autoupdate", "run"],
-         {"TUNNEL_TOKEN": секрет}),
+         {"MCP_TUNNEL_TOKEN": секрет, "MCP_AUTH_TOKEN": ключ, **наследство}, {},
+         ["tunnel", "--metrics", МЕТРИКИ, "--no-autoupdate", "run"], {"TUNNEL_TOKEN": секрет}),
         ("credentials: унаследованная личность туннеля ребёнку не идёт", "named", наследство,
          {"tunnel_id": "uuid-123", "credentials_file": "/x/cred.json"},
-         ["tunnel", "--no-autoupdate", "--credentials-file", "/x/cred.json", "run", "--url", "http://127.0.0.1:8080",
-          "uuid-123"], {}),
+         ["tunnel", "--metrics", МЕТРИКИ, "--no-autoupdate", "--credentials-file", "/x/cred.json", "run", "--url",
+          "http://127.0.0.1:8080", "uuid-123"], {}),
         ("quick: унаследованная личность туннеля ребёнку не идёт", "quick", наследство, {},
-         ["tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:8080"], {}),
+         ["tunnel", "--metrics", МЕТРИКИ, "--no-autoupdate", "--url", "http://127.0.0.1:8080"], {}),
     )
     прежние = {имя: os.environ.get(имя) for имя in ("MCP_TUNNEL_TOKEN", "MCP_AUTH_TOKEN", *наследство)}
-    with tempfile.TemporaryDirectory() as tmp:
+    # Двойник сам держит сервер метрик на петле — его готовность спрашивается настоящей сетью петли, а не стендом.
+    шов = CloudflaredTunnel.__dict__["transport"]
+    CloudflaredTunnel.transport = None
+    течёт: list = []
+    with tempfile.TemporaryDirectory() as tmp, warnings.catch_warnings(record=True) as замечено:
+        warnings.simplefilter("always", ResourceWarning)
         двойник = _двойник(Path(tmp))
         for случай, режим, среда, поля, хвост, ждём in случаи:
             _вернуть(dict.fromkeys(прежние))
@@ -606,12 +712,36 @@ def test_secret_reaches_child_by_env():
             check("бинаря нет → отказ до порождения", t._proc is None and секрет not in str(отказ), str(отказ)[:60])
         finally:
             _вернуть(прежние)
+        del t
+        gc.collect()
+        течёт = [str(w.message)[:80] for w in замечено if issubclass(w.category, ResourceWarning)]
+    CloudflaredTunnel.transport = шов
+    # 20.10: дескриптор трубы вывода и процесс соединителя не текут — прежде _end_attempt оставлял трубу открытой, и
+    # сборщик мусора закрывал её с ResourceWarning (журнал сервера: tunnel.py:324, :333, :575).
+    check("три подъёма и остановки настоящего процесса — ни одного ResourceWarning (труба закрыта, процесс подобран)",
+          not течёт, течёт)
 
 
 def _двойник(каталог: Path) -> str:
-    """Исполняемый двойник cloudflared: печатает адрес quick и событие соединения, затем ждёт сигнала остановки."""
+    """Исполняемый двойник cloudflared: сервер метрик на адресе `--metrics` (/ready — одно соединение, /quicktunnel —
+    адрес quick, как у cloudflared 2026.5.0), строки адреса и соединения в вывод, затем ждёт сигнала остановки."""
     путь = каталог / "cloudflared"
-    путь.write_text(f"#!{sys.executable}\nimport signal\n"
+    путь.write_text(f"#!{sys.executable}\nimport json, signal, sys, threading\n"
+                    "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+                    "хост, порт = sys.argv[sys.argv.index('--metrics') + 1].rsplit(':', 1)\n"
+                    "class Метрики(BaseHTTPRequestHandler):\n"
+                    "    def do_GET(self):\n"
+                    "        тело = {'/ready': {'status': 200, 'readyConnections': 1, 'connectorId': '0'},\n"
+                    "                '/quicktunnel': {'hostname': 'dvoinik.trycloudflare.com'}}.get(self.path)\n"
+                    "        данные = json.dumps(тело).encode()\n"
+                    "        self.send_response(200 if тело else 404)\n"
+                    "        self.send_header('Content-Type', 'application/json')\n"
+                    "        self.send_header('Content-Length', str(len(данные)))\n"
+                    "        self.end_headers()\n"
+                    "        self.wfile.write(данные)\n"
+                    "    def log_message(self, *a):\n"
+                    "        pass\n"
+                    "threading.Thread(target=HTTPServer((хост, int(порт)), Метрики).serve_forever, daemon=True).start()\n"
                     "print('INF |  https://dvoinik.trycloudflare.com  |', flush=True)\n"
                     "print('INF Registered tunnel connection connIndex=0', flush=True)\n"
                     "signal.pause()\n", encoding="utf-8")
@@ -694,6 +824,85 @@ def test_real_binary_takes_token_from_env():
         t.stop()
 
 
+def test_metrics_door_pins_declared_address():
+    """Петля и http открыты двери метрик ровно объявленному адресу: тот же слот с чужим портом петли или с адресом
+    внутренней сети — отказ двери до запроса (на петле слушает кто угодно)."""
+    from core.contracts import ContractError
+    from core.declaration_schemas import TUNNEL_METRICS
+    from core.providers.download import answers
+    from core.transport.diagnostics import каталог_проверок
+
+    с = Стенд(соединений=1)
+    хост, порт = МЕТРИКИ.rsplit(":", 1)
+    дверь = answers(каталог_проверок(), TUNNEL_METRICS, f"http://{МЕТРИКИ}", transport=httpx.MockTransport(с.handle))
+    свой = дверь.answer(f"http://{МЕТРИКИ}/ready", {})
+    try:
+        дверь.answer(f"http://{хост}:{int(порт) + 1}/ready", {})
+        чужой = "ответ"
+    except ContractError as отказ:
+        чужой = отказ.code
+    check("дверь метрик: объявленный адрес отвечает, чужой порт той же петли — DOWNLOAD_FORBIDDEN до запроса",
+          isinstance(свой, dict) and свой.get("readyConnections") == 1 and чужой == "DOWNLOAD_FORBIDDEN"
+          and [п for _, п, _ in с.спросы] == [int(порт)], (свой, чужой, с.спросы))
+    try:
+        answers(каталог_проверок(), TUNNEL_METRICS, "http://10.0.0.5:20241")
+        сеть = "собрана"
+    except ContractError as отказ:
+        сеть = отказ.code
+    check("дверь метрик: http и внутренняя сеть открыты только литералу петли — адрес 10.0.0.5 отказан",
+          сеть == "DOWNLOAD_FORBIDDEN", сеть)
+
+    # Адрес метрик уже слушает другой процесс (любой код ответа, и 503) — громкий отказ до запуска соединителя: иначе
+    # готовность прочлась бы у чужого; никто не слушает — запуск идёт.
+    t = CloudflaredTunnel(port=8080)
+    with Стенд(соединений=0):
+        try:
+            t._metrics_address_free()
+            занят = "пущен"
+        except TunnelError as e:
+            занят = str(e)
+    with Стенд(слушает=False):
+        try:
+            t._metrics_address_free()
+            свободен = "пущен"
+        except TunnelError as e:
+            свободен = str(e)
+    check("адрес метрик слушает чужой процесс — отказ с адресом; никто не слушает — запуск идёт",
+          МЕТРИКИ in занят and "другой процесс" in занят and свободен == "пущен", (занят[:90], свободен[:60]))
+
+
+def test_server_start_lines():
+    """Строки консоли о публичном адресе (server.py): ответил наш процесс — адрес есть; ответил край сразу после «готов» —
+    «край ещё не принял адрес», итог — следующей пробой надзора, а не «адреса нет»; проба не прошла — текст реестра
+    TUNNEL_PROBE_FAILED и что делать владельцу, а не словарь фактов."""
+    import server
+    from core.contracts import ContractError
+
+    адрес, локально = "https://mcp.example.com", "http://127.0.0.1:8080/mcp"
+    дошло = {"дошло": True, "код": 405, "кто": "aiohttp", "текст": "ответил наш процесс (405)"}
+    край = {"дошло": False, "код": 530, "кто": "cloudflare",
+            "текст": "край Cloudflare отвечает 530 — до нашего процесса запрос не доходит"}
+    отказ = ContractError("TUNNEL_PROBE_FAILED", facts={"host": "mcp.example.com", "status": "ReadTimeout"})
+    нет = {"дошло": False, "код": None, "кто": "нет ответа", "отказ": отказ, "текст": "TUNNEL_PROBE_FAILED (ReadTimeout)"}
+
+    статус, строки, ждёт = server.tunnel_address_at_start(дошло, адрес, локально)
+    check("старт: ответил наш процесс — 🌐 адрес для коннектора, итог надзора не нужен",
+          "🌐" in "\n".join(строки) and not ждёт and статус.startswith("поднят"), (статус, строки, ждёт))
+    статус, строки, ждёт = server.tunnel_address_at_start(край, адрес, локально)
+    текст = "\n".join(строки)
+    check("старт: 530 сразу после «готов» — «край ещё не принял адрес», итог — в надзоре, а не «адреса нет»",
+          ждёт and "ещё не принял адрес" in текст and "НЕТ" not in текст, (статус, строки))
+    статус, строки, ждёт = server.tunnel_address_at_start(нет, адрес, локально)
+    текст = "\n".join(строки)
+    check("старт: проба не прошла — текст реестра TUNNEL_PROBE_FAILED и что делать владельцу, а не словарь фактов",
+          not ждёт and "Публичный адрес mcp.example.com: проверка не прошла (ReadTimeout)" in текст
+          and "control_center.py" in текст and "{'host'" not in текст, текст)
+    check("надзор: следующая проба — 🟢 «отвечает» или ⚠️ «НЕ отвечает»",
+          server.tunnel_address_verdict(дошло, адрес).startswith("🟢")
+          and "НЕ отвечает" in server.tunnel_address_verdict(край, адрес),
+          (server.tunnel_address_verdict(дошло, адрес), server.tunnel_address_verdict(край, адрес)))
+
+
 def main():
     test_command_building()
     test_readiness_event_driven()
@@ -712,6 +921,8 @@ def main():
     test_secret_reaches_child_by_env()
     test_secret_in_declaration_refused()
     test_real_binary_takes_token_from_env()
+    test_metrics_door_pins_declared_address()
+    test_server_start_lines()
     print()
     passed, total = sum(results), len(results)
     print(f"ИТОГО: {passed}/{total} проверок пройдено")

@@ -191,10 +191,26 @@ COLUMN_NOT_FOUND:
 
 ROW_NOT_FOUND:
   class: ai_recoverable
-  message_template: "Строка с таким ID не найдена."
+  message_template: "Строки {row} в листе {sheet} нет."
   recovery:
     suggested_tool: table_find_row
     reason: "Если известно ЗНАЧЕНИЕ, а не ID — найди ID через table_find_row(where={{столбец: значение}}); иначе создай строку через table_append."
+
+PROVIDER_ROW_NOT_IN_BOOK:
+  class: ai_recoverable
+  message_template: "Строки провайдера нет в листе {sheet} книги канала — работает дефолт декларации, расход не списан."
+  recovery:
+    suggested_tool: table_append
+    suggested_params: { table: "{table}", sheet: "{sheet}" }
+    reason: "Заведи строку провайдера в листе {sheet} книги канала (table_append) — расход и лимиты пойдут по ней."
+
+RENDER_PROFILE_MISSING:
+  class: ai_recoverable
+  message_template: "Профиля рендера нет: лист {sheet} пуст и у канала, и в декларации."
+  recovery:
+    suggested_tool: table_append
+    suggested_params: { sheet: "{sheet}" }
+    reason: "Заведи профиль строкой листа {sheet} книги канала (table_append) и повтори рендер."
 
 ROW_KEY_EXISTS:
   class: ai_recoverable
@@ -919,6 +935,20 @@ TUNNEL_BINARY_CORRUPT:
   message_template: "Бинарь туннеля принят не полностью: {got} байт из {expected}."
   recovery:
     reason: "Остаток снят — повтор установки начнёт загрузку заново. Повторяется — источник отдаёт не тот файл: поставь бинарь вручную."
+
+TUNNEL_PROBE_FAILED:
+  class: server_recoverable
+  message_template: "Публичный адрес {host}: проверка не прошла ({status})."
+  recovery:
+    reason: "Сервер работает, но внешний доступ по туннелю не подтверждён — сообщи владельцу."
+    owner: "Запрос по публичному адресу не дошёл до ответа: путь до края туннеля — VPN, файрвол, сеть машины. Проверка — python3 scripts/control_center.py (без терминала печатает быструю проверку); после правки пути — перезапуск ./run.sh."
+
+TUNNEL_NOT_READY:
+  class: server_recoverable
+  message_template: "Соединитель туннеля не ответил готовностью на {host} ({status})."
+  recovery:
+    reason: "Сервер работает, но туннель ещё не готов — сообщи владельцу."
+    owner: "Ответ 503 — соединитель поднят, но не держит связь с краем туннеля: путь до края (VPN, файрвол, сеть машины), проверка — python3 scripts/control_center.py. Нет ответа — соединитель не слушает адрес готовности (config/tunnel_diagnostics.yaml → готовность): порт занят другим процессом — освободи его или смени адрес там же; процесс не поднялся — причина в строках его вывода выше. Иной ответ (другой код, оборванный ответ, лишние переходы) — сверь адрес и путь готовности там же."
 
 # ═══ Fallback: код, которого нет в реестре, приезжает клиенту этой записью и этим кодом ═══
 

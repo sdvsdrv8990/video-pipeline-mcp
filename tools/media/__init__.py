@@ -23,11 +23,11 @@ from core.contracts import ContractError, ErrorDetail, Fact, Later, ToolResult
 from core.engine import Engine
 from core.engine.table_materializer import declared_rows
 from core.jobs import Tasks
-from core.providers import (AdapterRegistry, MediaRequest, ModelSpec, ProviderResolver, TaskCycle,
+from core.providers import (AdapterRegistry, MediaRequest, ModelSpec, ProviderError, ProviderResolver, TaskCycle,
                             UsageLedger)
 from core.paths import Files
 from core.providers.catalog import ModelCatalog, OnlineCatalog
-from core.providers.download import results
+from core.providers.download import results, unapplied
 from core.providers.hardware import probe
 from core.providers.installer import ModelInstaller
 from core.providers.task_cycle import PLACE as GENERATE_PLACE
@@ -224,82 +224,112 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 return source_file
             if not source_file.is_file():
                 raise ContractError("FILE_NOT_FOUND", facts={"path": Files(ctx.workspace_path).name(input)})
-        rel = _asset_path(cfg, cycle, table, resource_type, slug, scene_id, params,
-                          source_stem=source_file.stem if source_file else "")
-        # Тип файла — та же дверь, что у любой записи: результат провайдера не привилегирован.
-        def _checked_target() -> Path:
-            ctx.write_policy.check(rel)          # бросает при запрещённом типе
-            return ctx.resolve(rel)
-
-        ok, target = ctx.safe(_checked_target)
-        if not ok:
-            return target
-        # Каталог ассетов заводит тот, кто владеет путём. Адаптер получает готовое место —
-        # иначе каждый новый адаптер обязан помнить про mkdir, и первый забывший роняет вызов.
-        target.parent.mkdir(parents=True, exist_ok=True)
-
-        # Ключ проверяется ДО задания — он свойство провайдера, а не кода, и без него генерация не
-        # состоится в любом случае. Берётся из закрытого файла канала и живёт в памяти работы до
-        # конца задания: в запись задания (параметры, итог) не попадает.
         registry = AdapterRegistry(ctx.config_path / "providers.yaml", ctx.config_path.parent)
-        api_key = ""
-        if registry.key_source(decision["provider"], resource_type) == "runner":
-            # Ключ раннера — не секрет владельца, а токен, выданный сервером при запуске. Нет
-            # токена — значит раннера нет: отказ ведёт к инструменту, а не к скрипту с ключами.
-            # Молчаливого отката «посчитаем в сервере» здесь нет намеренно: строка канала просила
-            # изоляцию, и подменить её тишиной значило бы соврать про то, где идёт расчёт.
-            api_key = _supervisor().token()
-            if not api_key:
-                raise ContractError("RUNNER_NOT_RUNNING")
-        elif registry.requires_key(decision["provider"], resource_type):
-            ok, api_key = ctx.safe(lambda: _key_for(table, decision["provider"]))
-            if not ok:
-                return api_key
-            if not api_key:
-                raise ContractError("PROVIDER_KEY_MISSING", facts={"provider": decision["provider"], "channel": table})
-
-        # Что модель принимает и в каких пределах, знает сама модель. Расхождение ловим ДО задания:
-        # у платного провайдера неверный параметр стоит денег, у локального — минут расчёта, и в
-        # обоих случаях ответ «не то, что просили» приходит без жалобы.
         spec_engine = ModelSpec(registry)
-        ok, spec = ctx.safe(lambda: spec_engine.of(decision["provider"],
-                                                   str(params.get("model") or ""), api_key))
-        if ok:
-            gaps = spec_engine.check(spec, params)
-            if gaps:
-                raise ContractError(  # просит строка книги канала, а не вызов: правится она (table_update)
-                    "BOOK_ROW_INVALID",
-                    facts={"sheet": sheet, "row": decision["row_id"], "spec_source": spec.get("source")},
-                    errors=[{"field": g["param"], "rule": g["problem"], "value": g["value"], "expected": g["allowed"]}
-                            for g in gaps])
-
-        ok, adapter = ctx.safe(lambda: registry.load(decision["provider"], resource_type))
-        if not ok:
-            return adapter
         take = int(take)        # схема пускает 2.0 как целое: дубль в ключе и зерно адаптеру — целым
-        request = MediaRequest(input=input, params={**params, "seed": take}, target=target,
-                               models_dir=registry.models_dir, api_key=api_key, source=source_file,
-                               provider=decision["provider"], resource_type=resource_type,
-                               workspace=ctx.workspace_path)
 
-        def on_row(step: Callable[[], T]) -> T:
+        def on_row(decision: dict, step: Callable[[], T]) -> T:
             """Шаг адаптера, чей отказ обработки строки — с листом и строкой, которые знает резолвер."""
             try:
                 return step()
             except ContractError as e:
                 raise e.with_facts(sheet=sheet, row=decision["row_id"])
 
-        # Готовность (вход, веса) известна до работы — отказ на двери, задание не заводится; работа судит её снова.
-        if callable(getattr(adapter, "ready", None)):
-            ok, readiness = ctx.safe(lambda: _keyless(lambda: on_row(lambda: adapter.ready(request)), api_key))
-            if not ok:
-                return readiness
+        def executor(decision: dict) -> dict:
+            """Исполнитель решения резолвера — место файла, ключ, параметры модели, адаптер, запрос и его готовность: одна
+            дверь у вызова и у запасного провайдера в работе задания. Отказ любой ступени — ContractError."""
+            params = decision["params"]
+            rel = _asset_path(cfg, cycle, table, resource_type, slug, scene_id, params,
+                              source_stem=source_file.stem if source_file else "")
+            ctx.write_policy.check(rel)          # тип файла — та же дверь, что у любой записи: результат не привилегирован
+            target = ctx.resolve(rel)
+            # Каталог ассетов заводит тот, кто владеет путём. Адаптер получает готовое место —
+            # иначе каждый новый адаптер обязан помнить про mkdir, и первый забывший роняет вызов.
+            target.parent.mkdir(parents=True, exist_ok=True)
+
+            # Ключ проверяется ДО задания — он свойство провайдера, а не кода, и без него генерация не
+            # состоится в любом случае. Берётся из закрытого файла канала и живёт в памяти работы до
+            # конца задания: в запись задания (параметры, итог) не попадает.
+            api_key = ""
+            if registry.key_source(decision["provider"], resource_type) == "runner":
+                # Ключ раннера — не секрет владельца, а токен, выданный сервером при запуске. Нет
+                # токена — значит раннера нет: отказ ведёт к инструменту, а не к скрипту с ключами.
+                # Молчаливого отката «посчитаем в сервере» здесь нет намеренно: строка канала просила
+                # изоляцию, и подменить её тишиной значило бы соврать про то, где идёт расчёт.
+                api_key = _supervisor().token()
+                if not api_key:
+                    raise ContractError("RUNNER_NOT_RUNNING")
+            elif registry.requires_key(decision["provider"], resource_type):
+                api_key = _key_for(table, decision["provider"])
+                if not api_key:
+                    raise ContractError("PROVIDER_KEY_MISSING", facts={"provider": decision["provider"], "channel": table})
+
+            # Что модель принимает и в каких пределах, знает сама модель. Расхождение ловим ДО задания:
+            # у платного провайдера неверный параметр стоит денег, у локального — минут расчёта, и в
+            # обоих случаях ответ «не то, что просили» приходит без жалобы.
+            ok, spec = ctx.safe(lambda: spec_engine.of(decision["provider"], str(params.get("model") or ""), api_key))
+            if ok:
+                gaps = spec_engine.check(spec, params)
+                if gaps:
+                    raise ContractError(  # просит строка книги канала, а не вызов: правится она (table_update)
+                        "BOOK_ROW_INVALID",
+                        facts={"sheet": sheet, "row": decision["row_id"], "spec_source": spec.get("source")},
+                        errors=[{"field": g["param"], "rule": g["problem"], "value": g["value"],
+                                 "expected": g["allowed"]} for g in gaps])
+
+            adapter = registry.load(decision["provider"], resource_type)
+            request = MediaRequest(input=input, params={**params, "seed": take}, target=target,
+                                   models_dir=registry.models_dir, api_key=api_key, source=source_file,
+                                   provider=decision["provider"], resource_type=resource_type,
+                                   workspace=ctx.workspace_path)
+            # Готовность (вход, веса) известна до работы — отказ на двери, задание не заводится; работа судит её снова.
+            if callable(getattr(adapter, "ready", None)):
+                _keyless(lambda: on_row(decision, lambda: adapter.ready(request)), api_key)
+            return {"decision": decision, "adapter": adapter, "request": request, "api_key": api_key, "target": target}
+
+        ok, chosen = ctx.safe(lambda: executor(decision))
+        if not ok:
+            return chosen
+
+        def fallen(run: dict, e: ContractError, refused: dict[str, dict]) -> dict | None:
+            """Исполнитель запасного провайдера после отказа `e` или None — отказ остаётся отказом. Уводит только отказ «не
+            применён» (`unapplied`: запрос не ушёл или провайдер его не принял) у строки, чей fallback_on это объявил: срок
+            после отправки и неизвестный исход не уводят никогда — работа могла исполниться и списаться."""
+            decision = run["decision"]
+            if not unapplied(e) or "unprocessed" not in resolver.fallback_on(decision["row"]):
+                return None
+            refused[decision["provider"]] = {
+                "reason": f"запрос не принят: {e.code} {e.facts.get('status', '')}".strip(),
+                **({"retry_after_sec": e.facts["retry_after_sec"]} if "retry_after_sec" in e.facts else {})}
+            try:
+                return executor(resolver.resolve(rows, resource_type, source=source, refused=refused))
+            except ProviderError as gone:
+                if gone.code != "PROVIDER_EXHAUSTED":
+                    raise
+                return None
 
         def work(pulse) -> dict:
             """Генерация, расход, прозвонка задачи провайдера, забор и приёмка — итог задания; отказ любого шага — отказ
             задания со скрытым ключом (`_keyless`). Оплачено то, что принял провайдер (итог или id задачи `generate`):
-            расход пишется до прозвонки, и снятие посреди неё оплаченное не обнуляет."""
-            outcome = _keyless(lambda: on_row(lambda: adapter.generate(request)), api_key)
+            расход пишется до прозвонки, и снятие посреди неё оплаченное не обнуляет. Провайдер запрос не принял, а строка
+            объявила fallback_on — та же работа у запасного (`fallen`): ответ называет его в `on_fallback`, расход и paid —
+            у того, кто исполнил."""
+            run: dict = chosen
+            refused: dict[str, dict] = {}
+            while True:
+                try:
+                    outcome = _keyless(lambda: on_row(run["decision"], lambda: run["adapter"].generate(run["request"])),
+                                       run["api_key"])
+                    break
+                except ContractError as e:
+                    nxt = fallen(run, e, refused)
+                    if nxt is None:
+                        if refused or unapplied(e):     # отказ называет, кого пробовали; запасного нет — «none»
+                            raise e.with_facts(fallback=[{"provider": p, **why} for p, why in refused.items()] or "none")
+                        raise
+                    run = nxt
+            decision, adapter, api_key, target = run["decision"], run["adapter"], run["api_key"], run["target"]
+            params = decision["params"]
             usage = _charge(table, sheet, source, decision, input, 1 if outcome.task_id else len(outcome.files))
             pulse.spent(paid={"provider": decision["provider"], "charged": usage["charged"],
                               **{k: usage[k] for k in ("amount", "unit") if k in usage}})
@@ -361,11 +391,9 @@ def register(engine: Engine, ctx: ToolContext) -> None:
                 text: str, files: int) -> dict:
         """Прибавить расход строке провайдера. Не получилось — это видно, а не проглатывается."""
         ledger = UsageLedger(ctx.config_path / "providers.yaml", ctx.state_manager)
-        if source != "project":
-            return {"charged": False, "reason": (
-                "Расход не учтён: провайдер взят из дефолтов декларации, а не из книги канала — "
-                "прибавлять счётчик некуда. Заполни лист провайдеров книги канала.")}
         try:
+            if source != "project":   # провайдер из дефолта декларации: строки в книге канала нет — та же причина, что у учёта
+                raise ProviderError("PROVIDER_ROW_NOT_IN_BOOK", facts={"table": table, "sheet": sheet})
             report = ledger.charge_call(table, sheet, decision, text=text, files=files)
         except Exception as e:
             # Провайдер уже принял работу: сбой учёта не отменяет её, а виден кодом реестра (чужой — с номером события).

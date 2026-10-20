@@ -644,6 +644,17 @@ else:
                                 lambda p: (_empty_ws / p).resolve()).profile("v0", "long_16x9")
     ok(_decl_report["profile_source"] == "declaration",
        "книги канала ещё нет → профиль берётся из декларации И НАЗЫВАЕТСЯ")
+    # Профилей нет ни у канала, ни в декларации — своя причина (EB-11), не «строки с этим ID нет».
+    _bare = Path(tempfile.mkdtemp(prefix="vpm-montage-bare-")) / "config"
+    shutil.copytree(CONFIG, _bare)
+    _bare_book = next(_bare.rglob(f"{MONTAGE['profile']['fallback_book']}.schema.yaml"))
+    _bare_decl = yaml.safe_load(_bare_book.read_text(encoding="utf-8"))
+    for _bare_sheet in _bare_decl["sheets"]:
+        if _bare_sheet["name"] == MONTAGE["profile"]["sheet"]:
+            _bare_sheet["rows"] = []
+    _bare_book.write_text(yaml.safe_dump(_bare_decl, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    refuses(lambda: SceneBook(StateManager(_empty_ws), _bare, lambda p: (_empty_ws / p).resolve()).profile("v0"),
+            "RENDER_PROFILE_MISSING", "профилей нет ни у канала, ни в декларации — свой код, а не ROW_NOT_FOUND")
 
     _ledger = RenderLedger(SM, CONFIG, IDGenerator())
     refuses(lambda: _ledger.record("ch1/v1", {"stage": "неведомая"}),

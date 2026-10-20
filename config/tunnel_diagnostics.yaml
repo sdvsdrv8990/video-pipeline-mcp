@@ -62,7 +62,41 @@
   retry_after_max_sec: 120
   jitter: 0.25
   retry_on: []                  # код ответа — улика (кто ответил: край или наш процесс), а не повод повторять
-  codes: {failed: PROVIDER_FAILED}
+  codes: {failed: TUNNEL_PROBE_FAILED}
+
+# Готовность соединителя — событием поставщика, а не строкой его журнала (схема — core/declaration_schemas.py
+# TunnelReadiness). Источник — исходники cloudflared на теге установленной версии 2026.5.0 (sha 5aa3287): флаг --metrics
+# (cmd/cloudflared/tunnel/cmd.go:466, :958; явный адрес занимается как есть, metrics/metrics.go:113-124), /ready — JSON
+# {status, readyConnections, connectorId}, 200 при активных соединениях с краем, иначе 503 (metrics/readiness.go:31-61),
+# /quicktunnel — JSON {"hostname"} (metrics/metrics.go:86-88). Адрес назначает сервер: занят — громкий отказ.
+готовность:
+  cloudflared:
+    metrics_flag: --metrics
+    metrics_address: 127.0.0.1:20241   # первый из известных портов поставщика (metrics.go:51)
+    ready_path: /ready
+    ready_field: readyConnections
+    quick_path: /quicktunnel
+    quick_field: hostname
+    pause_sec: 0.5                     # опрос готовности при подъёме; соединитель встаёт секунды (событий не шлёт)
+
+# Ответ сервера метрик соединителя — дверью загрузчика в память (Fetcher.answer). Петля и http открыты ровно адресу
+# готовность.<поставщик>.metrics_address (дверь закрепляет хост и порт). Молчание или 503 — «ещё не готов», а не сбой.
+метрики:
+  schemes: [http]
+  block_private: false
+  max_bytes: 65536              # ответ готовности — сотня байт; больше — чужое тело
+  timeout_sec: 2                # петля: ответ мгновенный, молчание — «ещё не слушает»
+  deadline_sec: 4
+  redirects: 0
+  attempts: 1                   # повтор — цикл готовности, а не дверь
+  backoff_sec: 0.5
+  backoff_max_sec: 8
+  retry_after_max_sec: 120
+  jitter: 0.25
+  speed_floor_bytes_per_sec: 0
+  speed_window_sec: 30
+  retry_on: []
+  codes: {failed: TUNNEL_NOT_READY, corrupt: TUNNEL_NOT_READY}
 
 # Надзор за процессом туннеля (core/transport/tunnel.py). Схема — core/declaration_schemas.py TunnelSupervision. Здесь, а
 # не в tunnel.yaml: это политика сервера, а машинный файл лежит в .gitignore и с репозиторием не едет — на чистом клоне
@@ -81,6 +115,9 @@
   # файрвол), жив и молчит — у попытки предел, у подъёма — число попыток.
   ready_timeout_seconds: 45     # предел ожидания соединения на ОДНУ попытку
   first_attempts: 3             # сколько раз пробуем поднять туннель при старте сервера
+  # Остановка соединителя: столько ждём его конца после SIGTERM (TerminateProcess на Windows), затем — kill. Значение —
+  # прежнее в коде tunnel.py _end_attempt.
+  stop_grace_seconds: 5
 
 # Какой бинарь доказывает объявленный конец туннеля. Ключ — значение `tunnel` из install.yaml.
 концы:

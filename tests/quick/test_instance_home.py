@@ -105,32 +105,51 @@ with live_server() as srv:
         # Живой терминал без ввода — как консоль Windows: байт на нём значит, что скрипт ждёт терминал, а не stdin.
         import pty
         import selectors
+        import threading
         _master, _slave = pty.openpty()      # свой конец держим до конца: без него чтение мастера — EIO раньше ребёнка
         _lead = ("import fcntl, os, sys, termios; os.setsid(); fd = os.open(sys.argv[1], os.O_RDWR); "
                  "fcntl.ioctl(fd, termios.TIOCSCTTY, 0); os.execv(sys.executable, [sys.executable, *sys.argv[2:]])")
+        _err = tempfile.TemporaryFile()      # stderr ребёнка — в отчёт проверки: CI dcb0c41 на macOS висел без улики
         _child = subprocess.Popen([sys.executable, "-c", _lead, os.ttyname(_slave), *_script[1:]], cwd=ROOT, env=_env,
-                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=_err)
         _child.stdin.write((_KEY + "\n").encode())
         _child.stdin.close()
-        _tty, _outb = b"", b""
-        # Первое из событий: байт на терминале или конец вывода ребёнка. select, а не kqueue по умолчанию: на macOS чтение
-        # pty через KqueueSelector висит (CPython bpo-32517, test_read_pty_output) — CI f382d26/098ddb9 ждал 900 с.
+        # Первое из событий: байт на терминале, конец вывода ребёнка или его выход — вывод может держать открытым и не он
+        # (CI dcb0c41: на macOS SelectSelector ждал 900 с без EOF, диагноз «kqueue, bpo-32517» синка 7 не подтвердился).
+        _wake_r, _wake_w = os.pipe()
+        threading.Thread(target=lambda: (_child.wait(), os.write(_wake_w, b"x")), daemon=True).start()
+        _tty, _outb, _ended = b"", b"", ""
         with selectors.SelectSelector() as _sel:
             _sel.register(_master, selectors.EVENT_READ, "tty")
             _sel.register(_child.stdout, selectors.EVENT_READ, "out")
-            while not _tty:
+            _sel.register(_wake_r, selectors.EVENT_READ, "exit")
+            while not _tty and not _ended:
                 _ready = {key.data for key, _ in _sel.select()}
                 if "tty" in _ready:
                     _tty = os.read(_master, 1024)
-                elif not (_chunk := os.read(_child.stdout.fileno(), 4096)):
-                    break
-                else:
+                elif "out" in _ready:
+                    if not (_chunk := os.read(_child.stdout.fileno(), 4096)):
+                        _ended = "конец вывода ребёнка"
                     _outb += _chunk
+                else:
+                    _ended = "ребёнок вышел, его вывод ещё открыт"
+                    os.set_blocking(_child.stdout.fileno(), False)
+                    try:
+                        while _chunk := os.read(_child.stdout.fileno(), 4096):
+                            _outb += _chunk
+                    except BlockingIOError:
+                        pass
+        print(f"  · ожидание pty кончилось: {_ended or 'байт терминала'}")
         if _tty:
             _child.kill()
         _child.wait()
         _child.stdout.close()
         _out = _outb.decode(errors="replace")
+        _err.seek(0)
+        _out_err = _err.read().decode(errors="replace")
+        _err.close()
+        os.close(_wake_r)
+        os.close(_wake_w)
         os.close(_slave)
         os.close(_master)
 key = ((status.get("resolved") or [{}])[0]).get("key") or {}
@@ -140,7 +159,8 @@ check("сервер видит ключ, внесённый скриптом: т
       key.get("present") is True and key.get("fingerprint") == fingerprint(_KEY) and not key.get("unreadable"), key)
 if os.name == "posix":
     check("ключ по флагу --stdin при живом терминале: терминал не тронут, ключ сохранён",
-          not _tty and _child.returncode == 0 and "сохранён" in _out, (_tty[:80], _child.returncode, _out[-200:]))
+          not _tty and _child.returncode == 0 and "сохранён" in _out,
+          (_tty[:80], _child.returncode, _ended, _out[-200:], _out_err[-300:]))
     # Флаг при stdin-терминале: набранный ключ печатался бы эхом — отказ до чтения, в доме ничего не появляется.
     import pty
     _home4b = Path(tempfile.mkdtemp(prefix="stdin_tty_"))
