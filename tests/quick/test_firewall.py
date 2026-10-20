@@ -198,7 +198,7 @@ with live_server() as srv:
     ok(srv.console.contains(r"Файрвол: активен"),
        "сервер сообщает о поднятом файрволе при старте")
     ok(srv.console.contains(r"Аутентификация: активна"),
-       "и о том, что аутентификация включена — калитка MCP_ALLOW_NO_AUTH не использовалась")
+       "и о том, что аутентификация включена")
     # Путь — данные, не образец (точки, обратные слэши Windows); сервер вправе назвать и настоящий путь (macOS: /private/var).
     ws_forms = "|".join(re.escape(p) for p in {str(srv.workspace), os.path.realpath(srv.workspace)})
     ok(srv.console.contains(rf"Workspace: (?:{ws_forms})"),

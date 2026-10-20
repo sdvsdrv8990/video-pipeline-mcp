@@ -14,15 +14,13 @@ source .venv/bin/activate
 
 # Запуск по объявлению установки (config/install.yaml): сервер и тот конец туннеля, что объявлен этой машине.
 # Сервер слушает 127.0.0.1; публичный адрес даёт только туннель.
-#   ./run.sh --no-tunnel   этот запуск без туннеля, объявление не меняется
-#   ./run.sh --no-auth     цикл разработки: коннектор подцепляется без ключа
+#   ./run.sh --stop        остановить сервер и туннель
 TUNNEL="--tunnel"
 STOP=""
 for arg in "$@"; do
     case "$arg" in
-        --no-tunnel) TUNNEL="" ;;
-        --no-auth)   export MCP_ALLOW_NO_AUTH=1 ;;
-        --stop)      STOP="1" ;;
+        --stop) STOP="1" ;;
+        *)      echo "✗ неизвестный флаг «$arg»: run.sh знает только --stop"; exit 2 ;;
     esac
 done
 
@@ -75,7 +73,7 @@ if [ -n "$STOP" ]; then
     exit $?
 fi
 
-# Что объявлено установщиком в config/install.yaml. Флаги выше — переопределение. Нет файла — рабочая машина (core/deploy).
+# Что объявлено установщиком в config/install.yaml. Нет файла — рабочая машина (core/deploy).
 if ! DECLARED="$(python3 -c 'from core.deploy import install; m,t=install(); print(m,t)')"; then
     echo "✗ config/install.yaml не читается — причина выше. Объявить заново: python3 scripts/installer_tui.py"
     exit 2
@@ -95,18 +93,14 @@ case "$TUNNEL_END" in
     client) ;;
     *)
         # Серверный конец (xray) — не cloudflared: поднять вместо него Cloudflare значило бы молча сменить вход.
-        if [ -n "$TUNNEL" ]; then
-            echo "✗ не запущено: config/install.yaml объявляет серверный конец туннеля «$TUNNEL_END» (xray), а run.sh"
-            echo "  поднимает только туннель Cloudflare. Запуска концов xray ещё нет (вход через свой сервер — в работе)."
-            echo "  Сервер без туннеля: ./run.sh --no-tunnel"
-            echo "$ROLE_FIX"
-            exit 2
-        fi
+        echo "✗ не запущено: config/install.yaml объявляет серверный конец туннеля «$TUNNEL_END» (xray), а run.sh"
+        echo "  поднимает только туннель Cloudflare. Запуска концов xray ещё нет (вход через свой сервер — в работе)."
+        echo "$ROLE_FIX"
+        exit 2
         ;;
 esac
 LAUNCH="сервер только для этой машины"
 [ -n "$TUNNEL" ] && LAUNCH="сервер + туннель Cloudflare"
 echo "▶ объявлено: сервер MCP, конец туннеля «$TUNNEL_END»; этот запуск — $LAUNCH"
 
-# Предупреждение «без ключа + туннель» печатает сам сервер: его зовут и напрямую (server.py --tunnel).
 python3 server.py $TUNNEL

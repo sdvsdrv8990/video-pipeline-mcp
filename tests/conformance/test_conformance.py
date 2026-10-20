@@ -119,8 +119,8 @@ ok(fw["rate_limit"].pop("max_requests") == 100000 and fw == src_fw,
    "и в нём — ровно порог частоты, остальные правила файрвола боевые")
 
 with live_server(env={"MCP_CONFIG": str(cfg_dir)}) as srv, AuthProxy(srv.url, srv.token) as proxy:
-    # Прокси добавляет ключ за клиента, который его не умеет: калитка MCP_ALLOW_NO_AUTH сняла бы
-    # проверяемый слой целиком. Host прокси передаёт как есть — на нём стоит проверка Host.
+    # Прокси добавляет ключ за клиента, который его не умеет: проверяемый слой ключа остаётся на месте.
+    # Host прокси передаёт как есть — на нём стоит проверка Host.
     out_dir = Path(tempfile.mkdtemp(prefix="conf_out_"))
     run = subprocess.run([NPX, "-y", PACKAGE, "server", "--url", proxy.url, "-o", str(out_dir)],
                          capture_output=True, text=True, timeout=1200,

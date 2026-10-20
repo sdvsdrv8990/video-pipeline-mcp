@@ -387,6 +387,36 @@ async def main():
     check("пустой ожидаемый отпечаток НЕ открывает сервер (fail-closed)",
           check_auth({"x-api-key": "anything"}, "") == "AUTH_REQUIRED")
 
+    # Проверка ключа (server.py --check-key): действующий отпечаток без выпуска, ответ без значения ключа
+    from core.auth import stored_digest
+    _none = _temp_dir("s1none_") / ".env"
+    check("проверка без выпущенного ключа: пусто, ключ не выпущен и файл не создан",
+          stored_digest(_none, env={}) == "" and not _none.exists())
+    check("проверка видит тот же отпечаток, что старт: файл и окружение",
+          stored_digest(_env, env={}) == ensure_digest(_env, env={})[0]
+          and stored_digest(_env, env={TOKEN_VAR: "from-env"}) == token_digest("from-env"))
+    import hashlib as _hk
+    import os as _os
+    import subprocess as _sk
+    _real_env = ROOT / ".env"
+    _before = _hk.sha256(_real_env.read_bytes()).hexdigest() if _real_env.exists() else None
+    _probe_key = "проба-ключа-" + _temp_dir("s1key_").name
+    _verdicts = {}
+    for _said in (_probe_key, "чужой-ключ"):
+        _run = _sk.run([sys.executable, str(ROOT / "server.py"), "--check-key"], input=_said + "\n", text=True,
+                       capture_output=True, encoding="utf-8", cwd=ROOT,
+                       env={**_os.environ, TOKEN_VAR: _probe_key})
+        _verdicts[_said] = (_run.returncode, _run.stdout + _run.stderr)
+    _ok_rc, _ok_out = _verdicts[_probe_key]
+    _bad_rc, _bad_out = _verdicts["чужой-ключ"]
+    check("--check-key: верный ключ — код 0 и «Ключ верный», значение не напечатано",
+          _ok_rc == 0 and "Ключ верный" in _ok_out and _probe_key not in _ok_out, (_ok_rc, _ok_out[-300:]))
+    check("--check-key: чужой ключ — код 1 и «Ключ не тот» с отпечатками, ни одно значение не напечатано",
+          _bad_rc == 1 and "Ключ не тот" in _bad_out and "чужой-ключ" not in _bad_out and _probe_key not in _bad_out,
+          (_bad_rc, _bad_out[-300:]))
+    check("--check-key не пишет в .env сервера",
+          (_hk.sha256(_real_env.read_bytes()).hexdigest() if _real_env.exists() else None) == _before)
+
     # S1/§3-тер: секрет недостижим для файловых инструментов ПО ПОСТРОЕНИЮ (.env вне workspace/)
     from core.paths import Files, PathEscapeError
     _ws = _temp_dir("s1ws_") / "workspace"

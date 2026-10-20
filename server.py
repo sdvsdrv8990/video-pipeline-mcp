@@ -33,8 +33,8 @@ from core.transport import Transport
 from core.transport.transport import declared_transport
 from core.transport.tunnel import PROBE_HEADER, declared_hostname, probe_echo
 from core.reactions import Reactions
-from core.auth import (ENV_FILE, check_auth, digest_fingerprint, ensure_digest, rotate_token,
-                       token_file_mode, token_fingerprint)
+from core.auth import (ENV_FILE, check_auth, digest_fingerprint, ensure_digest, presented_matches, rotate_token,
+                       stored_digest, token_file_mode, token_fingerprint)
 from core.ids import IDGenerator
 from core.owner_only import superuser
 from core.state import StateManager
@@ -102,13 +102,10 @@ def _allowed_hosts() -> set:
 # Значения, о которых уже сообщили: чужая вкладка в цикле иначе забьёт консоль владельца.
 _REPORTED_ORIGINS: set = set()
 
-# Ключ сервер выдаёт себе сам (см. core/auth). Пустой токен больше НЕ означает
-# «auth отключена» — это fail-closed: без ключа сервер не стартует, если явно не разрешено.
+# Ключ сервер выдаёт себе сам (см. core/auth); без ключа сервер не стартует (fail-closed), работы без ключа нет.
 ENV_PATH = BASE_PATH / ENV_FILE
 # Сервер держит ОТПЕЧАТОК ключа, не значение — сравнение идёт по хэшу.
 MCP_AUTH_DIGEST = ""
-# Явная и громкая калитка для локальной разработки и тестов (по умолчанию закрыта).
-ALLOW_NO_AUTH = os.environ.get("MCP_ALLOW_NO_AUTH", "") == "1"
 # Суперпользователь превращает любую дыру инструмента в захват машины; калитка — только для одноразовой машины.
 ALLOW_ROOT = os.environ.get("MCP_ALLOW_ROOT", "") == "1"
 
@@ -225,27 +222,24 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
         use_tunnel: Поднять туннель вместе с сервером
     """
     global MCP_AUTH_DIGEST
-    if not ALLOW_NO_AUTH:
-        MCP_AUTH_DIGEST, issued = ensure_digest(ENV_PATH)
-        if not MCP_AUTH_DIGEST:
-            print(f"ОТКАЗ СТАРТА: не удалось получить ключ доступа ({ENV_PATH}).", file=sys.stderr)
-            print("Задай MCP_AUTH_TOKEN или дай серверу право создать .env; "
-                  "работа без ключа — только с MCP_ALLOW_NO_AUTH=1.", file=sys.stderr)
-            raise SystemExit(2)
-        if issued:
-            print("─" * 60)
-            print(f"Выпущен ключ доступа (в {ENV_FILE} — только хэш, права 0600), "
-                  f"отпечаток {token_fingerprint(issued)}")
-            if sys.stdout.isatty():
-                # Единственный момент, когда значение вообще существует: дальше его негде взять.
-                print(f"  {issued}")
-                print("Вставь в коннекторе Claude AI Web: Request headers →")
-                print("  authorization: Bearer <ключ>    (или x-api-key: <ключ>)")
-                print("СОХРАНИ СЕЙЧАС: восстановить нельзя, только перевыпустить.")
-            else:
-                print("Запуск не из терминала — значение не печатаем, чтобы не осело в логе.")
-                print("Выпусти ключ заново в терминале: server.py --rotate-key")
-            print("─" * 60)
+    MCP_AUTH_DIGEST, issued = ensure_digest(ENV_PATH)
+    if not MCP_AUTH_DIGEST:
+        print(f"ОТКАЗ СТАРТА: не удалось получить ключ доступа ({ENV_PATH}).", file=sys.stderr)
+        print("Задай MCP_AUTH_TOKEN или дай серверу право создать .env.", file=sys.stderr)
+        raise SystemExit(2)
+    if issued:
+        print("─" * 60)
+        print(f"Выпущен ключ доступа (в {ENV_FILE} — только хэш, права 0600), "
+              f"отпечаток {token_fingerprint(issued)}")
+        if sys.stdout.isatty():
+            # Единственный момент, когда значение вообще существует: дальше его негде взять.
+            print(f"  {issued}")
+            print("Вставь в коннекторе Claude AI Web: Заголовки запроса → x-api-key: <ключ>")
+            print("СОХРАНИ СЕЙЧАС: восстановить нельзя, только перевыпустить.")
+        else:
+            print("Запуск не из терминала — значение не печатаем, чтобы не осело в логе.")
+            print("Выпусти ключ заново в терминале: server.py --rotate-key")
+        print("─" * 60)
 
     # Битое объявление туннеля — отказ старта: сервер, отвечающий 403 на каждый запрос через туннель, хуже неподнятого.
     allowed_hosts = _allowed_hosts()
@@ -261,11 +255,8 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
     print(f"Файрвол: активен (config: {'загружен' if (CONFIG_PATH / 'firewall.yaml').exists() else 'дефолт'})")
     print(f"Браузер: Origin петлевой{' + ' + ', '.join(origins) if origins else ''}"
           f" (transport.yaml, MCP_ALLOWED_ORIGINS), без Origin — пускаем, тело только {JSON_CONTENT_TYPE}")
-    if ALLOW_NO_AUTH:
-        print("Аутентификация: ⚠ ОТКЛЮЧЕНА (MCP_ALLOW_NO_AUTH=1) — только локальная разработка")
-    else:
-        print(f"Аутентификация: активна (Authorization: Bearer / X-Api-Key), "
-              f"отпечаток {digest_fingerprint(MCP_AUTH_DIGEST)} в {ENV_FILE} (0600, значения нет)")
+    print(f"Аутентификация: активна (Authorization: Bearer / X-Api-Key), "
+          f"отпечаток {digest_fingerprint(MCP_AUTH_DIGEST)} в {ENV_FILE} (0600, значения нет)")
     print()
 
     from aiohttp import web
@@ -335,12 +326,11 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
 
         # Аутентификация ДО файрвола. Принимаем оба заголовка из allowlist коннектора
         # Claude AI Web (Authorization: Bearer / X-Api-Key) — иначе клиент не сможет прислать ключ.
-        if not ALLOW_NO_AUTH:
-            deny = check_auth(request.headers, MCP_AUTH_DIGEST)
-            if deny:
-                return _refuse("identity", deny, -32001, 401, request,
-                               request_id=req_data.get("id") if isinstance(req_data, dict) else None,
-                               rpc=req_data.get("method", "") if isinstance(req_data, dict) else "")
+        deny = check_auth(request.headers, MCP_AUTH_DIGEST)
+        if deny:
+            return _refuse("identity", deny, -32001, 401, request,
+                           request_id=req_data.get("id") if isinstance(req_data, dict) else None,
+                           rpc=req_data.get("method", "") if isinstance(req_data, dict) else "")
 
         # Пакет JSON-RPC (массив) файрвол судит поэлементно: иначе элементы пакета прошли бы мимо него. Любой элемент не
         # пропущен — отказ всему пакету (fail-closed). params не объект — в файрвол пустым: транспорт ответит −32602.
@@ -468,13 +458,6 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
             print("   ПУБЛИЧНОГО АДРЕСА НЕТ — Claude AI Web подключиться не сможет.")
             print(f"   Локально сервер работает: http://{host}:{port}/mcp")
             tunnel = None
-
-    # Публичный адрес без ключа пускает любого, кто его узнает: Origin/Host и файрвол есть, идентификации нет.
-    if ALLOW_NO_AUTH and tunnel:
-        print()
-        print("⚠ АУТЕНТИФИКАЦИЯ ОТКЛЮЧЕНА (MCP_ALLOW_NO_AUTH=1)")
-        print("⚠ СЕРВЕР ОТКРЫТ ЧЕРЕЗ ТУННЕЛЬ — публичный адрес пустит любого, кто его узнает")
-        print("⚠ ЭТОТ РЕЖИМ — ТОЛЬКО ДЛЯ РАЗРАБОТКИ: для работы запускай без --no-auth, с ключом в коннекторе")
 
     # Статус готовности (по спецификации MCP SDK).
     print()
@@ -633,6 +616,10 @@ def main():
     parser.add_argument("--port", type=int, default=PORT, help="Порт (по умолчанию: %(default)s)")
     parser.add_argument("--tunnel", action="store_true", help="Поднять туннель вместе с сервером (D11)")
     parser.add_argument("--rotate-key", action="store_true", help="Перевыпустить ключ доступа и выйти (S1)")
+    parser.add_argument("--check-key", action="store_true",
+                        help="Проверить ключ доступа и выйти: ключ вводится без эха (из канала — первой строкой), "
+                             "ответ — верный или нет, значение не печатается; код выхода 0 — верный, 1 — не тот, "
+                             "2 — ключ ещё не выпущен")
     parser.add_argument("--re-adopt", action="store_true", help="Присвоить рабочую область этому серверу после переноса (S9)")
     args = parser.parse_args()
 
@@ -674,6 +661,21 @@ def main():
         else:
             print("Запуск не из терминала — значение не печатаем. Повтори ротацию в терминале.")
         return
+
+    if args.check_key:
+        digest = stored_digest(ENV_PATH)
+        if not digest:
+            print(f"Ключ ещё не выпущен: в {ENV_FILE} нет отпечатка. Выпусти его: server.py --rotate-key.", file=sys.stderr)
+            raise SystemExit(2)
+        import getpass
+        presented = (getpass.getpass("Ключ (ввод не отображается): ") if sys.stdin.isatty()
+                     else sys.stdin.readline()).strip()
+        if presented_matches(presented, digest):
+            print(f"Ключ верный: отпечаток {digest_fingerprint(digest)} совпал с ключом сервера.")
+            return
+        print(f"Ключ не тот: у сервера отпечаток {digest_fingerprint(digest)}, у введённого "
+              f"{token_fingerprint(presented) or '— (пусто)'}. Новый ключ: server.py --rotate-key.", file=sys.stderr)
+        raise SystemExit(1)
 
     try:
         asyncio.run(run_server(args.host, args.port, use_tunnel=args.tunnel))
