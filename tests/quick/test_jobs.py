@@ -367,7 +367,7 @@ def _waiting_calls16() -> tuple[list, bool, list]:
     gate, waiting = threading.Event(), {1: asyncio.Event(), 2: asyncio.Event()}
 
     def work(pulse):
-        gate.wait(15)                           # дольше потолка наблюдения: работа идёт, пока проба смотрит
+        gate.wait()                             # работа идёт, пока проба смотрит: ворота открывает сама проба
         return {"ok": 1}
 
     async def generate(n: int):
@@ -391,10 +391,11 @@ def _waiting_calls16() -> tuple[list, bool, list]:
         waits = []
         for n in (1, 2):                        # второй входит, когда первый уже ждёт итог: гонки входов здесь нет
             waits.append(asyncio.create_task(eng.call("media_generate", {"n": n})))
-            try:
-                await asyncio.wait_for(waiting[n].wait(), 5)
-            except TimeoutError:
-                pass
+            # Событием, а не часами: вызов вошёл в ожидание итога или кончился сам (отказ) — без своего предела, зависание
+            # ловит предел набора; прежний срок 5 с под нагрузкой гейта отпускал пробу до входа и мерил не то состояние.
+            entered = asyncio.create_task(waiting[n].wait())
+            await asyncio.wait({entered, waits[-1]}, return_when=asyncio.FIRST_COMPLETED)
+            entered.cancel()
         calls = [await eng.call(name, {}) for name in ("media_models", "media_model_install")]
         taken = {k: [eng.slots.take(k) for _ in range(b.max_concurrent or 0)] for k, b in RES16.classes.items()
                  if b.max_concurrent}

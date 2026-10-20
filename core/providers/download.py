@@ -33,6 +33,7 @@ from core.declaration import Declaration
 from core.declaration_schemas import (RESULT_FETCH, AddressedPolicy, AnswerPolicy, CallCodes, CallPolicy, FetchPolicy,
                                       RequestPolicy, ResultFetchPolicy, Slot, declared_host)
 from core.paths import Files, PathEscapeError
+from core.retry import Again as _Again, retry
 from .task_cycle import TaskCycleError
 
 log = logging.getLogger(__name__)
@@ -104,15 +105,6 @@ def file_digest(path: Path, algo: str, mark=None) -> str:
             if mark:
                 mark()
     return digest.hexdigest()
-
-
-class _Again(Exception):
-    """Попытка оборвалась так, что повтор осмыслен (обрыв, перегрузка, молчание); несёт отказ на случай исчерпания и
-    `applied` — запрос мог дойти и выполниться: неповторяемый вызов (`Fetcher.call`) такую попытку не повторяет."""
-
-    def __init__(self, refusal: ContractError, wait: float = 0.0, *, applied: bool = True):
-        super().__init__(refusal.code)
-        self.refusal, self.wait, self.applied = refusal, wait, applied
 
 
 def unapplied(error: BaseException) -> bool:
@@ -215,23 +207,10 @@ class Fetcher(Generic[P]):
         `attempts` попыток, а раньше, если сервер назвал срок длиннее `retry_after_max_sec` или пауза не оставляет
         времени до срока обращения `deadline` (часы двери): названный сервером срок — в фактах отказа, повторять ли
         позже, решает вызывающий. Неповторяемый вызов (`replayable` False) повторяет только попытку, чей запрос не
-        применён (`_Again.applied` False)."""
-        cap, jitter = self.policy.backoff_max_sec, self.policy.jitter
-        pause, left = self.policy.backoff_sec, self.policy.attempts
-        while True:
-            try:
-                return attempt()
-            except _Again as e:
-                left -= 1
-                wait = max(pause * (1 + jitter * self.rng.random()), e.wait)
-                late = deadline is not None and self.clock() + wait >= deadline
-                if not left or e.wait > self.policy.retry_after_max_sec or late or (e.applied and not replayable):
-                    if e.wait:
-                        e.refusal.with_facts(retry_after_sec=e.wait)
-                    raise
-                self.mark()
-                self.sleep(wait)
-                pause = min(pause * 2, cap)
+        применён (`_Again.applied` False). Цикл — узел сервера `core.retry.retry`, часы, сон и генератор — швы двери."""
+        return retry(attempt, self.policy, deadline=deadline, replayable=replayable,
+                     told_max_sec=self.policy.retry_after_max_sec, clock=self.clock, sleep=self.sleep, rng=self.rng,
+                     mark=self.mark)
 
     def _routes(self, stack: contextlib.ExitStack):
         """Клиент маршрута по прокси — один на прокси за время вызова, закрывается вместе со `stack`."""

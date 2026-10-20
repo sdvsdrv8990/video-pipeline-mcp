@@ -8,12 +8,15 @@
 
 import codecs
 import errno
+import functools
 import json
 import os
+import random
 import re
 import shutil
 import stat
 import sys
+import time
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -23,6 +26,9 @@ from filelock import FileLock
 
 from core import owner_only
 from core.contracts import ContractError
+from core.declaration import Declaration, declarations_root
+from core.declaration_schemas import FILES_REPLACE
+from core.retry import Again, retry
 from core.write_policy import WritePolicy
 
 # Встроенный минимум: даже без конфига каталог секретов закрыт. Конфиг может ДОБАВИТЬ имена
@@ -121,6 +127,19 @@ def open_shared(target: Path):
     return os.fdopen(msvcrt.open_osfhandle(handle, os.O_RDONLY | getattr(os, "O_BINARY", 0)), "rb")
 
 
+_WIN_TRANSIENT = frozenset({5, 32})               # ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION — временный отказ замены
+
+# Часы, сон и генератор повтора замены — швы (WC-06): событие худшего времени подставляет их без настоящего ожидания.
+_clock, _sleep, _rng = time.monotonic, time.sleep, random.Random()
+
+
+@functools.cache
+def _files_door(root: Path) -> Declaration:
+    """Объявление слоя (`config/files.yaml` каталога деклараций `root`): одна дверь на каталог — перечитывает файл при
+    правке (DC-04), читатель берёт раздел схемой (`FILES_REPLACE`)."""
+    return Declaration(root / FILES_REPLACE.file, ContractError, "«files»")
+
+
 @dataclass(frozen=True)
 class Files:
     """Дверь к диску одного корня: всё, что сервер делает с файлом этого корня, начинается с `place`."""
@@ -178,11 +197,11 @@ class Files:
 
     def publish(self, path: str | Path, owner: str, *, secrets: bool = False) -> Path:
         """Остаток владельца становится файлом (FS-06): сброс на диск, `os.replace` на место, заметка остатка снимается,
-        сброс каталога."""
+        сброс каталога. Диск отказал замене — PLACE_UNWRITABLE (`_swap`); остаток владельца остаётся вызывающему (FS-08)."""
         target, part = self.place(path, secrets=secrets), self.remnant(path, owner, secrets=secrets)
         with open(part, "r+b") as f:  # на Windows fsync = FlushFileBuffers: дескриптор только на чтение — EBADF
             os.fsync(f.fileno())
-        os.replace(part, target)
+        self._swap(part, target, path)
         self._note(path, owner, secrets).unlink(missing_ok=True)
         _sync_dir(target.parent)
         return target
@@ -197,12 +216,48 @@ class Files:
             policy.admit(self.name(target), data, at=target)
         part = self._fresh(target, data, self._mode(target) if mode is None else mode, secrets)
         try:
-            os.replace(part, target)
-        except OSError as e:  # на Windows файл, открытый без FILE_SHARE_DELETE, не заменить: под именем — прежний
+            self._swap(part, target, path)
+        except PlaceUnwritable:     # под именем — прежний; свой остаток снят
             part.unlink(missing_ok=True)
-            raise PlaceUnwritable("замена", **self.unread(path, e)) from e
+            raise
         _sync_dir(target.parent)
         return target
+
+    def _swap(self, part: Path, target: Path, path: str | Path) -> None:
+        """`os.replace` остатка на место; отказ диска — одной формой, PLACE_UNWRITABLE с путём от корня и причиной ОС
+        (FS-13), сырой `OSError` наружу не уходит. На Windows отказ доступа бывает временным (`_WIN_TRANSIENT`: файл держит
+        антивирус или читатель без FILE_SHARE_DELETE) — замена повторяется циклом сервера `core.retry.retry` по политике
+        `config/files.yaml → замена` в её срок. Код Windows (`winerror`) у исключения есть только на Windows: на прочих ОС
+        отказ доступа — настоящий запрет прав, без повтора. Объявление читается только после первого временного отказа:
+        обычная замена — горячий путь записи (ход задания, состояние) — идёт одной попыткой без него."""
+        def attempt() -> None:
+            try:
+                os.replace(part, target)
+            except PermissionError as e:
+                if getattr(e, "winerror", None) not in _WIN_TRANSIENT:
+                    raise
+                raise Again(PlaceUnwritable("замена", **self.unread(path, e)), applied=False) from e
+
+        observed: list[Again] = []
+
+        def again() -> None:        # первый отказ уже случился: цикл начинает с его паузы, а не с новой попытки
+            if observed:
+                raise observed.pop()
+            attempt()
+
+        try:
+            try:
+                attempt()
+                return
+            except Again as first:
+                observed.append(first)
+            policy = _files_door(declarations_root()).section(*FILES_REPLACE.section, schema=FILES_REPLACE.schema)
+            retry(again, policy, deadline=_clock() + policy.within_sec, replayable=True, told_max_sec=0.0,
+                  clock=_clock, sleep=_sleep, rng=_rng, mark=lambda: None)
+        except Again as e:          # временный отказ держался весь срок — его отказ с причиной ОС
+            raise e.refusal from e.__cause__
+        except OSError as e:
+            raise PlaceUnwritable("замена", **self.unread(path, e)) from e
 
     def create(self, path: str | Path, data: bytes | str, *, mode: int | None = None, secrets: bool = False,
                policy: WritePolicy | None = None) -> bool:
