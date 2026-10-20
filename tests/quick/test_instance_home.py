@@ -126,7 +126,12 @@ with live_server() as srv:
             while not _tty and not _ended:
                 _ready = {key.data for key, _ in _sel.select()}
                 if "tty" in _ready:
-                    _tty = os.read(_master, 1024)
+                    try:
+                        _tty = os.read(_master, 1024)
+                    except OSError:             # Linux после выхода лидера сессии — EIO
+                        _tty = b""
+                    if not _tty:                # конец терминала — не байт: на macOS мастер готов вечно (CI c9249e0, 900 с)
+                        _sel.unregister(_master)
                 elif "out" in _ready:
                     if not (_chunk := os.read(_child.stdout.fileno(), 4096)):
                         _ended = "конец вывода ребёнка"
