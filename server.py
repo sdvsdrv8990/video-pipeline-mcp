@@ -31,7 +31,7 @@ from core.observability import Logs, wire
 from core.firewall import Firewall, FirewallRequest, FirewallDecision
 from core.transport import Transport
 from core.transport.transport import declared_transport
-from core.transport.tunnel import declared_hostname
+from core.transport.tunnel import PROBE_HEADER, declared_hostname, probe_echo
 from core.reactions import Reactions
 from core.auth import (ENV_FILE, check_auth, digest_fingerprint, ensure_digest, rotate_token,
                        token_file_mode, token_fingerprint)
@@ -216,19 +216,29 @@ def _port_holder(port: int) -> str:
     return ""
 
 
-def tunnel_address_at_start(улика: dict, public_url: str | None, local: str) -> tuple[str, list[str], bool]:
+def tunnel_start_lines(улика: dict, public_url: str | None, origin: str,
+                       соединений: int) -> tuple[str, list[str], bool]:
     """Публичный адрес после подъёма туннеля, когда соединитель готов: статус для строки «Статус», строки консоли и ждёт
-    ли адрес итога надзора. Ответил наш процесс — адрес есть; ответил край (код есть, а нашего процесса нет) — край ещё не
-    принял адрес на новый соединитель: итог — следующая проба надзора, а не «адреса нет»; проба не прошла — отказ текстом
-    реестра (`cli_text`: текст и что делать владельцу), а не словарём фактов."""
+    ли адрес итога надзора. Ответил наш процесс — адрес есть; ответил край кодом края — край ещё не принял адрес на новый
+    соединитель: итог — следующая проба надзора, рядом — что проверить фактами (соединений с краем по /ready, адрес, куда
+    должен вести вход туннеля); ответил чужой процесс — ⚠️ «ведёт не к этому серверу» и куда должен вести вход; проба не
+    прошла — отказ текстом реестра (`cli_text`: текст и что делать владельцу), а не словарём фактов. `origin` — адрес,
+    который слушает сервер."""
+    local = f"{origin}/mcp"
     if улика["дошло"]:
         return (f"поднят → {public_url}/mcp",
                 ["", f"🌐 Публичный URL (вставь в коннектор Claude): {public_url}/mcp",
                  f"   проверено снаружи: {улика['текст']}"], False)
-    if улика["код"] is not None:
+    if улика["кто"] == "край":
         return ("соединитель готов, край ещё не принял адрес — проверка в надзоре",
                 ["", f"⏳ Публичный URL {public_url}/mcp: край туннеля ещё не принял адрес ({улика['текст']}) — "
-                     "проверю в надзоре.", f"   локально сервер работает: {local}"], True)
+                     "проверю в надзоре.",
+                 f"   соединитель готов: соединений с краем {соединений} (/ready); вход туннеля должен вести на {origin}",
+                 f"   локально сервер работает: {local}"], True)
+    if улика["кто"] == "чужой процесс":
+        return ("соединитель готов, публичный адрес ведёт не к этому серверу",
+                ["", f"⚠️  Публичный адрес {public_url}/mcp ведёт не к этому серверу.", f"   {улика['текст']}",
+                 f"   сервер слушает {origin}: вход туннеля должен вести сюда"], False)
     from core.reactions.reactions import cli_text
     сказано = (cli_text(улика["отказ"], CONFIG_PATH / "server_reactions.yaml").replace("\n", "\n   ")
                if улика.get("отказ") else f"проверено: {улика['текст']}")
@@ -431,24 +441,13 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
             return web.Response(status=202)
         return web.Response(text=response_text, content_type="application/json")
 
-    @web.middleware
-    async def security_headers(request: "web.Request", handler):
-        """Заголовки навешиваются и на отказы — 405/403 тоже уходят в браузер."""
-        try:
-            response = await handler(request)
-        except web.HTTPException as exc:
-            exc.headers.update(RESPONSE_HEADERS)
-            raise
-        response.headers.update(RESPONSE_HEADERS)
-        return response
-
     # Только POST: GET/OPTIONS отвечают 405 без CORS-заголовков, и preflight чужой страницы
     # проваливается — это и запрещает браузеру читать наши ответы (спека транспорта MCP).
     # Отказ маршрутизатора (чужой метод, неизвестный путь) наш обработчик не видит вовсе —
     # замер показал, что такие запросы уходили бесследно. Слушатель разбора протокола ловит то,
     # что отвергнуто ещё раньше: битый HTTP, разбухший заголовок.
     wire.attach(engine.trail)
-    app = web.Application(middlewares=[security_headers, wire.route_watch(engine.trail)])
+    app = web.Application(middlewares=[security_headers_middleware(), wire.route_watch(engine.trail)])
     app.router.add_post("/", handle_jsonrpc)
     app.router.add_post("/mcp", handle_jsonrpc)
 
@@ -489,8 +488,8 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
             st = await asyncio.to_thread(tunnel.status)
             улика = await asyncio.to_thread(tunnel.probe)
             if st["connected"]:
-                tunnel_status_str, строки, адрес_ждёт = tunnel_address_at_start(улика, public_url,
-                                                                               f"http://{host}:{port}/mcp")
+                tunnel_status_str, строки, адрес_ждёт = tunnel_start_lines(улика, public_url, f"http://{host}:{port}",
+                                                                          st["connections"])
                 print("\n".join(строки))
                 # Рекомендация: quick → named для продакшена — когда проба адреса не прошла.
                 if not улика["дошло"] and not адрес_ждёт and "trycloudflare.com" in (public_url or ""):
@@ -689,6 +688,27 @@ def main():
         said = (refused.facts.get("file"), refused.facts.get("details"), refused.message, refused.reason)
         print(" · ".join([f"ОТКАЗ СТАРТА: {refused.code}", *(str(part) for part in said if part)]), file=sys.stderr)
         raise SystemExit(2) from None
+
+
+def security_headers_middleware():
+    """Прослойка заголовков ответа: `RESPONSE_HEADERS` навешиваются и на отказы (405/403 тоже уходят в браузер), метка
+    прозвонки отражается только запросу, который принёс метку этого процесса (вызов-ответ, `probe_echo`), — и на отказы
+    маршрутизатора тоже. Внешняя к `wire.route_watch`: её заголовки получает и отказ маршрутизатора."""
+    from aiohttp import web
+
+    @web.middleware
+    async def security_headers(request: "web.Request", handler):
+        said = probe_echo(request.headers.get(PROBE_HEADER, ""))
+        headers = {**RESPONSE_HEADERS, PROBE_HEADER: said} if said else RESPONSE_HEADERS
+        try:
+            response = await handler(request)
+        except web.HTTPException as exc:
+            exc.headers.update(headers)
+            raise
+        response.headers.update(headers)
+        return response
+
+    return security_headers
 
 
 if __name__ == "__main__":

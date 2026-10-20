@@ -78,6 +78,9 @@
     quick_path: /quicktunnel
     quick_field: hostname
     pause_sec: 0.5                     # опрос готовности при подъёме; соединитель встаёт секунды (событий не шлёт)
+    # Коды только края Cloudflare: 520–526 и 530 (с ошибкой 1xxx, туннель — 1033) — developers.cloudflare.com
+    # support/troubleshooting/http-status-codes/cloudflare-5xx-errors. 500–504 отдаёт и сервер за краем — не улика края.
+    edge_statuses: [520, 521, 522, 523, 524, 525, 526, 530]
 
 # Ответ сервера метрик соединителя — дверью загрузчика в память (Fetcher.answer). Петля и http открыты ровно адресу
 # готовность.<поставщик>.metrics_address (дверь закрепляет хост и порт). Молчание или 503 — «ещё не готов», а не сбой.

@@ -572,7 +572,9 @@ class TunnelReadiness(BaseModel):
     его журнала. Сервер метрик соединителя садится на адрес, который назначает сервер (`metrics_flag metrics_address` в
     команде; адрес занят — громкий отказ, а не случайный порт поставщика), путь `ready_path` отвечает JSON, где поле
     `ready_field` — счёт соединений с краем (готов — больше нуля); путь `quick_path` — адрес quick-туннеля полем
-    `quick_field`. Пока соединитель встаёт, готовность спрашивается с паузой `pause_sec`: события об этом поставщик не шлёт."""
+    `quick_field`. Пока соединитель встаёт, готовность спрашивается с паузой `pause_sec`: события об этом поставщик не шлёт.
+    `edge_statuses` — коды, которые отдаёт только край поставщика (до нашего процесса запрос не дошёл): прозвонка без
+    отражённой метки судит по ним «край не принял», а не по заголовку `Server`, который край переписывает."""
 
     model_config = STRICT
 
@@ -583,6 +585,7 @@ class TunnelReadiness(BaseModel):
     quick_path: StrictStr
     quick_field: StrictStr
     pause_sec: float = Field(gt=0)
+    edge_statuses: Annotated[tuple[HttpStatus, ...], Listed, Field(min_length=1)]
 
 
 class RunnerDockerPoll(BaseModel):

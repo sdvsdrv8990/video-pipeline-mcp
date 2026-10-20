@@ -26,7 +26,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from core.environment import SECRETS
-from core.transport.tunnel import CloudflaredTunnel, TunnelCancelled, TunnelError
+from core.transport import tunnel as tunnel_module
+from core.transport.tunnel import PROBE_HEADER, CloudflaredTunnel, TunnelCancelled, TunnelError, probe_echo
 from tests.harness.live_server import declarations_copy
 
 
@@ -388,14 +389,12 @@ def test_first_attempt_retries():
 
 
 def test_probe_names_the_responder():
-    """Кто ответил по публичному адресу — судится ЗАГОЛОВКОМ, код лишь дополняет."""
-    край = CloudflaredTunnel._край_ответил
-    check("cloudflare в заголовке — край, при ЛЮБОМ коде",
-          all(край(код, "cloudflare") for код in (200, 405, 502, 530)))
-    check("свой заголовок — дошло до нас, даже на 5xx",
-          not any(край(код, "Python/3.14 aiohttp/3.9") for код in (200, 405, 500)))
-    check("заголовка нет: 5xx — край, наш транспорт таких на GET не отдаёт",
-          край(530, "") and край(502, "") and not край(405, ""))
+    """Кто ответил по публичному адресу — вызовом-ответом: метку этого процесса отражает только он и только её."""
+    своя = tunnel_module._PROBE_MARK
+    check("своя метка отражается — ответил этот процесс",
+          probe_echo(своя) == своя, probe_echo(своя))
+    check("чужая метка (соседний экземпляр за тем же туннелем), пустая, похожая — не отражаются",
+          not any(probe_echo(m) for m in (secrets.token_hex(16), "", своя[:-1], своя + "0", своя.upper(), "ё" * 32)))
 
     t = CloudflaredTunnel(port=8080); t.mode = "quick"; t._public_url = None
     улика = t.probe()
@@ -423,10 +422,13 @@ def test_probe_through_door():
 
     class Край:
         """Подставной публичный край: журнал запросов (IP, Host, SNI), вытянутые куски тела, часы события. Без ответа —
-        молчит: соединение и ответ съедают каждый свою фазу, которую дверь отдала транспорту."""
+        молчит: соединение и ответ съедают каждый свою фазу, которую дверь отдала транспорту. `за_краем` — кто отвечает
+        за краем: "наш" — наш сервер (отражает пришедшую метку), строка — соседний экземпляр (отражает свою), None —
+        сам край. `Server` край пишет свой в любом случае."""
 
-        def __init__(self, ответ=None, имена=None):
+        def __init__(self, ответ=None, имена=None, за_краем=None):
             self.ответ, self.имена, self.журнал, self.кусков, self.часы = ответ, имена or {}, [], 0, 0.0
+            self.за_краем = за_краем
 
         def resolve(self, host, port, *a, **k):
             return [(2, 1, 6, "", (self.имена.get(host, "104.16.230.132"), port))]
@@ -443,7 +445,9 @@ def test_probe_through_door():
                 self.часы += фаза["connect"] + фаза["read"]
                 raise httpx.ReadTimeout("молчит")
             код, сервер = self.ответ
-            return httpx.Response(код, headers={"Server": сервер}, content=self.тело())
+            метка = request.headers.get(PROBE_HEADER, "") if self.за_краем == "наш" else self.за_краем
+            return httpx.Response(код, headers={"Server": сервер, **({PROBE_HEADER: метка} if метка else {})},
+                                  content=self.тело())
 
     прежние = tuple(CloudflaredTunnel.__dict__[шов] for шов in ("transport", "resolve", "clock", "sleep"))
 
@@ -459,13 +463,25 @@ def test_probe_through_door():
         край = Край((530, "cloudflare"))
         улика = прозвонить("https://abc-1.trycloudflare.com", край)
         check("край отвечает 530 — «не дошло», кто — край; соединение на судимый IP, имя в Host и SNI; тело не вытянуто",
-              улика["дошло"] is False and улика["кто"] == "cloudflare" and край.кусков == 0
+              улика["дошло"] is False and улика["кто"] == "край" and край.кусков == 0
               and край.журнал == [("104.16.230.132", "abc-1.trycloudflare.com", "abc-1.trycloudflare.com")],
               (улика, край.журнал, край.кусков))
-        край = Край((405, "Python/3.14 aiohttp/3.9"))
-        улика = прозвонить("https://abc-1.trycloudflare.com", край)
-        check("наш процесс ответил 405 — «дошло»: код — улика, а не отказ двери; тело не вытянуто",
-              улика["дошло"] is True and улика["код"] == 405 and край.кусков == 0, (улика, край.кусков))
+        for код in (405, 401):
+            край = Край((код, "cloudflare"), за_краем="наш")
+            улика = прозвонить("https://abc-1.trycloudflare.com", край)
+            check(f"наш процесс ответил {код} через край, Server переписан краем на cloudflare — «дошло» по отражённой "
+                  "метке; тело не вытянуто",
+                  улика["дошло"] is True and улика["код"] == код and улика["кто"] == "наш процесс" and край.кусков == 0,
+                  (улика, край.кусков))
+        for случай, ответ, за_краем in (
+                ("соседний экземпляр за тем же туннелем отражает свою метку", (405, "cloudflare"), secrets.token_hex(16)),
+                ("чужая страница 200 без метки", (200, "cloudflare"), None),
+                ("502 без метки: его отдаёт и сервер за краем, кода края нет", (502, "cloudflare"), None),
+                ("ответ без метки и без Server края", (405, "Python/3.14 aiohttp/3.9"), None)):
+            улика = прозвонить("https://abc-1.trycloudflare.com", Край(ответ, за_краем=за_краем))
+            check(f"{случай} — «не дошло», ответил чужой процесс, а не «край не принял»",
+                  улика["дошло"] is False and улика["кто"] == "чужой процесс" and str(ответ[0]) in улика["текст"],
+                  улика)
         край = Край((405, "aiohttp"), имена={"abc-1.trycloudflare.com": "10.0.0.9"})
         улика = прозвонить("https://abc-1.trycloudflare.com", край)
         check("публичное имя разрешилось во внутреннюю сеть — «не дошло» с отказом двери, запроса нет",
@@ -479,7 +495,7 @@ def test_probe_through_door():
             улика = прозвонить(адрес, край)
             check(f"quick: {случай} — хост судится разобранным и целиком, туда ни запроса",
                   улика["дошло"] is False and not край.журнал, (улика, край.журнал))
-        край = Край((405, "aiohttp"))
+        край = Край((405, "aiohttp"), за_краем="наш")
         улика = прозвонить(None, край, режим="named", hostname="mcp.example.com")
         check("named: прозвонка идёт ровно на объявленный hostname",
               улика["дошло"] is True and [h for _, h, _ in край.журнал] == ["mcp.example.com"], (улика, край.журнал))
@@ -871,6 +887,51 @@ def test_metrics_door_pins_declared_address():
           МЕТРИКИ in занят and "другой процесс" in занят and свободен == "пущен", (занят[:90], свободен[:60]))
 
 
+def test_server_echoes_probe_mark():
+    """Сервер отражает метку прозвонки (вызов-ответ): прослойка `security_headers_middleware` и `wire.route_watch` сервера
+    — те же, что в run_server, маршрут — свой (POST /mcp). Своя метка отражается и на отказах маршрутизатора (405, 404);
+    чужая и пустая — нет; метки нет ни в теле, ни в журнале отказов."""
+    import asyncio
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    import server
+    from core.observability import wire
+
+    class Журнал:
+        def __init__(self):
+            self.записи: list[str] = []
+
+        def refusal(self, *args, **kw):
+            self.записи.append(repr((args, kw)))
+
+    своя, журнал = tunnel_module._PROBE_MARK, Журнал()
+
+    async def прогон():
+        app = web.Application(middlewares=[server.security_headers_middleware(), wire.route_watch(журнал)])
+        app.router.add_post("/mcp", lambda request: web.json_response({"error": "ключ"}, status=401))
+        ответы = {}
+        async with TestClient(TestServer(app)) as клиент:
+            for имя, метод, путь, метка in (("405 своя", "GET", "/mcp", своя), ("404 своя", "GET", "/нет", своя),
+                                            ("401 своя", "POST", "/mcp", своя), ("405 чужая", "GET", "/mcp",
+                                                                                 secrets.token_hex(16)),
+                                            ("405 без метки", "GET", "/mcp", "")):
+                r = await клиент.request(метод, путь, headers={PROBE_HEADER: метка} if метка else {})
+                ответы[имя] = (r.status, r.headers.get(PROBE_HEADER), r.headers.get("Server"), await r.text())
+        return ответы
+
+    ответы = asyncio.run(прогон())
+    check("своя метка отражается на 405, 404 маршрутизатора и на 401 обработчика; защитные заголовки на месте",
+          all(ответы[и][1] == своя and ответы[и][2] == "mcp" for и in ("405 своя", "404 своя", "401 своя"))
+          and [ответы[и][0] for и in ("405 своя", "404 своя", "401 своя")] == [405, 404, 401], ответы)
+    check("чужая метка и запрос без метки — ответ без заголовка метки",
+          ответы["405 чужая"][1] is None and ответы["405 без метки"][1] is None, ответы)
+    check("метки нет ни в одном теле ответа и ни в одной записи журнала отказов",
+          журнал.записи and not any(своя in тело for *_, тело in ответы.values())
+          and not any(своя in запись for запись in журнал.записи), (журнал.записи, ответы))
+
+
 def test_server_start_lines():
     """Строки консоли о публичном адресе (server.py): ответил наш процесс — адрес есть; ответил край сразу после «готов» —
     «край ещё не принял адрес», итог — следующей пробой надзора, а не «адреса нет»; проба не прошла — текст реестра
@@ -878,21 +939,32 @@ def test_server_start_lines():
     import server
     from core.contracts import ContractError
 
-    адрес, локально = "https://mcp.example.com", "http://127.0.0.1:8080/mcp"
-    дошло = {"дошло": True, "код": 405, "кто": "aiohttp", "текст": "ответил наш процесс (405)"}
-    край = {"дошло": False, "код": 530, "кто": "cloudflare",
-            "текст": "край Cloudflare отвечает 530 — до нашего процесса запрос не доходит"}
+    адрес, сервер = "https://mcp.example.com", "http://127.0.0.1:8080"
+    дошло = {"дошло": True, "код": 405, "кто": "наш процесс", "текст": "ответил наш процесс (405)"}
+    край = {"дошло": False, "код": 530, "кто": "край",
+            "текст": "край туннеля отвечает 530 — до нашего процесса запрос не доходит"}
+    чужой = {"дошло": False, "код": 200, "кто": "чужой процесс",
+             "текст": "на адресе туннеля ответил чужой процесс (200): метки этого сервера в ответе нет — туннель ведёт не "
+                      "к нему (другой процесс на порту или старая настройка входа туннеля)"}
     отказ = ContractError("TUNNEL_PROBE_FAILED", facts={"host": "mcp.example.com", "status": "ReadTimeout"})
     нет = {"дошло": False, "код": None, "кто": "нет ответа", "отказ": отказ, "текст": "TUNNEL_PROBE_FAILED (ReadTimeout)"}
 
-    статус, строки, ждёт = server.tunnel_address_at_start(дошло, адрес, локально)
+    статус, строки, ждёт = server.tunnel_start_lines(дошло, адрес, сервер, 2)
     check("старт: ответил наш процесс — 🌐 адрес для коннектора, итог надзора не нужен",
           "🌐" in "\n".join(строки) and not ждёт and статус.startswith("поднят"), (статус, строки, ждёт))
-    статус, строки, ждёт = server.tunnel_address_at_start(край, адрес, локально)
+    статус, строки, ждёт = server.tunnel_start_lines(край, адрес, сервер, 2)
     текст = "\n".join(строки)
     check("старт: 530 сразу после «готов» — «край ещё не принял адрес», итог — в надзоре, а не «адреса нет»",
           ждёт and "ещё не принял адрес" in текст and "НЕТ" not in текст, (статус, строки))
-    статус, строки, ждёт = server.tunnel_address_at_start(нет, адрес, локально)
+    check("старт, край не принял: что проверить — фактами (соединений с краем по /ready и адрес, куда должен вести вход)",
+          "соединений с краем 2 (/ready)" in текст and f"вход туннеля должен вести на {сервер}" in текст, текст)
+    статус, строки, ждёт = server.tunnel_start_lines(чужой, адрес, сервер, 2)
+    текст = "\n".join(строки)
+    check("старт: ответил чужой процесс — ⚠️ «ведёт не к этому серверу» и куда должен вести вход, а не «край ещё не "
+          "принял» и не ожидание надзора",
+          not ждёт and "⚠️" in текст and "ведёт не к этому серверу" in текст and f"сервер слушает {сервер}" in текст
+          and "ещё не принял" not in текст, (статус, строки))
+    статус, строки, ждёт = server.tunnel_start_lines(нет, адрес, сервер, 2)
     текст = "\n".join(строки)
     check("старт: проба не прошла — текст реестра TUNNEL_PROBE_FAILED и что делать владельцу, а не словарь фактов",
           not ждёт and "Публичный адрес mcp.example.com: проверка не прошла (ReadTimeout)" in текст
@@ -922,6 +994,7 @@ def main():
     test_secret_in_declaration_refused()
     test_real_binary_takes_token_from_env()
     test_metrics_door_pins_declared_address()
+    test_server_echoes_probe_mark()
     test_server_start_lines()
     print()
     passed, total = sum(results), len(results)
