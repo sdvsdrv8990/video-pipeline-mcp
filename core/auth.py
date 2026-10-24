@@ -76,20 +76,25 @@ def ensure_digest(env_path: Path, env: Mapping[str, str] | None = None) -> tuple
         это единственный момент, когда значение вообще существует в открытом виде.
     """
     env = os.environ if env is None else env
-    from_env = (env.get(TOKEN_VAR) or "").strip()
-    if from_env:
-        return token_digest(from_env), ""
-    file_vars = _read_env(env_path)
-    stored = file_vars.get(DIGEST_VAR, "").strip()
-    if stored:
-        return stored, ""
-    legacy = file_vars.get(TOKEN_VAR, "").strip()
-    if legacy:
-        _write_digest(env_path, token_digest(legacy))   # ключ прежний, открытая копия убрана
-        return token_digest(legacy), ""
+    digest = stored_digest(env_path, env)
+    if digest:
+        if not (env.get(TOKEN_VAR) or "").strip() and not _read_env(env_path).get(DIGEST_VAR, "").strip():
+            _write_digest(env_path, digest)     # ключ прежний, открытая копия убрана
+        return digest, ""
     token = secrets.token_urlsafe(TOKEN_BYTES)
     _write_digest(env_path, token_digest(token))
     return token_digest(token), token
+
+
+def stored_digest(env_path: Path, env: Mapping[str, str] | None = None) -> str:
+    """Действующий отпечаток ключа без выпуска и без записи: переменная окружения → отпечаток в `.env` → открытый
+    ключ в `.env`; ключа нет — пусто."""
+    env = os.environ if env is None else env
+    from_env = (env.get(TOKEN_VAR) or "").strip()
+    if from_env:
+        return token_digest(from_env)
+    file_vars = _read_env(env_path)
+    return file_vars.get(DIGEST_VAR, "").strip() or token_digest(file_vars.get(TOKEN_VAR, "").strip())
 
 
 def rotate_token(env_path: Path) -> str:

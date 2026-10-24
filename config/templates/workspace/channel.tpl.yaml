@@ -16,5 +16,8 @@ channel:
     # Конфиг канала живёт ЛИСТАМИ в channel_data.xlsx (7 листов со строками-дефолтами),
     # отдельного YAML у канала больше нет: одна книга на сущность.
     - { name: "project_memory.md", kind: file, required: true }
+    # Снимок и очередь слоя таблиц: имена берёт отсюда сервер, по role.
+    - { name: "channel_read.json", kind: file, role: snapshot, required: true, content: "{}" }
+    - { name: "channel_write.json", kind: file, role: queue, required: true, content: "[]" }
   children:
     - { type: video, container: "videos/" }

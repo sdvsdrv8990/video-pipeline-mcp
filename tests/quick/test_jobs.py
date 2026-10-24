@@ -367,7 +367,7 @@ def _waiting_calls16() -> tuple[list, bool, list]:
     gate, waiting = threading.Event(), {1: asyncio.Event(), 2: asyncio.Event()}
 
     def work(pulse):
-        gate.wait(15)                           # дольше потолка наблюдения: работа идёт, пока проба смотрит
+        gate.wait()                             # работа идёт, пока проба смотрит: ворота открывает сама проба
         return {"ok": 1}
 
     async def generate(n: int):
@@ -391,10 +391,11 @@ def _waiting_calls16() -> tuple[list, bool, list]:
         waits = []
         for n in (1, 2):                        # второй входит, когда первый уже ждёт итог: гонки входов здесь нет
             waits.append(asyncio.create_task(eng.call("media_generate", {"n": n})))
-            try:
-                await asyncio.wait_for(waiting[n].wait(), 5)
-            except TimeoutError:
-                pass
+            # Событием, а не часами: вызов вошёл в ожидание итога или кончился сам (отказ) — без своего предела, зависание
+            # ловит предел набора; прежний срок 5 с под нагрузкой гейта отпускал пробу до входа и мерил не то состояние.
+            entered = asyncio.create_task(waiting[n].wait())
+            await asyncio.wait({entered, waits[-1]}, return_when=asyncio.FIRST_COMPLETED)
+            entered.cancel()
         calls = [await eng.call(name, {}) for name in ("media_models", "media_model_install")]
         taken = {k: [eng.slots.take(k) for _ in range(b.max_concurrent or 0)] for k, b in RES16.classes.items()
                  if b.max_concurrent}
@@ -954,14 +955,30 @@ gate_hidden = threading.Event()
 hidden7 = node7.begin("скрытая", {"x": 3}, "любой", held(gate_hidden, {"ok": 1}))["task_id"]
 files7 = node7.files
 node7.files = Hiding(files7, f"{hidden7}.json")
+seen7: list[tuple] = []         # что поиск двойника прочёл или каким отказом: улика CI Windows 3.11 (c9249e0, 8e6e5c9)
+load7 = node7._load
+
+
+def _spy7(path, _load=load7):
+    try:
+        record = _load(path)
+    except Exception as e:
+        seen7.append((Path(path).name, type(e).__name__, getattr(e, "winerror", None), str(e)[:80]))
+        raise
+    seen7.append((Path(path).name, record.task.status, record.fingerprint[:8], record.created))
+    return record
+
+
+node7._load = _spy7
 twin7 = node7.begin("скрытая", {"x": 3}, "любой", held(threading.Event(), {"ok": 2}))["task_id"]
+node7._load = load7
 listed7 = {entry["task_id"] for entry in node7.status(tool="скрытая")}
 node7.files = files7
 gate_hidden.set()
 node7.settle(hidden7, 5)
 check("обход каталога не увидел имя записи живого задания (так прячет его os.replace на btrfs) — задание найдено по "
       "замку записи: повтор — тот же id (AD-21), список его называет", twin7 == hidden7 and hidden7 in listed7,
-      (hidden7, twin7, sorted(listed7)))
+      (hidden7, twin7, sorted(listed7), [s for s in seen7 if s[0].startswith(hidden7)]))
 
 RES7 = Resources.model_validate({
     "default": "пробный", "classes": {"пробный": {"offload": True, "max_concurrent": 1, "retry_after_sec": 7}},

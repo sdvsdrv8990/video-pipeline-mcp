@@ -519,6 +519,82 @@ def main():
           (written, [hex(f) for f in opened]))  # открытие каталога для сброса на диск (O_RDONLY) — не запись, флага не требует
     shutil.rmtree(ws, ignore_errors=True)
 
+    print("== Замена на Windows: временный отказ ОС повторяется в срок files.yaml, настоящий запрет — нет ==")
+    # Причина рождается в os.replace (антивирус держит свежий файл — CI и стенд Windows 21.10), следствие — на двери слоя.
+    import core.paths as paths_module
+    within = paths_module._files_door(paths_module.declarations_root()).section(
+        *paths_module.FILES_REPLACE.section, schema=paths_module.FILES_REPLACE.schema).within_sec
+    ws = Path(tempfile.mkdtemp(prefix="swap_"))
+    files = Files(ws)
+    files.replace("a.txt", "старое")
+    real_replace = os.replace
+    seams = (paths_module._clock, paths_module._sleep, paths_module._rng)
+    now, slept = [0.0], []
+
+    def _slept(sec):
+        slept.append(sec)
+        now[0] += sec
+
+    paths_module._clock, paths_module._sleep = (lambda: now[0]), _slept
+    paths_module._rng = SimpleNamespace(random=lambda: 0.5)
+
+    def swap_run(times, winerror, call):
+        calls: list[str] = []
+
+        def refusing(src, dst):
+            calls.append(dst)
+            if len(calls) <= times:
+                denied = PermissionError(13, "Access is denied")
+                if winerror is not None:    # код Windows у исключения — только на Windows: так его ставит ОС
+                    denied.winerror = winerror
+                raise denied
+            return real_replace(src, dst)
+
+        os.replace = refusing
+        slept.clear()
+        now[0] = 0.0
+        try:
+            call()
+            return "ok", len(calls)
+        except ContractError as e:
+            return e.code, len(calls)
+        except OSError as e:
+            return type(e).__name__, len(calls)
+        finally:
+            os.replace = real_replace
+
+    try:
+        got = swap_run(2, 5, lambda: files.replace("a.txt", "новое"))
+        check("Windows: замена, дважды отказанная WinError 5 (файл держит антивирус), прошла третьей попыткой; две паузы "
+              "своей политики", got == ("ok", 3) and (ws / "a.txt").read_text(encoding="utf-8") == "новое"
+              and len(slept) == 2, (got, slept))
+        files.replace("a.txt", "прежнее")
+        got = swap_run(99, 32, lambda: files.replace("a.txt", "не ляжет"))
+        check("Windows: WinError 32 держится дольше срока — PLACE_UNWRITABLE, под именем прежнее, паузы не дольше "
+              "within_sec", got[0] == "PLACE_UNWRITABLE" and got[1] >= 2 and sum(slept) < within
+              and (ws / "a.txt").read_text(encoding="utf-8") == "прежнее", (got, slept, within))
+        got = swap_run(1, 1314, lambda: files.replace("a.txt", "не ляжет"))
+        check("Windows: отказ доступа не из временных (WinError 1314) — без повтора, PLACE_UNWRITABLE сразу",
+              got == ("PLACE_UNWRITABLE", 1) and not slept, (got, slept))
+        got = swap_run(1, None, lambda: files.replace("a.txt", "не ляжет"))
+        check("не Windows (у отказа нет кода winerror): отказ доступа — настоящий запрет прав, без повтора", got == ("PLACE_UNWRITABLE", 1) and not slept,
+              (got, slept))
+        files.remnant("b.bin", "t1").write_bytes(b"\x00\x01")
+        got = swap_run(1, 5, lambda: files.publish("b.bin", "t1"))
+        check("Windows: публикация остатка тоже повторяет временный отказ — файл на месте",
+              got == ("ok", 2) and (ws / "b.bin").read_bytes() == b"\x00\x01", got)
+        held = files.remnant("b.bin", "t2")
+        held.write_bytes(b"\x02")
+        published = [swap_run(99, 32, lambda: files.publish("b.bin", "t2")),
+                     swap_run(1, None, lambda: files.publish("b.bin", "t2"))]
+        check("публикация, которой диск отказал (временный отказ дольше срока, настоящий запрет), — PLACE_UNWRITABLE "
+              "одним обработчиком, а не сырой PermissionError; остаток владельца цел, под именем прежнее",
+              [code for code, _ in published] == ["PLACE_UNWRITABLE", "PLACE_UNWRITABLE"] and held.read_bytes() == b"\x02"
+              and (ws / "b.bin").read_bytes() == b"\x00\x01", published)
+    finally:
+        paths_module._clock, paths_module._sleep, paths_module._rng = seams
+    shutil.rmtree(ws, ignore_errors=True)
+
     print(f"\n{'=' * 50}")
     print(f"РЕЗУЛЬТАТ: {_checks - len(_fails)}/{_checks} прошло")
     if _fails:

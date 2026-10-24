@@ -54,12 +54,19 @@ class TableMaterializer:
         """Декларация книги из каталога схем этого материализатора — через общую дверь книг (`book_schema`)."""
         return book_schema(self.schemas_dir, book)
 
-    def materialize(self, book: str, path: str) -> dict:
+    def materialize(self, book: str, path: str, entity: str = "") -> dict:
         """Создать книгу по декларации: листы → столбцы → формулы → валидации.
 
+        `entity` — сущность, чей снимок получает схемы листов; пусто — каталог книги.
         Идемпотентности НЕТ намеренно: существующая книга — это данные владельца,
         молча перезаписывать её нельзя (ExcelEngine отдаёт FILE_EXISTS).
         """
+        entity = entity or path.rpartition("/")[0]
+        if self.tables is not None:
+            try:
+                self.tables.state.snapshot_file(entity)     # снимку некуда лечь — отказ до книги, а не книга без схем
+            except ContractError as e:
+                raise TableMaterializerError(e.code, facts=e.facts) from e
         schema = self.load_schema(book)
         rules = self._degrade_rules(schema)
         _, language = declared_language(TableMaterializerError)
@@ -91,9 +98,9 @@ class TableMaterializer:
         except ExcelError as e:
             # Ошибка формы книги — код движка Excel уже в реестре реакций, не переобёртываем.
             raise TableMaterializerError(e.code, e.message, e.reason, e.suggested_tool) from e
-        if self.tables is not None:   # снимок лежит рядом с книгой — в каталоге её сущности
+        if self.tables is not None:
             formats = book_defaults(self.schemas_dir)[1].formats
-            self.tables.declare_sheets(path.rpartition("/")[0], schema, {
+            self.tables.declare_sheets(entity, schema, {
                 (sheet.name, col.name): self.fallback(col, rules)
                 for sheet in schema.sheets for col in sheet.columns if col.flag == "F" and col.formula}, {
                 (sheet.name, col.name): formats[col.format].pattern
@@ -122,7 +129,7 @@ class TableMaterializer:
                                "message": "В записи tables_pending нет table_template или path."})
                 continue
             try:
-                result = self.materialize(book, path)
+                result = self.materialize(book, path, item.get("entity", ""))
                 result["file_id"] = item.get("file_id", "")
                 materialized.append(result)
             except TableMaterializerError as e:

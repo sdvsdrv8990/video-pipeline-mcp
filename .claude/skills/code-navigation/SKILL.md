@@ -116,7 +116,6 @@ workspace/             ДАННЫЕ пользователя. Кода тут н
 | `MCP_AUTH_TOKEN` | ключ (иначе сервер выпускает себе сам) | `core/auth.py` |
 | `MCP_ALLOWED_HOSTS` / `MCP_ALLOWED_ORIGINS` | кто вправе называться нашим хостом / источником | `server.py`, проверка `Host` идёт ПЕРВОЙ |
 | `MCP_HOST` / `MCP_PORT` | адрес слушателя | `server.py` |
-| `MCP_ALLOW_NO_AUTH` | 🟠 калитка `F74`, помечена на снос — в тестах не использовать | `server.py` |
 
 Тестовая инфраструктура: `tests/harness/` (живой сервер, JSON-RPC, консоль, прокси с ключом),
 `tests/test_suites.py` (раннер: новый `tests/**/test_*.py` попадает в гейт сам).

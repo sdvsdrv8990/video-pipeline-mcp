@@ -369,8 +369,9 @@ check("нет файла — FileNotFoundError, как ждут читатели
 (ws / "_id_registry.json").write_text('{"entities": {}}', encoding="utf-8")
 (ws / "runner").mkdir()
 (ws / "runner" / "state.json").write_text('{"token": "t"}', encoding="utf-8")
-(ws / "installed.yaml").write_text("models: []\n", encoding="utf-8")
-(ws / "notes" / "lines.md").write_text("раз\nдва\n", encoding="utf-8")
+# Ожидания ниже — байты с «\n»: без newline Windows пишет «\r\n», и краснела бы запись, а не дверь (CI c9249e0 §7).
+(ws / "installed.yaml").write_text("models: []\n", encoding="utf-8", newline="\n")
+(ws / "notes" / "lines.md").write_text("раз\nдва\n", encoding="utf-8", newline="\n")
 (ws / ".env").write_text("A=1\n", encoding="utf-8")
 keys = ChannelSecrets(ws, ws / "home")
 (ws / "home").mkdir()

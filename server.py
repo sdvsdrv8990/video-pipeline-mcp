@@ -31,10 +31,10 @@ from core.observability import Logs, wire
 from core.firewall import Firewall, FirewallRequest, FirewallDecision
 from core.transport import Transport
 from core.transport.transport import declared_transport
-from core.transport.tunnel import declared_hostname
+from core.transport.tunnel import PROBE_HEADER, declared_hostname, probe_echo
 from core.reactions import Reactions
-from core.auth import (ENV_FILE, check_auth, digest_fingerprint, ensure_digest, rotate_token,
-                       token_file_mode, token_fingerprint)
+from core.auth import (ENV_FILE, check_auth, digest_fingerprint, ensure_digest, presented_matches, rotate_token,
+                       stored_digest, token_file_mode, token_fingerprint)
 from core.ids import IDGenerator
 from core.owner_only import superuser
 from core.state import StateManager
@@ -102,13 +102,10 @@ def _allowed_hosts() -> set:
 # Значения, о которых уже сообщили: чужая вкладка в цикле иначе забьёт консоль владельца.
 _REPORTED_ORIGINS: set = set()
 
-# Ключ сервер выдаёт себе сам (см. core/auth). Пустой токен больше НЕ означает
-# «auth отключена» — это fail-closed: без ключа сервер не стартует, если явно не разрешено.
+# Ключ сервер выдаёт себе сам (см. core/auth); без ключа сервер не стартует (fail-closed), работы без ключа нет.
 ENV_PATH = BASE_PATH / ENV_FILE
 # Сервер держит ОТПЕЧАТОК ключа, не значение — сравнение идёт по хэшу.
 MCP_AUTH_DIGEST = ""
-# Явная и громкая калитка для локальной разработки и тестов (по умолчанию закрыта).
-ALLOW_NO_AUTH = os.environ.get("MCP_ALLOW_NO_AUTH", "") == "1"
 # Суперпользователь превращает любую дыру инструмента в захват машины; калитка — только для одноразовой машины.
 ALLOW_ROOT = os.environ.get("MCP_ALLOW_ROOT", "") == "1"
 
@@ -216,34 +213,6 @@ def _port_holder(port: int) -> str:
     return ""
 
 
-def tunnel_address_at_start(улика: dict, public_url: str | None, local: str) -> tuple[str, list[str], bool]:
-    """Публичный адрес после подъёма туннеля, когда соединитель готов: статус для строки «Статус», строки консоли и ждёт
-    ли адрес итога надзора. Ответил наш процесс — адрес есть; ответил край (код есть, а нашего процесса нет) — край ещё не
-    принял адрес на новый соединитель: итог — следующая проба надзора, а не «адреса нет»; проба не прошла — отказ текстом
-    реестра (`cli_text`: текст и что делать владельцу), а не словарём фактов."""
-    if улика["дошло"]:
-        return (f"поднят → {public_url}/mcp",
-                ["", f"🌐 Публичный URL (вставь в коннектор Claude): {public_url}/mcp",
-                 f"   проверено снаружи: {улика['текст']}"], False)
-    if улика["код"] is not None:
-        return ("соединитель готов, край ещё не принял адрес — проверка в надзоре",
-                ["", f"⏳ Публичный URL {public_url}/mcp: край туннеля ещё не принял адрес ({улика['текст']}) — "
-                     "проверю в надзоре.", f"   локально сервер работает: {local}"], True)
-    from core.reactions.reactions import cli_text
-    сказано = (cli_text(улика["отказ"], CONFIG_PATH / "server_reactions.yaml").replace("\n", "\n   ")
-               if улика.get("отказ") else f"проверено: {улика['текст']}")
-    return ("соединитель готов, проверка публичного адреса не прошла",
-            ["", "⚠️  Публичный адрес не подтверждён: туннель соединился, проверка снаружи не прошла.", f"   {сказано}",
-             f"   локально сервер работает: {local}"], False)
-
-
-def tunnel_address_verdict(улика: dict, public_url: str | None) -> str:
-    """Итог публичного адреса пробой надзора — строка консоли: ответил наш процесс — 🟢, иначе — ⚠️ с уликой."""
-    if улика["дошло"]:
-        return f"🟢 [tunnel] публичный адрес отвечает → {public_url}/mcp ({улика['текст']})"
-    return f"⚠️  [tunnel] публичный адрес НЕ отвечает: {улика['текст']} — локально сервер работает"
-
-
 async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = False):
     """Запуск сервера.
 
@@ -253,27 +222,24 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
         use_tunnel: Поднять туннель вместе с сервером
     """
     global MCP_AUTH_DIGEST
-    if not ALLOW_NO_AUTH:
-        MCP_AUTH_DIGEST, issued = ensure_digest(ENV_PATH)
-        if not MCP_AUTH_DIGEST:
-            print(f"ОТКАЗ СТАРТА: не удалось получить ключ доступа ({ENV_PATH}).", file=sys.stderr)
-            print("Задай MCP_AUTH_TOKEN или дай серверу право создать .env; "
-                  "работа без ключа — только с MCP_ALLOW_NO_AUTH=1.", file=sys.stderr)
-            raise SystemExit(2)
-        if issued:
-            print("─" * 60)
-            print(f"Выпущен ключ доступа (в {ENV_FILE} — только хэш, права 0600), "
-                  f"отпечаток {token_fingerprint(issued)}")
-            if sys.stdout.isatty():
-                # Единственный момент, когда значение вообще существует: дальше его негде взять.
-                print(f"  {issued}")
-                print("Вставь в коннекторе Claude AI Web: Request headers →")
-                print("  authorization: Bearer <ключ>    (или x-api-key: <ключ>)")
-                print("СОХРАНИ СЕЙЧАС: восстановить нельзя, только перевыпустить.")
-            else:
-                print("Запуск не из терминала — значение не печатаем, чтобы не осело в логе.")
-                print("Выпусти ключ заново в терминале: server.py --rotate-key")
-            print("─" * 60)
+    MCP_AUTH_DIGEST, issued = ensure_digest(ENV_PATH)
+    if not MCP_AUTH_DIGEST:
+        print(f"ОТКАЗ СТАРТА: не удалось получить ключ доступа ({ENV_PATH}).", file=sys.stderr)
+        print("Задай MCP_AUTH_TOKEN или дай серверу право создать .env.", file=sys.stderr)
+        raise SystemExit(2)
+    if issued:
+        print("─" * 60)
+        print(f"Выпущен ключ доступа (в {ENV_FILE} — только хэш, права 0600), "
+              f"отпечаток {token_fingerprint(issued)}")
+        if sys.stdout.isatty():
+            # Единственный момент, когда значение вообще существует: дальше его негде взять.
+            print(f"  {issued}")
+            print("Вставь в коннекторе Claude AI Web: Заголовки запроса → x-api-key: <ключ>")
+            print("СОХРАНИ СЕЙЧАС: восстановить нельзя, только перевыпустить.")
+        else:
+            print("Запуск не из терминала — значение не печатаем, чтобы не осело в логе.")
+            print("Выпусти ключ заново в терминале: server.py --rotate-key")
+        print("─" * 60)
 
     # Битое объявление туннеля — отказ старта: сервер, отвечающий 403 на каждый запрос через туннель, хуже неподнятого.
     allowed_hosts = _allowed_hosts()
@@ -289,11 +255,8 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
     print(f"Файрвол: активен (config: {'загружен' if (CONFIG_PATH / 'firewall.yaml').exists() else 'дефолт'})")
     print(f"Браузер: Origin петлевой{' + ' + ', '.join(origins) if origins else ''}"
           f" (transport.yaml, MCP_ALLOWED_ORIGINS), без Origin — пускаем, тело только {JSON_CONTENT_TYPE}")
-    if ALLOW_NO_AUTH:
-        print("Аутентификация: ⚠ ОТКЛЮЧЕНА (MCP_ALLOW_NO_AUTH=1) — только локальная разработка")
-    else:
-        print(f"Аутентификация: активна (Authorization: Bearer / X-Api-Key), "
-              f"отпечаток {digest_fingerprint(MCP_AUTH_DIGEST)} в {ENV_FILE} (0600, значения нет)")
+    print(f"Аутентификация: активна (Authorization: Bearer / X-Api-Key), "
+          f"отпечаток {digest_fingerprint(MCP_AUTH_DIGEST)} в {ENV_FILE} (0600, значения нет)")
     print()
 
     from aiohttp import web
@@ -363,12 +326,11 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
 
         # Аутентификация ДО файрвола. Принимаем оба заголовка из allowlist коннектора
         # Claude AI Web (Authorization: Bearer / X-Api-Key) — иначе клиент не сможет прислать ключ.
-        if not ALLOW_NO_AUTH:
-            deny = check_auth(request.headers, MCP_AUTH_DIGEST)
-            if deny:
-                return _refuse("identity", deny, -32001, 401, request,
-                               request_id=req_data.get("id") if isinstance(req_data, dict) else None,
-                               rpc=req_data.get("method", "") if isinstance(req_data, dict) else "")
+        deny = check_auth(request.headers, MCP_AUTH_DIGEST)
+        if deny:
+            return _refuse("identity", deny, -32001, 401, request,
+                           request_id=req_data.get("id") if isinstance(req_data, dict) else None,
+                           rpc=req_data.get("method", "") if isinstance(req_data, dict) else "")
 
         # Пакет JSON-RPC (массив) файрвол судит поэлементно: иначе элементы пакета прошли бы мимо него. Любой элемент не
         # пропущен — отказ всему пакету (fail-closed). params не объект — в файрвол пустым: транспорт ответит −32602.
@@ -431,24 +393,13 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
             return web.Response(status=202)
         return web.Response(text=response_text, content_type="application/json")
 
-    @web.middleware
-    async def security_headers(request: "web.Request", handler):
-        """Заголовки навешиваются и на отказы — 405/403 тоже уходят в браузер."""
-        try:
-            response = await handler(request)
-        except web.HTTPException as exc:
-            exc.headers.update(RESPONSE_HEADERS)
-            raise
-        response.headers.update(RESPONSE_HEADERS)
-        return response
-
     # Только POST: GET/OPTIONS отвечают 405 без CORS-заголовков, и preflight чужой страницы
     # проваливается — это и запрещает браузеру читать наши ответы (спека транспорта MCP).
     # Отказ маршрутизатора (чужой метод, неизвестный путь) наш обработчик не видит вовсе —
     # замер показал, что такие запросы уходили бесследно. Слушатель разбора протокола ловит то,
     # что отвергнуто ещё раньше: битый HTTP, разбухший заголовок.
     wire.attach(engine.trail)
-    app = web.Application(middlewares=[security_headers, wire.route_watch(engine.trail)])
+    app = web.Application(middlewares=[security_headers_middleware(), wire.route_watch(engine.trail)])
     app.router.add_post("/", handle_jsonrpc)
     app.router.add_post("/mcp", handle_jsonrpc)
 
@@ -476,41 +427,19 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
     # Поднимаем туннель вместе с сервером (одной командой).
     tunnel = None
     tunnel_status_str = "нет"
-    адрес_ждёт = False      # соединитель готов, а за адрес ещё отвечал край: итог даст следующая проба надзора
+    цикл = TunnelCycle(f"http://{host}:{port}")
     if use_tunnel:
         from core.transport.tunnel import CloudflaredTunnel, TunnelCancelled
         tunnel = CloudflaredTunnel(port=port, config_path=CONFIG_PATH / "tunnel.yaml")
         try:
             # В потоке: подъём длится попытками по сроку, а цикл событий должен услышать Ctrl+C сразу (отмена задачи).
-            public_url = await asyncio.to_thread(tunnel.start)
-            # Статус спрашивается ДВАЖДЫ и у разных свидетелей: сервер метрик соединителя говорит, что соединения с краем
-            # есть, а проба — доходит ли запрос снаружи до нашего процесса. Край начинает вести адрес на новый соединитель
-            # не сразу: его ответ за нас сразу после «готов» — «ещё не принял», а итог скажет проба надзора.
+            await asyncio.to_thread(tunnel.start)
+            # Соединения с краем называет сервер метрик соединителя, а доходит ли запрос снаружи до нас — проба; край
+            # начинает вести адрес на новый соединитель не сразу, поэтому фазу дальше ведёт цикл надзора (TunnelCycle).
             st = await asyncio.to_thread(tunnel.status)
-            улика = await asyncio.to_thread(tunnel.probe)
-            if st["connected"]:
-                tunnel_status_str, строки, адрес_ждёт = tunnel_address_at_start(улика, public_url,
-                                                                               f"http://{host}:{port}/mcp")
-                print("\n".join(строки))
-                # Рекомендация: quick → named для продакшена — когда проба адреса не прошла.
-                if not улика["дошло"] and not адрес_ждёт and "trycloudflare.com" in (public_url or ""):
-                    print()
-                    print("💡 Рекомендация: quick-режим подходит для разработки.")
-                    print("   Для продакшена используй named-режим:")
-                    print("   • токен: экспорт MCP_TUNNEL_TOKEN из дашборда Cloudflare")
-                    print("   • credentials: домен + файл credentials (см. tunnel.py)")
-            else:
-                tunnel_status_str = "процесс жив, но соединение НЕ установлено"
-                print()
-                print("⚠️  Туннель запущен, но соединение не установлено.")
-                if st["last_error"]:
-                    print(f"   Причина: {st['last_error']}")
-                print(f"   Uptime: {st['uptime_sec']}s | Попыток перезапуска: {st['attempts']}")
-                print()
-                print("   Режимы работы Cloudflare Tunnel:")
-                print("   • quick (без аккаунта): работает сразу, URL эфемерный (*.trycloudflare.com)")
-                print("   • named + token: нужен токен из дашборда (env MCP_TUNNEL_TOKEN)")
-                print("   • named + credentials: нужен домен + credentials файл")
+            print()
+            print("\n".join(await asyncio.to_thread(цикл.step, st, tunnel.probe)))
+            tunnel_status_str = цикл.статус
         except (TunnelCancelled, asyncio.CancelledError) as e:
             # Отмена оператора, а не поломка: Ctrl+C ушёл всей группе процессов — первым его слышит процесс туннеля
             # (отказ подъёма) или сервер (отмена задачи). Флаг остановки снимает подъём в потоке на любой фазе, иначе
@@ -530,25 +459,12 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
             print(f"   Локально сервер работает: http://{host}:{port}/mcp")
             tunnel = None
 
-    # Публичный адрес без ключа пускает любого, кто его узнает: Origin/Host и файрвол есть, идентификации нет.
-    if ALLOW_NO_AUTH and tunnel:
-        print()
-        print("⚠ АУТЕНТИФИКАЦИЯ ОТКЛЮЧЕНА (MCP_ALLOW_NO_AUTH=1)")
-        print("⚠ СЕРВЕР ОТКРЫТ ЧЕРЕЗ ТУННЕЛЬ — публичный адрес пустит любого, кто его узнает")
-        print("⚠ ЭТОТ РЕЖИМ — ТОЛЬКО ДЛЯ РАЗРАБОТКИ: для работы запускай без --no-auth, с ключом в коннекторе")
-
     # Статус готовности (по спецификации MCP SDK).
     print()
     print(f"Статус: ГОТОВ | Туннель: {tunnel_status_str}")
     print("Для остановки: Ctrl+C")
 
     try:
-        # Мониторинг туннеля: печатаем ТОЛЬКО изменения статуса, а не шум каждые N сек.
-        # Восстановление соединения выполняет супервизор в CloudflaredTunnel сам —
-        # здесь только наблюдаем его status() и сообщаем переходы в консоль.
-        # dict: блок туннеля ниже под `if not tunnel: continue`; статус спрашивает сервер метрик — в потоке, не в цикле событий
-        prev = await asyncio.to_thread(tunnel.status) if tunnel else {}
-
         # Хот-релоад декларативного config без рестарта: «сменился ли файл» — по содержимому, тем же узлом, что у двери
         # деклараций. firewall.yaml → firewall.reload() (fail-closed), server_reactions.yaml →
         # reactions.load(). tunnel.yaml НЕ входит: смена режима/порта требует
@@ -584,31 +500,10 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
 
             if not tunnel:
                 continue
+            # Восстановление соединения ведёт надзор в CloudflaredTunnel сам; здесь — только строки смены фазы.
             st = await asyncio.to_thread(tunnel.status)
-
-            # 1) Публичный URL сменился (для quick-режима — норма при реконнекте процесса).
-            #    Самое важное сообщение: старый адрес в коннекторе Claude уже мёртв.
-            if st["public_url"] and st["public_url"] != prev["public_url"]:
-                print()
-                print(f"🌐 [tunnel] ПУБЛИЧНЫЙ URL ИЗМЕНИЛСЯ → {st['public_url']}/mcp")
-                print("   ⚠️  Обнови адрес в коннекторе Claude AI Web — старый больше не отвечает.")
-                print()
-            # 2) Соединение потеряно.
-            if prev["connected"] and not st["connected"]:
-                reason = st["last_error"] or "нет соединения"
-                print(f"🔴 [tunnel] соединение потеряно (uptime={st['uptime_sec']}s, попыток={st['attempts']}): {reason}")
-            # 3) Соединение восстановлено.
-            elif not prev["connected"] and st["connected"]:
-                print(f"🟢 [tunnel] соединение восстановлено → {st['public_url']}/mcp")
-            # 4) Новая ошибка без смены флага connected.
-            elif st["last_error"] and st["last_error"] != prev["last_error"]:
-                print(f"⚠️  [tunnel] {st['last_error']}")
-            # 5) На старте за адрес ещё отвечал край: следующая проба — итог, без окна-числа.
-            if адрес_ждёт and st["connected"]:
-                адрес_ждёт = False
-                print(tunnel_address_verdict(await asyncio.to_thread(tunnel.probe), st["public_url"]))
-
-            prev = st
+            for строка in await asyncio.to_thread(цикл.step, st, tunnel.probe):
+                print(строка)
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
@@ -617,6 +512,87 @@ async def run_server(host: str = HOST, port: int = PORT, use_tunnel: bool = Fals
             tunnel.stop()
         await wire.stop_socket_watch(socket_task)
         await runner.cleanup()
+
+
+class TunnelCycle:
+    """Состояние туннеля для консоли по событиям цикла надзора: строка печатается только на смене фазы, адрес — только
+    подтверждённый пробой снаружи (ответил наш процесс). Фазы: подключение (соединителя с краем нет), потеря (было
+    соединение — нет), ждёт края (соединитель готов, край отвечает своим кодом или молчит), адрес, чужой процесс, адреса нет,
+    надзор остановлен. Проба идёт, пока адрес не подтверждён, и снова — после потери, перезапуска соединителя или смены
+    адреса; подтверждённый адрес между событиями не переспрашивается. `origin` — адрес, который слушает сервер."""
+
+    def __init__(self, origin: str):
+        self.origin = origin
+        self.фаза: str | None = None
+        self.статус = ""                          # хвост строки «Статус: ГОТОВ | Туннель: …» — фазой первого шага
+        self._было: dict = {}
+        self._адрес: str | None = None             # последний адрес, подтверждённый пробой
+
+    def step(self, st: dict, probe) -> list[str]:
+        """Строки консоли по снимку `status()` туннеля; `probe` зовётся, только когда нужна проверка снаружи. Новая
+        ошибка соединителя без смены фазы — своей строкой."""
+        было, self._было = self._было, st
+        строки = self._lines(st, было, probe)
+        if not строки and было and st["last_error"] and st["last_error"] != было["last_error"]:
+            строки = [f"⚠️  [tunnel] {st['last_error']}"]
+        return строки
+
+    def _lines(self, st: dict, было: dict, probe) -> list[str]:
+        строки: list[str] = []
+        перезапуск = bool(было) and st["attempts"] != было["attempts"]
+        if перезапуск and st["connected"] and self.фаза not in (None, "подключение", "потеря"):
+            строки += self._enter("потеря", st, None)        # соединитель умер и поднялся между двумя взглядами
+        if st["supervision"].get("state") != "идёт":
+            return строки + self._enter("надзор", st, None)
+        if not st["connected"]:
+            return строки + self._enter("подключение" if self.фаза in (None, "подключение") else "потеря", st, None)
+        if self.фаза == "адрес" and not перезапуск and st["public_url"] == self._адрес:
+            return строки
+        улика = probe()
+        фаза = {"наш процесс": "адрес", "край": "ждёт края", "нет ответа": "ждёт края",
+                "чужой процесс": "чужой процесс"}.get(улика["кто"], "адреса нет")
+        return строки + self._enter(фаза, st, улика)
+
+    def _enter(self, фаза: str, st: dict, улика: dict | None) -> list[str]:
+        if фаза == self.фаза and not (фаза == "адрес" and st["public_url"] != self._адрес):
+            return []
+        self.фаза = фаза
+        ошибка = f": {st['last_error']}" if st["last_error"] else ""
+        if фаза == "подключение":
+            self.статус = "подключаюсь к краю"
+            return [f"⏳ [tunnel] {self.статус}{ошибка}"]
+        if фаза == "потеря":
+            self.статус = "соединение потеряно, переподключаюсь"
+            return [f"🔴 [tunnel] соединение с краем потеряно{ошибка} — публичный адрес не отвечает, переподключаюсь"]
+        if фаза == "надзор":
+            надзор = st["supervision"]
+            self.статус = "надзор остановлен — туннель не поднимется"
+            return [f"🔴 [tunnel] надзор туннеля остановлен: {надзор.get('reason')} (событие {надзор.get('event')}) — "
+                    "туннель больше не поднимается, перезапусти сервер"]
+        assert улика is not None                   # дальше — фазы, которые даёт только проба
+        url = f"{st['public_url']}/mcp"
+        if фаза == "адрес":
+            сменился = self._адрес is not None and st["public_url"] != self._адрес
+            self._адрес = st["public_url"]
+            self.статус = f"адрес проверен снаружи → {url}"
+            return ([f"🌐 [tunnel] Публичный URL (вставь в коннектор Claude): {url} — проверено снаружи: {улика['текст']}"]
+                    + (["   адрес изменился — обнови его в коннекторе Claude AI Web, старый больше не отвечает"]
+                       if сменился else []))
+        if фаза == "ждёт края":
+            self.статус = "ждёт края"
+            if улика.get("отказ") is not None:
+                from core.reactions.reactions import cli_text
+                почему = cli_text(улика["отказ"], CONFIG_PATH / "server_reactions.yaml").replace("\n", "\n   ")
+            else:
+                почему = улика["текст"]
+            return [f"⏳ [tunnel] соединений с краем {st['connections']}, край ещё не ведёт адрес к серверу — жду",
+                    f"   {почему}"]
+        if фаза == "чужой процесс":
+            self.статус = "адрес ведёт не к этому серверу"
+            return [f"⚠️  [tunnel] публичный адрес ведёт не к этому серверу: {улика['текст']}",
+                    f"   вход туннеля должен вести на {self.origin}"]
+        self.статус = "публичный адрес неизвестен"
+        return [f"⚠️  [tunnel] {улика['текст']}"]
 
 
 def main():
@@ -640,6 +616,10 @@ def main():
     parser.add_argument("--port", type=int, default=PORT, help="Порт (по умолчанию: %(default)s)")
     parser.add_argument("--tunnel", action="store_true", help="Поднять туннель вместе с сервером (D11)")
     parser.add_argument("--rotate-key", action="store_true", help="Перевыпустить ключ доступа и выйти (S1)")
+    parser.add_argument("--check-key", action="store_true",
+                        help="Проверить ключ доступа и выйти: ключ вводится без эха (из канала — первой строкой), "
+                             "ответ — верный или нет, значение не печатается; код выхода 0 — верный, 1 — не тот, "
+                             "2 — ключ ещё не выпущен")
     parser.add_argument("--re-adopt", action="store_true", help="Присвоить рабочую область этому серверу после переноса (S9)")
     args = parser.parse_args()
 
@@ -682,6 +662,21 @@ def main():
             print("Запуск не из терминала — значение не печатаем. Повтори ротацию в терминале.")
         return
 
+    if args.check_key:
+        digest = stored_digest(ENV_PATH)
+        if not digest:
+            print(f"Ключ ещё не выпущен: в {ENV_FILE} нет отпечатка. Выпусти его: server.py --rotate-key.", file=sys.stderr)
+            raise SystemExit(2)
+        import getpass
+        presented = (getpass.getpass("Ключ (ввод не отображается): ") if sys.stdin.isatty()
+                     else sys.stdin.readline()).strip()
+        if presented_matches(presented, digest):
+            print(f"Ключ верный: отпечаток {digest_fingerprint(digest)} совпал с ключом сервера.")
+            return
+        print(f"Ключ не тот: у сервера отпечаток {digest_fingerprint(digest)}, у введённого "
+              f"{token_fingerprint(presented) or '— (пусто)'}. Новый ключ: server.py --rotate-key.", file=sys.stderr)
+        raise SystemExit(1)
+
     try:
         asyncio.run(run_server(args.host, args.port, use_tunnel=args.tunnel))
     except ContractError as refused:
@@ -689,6 +684,27 @@ def main():
         said = (refused.facts.get("file"), refused.facts.get("details"), refused.message, refused.reason)
         print(" · ".join([f"ОТКАЗ СТАРТА: {refused.code}", *(str(part) for part in said if part)]), file=sys.stderr)
         raise SystemExit(2) from None
+
+
+def security_headers_middleware():
+    """Прослойка заголовков ответа: `RESPONSE_HEADERS` навешиваются и на отказы (405/403 тоже уходят в браузер), метка
+    прозвонки отражается только запросу, который принёс метку этого процесса (вызов-ответ, `probe_echo`), — и на отказы
+    маршрутизатора тоже. Внешняя к `wire.route_watch`: её заголовки получает и отказ маршрутизатора."""
+    from aiohttp import web
+
+    @web.middleware
+    async def security_headers(request: "web.Request", handler):
+        said = probe_echo(request.headers.get(PROBE_HEADER, ""))
+        headers = {**RESPONSE_HEADERS, PROBE_HEADER: said} if said else RESPONSE_HEADERS
+        try:
+            response = await handler(request)
+        except web.HTTPException as exc:
+            exc.headers.update(headers)
+            raise
+        response.headers.update(headers)
+        return response
+
+    return security_headers
 
 
 if __name__ == "__main__":

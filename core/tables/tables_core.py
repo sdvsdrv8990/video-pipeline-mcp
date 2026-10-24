@@ -38,7 +38,7 @@ class TableEngine:
     `if table == ...`). Поведение задаётся схемой листа, не Python-кодом.
 
     Attributes:
-        state: StateManager — доступ к read.json/write.json с containment.
+        state: StateManager — доступ к снимку и очереди сущности (имена — из её шаблона).
         ids: IDGenerator — сервер присваивает ID новым строкам (table_append).
     """
 
@@ -49,7 +49,7 @@ class TableEngine:
     # ═══ Загрузка/навигация по снапшоту ═══
 
     def _load(self, table: str) -> dict:
-        """Читает read.json. TABLE_NOT_FOUND если сущности/снапшота нет.
+        """Читает снимок сущности. TABLE_NOT_FOUND если сущности/снапшота нет.
 
         Отказ двери пути (PathRefused) прокидывается наружу — клиент получает его код и факт `path`.
         """
@@ -355,10 +355,10 @@ class TableEngine:
                 "row_ids": [str(op.get("row_id")) for op in queued if op.get("row_id")]}
 
     def execute_queue(self, table: str) -> dict:
-        """Применить очередь к read.json (RMW). Забирает и очищает write.json.
+        """Применить очередь к снимку (RMW). Забирает и очищает очередь.
 
         .xlsx-материализация ОТЛОЖЕНА (следующий блок) — применяем к снапшоту
-        read.json, а факт синка в книгу честно помечаем xlsx_synced=False.
+        снимку, а факт синка в книгу честно помечаем xlsx_synced=False.
         Защита формул перепроверяется на применении (schema мог измениться).
         """
         queued = self.state.execute_queue(table)  # [{timestamp, operation}, ...], очередь очищена
@@ -407,7 +407,7 @@ class TableEngine:
             self._recompute(snapshot)   # формулы — по уже применённым строкам, в той же записи снимка
 
         return {"applied": applied, "skipped": skipped, "xlsx_synced": False,
-                "note": "Применено к read.json. Синк в .xlsx отложен (следующий блок excel_*)."}
+                "note": "Применено к снимку. Синк в .xlsx отложен (следующий блок excel_*)."}
 
     @staticmethod
     def _recompute(snapshot: dict) -> None:

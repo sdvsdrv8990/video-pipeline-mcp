@@ -27,8 +27,8 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     # Объявленные платформы = матрица CI (.github/workflows/ci.yml): красный на ОС — мера переносимости, не повод снять ОС.
+    # macOS отложен владельцем 20.10 — мерить негде законно (виртуализация macOS — только на железе Apple), а не за красный.
     "Operating System :: POSIX :: Linux",
-    "Operating System :: MacOS",
     "Operating System :: Microsoft :: Windows",
     "Framework :: AsyncIO",
 ]

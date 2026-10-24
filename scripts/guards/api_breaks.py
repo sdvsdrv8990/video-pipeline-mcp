@@ -5,7 +5,7 @@
   1 — слом не объявлен или объявленное не случилось: что именно и какой строкой объявить;
   2 — сравнить нельзя (нет ревизии сравнения, griffe отказал сам): причина.
 Объявление — строки трейлера сообщения коммита `API-Break: <путь>: <объект>: <род изменения>` (номер строки не входит:
-он сдвигается). Источник объявлений — сообщение коммита HEAD или файл (`--declared-from`, для гейта до коммита).
+он сдвигается). Источник объявлений — сообщения коммитов base..head или файл (`--declared-from`, для гейта до коммита).
 
 Запуск: python scripts/guards/api_breaks.py core tools [--base HEAD~1] [--head HEAD] [--declared-from FILE]
 """
@@ -53,10 +53,12 @@ def found(packages: list[str], base: str, head: str) -> dict[str, str]:
     return out
 
 
-def declared(head: str, source: str | None) -> set[str]:
+def declared(base: str, head: str, source: str | None) -> set[str]:
+    """Объявления — из сообщений всех коммитов `base..head`, а не одного HEAD: у pull request CI проверяет слитый коммит,
+    чьё сообщение трейлеров ветки не несёт, а дифф griffe и так считается по всему диапазону."""
     if not source and head == WORKTREE:
         return set()  # у рабочего дерева сообщения ещё нет — исход 1 печатает строки трейлера к объявлению
-    text = open(source, encoding="utf-8").read() if source else _git("log", "-1", "--format=%B", head)
+    text = open(source, encoding="utf-8").read() if source else _git("log", "--format=%B", f"{base}..{head}")
     return {m.group(1).strip() for m in re.finditer(rf"^{TRAILER}:\s*(.+)$", text, re.M)}
 
 
@@ -66,11 +68,11 @@ def main() -> int:
     ap.add_argument("--base", default="HEAD~1", help="ревизия сравнения (по умолчанию HEAD~1)")
     ap.add_argument("--head", default="HEAD",
                     help=f"проверяемая ревизия (по умолчанию HEAD); {WORKTREE} — рабочее дерево, до коммита")
-    ap.add_argument("--declared-from", help="файл с объявлениями вместо сообщения коммита HEAD")
+    ap.add_argument("--declared-from", help="файл с объявлениями вместо сообщений коммитов base..head")
     a = ap.parse_args()
     try:
         _git("rev-parse", "--verify", f"{a.base}^{{commit}}")
-        breaks, said = found(a.packages, a.base, a.head), declared(a.head, a.declared_from)
+        breaks, said = found(a.packages, a.base, a.head), declared(a.base, a.head, a.declared_from)
     except Unmeasured as e:
         print(f"слом публичной поверхности: СРАВНИТЬ НЕЛЬЗЯ — {e}")
         return 2

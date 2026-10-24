@@ -16,7 +16,7 @@ video:
     - { name: "renders", required: true }
   files:
     - { name: "video_data.xlsx", kind: table, table_template: video_data, required: true }
-    - { name: "read.json", kind: file, required: true, content: "{}" }
-    - { name: "write.json", kind: file, required: true, content: "[]" }
+    - { name: "read.json", kind: file, role: snapshot, required: true, content: "{}" }
+    - { name: "write.json", kind: file, role: queue, required: true, content: "[]" }
     - { name: "project_memory.md", kind: file, required: true }
   children: []

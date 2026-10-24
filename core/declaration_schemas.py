@@ -120,34 +120,48 @@ class CallCodes(FetchCodes):
     outcome_unknown: ReactionCode
 
 
-class RequestPolicy(BaseModel):
+class Backoff(BaseModel):
+    """Повтор цикла `core.retry.retry` — общая база политик дверей, которые повторяют (DC-11): попытки, своя пауза
+    (растёт вдвое до потолка) и доля случайной добавки к ней (WC-03). Пауза начинается не выше своего потолка."""
+
+    model_config = STRICT
+
+    attempts: int = Field(ge=1)
+    backoff_sec: float = Field(ge=0)
+    backoff_max_sec: float = Field(ge=0)
+    jitter: float = Field(ge=0, le=1)
+
+    @model_validator(mode="after")
+    def _coherent(self) -> "Backoff":
+        if self.backoff_sec > self.backoff_max_sec:
+            raise ValidationError.from_exception_data(type(self).__name__, [
+                _gap("backoff_over_ceiling", "пауза повтора не выше backoff_max_sec", ("backoff_sec",))])
+        return self
+
+
+class ReplacePolicy(Backoff):
+    """`config/files.yaml → замена`: повтор замены файла слоем (`core.paths`), когда ОС отказала временно (Windows: файл
+    держит антивирус или читатель без FILE_SHARE_DELETE). `within_sec` — срок всех попыток одной замены (WC-01)."""
+
+    within_sec: float = Field(gt=0)
+
+
+class RequestPolicy(Backoff):
     """Раздел `fetch` потребителя загрузчика `core.providers.download.Fetcher`, которому тело не отдаётся (длина по HEAD).
 
     Суд схемы, хоста и адреса, срок, переходы и повтор — общие для всех приёмников двери. Списки YAML становятся
     кортежами, элементы проверяются строго. `codes` — коды реестра реакций, которыми загрузчик отказывает за потребителя.
+    `retry_after_max_sec` — потолок срока, названного сервером (Retry-After), отдельно от своей паузы (WC-04).
     """
-
-    model_config = STRICT
 
     schemes: Annotated[tuple[StrictStr, ...], Listed]
     hosts: Annotated[tuple[StrictStr, ...], Listed]
     block_private: bool
     timeout_sec: float = Field(gt=0)
     redirects: int = Field(ge=0)
-    attempts: int = Field(ge=1)
-    backoff_sec: float = Field(ge=0)
-    backoff_max_sec: float = Field(ge=0)
     retry_after_max_sec: float = Field(ge=0)
-    jitter: float = Field(ge=0, le=1)
     retry_on: Annotated[tuple[HttpStatus, ...], Listed]
     codes: RequestCodes
-
-    @model_validator(mode="after")
-    def _coherent(self) -> "RequestPolicy":
-        gaps = _fetch_gaps(self)
-        if gaps:
-            raise ValidationError.from_exception_data(type(self).__name__, gaps)
-        return self
 
     @property
     def silence_sec(self) -> float:
@@ -266,13 +280,6 @@ class InstallPolicy(BaseModel):
     prefer_files: Annotated[tuple[StrictStr, ...], Listed]
     progress: InstallProgress
     revisions: Annotated[Mapping[StrictStr, StrictStr], ReadOnly]
-
-
-def _fetch_gaps(policy: RequestPolicy) -> list[InitErrorDetails]:
-    """Связь ключей раздела: пауза повтора начинается не выше своего потолка."""
-    if policy.backoff_sec > policy.backoff_max_sec:
-        return [_gap("backoff_over_ceiling", "пауза повтора не выше backoff_max_sec", ("backoff_sec",))]
-    return []
 
 
 class PackageIndex(BaseModel):
@@ -572,7 +579,9 @@ class TunnelReadiness(BaseModel):
     его журнала. Сервер метрик соединителя садится на адрес, который назначает сервер (`metrics_flag metrics_address` в
     команде; адрес занят — громкий отказ, а не случайный порт поставщика), путь `ready_path` отвечает JSON, где поле
     `ready_field` — счёт соединений с краем (готов — больше нуля); путь `quick_path` — адрес quick-туннеля полем
-    `quick_field`. Пока соединитель встаёт, готовность спрашивается с паузой `pause_sec`: события об этом поставщик не шлёт."""
+    `quick_field`. Пока соединитель встаёт, готовность спрашивается с паузой `pause_sec`: события об этом поставщик не шлёт.
+    `edge_statuses` — коды, которые отдаёт только край поставщика (до нашего процесса запрос не дошёл): прозвонка без
+    отражённой метки судит по ним «край не принял», а не по заголовку `Server`, который край переписывает."""
 
     model_config = STRICT
 
@@ -583,6 +592,7 @@ class TunnelReadiness(BaseModel):
     quick_path: StrictStr
     quick_field: StrictStr
     pause_sec: float = Field(gt=0)
+    edge_statuses: Annotated[tuple[HttpStatus, ...], Listed, Field(min_length=1)]
 
 
 class RunnerDockerPoll(BaseModel):
@@ -736,9 +746,10 @@ TUNNEL_METRICS = Slot("tunnel_diagnostics.yaml", ("метрики",), AnswerPoli
 TRANSPORT = Slot("transport.yaml", (), TransportDeclaration)
 RECALC_ENGINE = Slot("engines.yaml", ("recalc",), EnginePlaces)
 FORMULAS = Slot("formulas.yaml", (), FormulaLanguageDecl)
+FILES_REPLACE = Slot("files.yaml", ("замена",), ReplacePolicy)
 SLOTS = (RESOURCES, PACKAGES, MODEL_INSTALL, MODEL_FETCH, RESULT_FETCH, ONLINE_ANSWER, ONLINE_CALL, RESULT_ANSWER,
          RUNNER_HEALTH, RUNNER_DOCKER_POLL, TUNNEL_PROBE, JOBS, RATE_LIMIT, TUNNEL_BINARY_FETCH, TUNNEL_SUPERVISION,
-         TUNNEL_READINESS, TUNNEL_METRICS, TRANSPORT, RECALC_ENGINE, FORMULAS)
+         TUNNEL_READINESS, TUNNEL_METRICS, TRANSPORT, RECALC_ENGINE, FORMULAS, FILES_REPLACE)
 
 
 def registry_codes(model: BaseModel) -> frozenset[str]:

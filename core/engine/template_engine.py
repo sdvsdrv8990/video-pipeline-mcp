@@ -165,6 +165,7 @@ class TemplateEngine:
                 file_id = self.ids.generate_simple("FILE")
                 tables_pending.append({
                     "path": f"{node_rel}/{fname}",
+                    "entity": node_rel,     # чей снимок получает схемы книги (книга может лежать глубже узла)
                     "table_template": fr.get("table_template"),
                     "required": fr.get("required", False),
                     "file_id": file_id,
