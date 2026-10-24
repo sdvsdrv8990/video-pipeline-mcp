@@ -12,15 +12,20 @@ from __future__ import annotations
 import json
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, overload
 
+from core.contracts import ContractError
 from core.paths import Files
 
 if TYPE_CHECKING:
     from core.observability import Journal
+
+
+class StateError(ContractError):
+    """Отказ слоя снимков (код из server_reactions.yaml)."""
 
 
 def _atomic_write_json(path: Path, data: Any):
@@ -63,6 +68,10 @@ def _sanitize_for_log(data: dict) -> dict:
     return out
 
 
+# Путь сущности → (имена `{snapshot, queue}` из её шаблона, тип сущности); не сущность — ({}, "").
+PairOf = Callable[[str], tuple[dict[str, str], str]]
+
+
 class StateManager:
     """Управление состоянием сервера.
 
@@ -82,37 +91,60 @@ class StateManager:
         # Очередь и снимки пишет только процесс сервера (раннер их не трогает): потоков хватает потокового замка,
         # межпроцессный здесь не нужен — в отличие от реестра связей и ключей канала.
         self._lock = threading.Lock()
+        self._pairs: PairOf | None = None
+
+    def bind_pairs(self, pairs: PairOf) -> None:
+        """Откуда имена снимка и очереди сущности; подключает сборка контекста — реестр и шаблоны поднимаются позже."""
+        self._pairs = pairs
+
+    @overload
+    def _file(self, entity_path: str, role: str, *, write: Literal[True]) -> Path: ...
+    @overload
+    def _file(self, entity_path: str, role: str, *, write: Literal[False]) -> Path | None: ...
+    def _file(self, entity_path: str, role: str, *, write: bool) -> Path | None:
+        """Файл роли `snapshot`/`queue` сущности по её шаблону. Пары нет: чтение — None, запись — отказ до записи.
+
+        Raises:
+            PathRefused: путь вне workspace или в закрытом каталоге
+            StateError: запись в путь без пары — TABLE_NOT_FOUND (не сущность) или TABLE_PAIR_UNDECLARED
+        """
+        place = Files(self.workspace_path).place(entity_path)
+        if self._pairs is None:
+            raise RuntimeError("StateManager: имена снимка и очереди не подключены (bind_pairs)")
+        pair, entity_type = self._pairs(entity_path)
+        if pair:
+            return place / pair[role]
+        if not write:
+            return None
+        if not entity_type:
+            raise StateError("TABLE_NOT_FOUND", facts={"table": entity_path})
+        raise StateError("TABLE_PAIR_UNDECLARED", facts={"table": entity_path, "entity_type": entity_type})
+
+    def snapshot_file(self, entity_path: str) -> Path:
+        """Файл снимка сущности, куда пойдёт запись; писать некуда — отказ раньше записи."""
+        return self._file(entity_path, "snapshot", write=True)
 
     def read_snapshot(self, entity_path: str) -> dict | None:
-        """Чтение снапшота (read.json).
-
-        Args:
-            entity_path: Путь к сущности (относительно workspace)
-
-        Returns:
-            Словарь данных или None
+        """Снимок сущности; нет пары или файла — None.
 
         Raises:
             PathRefused: путь вне workspace или в закрытом каталоге
         """
-        snapshot_file = Files(self.workspace_path).place(entity_path) / "read.json"
+        snapshot_file = self._file(entity_path, "snapshot", write=False)
 
-        if not snapshot_file.exists():
+        if snapshot_file is None or not snapshot_file.exists():
             return None
 
         return _read_json(snapshot_file)
 
     def write_snapshot(self, entity_path: str, data: dict):
-        """Запись снапшота (read.json).
-
-        Args:
-            entity_path: Путь к сущности
-            data: Данные для записи
+        """Запись снимка целиком.
 
         Raises:
             PathRefused: путь вне workspace или в закрытом каталоге
+            StateError: у пути нет пары снимок/очередь
         """
-        snapshot_file = Files(self.workspace_path).place(entity_path) / "read.json"
+        snapshot_file = self.snapshot_file(entity_path)
         with _snapshot_lock(snapshot_file):         # целиком — не посреди чужой правки снимка
             _atomic_write_json(snapshot_file, data)
 
@@ -125,27 +157,25 @@ class StateManager:
 
         Raises:
             PathRefused: путь вне workspace или в закрытом каталоге
+            StateError: у пути нет пары снимок/очередь
         """
-        snapshot_file = Files(self.workspace_path).place(entity_path) / "read.json"
+        snapshot_file = self.snapshot_file(entity_path)
         with _snapshot_lock(snapshot_file):
             snapshot = self.read_snapshot(entity_path) or {}
             yield snapshot
             _atomic_write_json(snapshot_file, snapshot)
 
     def push_to_queue(self, entity_path: str, operation: dict) -> bool:
-        """Добавление операции в очередь (write.json).
-
-        Args:
-            entity_path: Путь к сущности
-            operation: Операция для выполнения
+        """Добавление операции в очередь сущности.
 
         Returns:
             True если добавлено успешно
 
         Raises:
             PathRefused: путь вне workspace или в закрытом каталоге
+            StateError: у пути нет пары снимок/очередь
         """
-        queue_file = Files(self.workspace_path).place(entity_path) / "write.json"
+        queue_file = self._file(entity_path, "queue", write=True)
 
         # Read-modify-write под локом + атомарная запись (без гонок/порчи).
         with self._lock:
@@ -168,29 +198,23 @@ class StateManager:
         Пустой список и на отсутствующий файл — для читателя «пусто» и «файла нет» одно и то же;
         отсутствие самой таблицы отвечает уровнем выше своим кодом.
         """
-        queue_file = Files(self.workspace_path).place(entity_path) / "write.json"
+        queue_file = self._file(entity_path, "queue", write=False)
         with self._lock:
-            if not queue_file.exists():
+            if queue_file is None or not queue_file.exists():
                 return []
             return _read_json(queue_file)
 
     def execute_queue(self, entity_path: str) -> list[dict]:
-        """Выполнение очереди операций.
-
-        Args:
-            entity_path: Путь к сущности
-
-        Returns:
-            Список выполненных операций
+        """Забрать очередь и очистить её; применяет операции вызывающий.
 
         Raises:
             PathRefused: путь вне workspace или в закрытом каталоге
         """
-        queue_file = Files(self.workspace_path).place(entity_path) / "write.json"
+        queue_file = self._file(entity_path, "queue", write=False)
 
         # Атомарный «забрать и очистить» под локом.
         with self._lock:
-            if not queue_file.exists():
+            if queue_file is None or not queue_file.exists():
                 return []
 
             queue = _read_json(queue_file)
@@ -201,15 +225,15 @@ class StateManager:
 
     def clear_queue(self, entity_path: str) -> int:
         """Очистка очереди без выполнения: в отличие от execute_queue операции НЕ применяются
-        к read.json, а выбрасываются.
+        к снимку, а выбрасываются.
 
         Возвращает число отброшенных операций; PathRefused — путь вне workspace или в закрытом каталоге.
         """
-        queue_file = Files(self.workspace_path).place(entity_path) / "write.json"
+        queue_file = self._file(entity_path, "queue", write=False)
 
         # Read-modify-write под локом + атомарная запись.
         with self._lock:
-            if not queue_file.exists():
+            if queue_file is None or not queue_file.exists():
                 return 0
             count = len(_read_json(queue_file))
             _atomic_write_json(queue_file, [])

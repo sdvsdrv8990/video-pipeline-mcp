@@ -108,6 +108,13 @@ class ToolContext:
         """Резолвер цепочки по каталогу назначения — собран из уже имеющихся частей."""
         return ChainResolver(self.workspace_path, self.link_registry, self.taxonomy)
 
+    def pair_of(self, entity_path: str) -> tuple[dict[str, str], str]:
+        """Имена снимка и очереди сущности по пути — из шаблона её типа (реестр знает тип); не сущность — ({}, "")."""
+        rec = self.link_registry.find_by_path(entity_path)
+        if not rec:
+            return {}, ""
+        return self.taxonomy.pair(rec["type"]), rec["type"]
+
     def safe(self, call: Callable[[], Any]) -> tuple[bool, Any]:
         """Выполнить sync-вызов ядра; объявленное исключение — готовый отказ (перевод один — `Engine.refusal`),
         чужое летит дальше, на границу исполнения.
@@ -151,11 +158,11 @@ def build_context(engine: Engine, id_generator: IDGenerator, state_manager: Stat
     # Личность инстанса — ключ подписи выпускается в доме инстанса (вне workspace/).
     identity = InstanceIdentity(instance_home(config_path), workspace_path)
     identity.ensure_key()
-    return ToolContext(
+    ctx = ToolContext(
         engine=engine,
         id_generator=id_generator,
         state_manager=state_manager,
-        # Категория 3 (данные) — TableEngine поверх read.json/write.json.
+        # Категория 3 (данные) — TableEngine поверх снимка и очереди сущности.
         table_engine=TableEngine(state_manager, id_generator),
         # Категория 2 (структура) — ExcelEngine поверх .xlsx (openpyxl).
         excel_engine=ExcelEngine(workspace_path),
@@ -167,3 +174,5 @@ def build_context(engine: Engine, id_generator: IDGenerator, state_manager: Stat
         workspace_path=workspace_path,
         config_path=config_path,
     )
+    state_manager.bind_pairs(ctx.pair_of)
+    return ctx

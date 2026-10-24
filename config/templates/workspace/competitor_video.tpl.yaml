@@ -12,6 +12,6 @@ competitor_video:
   folders: []
   files:
     - { name: "competitor_video_data.xlsx", kind: table, table_template: competitor_video_data, required: true }
-    - { name: "read.json", kind: file, required: true, content: "{}" }
-    - { name: "write.json", kind: file, required: true, content: "[]" }
+    - { name: "read.json", kind: file, role: snapshot, required: true, content: "{}" }
+    - { name: "write.json", kind: file, role: queue, required: true, content: "[]" }
   children: []

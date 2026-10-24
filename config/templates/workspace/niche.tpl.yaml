@@ -12,7 +12,7 @@ niche:
     - { name: "networks", required: true }
   files:
     - { name: "_NICHE_INDEX.md", kind: file, required: true }
-    - { name: "niche_read.json", kind: file, required: true, content: "{}" }
-    - { name: "niche_write.json", kind: file, required: true, content: "[]" }
+    - { name: "niche_read.json", kind: file, role: snapshot, required: true, content: "{}" }
+    - { name: "niche_write.json", kind: file, role: queue, required: true, content: "[]" }
   children:
     - { type: network, container: "networks/" }

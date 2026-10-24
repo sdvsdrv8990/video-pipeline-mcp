@@ -19,6 +19,9 @@ class TaxonomyError(ContractError):
 # Укороченный `scoped8` требует проверки уникальности в реестре и пока не подключён.
 SUPPORTED_STRATEGIES = {"hex"}
 
+# Роли файлов сущности, через которые ходит слой таблиц: снимок для чтения и очередь записи.
+PAIR_ROLES = ("snapshot", "queue")
+
 # Классы файлов (префиксы ID) объявлены рядом с шаблонами, но отдельным файлом:
 # у файла нет шаблона папок, только личность.
 FILE_CLASSES_FILE = "_file_classes.yaml"
@@ -70,9 +73,29 @@ class Taxonomy:
                 # Папки, объявленные шаблоном (assets/svg, renders…): структура, а не сущности —
                 # резолвер обязан их пропускать наравне с контейнерами детей.
                 "folders": [str(f.get("name", "")).strip("/") for f in (body.get("folders") or []) if f.get("name")],
+                "pair": self._declared_pair(p, body),
             }
         self._types = types
         return types
+
+    @staticmethod
+    def _declared_pair(p: Path, body: dict) -> dict[str, str]:
+        """Имена снимка и очереди сущности — файлы шаблона с `role`: обе роли разом или ни одной."""
+        pair: dict[str, str] = {}
+        for f in body.get("files") or []:
+            role = f.get("role")
+            if role is None:
+                continue
+            if role not in PAIR_ROLES or role in pair or f.get("kind") != "file":
+                raise TaxonomyError(
+                    "TEMPLATE_INVALID", f"Шаблон {p.name}: файл {f.get('name')!r} с role {role!r}.",
+                    f"role — {', '.join(PAIR_ROLES)}, у файла kind: file, каждая роль один раз.")
+            pair[role] = str(f.get("name", ""))
+        if pair and set(pair) != set(PAIR_ROLES):
+            raise TaxonomyError(
+                "TEMPLATE_INVALID", f"Шаблон {p.name}: объявлена только роль {', '.join(pair)}.",
+                f"Снимок и очередь объявляются парой: {', '.join(PAIR_ROLES)}.")
+        return pair
 
     @property
     def node_types(self) -> list[str]:
@@ -97,6 +120,10 @@ class Taxonomy:
     def ancestors(self, node_type: str) -> list[dict]:
         """Объявленные предки сверху вниз: [{type, required, role}]."""
         return list(self._get(node_type)["ancestors"])
+
+    def pair(self, node_type: str) -> dict[str, str]:
+        """Имена снимка и очереди типа `{snapshot, queue}`; шаблон пары не объявил — пусто."""
+        return dict(self._get(node_type)["pair"])
 
     def child_type_for(self, parent_type: str, container: str) -> str:
         """Тип ребёнка, который живёт в контейнере родителя (`videos/` → video)."""

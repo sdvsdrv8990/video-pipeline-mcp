@@ -58,6 +58,13 @@ TABLE_NOT_FOUND:
     suggested_tool: "fs_create_project_structure"
     reason: "Создай структуру проекта."
 
+TABLE_PAIR_UNDECLARED:
+  class: integrity
+  message_template: "У «{table}» нет таблицы: шаблон типа «{entity_type}» не объявляет снимок и очередь."
+  recovery:
+    reason: "Запись не сделана. Сообщи владельцу."
+    owner: "Объяви в шаблоне типа {entity_type} два файла с role: snapshot и role: queue (config/templates/workspace)."
+
 FILE_EXISTS:
   class: ai_recoverable
   message_template: "Файл или каталог уже существует: {path}"

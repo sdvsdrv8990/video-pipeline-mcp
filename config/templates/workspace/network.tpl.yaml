@@ -16,6 +16,9 @@ network:
     - { name: "network_config.xlsx", kind: table, table_template: network_config, required: true }
     # Агрегат по конкурентам ниши живёт на уровне competitors/ (§4). Необязателен при голом создании сетки.
     - { name: "competitors/niche_network_data.xlsx", kind: table, table_template: niche_network_data, required: false }
+    # Снимок и очередь слоя таблиц — общие для обеих книг сетки (листы у них разные).
+    - { name: "network_read.json", kind: file, role: snapshot, required: true, content: "{}" }
+    - { name: "network_write.json", kind: file, role: queue, required: true, content: "[]" }
   children:
     - { type: channel, container: "channels/" }
     # {parent:channel} — имя НАШЕГО канала, чьим конкурентом считается сущность (§4).
