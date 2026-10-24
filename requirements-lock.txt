@@ -296,7 +296,7 @@ ruff==0.17.0
     # via video-pipeline-mcp (pyproject.toml)
 s3transfer==0.19.2
     # via boto3
-setuptools==84.0.0
+setuptools==84.1.0
     # via video-pipeline-mcp (pyproject.toml)
 six==1.17.0
     # via python-dateutil
